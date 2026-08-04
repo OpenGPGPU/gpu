@@ -4,7 +4,7 @@ import circt.stage.ChiselStage
 import gpu.config.GpuConfig
 import gpu.core.GpuCore
 
-/** Emits a simulation core with behavioral scalar RF and real CVFPU backend. */
+/** Emits a simulation core with behavioral scalar RF and Chisel FPU backend. */
 object EmitFpuCoreSimulationRtl {
   def main(args: Array[String]): Unit = {
     val targetDir = args.headOption.getOrElse("target/gpu_core_fpu_rtl")

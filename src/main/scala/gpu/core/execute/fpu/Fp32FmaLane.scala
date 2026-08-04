@@ -2,27 +2,7 @@ package gpu.core.execute.fpu
 
 import chisel3._
 import chisel3.util._
-import chisel3.util.HasBlackBoxResource
-
-/** FP32-specialized YunSuan FloatFMA generated from the upstream Chisel RTL. */
-private class YunSuanFp32FmaBlackBox extends BlackBox
-    with HasBlackBoxResource {
-  val io = IO(new Bundle {
-    val clk_i = Input(Clock())
-    val rst_ni = Input(Bool())
-    val operand_a_i = Input(UInt(32.W))
-    val operand_b_i = Input(UInt(32.W))
-    val operand_c_i = Input(UInt(32.W))
-    val rnd_mode_i = Input(UInt(3.W))
-    val op_i = Input(UInt(4.W))
-    val in_valid_i = Input(Bool())
-    val result_o = Output(UInt(32.W))
-    val status_o = Output(UInt(5.W))
-  })
-
-  override def desiredName: String = "yunsuan_float_fma_fp32_wrapper"
-  addResource("/fpu/YunSuanFloatFmaFp32Ppa.v")
-}
+import yunsuan.fpu.FloatFMA
 
 /** Elastic GPU wrapper around YunSuan's three-cycle FP32 FMA pipeline.
   *
@@ -44,10 +24,8 @@ class Fp32FmaLane(tagWidth: Int = 16, pipeRegs: Int = 3) extends Module {
     val busy = Output(Bool())
   })
 
-  private val core = Module(new YunSuanFp32FmaBlackBox)
   private val resetOrFlush = reset.asBool || io.flush
-  core.io.clk_i := clock
-  core.io.rst_ni := !resetOrFlush
+  private val core = withReset(resetOrFlush) { Module(new FloatFMA) }
 
   private val isFmadd = io.in.bits.operation === Fp32Operation.fmadd
   private val isFnmsub = io.in.bits.operation === Fp32Operation.fnmsub
@@ -63,11 +41,18 @@ class Fp32FmaLane(tagWidth: Int = 16, pipeRegs: Int = 3) extends Module {
     yunSuanOp := Mux(io.in.bits.operationModifier, 2.U, 4.U)
   }
 
-  core.io.operand_a_i := Mux(isAdd, "h3f800000".U, io.in.bits.operandA)
-  core.io.operand_b_i := io.in.bits.operandB
-  core.io.operand_c_i := Mux(isMul, 0.U, io.in.bits.operandC)
-  core.io.rnd_mode_i := io.in.bits.roundingMode
-  core.io.op_i := yunSuanOp
+  core.io.fp_a := Mux(isAdd, "h3f800000".U, io.in.bits.operandA)
+  core.io.fp_b := io.in.bits.operandB
+  core.io.fp_c := Mux(isMul, 0.U, io.in.bits.operandC)
+  core.io.round_mode := io.in.bits.roundingMode
+  core.io.fp_format := 2.U // FP32 only
+  core.io.op_code := yunSuanOp
+  core.io.fp_aIsFpCanonicalNAN :=
+    core.io.fp_a(30, 0) === "h7fc00000".U
+  core.io.fp_bIsFpCanonicalNAN :=
+    core.io.fp_b(30, 0) === "h7fc00000".U
+  core.io.fp_cIsFpCanonicalNAN :=
+    core.io.fp_c(30, 0) === "h7fc00000".U
 
   private val responseQueue = withReset(resetOrFlush) {
     Module(new Queue(new Fp32Response(tagWidth), resultEntries))
@@ -77,7 +62,7 @@ class Fp32FmaLane(tagWidth: Int = 16, pipeRegs: Int = 3) extends Module {
   io.in.ready := !io.flush &&
     (outstanding =/= resultEntries.U || canRecycleCredit)
   private val accept = io.in.valid && io.in.ready
-  core.io.in_valid_i := accept
+  core.io.fire := accept
 
   private val validPipe = RegInit(VecInit(Seq.fill(latency)(false.B)))
   private val tagPipe = Reg(Vec(latency, UInt(tagWidth.W)))
@@ -95,8 +80,8 @@ class Fp32FmaLane(tagWidth: Int = 16, pipeRegs: Int = 3) extends Module {
   }
 
   responseQueue.io.enq.valid := validPipe(latency - 1)
-  responseQueue.io.enq.bits.result := core.io.result_o
-  responseQueue.io.enq.bits.status := core.io.status_o
+  responseQueue.io.enq.bits.result := core.io.fp_result(31, 0)
+  responseQueue.io.enq.bits.status := core.io.fflags
   responseQueue.io.enq.bits.tag := tagPipe(latency - 1)
   assert(!responseQueue.io.enq.valid || responseQueue.io.enq.ready,
     "reserved YunSuan FMA result queue entry was unavailable")

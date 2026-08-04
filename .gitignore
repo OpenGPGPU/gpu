@@ -11,9 +11,9 @@ project/target/
 .metals/
 .scala-build/
 
-# Upstream reference checkouts are optional development inputs.  The active
-# YunSuan FP32 implementation is checked in under src/main/resources/fpu.
-depends/
+# CVFPU remains an optional local reference checkout.  YunSuan is a tracked
+# Chisel source dependency because its FloatFMA is compiled directly.
+depends/cvfpu/
 
 # Generated RTL and physical-design work products are reproducible and can be
 # tens of gigabytes.  Keep constraints, scripts, benchmarks, and libraries.

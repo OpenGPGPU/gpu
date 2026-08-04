@@ -1,0 +1,3 @@
+[submodule "depends/yunsuan"]
+	path = depends/yunsuan
+	url = https://github.com/OpenXiangShan/YunSuan.git

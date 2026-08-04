@@ -14,3 +14,9 @@ libraryDependencies ++= Seq(
 Compile / scalacOptions ++= Seq("-language:reflectiveCalls")
 
 Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-oD")
+
+// Compile the arithmetic implementation directly from YunSuan's Chisel
+// source.  Only FloatFMA is imported; small compatibility definitions live in
+// this repository, so the rest of YunSuan is not pulled into the GPU build.
+Compile / unmanagedSources +=
+  baseDirectory.value / "depends/yunsuan/src/main/scala/yunsuan/fpu/FloatFMA.scala"
