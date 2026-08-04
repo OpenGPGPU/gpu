@@ -5,7 +5,12 @@ import chisel3.util._
 import gpu.config.GpuConfig
 import gpu.core.frontend.{InstructionFetchRequest, InstructionFetchResponse}
 
-/** Fully-associative blocking instruction TLB. */
+/** Fully-associative instruction TLB with one page-walk miss slot.
+  *
+  * Cached translations and Bare requests may continue to reach the ICache
+  * while a different virtual page is being walked.  A completed walk is held
+  * in a replay register, so downstream backpressure cannot lose the request.
+  */
 class InstructionTlb(config: GpuConfig = GpuConfig(), entries: Int = 16)
     extends Module {
   require(entries > 0)
@@ -31,86 +36,109 @@ class InstructionTlb(config: GpuConfig = GpuConfig(), entries: Int = 16)
   private val entryAsid = Reg(Vec(entries, UInt(9.W)))
   private val global = Reg(Vec(entries, Bool()))
   private val replacement = RegInit(0.U(entryWidth.W))
-  private val request = Reg(new InstructionFetchRequest(config))
-  private val physicalPc = Reg(UInt(config.xLen.W))
-  private val fault = Reg(new InstructionFetchResponse(config))
 
-  private object State extends ChiselEnum {
-    val idle, lookup, walkRequest, walkResponse, forward, memoryResponse,
-      faultResponse = Value
-  }
-  private val state = RegInit(State.idle)
-  private val requestVpn = request.pc(config.xLen - 1, 12)
+  private val inputVpn = io.in.bits.pc(config.xLen - 1, 12)
   private val hitByEntry = VecInit((0 until entries).map { entry =>
-    valid(entry) && vpn(entry) === requestVpn &&
+    valid(entry) && vpn(entry) === inputVpn &&
       (global(entry) || entryAsid(entry) === io.asid)
   })
-  private val hit = hitByEntry.asUInt.orR
-  private val hitPpn = Mux1H(hitByEntry, ppn)
-  private val hitExecutable = Mux1H(hitByEntry, executable)
+  private val inputHit = hitByEntry.asUInt.orR
+  private val inputPpn = Mux1H(hitByEntry, ppn)
+  private val inputExecutable = Mux1H(hitByEntry, executable)
+  private val inputCanForward = !io.translationEnabled ||
+    (inputHit && inputExecutable)
+  private val inputFault = io.translationEnabled && inputHit && !inputExecutable
+  private val inputMiss = io.translationEnabled && !inputHit
 
-  io.in.ready := state === State.idle
-  io.out.valid := state === State.faultResponse ||
-    (state === State.memoryResponse && io.physicalResponse.valid)
-  io.out.bits := Mux(state === State.faultResponse, fault, io.physicalResponse.bits)
-  io.physicalRequest.valid := state === State.forward
-  io.physicalRequest.bits.warpId := request.warpId
-  io.physicalRequest.bits.pc := physicalPc
-  io.physicalResponse.ready := state === State.memoryResponse && io.out.ready
-  io.pageWalkRequest.valid := state === State.walkRequest
-  io.pageWalkRequest.bits.virtualPageNumber := requestVpn
+  private val missValid = RegInit(false.B)
+  private val missWalkIssued = RegInit(false.B)
+  private val missRequest = Reg(new InstructionFetchRequest(config))
+  private val missAsid = Reg(UInt(9.W))
+  private val missVpn = missRequest.pc(config.xLen - 1, 12)
+
+  private val replayValid = RegInit(false.B)
+  private val replayRequest = Reg(new InstructionFetchRequest(config))
+  private val faultValid = RegInit(false.B)
+  private val fault = Reg(new InstructionFetchResponse(config))
+
+  // A walked request has priority so a stream of hits cannot starve it.
+  io.physicalRequest.valid := replayValid || (io.in.valid && inputCanForward)
+  io.physicalRequest.bits := Mux(replayValid, replayRequest, io.in.bits)
+  when(!replayValid && io.translationEnabled) {
+    io.physicalRequest.bits.pc := Cat(inputPpn, io.in.bits.pc(11, 0))
+  }
+
+  private val faultSlotAvailable = !faultValid ||
+    (io.out.ready && faultValid)
+  io.in.ready := !io.flush.valid && MuxCase(false.B, Seq(
+    inputCanForward -> (!replayValid && io.physicalRequest.ready),
+    inputFault -> faultSlotAvailable,
+    inputMiss -> !missValid
+  ))
+
+  io.out.valid := faultValid || io.physicalResponse.valid
+  io.out.bits := Mux(faultValid, fault, io.physicalResponse.bits)
+  io.physicalResponse.ready := !faultValid && io.out.ready
+
+  io.pageWalkRequest.valid := missValid && !missWalkIssued
+  io.pageWalkRequest.bits.virtualPageNumber := missVpn
   io.pageWalkRequest.bits.isStore := false.B
   io.pageWalkRequest.bits.isInstruction := true.B
-  io.pageWalkResponse.ready := state === State.walkResponse
+  io.pageWalkResponse.ready := missValid && missWalkIssued &&
+    !replayValid && faultSlotAvailable
 
-  when(io.in.fire) {
-    request := io.in.bits
-    state := State.lookup
+  when(io.in.fire && inputMiss) {
+    missValid := true.B
+    missWalkIssued := false.B
+    missRequest := io.in.bits
+    missAsid := io.asid
   }
 
-  when(state === State.lookup) {
-    when(!io.translationEnabled) {
-      physicalPc := request.pc
-      state := State.forward
-    }.elsewhen(hit && hitExecutable) {
-      physicalPc := Cat(hitPpn, request.pc(11, 0))
-      state := State.forward
-    }.elsewhen(hit) {
-      fault.warpId := request.warpId
-      fault.instruction := 0.U
-      fault.accessFault := true.B
-      state := State.faultResponse
-    }.otherwise {
-      state := State.walkRequest
-    }
+  when(io.in.fire && inputFault) {
+    faultValid := true.B
+    fault.warpId := io.in.bits.warpId
+    fault.instruction := 0.U
+    fault.accessFault := true.B
+  }.elsewhen(faultValid && io.out.ready) {
+    faultValid := false.B
   }
 
-  when(io.pageWalkRequest.fire) { state := State.walkResponse }
+  when(io.pageWalkRequest.fire) {
+    missWalkIssued := true.B
+  }
+
   when(io.pageWalkResponse.fire) {
-    when(io.pageWalkResponse.bits.fault || !io.pageWalkResponse.bits.executable) {
-      fault.warpId := request.warpId
+    missValid := false.B
+    missWalkIssued := false.B
+    when(io.pageWalkResponse.bits.fault ||
+      !io.pageWalkResponse.bits.executable) {
+      faultValid := true.B
+      fault.warpId := missRequest.warpId
       fault.instruction := 0.U
       fault.accessFault := true.B
-      state := State.faultResponse
     }.otherwise {
       valid(replacement) := true.B
-      vpn(replacement) := requestVpn
+      vpn(replacement) := missVpn
       ppn(replacement) := io.pageWalkResponse.bits.physicalPageNumber
       executable(replacement) := io.pageWalkResponse.bits.executable
-      entryAsid(replacement) := io.asid
+      entryAsid(replacement) := missAsid
       global(replacement) := io.pageWalkResponse.bits.global
-      replacement := Mux(replacement === (entries - 1).U, 0.U, replacement + 1.U)
-      physicalPc := Cat(io.pageWalkResponse.bits.physicalPageNumber, request.pc(11, 0))
-      state := State.forward
+      replacement := Mux(replacement === (entries - 1).U,
+        0.U, replacement + 1.U)
+      replayValid := true.B
+      replayRequest.warpId := missRequest.warpId
+      replayRequest.pc := Cat(io.pageWalkResponse.bits.physicalPageNumber,
+        missRequest.pc(11, 0))
     }
   }
 
-  when(io.physicalRequest.fire) { state := State.memoryResponse }
-  when(state === State.memoryResponse && io.physicalResponse.fire) { state := State.idle }
-  when(state === State.faultResponse && io.out.fire) { state := State.idle }
+  when(replayValid && io.physicalRequest.ready) {
+    replayValid := false.B
+  }
 
   when(io.flush.valid) {
-    assert(state === State.idle, "ITLB flush requires an idle translation port")
+    assert(!missValid && !replayValid && !faultValid,
+      "ITLB flush requires no pending translation")
     for (entry <- 0 until entries) {
       val vpnMatches = !io.flush.bits.virtualPageNumberValid ||
         vpn(entry) === io.flush.bits.virtualPageNumber
