@@ -1,0 +1,22 @@
+build/
+target/
+project/target/
+*.vcd
+*.vvp
+*.out
+
+# Local IDE and operating-system state.
+.DS_Store
+.bsp/
+.metals/
+.scala-build/
+
+# Upstream reference checkouts are optional development inputs.  The active
+# YunSuan FP32 implementation is checked in under src/main/resources/fpu.
+depends/
+
+# Generated RTL and physical-design work products are reproducible and can be
+# tens of gigabytes.  Keep constraints, scripts, benchmarks, and libraries.
+timing/generated/
+timing/reports/
+timing/lib/
