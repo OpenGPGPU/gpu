@@ -16,6 +16,7 @@ class SharedL2CacheSpec extends AnyFlatSpec {
     dut.io.memoryRequest.ready.poke(true.B)
     dut.io.memoryResponse.valid.poke(false.B)
     dut.io.memoryResponse.bits.poke(0.U.asTypeOf(dut.io.memoryResponse.bits))
+    dut.io.clearPerformanceCounters.poke(false.B)
     (0 until 2).foreach { cu =>
       dut.io.invalidate(cu).ready.poke(true.B)
       dut.io.invalidateDone(cu).valid.poke(false.B)
@@ -115,6 +116,8 @@ class SharedL2CacheSpec extends AnyFlatSpec {
       dut.io.response.bits.readData.expect(line.U)
       dut.io.response.bits.transactionId.expect(1.U)
       dut.io.memoryRequest.valid.expect(false.B)
+      dut.io.performance.loadMisses.expect(1.U)
+      dut.io.performance.loadHits.expect(1.U)
     }
   }
 
@@ -128,6 +131,7 @@ class SharedL2CacheSpec extends AnyFlatSpec {
       requestLine(dut, 0x8000, 1, isWrite = true,
         data = 0x0000aa00L, mask = 0x2)
       completeLower(dut, 0, 1)
+      dut.io.performance.storesAccepted.expect(1.U)
       dut.clock.step()
 
       requestLine(dut, 0x8000, 2)

@@ -33,6 +33,7 @@ class GpuSystemSpec extends AnyFlatSpec {
     dut.io.memoryResponse.valid.poke(false.B)
     dut.io.memoryResponse.bits.poke(
       0.U.asTypeOf(dut.io.memoryResponse.bits))
+    dut.io.clearPerformanceCounters.poke(false.B)
     dut.io.invalidateInstructionCache.poke(false.B)
     dut.io.instructionSatp.poke(0.U)
     dut.io.instructionTlbFlush.valid.poke(false.B)
@@ -350,6 +351,14 @@ class GpuSystemSpec extends AnyFlatSpec {
       dut.io.gpuCompletion.bits.opcode.expect(GpuCommandOpcode.fill)
       dut.io.gpuCompletion.bits.success.expect(true.B)
       dut.io.gpuCompletion.bits.bytesProcessed.expect(64.U)
+      dut.io.performance.lowerWriteRequests.expect(1.U)
+      dut.clock.step()
+      dut.io.performance.dmaBytesCompleted.expect(64.U)
+      dut.io.clearPerformanceCounters.poke(true.B)
+      dut.clock.step(); dut.io.clearPerformanceCounters.poke(false.B)
+      dut.io.performance.cycles.expect(0.U)
+      dut.io.performance.lowerWriteRequests.expect(0.U)
+      dut.io.performance.dmaBytesCompleted.expect(0.U)
     }
   }
 }

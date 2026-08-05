@@ -15,6 +15,15 @@ import gpu.core.trap.CoreTrapEvent
 import gpu.dispatch._
 import gpu.dma._
 
+class GpuPerformanceCounters extends Bundle {
+  val cycles = UInt(64.W)
+  val activeCuCycles = UInt(64.W)
+  val lowerReadRequests = UInt(64.W)
+  val lowerWriteRequests = UInt(64.W)
+  val dmaBytesCompleted = UInt(64.W)
+  val l2 = new L2PerformanceCounters
+}
+
 /** Scalable compute-first GPU integration point.
   *
   * Kernels carry host command tags, CUs execute independently, and one shared
@@ -108,6 +117,8 @@ class GpuSystem(
     val stridedCopyEngineBusy = Output(Bool())
     val unifiedCommandRouterBusy = Output(Bool())
     val duplicateUnifiedCommandId = Output(Bool())
+    val clearPerformanceCounters = Input(Bool())
+    val performance = Output(new GpuPerformanceCounters)
   })
 
   private val commandProcessor = Module(new GpuCommandProcessor(
@@ -125,6 +136,7 @@ class GpuSystem(
     maxOutstanding = totalSystemTransactions, numComputeUnits = numComputeUnits,
     transactionsPerCu = transactionsPerCu, banks = config.l2Banks,
     requestQueueDepth = config.l2RequestQueueDepth))
+  l2.io.clearPerformanceCounters := io.clearPerformanceCounters
   private val computeUnits = Seq.fill(numComputeUnits) {
     Module(new GpuComputeUnit(config, useBlackBoxes, enableFpuBackend))
   }
@@ -153,6 +165,40 @@ class GpuSystem(
   io.stridedCopyEngineBusy := stridedCopyEngine.io.busy
   io.unifiedCommandRouterBusy := commandRouter.io.busy
   io.duplicateUnifiedCommandId := commandRouter.io.duplicateCommandId
+  private val cycleCount = RegInit(0.U(64.W))
+  private val activeCuCycleCount = RegInit(0.U(64.W))
+  private val lowerReadCount = RegInit(0.U(64.W))
+  private val lowerWriteCount = RegInit(0.U(64.W))
+  private val dmaByteCount = RegInit(0.U(64.W))
+  when(io.clearPerformanceCounters) {
+    cycleCount := 0.U
+    activeCuCycleCount := 0.U
+    lowerReadCount := 0.U
+    lowerWriteCount := 0.U
+    dmaByteCount := 0.U
+  }.otherwise {
+    cycleCount := cycleCount + 1.U
+    activeCuCycleCount := activeCuCycleCount + PopCount(dispatcher.io.busy)
+    when(io.memoryRequest.fire && io.memoryRequest.bits.isWrite) {
+      lowerWriteCount := lowerWriteCount + 1.U
+    }
+    when(io.memoryRequest.fire && !io.memoryRequest.bits.isWrite) {
+      lowerReadCount := lowerReadCount + 1.U
+    }
+    dmaByteCount := dmaByteCount +
+      Mux(copyEngine.io.completion.fire,
+        copyEngine.io.completion.bits.bytesCopied, 0.U) +
+      Mux(fillEngine.io.completion.fire,
+        fillEngine.io.completion.bits.bytesFilled, 0.U) +
+      Mux(stridedCopyEngine.io.completion.fire,
+        stridedCopyEngine.io.completion.bits.bytesCopied, 0.U)
+  }
+  io.performance.cycles := cycleCount
+  io.performance.activeCuCycles := activeCuCycleCount
+  io.performance.lowerReadRequests := lowerReadCount
+  io.performance.lowerWriteRequests := lowerWriteCount
+  io.performance.dmaBytesCompleted := dmaByteCount
+  io.performance.l2 := l2.io.performance
 
   if (enableUnifiedCommands) {
     commandRouter.io.command <> io.gpuCommand

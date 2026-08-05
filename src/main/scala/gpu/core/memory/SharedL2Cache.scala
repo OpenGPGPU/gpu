@@ -4,6 +4,14 @@ import chisel3._
 import chisel3.util._
 import gpu.config.GpuConfig
 
+class L2PerformanceCounters extends Bundle {
+  val loadHits = UInt(64.W)
+  val loadMisses = UInt(64.W)
+  val mshrMerges = UInt(64.W)
+  val storesAccepted = UInt(64.W)
+  val storeBlockedCycles = UInt(64.W)
+}
+
 /** Shared L2 cache at the point where all compute-unit traffic has
   * already been assigned a globally unique transaction ID.
   *
@@ -55,6 +63,8 @@ class SharedL2Slice(
       Flipped(Decoupled(new SharedAtomicRequest(config))))
     val atomicResponse = Vec(numComputeUnits,
       Decoupled(new SharedAtomicResponse(config)))
+    val clearPerformanceCounters = Input(Bool())
+    val performance = Output(new L2PerformanceCounters)
   })
 
   private object State extends ChiselEnum {
@@ -109,6 +119,16 @@ class SharedL2Slice(
   private val storeTable = Module(new L2StoreTransactionTable(
     config, entries = 2, lineBytes = lineBytes,
     maxOutstanding = maxOutstanding, lowerIdBase = 4))
+  private val loadHitCount = RegInit(0.U(64.W))
+  private val loadMissCount = RegInit(0.U(64.W))
+  private val mshrMergeCount = RegInit(0.U(64.W))
+  private val storeAcceptedCount = RegInit(0.U(64.W))
+  private val storeBlockedCount = RegInit(0.U(64.W))
+  io.performance.loadHits := loadHitCount
+  io.performance.loadMisses := loadMissCount
+  io.performance.mshrMerges := mshrMergeCount
+  io.performance.storesAccepted := storeAcceptedCount
+  io.performance.storeBlockedCycles := storeBlockedCount
 
   private val atomicArbiter = Module(new RRArbiter(
     new SharedAtomicRequest(config), numComputeUnits))
@@ -307,6 +327,27 @@ class SharedL2Slice(
   }
   storeTable.io.allocate.valid := state === State.storeAllocate
   storeTable.io.allocate.bits := request
+  when(io.clearPerformanceCounters) {
+    loadHitCount := 0.U
+    loadMissCount := 0.U
+    mshrMergeCount := 0.U
+    storeAcceptedCount := 0.U
+    storeBlockedCount := 0.U
+  }.otherwise {
+    when(state === State.lookup && !atomicMode && cacheable &&
+        !request.isWrite && hit) { loadHitCount := loadHitCount + 1.U }
+    when(missEngine.io.miss.fire) { loadMissCount := loadMissCount + 1.U }
+    when(state === State.missAllocate && missEngine.io.allocation.valid &&
+        missEngine.io.allocation.bits.merged) {
+      mshrMergeCount := mshrMergeCount + 1.U
+    }
+    when(storeTable.io.allocate.fire) {
+      storeAcceptedCount := storeAcceptedCount + 1.U
+    }
+    when(state === State.storeAllocate && !storeTable.io.allocate.ready) {
+      storeBlockedCount := storeBlockedCount + 1.U
+    }
+  }
   missEngine.io.miss.valid := state === State.lookup && !atomicMode &&
     cacheable && !request.isWrite && !hit
   missEngine.io.miss.bits.lineAddress := activeLine
@@ -645,11 +686,21 @@ class SharedL2Cache(
       Flipped(Decoupled(new SharedAtomicRequest(config))))
     val atomicResponse = Vec(numComputeUnits,
       Decoupled(new SharedAtomicResponse(config)))
+    val clearPerformanceCounters = Input(Bool())
+    val performance = Output(new L2PerformanceCounters)
   })
 
   private val slices = Seq.fill(banks)(Module(new SharedL2Slice(
     config, setsPerBank, ways, lineBytes, maxOutstanding,
     numComputeUnits, transactionsPerCu)))
+  slices.foreach(_.io.clearPerformanceCounters := io.clearPerformanceCounters)
+  io.performance.loadHits := slices.map(_.io.performance.loadHits).reduce(_ +& _)
+  io.performance.loadMisses := slices.map(_.io.performance.loadMisses).reduce(_ +& _)
+  io.performance.mshrMerges := slices.map(_.io.performance.mshrMerges).reduce(_ +& _)
+  io.performance.storesAccepted :=
+    slices.map(_.io.performance.storesAccepted).reduce(_ +& _)
+  io.performance.storeBlockedCycles :=
+    slices.map(_.io.performance.storeBlockedCycles).reduce(_ +& _)
   /** XOR interleaving keeps the slice's existing index/tag decomposition while
     * spreading adjacent cache lines across banks. Using only the upper set
     * bits made every short sequential DMA burst target one blocking slice.
