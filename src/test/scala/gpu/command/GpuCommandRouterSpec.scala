@@ -39,6 +39,20 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
     dut.clock.step(); dut.io.command.valid.poke(false.B)
   }
 
+  private def setEventDependency(dut: GpuCommandRouter, wait: Boolean,
+                                 eventId: Int, generation: Int): Unit = {
+    dut.io.command.bits.waitForEvent.poke(wait.B)
+    dut.io.command.bits.waitEventId.poke(eventId.U)
+    dut.io.command.bits.waitEventGeneration.poke(generation.U)
+  }
+
+  private def setEventSignal(dut: GpuCommandRouter, signal: Boolean,
+                             eventId: Int, generation: Int): Unit = {
+    dut.io.command.bits.signalEvent.poke(signal.B)
+    dut.io.command.bits.signalEventId.poke(eventId.U)
+    dut.io.command.bits.signalEventGeneration.poke(generation.U)
+  }
+
   it should "route payloads and retain IDs until unified completion is consumed" in {
     simulate(new GpuCommandRouter(
       GpuConfig(lanes = 4), commandIdWidth = 4,
@@ -97,6 +111,70 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
       dut.io.completion.valid.expect(true.B)
       dut.io.completion.bits.commandId.expect(2.U)
       dut.io.completion.bits.status.expect(GpuCommandResultStatus.invalidOpcode)
+    }
+  }
+
+  it should "broadcast a generated event to multiple dependent command types" in {
+    simulate(new GpuCommandRouter(
+      GpuConfig(lanes = 4), commandIdWidth = 4,
+      commandQueueDepth = 4, completionQueueDepth = 4)) { dut =>
+      initialize(dut)
+      dut.io.fill.ready.poke(true.B)
+      setEventSignal(dut, signal = true, eventId = 6, generation = 3)
+      submit(dut, 1, GpuCommandOpcode.fill)
+      dut.clock.step()
+
+      setEventSignal(dut, signal = false, eventId = 0, generation = 0)
+      setEventDependency(dut, wait = true, eventId = 6, generation = 3)
+      submit(dut, 2, GpuCommandOpcode.kernel)
+      submit(dut, 3, GpuCommandOpcode.copy)
+      dut.io.kernel.valid.expect(false.B)
+
+      dut.io.fillCompletion.bits.descriptorId.poke(1.U)
+      dut.io.fillCompletion.bits.status.poke(CopyStatus.success)
+      dut.io.fillCompletion.bits.success.poke(true.B)
+      dut.io.fillCompletion.bits.bytesFilled.poke(64.U)
+      dut.io.fillCompletion.valid.poke(true.B)
+      dut.clock.step(); dut.io.fillCompletion.valid.poke(false.B)
+
+      dut.io.kernel.valid.expect(true.B)
+      dut.io.kernel.bits.commandId.expect(2.U)
+      dut.io.kernel.ready.poke(true.B); dut.clock.step()
+      dut.io.copy.valid.expect(true.B)
+      dut.io.copy.bits.descriptorId.expect(3.U)
+      // The kernel did not consume the broadcast event.
+      dut.clock.step(2)
+      dut.io.copy.valid.expect(true.B)
+    }
+  }
+
+  it should "fail a dependent command on the matching failed generation" in {
+    simulate(new GpuCommandRouter(
+      GpuConfig(lanes = 4), commandIdWidth = 4,
+      commandQueueDepth = 3, completionQueueDepth = 3)) { dut =>
+      initialize(dut)
+      dut.io.fill.ready.poke(true.B)
+      setEventSignal(dut, signal = true, eventId = 4, generation = 9)
+      submit(dut, 1, GpuCommandOpcode.fill)
+      dut.clock.step()
+      setEventSignal(dut, signal = false, eventId = 0, generation = 0)
+      setEventDependency(dut, wait = true, eventId = 4, generation = 9)
+      submit(dut, 2, GpuCommandOpcode.kernel)
+
+      dut.io.fillCompletion.bits.descriptorId.poke(1.U)
+      dut.io.fillCompletion.bits.status.poke(CopyStatus.writeFault)
+      dut.io.fillCompletion.bits.success.poke(false.B)
+      dut.io.fillCompletion.bits.bytesFilled.poke(0.U)
+      dut.io.fillCompletion.valid.poke(true.B)
+      dut.clock.step(); dut.io.fillCompletion.valid.poke(false.B)
+      dut.io.completion.ready.poke(true.B)
+      dut.clock.step()
+      dut.io.kernel.valid.expect(false.B)
+      dut.clock.step()
+      dut.io.completion.valid.expect(true.B)
+      dut.io.completion.bits.commandId.expect(2.U)
+      dut.io.completion.bits.status.expect(
+        GpuCommandResultStatus.eventDependencyFailed)
     }
   }
 }

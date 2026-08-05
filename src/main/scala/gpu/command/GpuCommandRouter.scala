@@ -30,10 +30,17 @@ class GpuCommand(config: GpuConfig, val commandIdWidth: Int) extends Bundle {
   val height = UInt(32.W)
   val sourceStride = UInt(32.W)
   val destinationStride = UInt(32.W)
+  val waitForEvent = Bool()
+  val waitEventId = UInt(commandIdWidth.W)
+  val waitEventGeneration = UInt(8.W)
+  val signalEvent = Bool()
+  val signalEventId = UInt(commandIdWidth.W)
+  val signalEventGeneration = UInt(8.W)
 }
 
 object GpuCommandResultStatus {
   val width = 4
+  val eventDependencyFailed = 14.U(width.W)
   val invalidOpcode = 15.U(width.W)
 }
 
@@ -84,6 +91,12 @@ class GpuCommandRouter(
   private val reservedIds = RegInit(0.U(idCount.W))
   private val commandOpcode = Reg(Vec(idCount,
     UInt(GpuCommandOpcode.width.W)))
+  private val commandSignalsEvent = Reg(Vec(idCount, Bool()))
+  private val commandSignalId = Reg(Vec(idCount, UInt(commandIdWidth.W)))
+  private val commandSignalGeneration = Reg(Vec(idCount, UInt(8.W)))
+  private val eventValid = RegInit(0.U(idCount.W))
+  private val eventSuccess = RegInit(0.U(idCount.W))
+  private val eventGeneration = Reg(Vec(idCount, UInt(8.W)))
   private val duplicate = reservedIds(io.command.bits.commandId)
   commands.io.enq.valid := io.command.valid && !duplicate
   commands.io.enq.bits := io.command.bits
@@ -96,24 +109,33 @@ class GpuCommandRouter(
   private val isFill = head.opcode === GpuCommandOpcode.fill
   private val isStrided = head.opcode === GpuCommandOpcode.stridedCopy
   private val opcodeValid = isKernel || isCopy || isFill || isStrided
+  private val waitedEventMatches = eventValid(head.waitEventId) &&
+    eventGeneration(head.waitEventId) === head.waitEventGeneration
+  private val dependencyKnown = !head.waitForEvent || waitedEventMatches
+  private val dependencyFailed = head.waitForEvent && waitedEventMatches &&
+    !eventSuccess(head.waitEventId)
 
-  io.kernel.valid := commands.io.deq.valid && isKernel
+  io.kernel.valid := commands.io.deq.valid && dependencyKnown &&
+    !dependencyFailed && isKernel
   io.kernel.bits.commandId := head.commandId
   io.kernel.bits.launch := head.launch
   io.kernel.bits.waitForDma := head.waitForDma
   io.kernel.bits.dmaSource := head.dmaSource
   io.kernel.bits.dmaDescriptorId := head.dmaDescriptorId
-  io.copy.valid := commands.io.deq.valid && isCopy
+  io.copy.valid := commands.io.deq.valid && dependencyKnown &&
+    !dependencyFailed && isCopy
   io.copy.bits.descriptorId := head.commandId
   io.copy.bits.sourceAddress := head.sourceAddress
   io.copy.bits.destinationAddress := head.destinationAddress
   io.copy.bits.bytes := head.bytes
-  io.fill.valid := commands.io.deq.valid && isFill
+  io.fill.valid := commands.io.deq.valid && dependencyKnown &&
+    !dependencyFailed && isFill
   io.fill.bits.descriptorId := head.commandId
   io.fill.bits.destinationAddress := head.destinationAddress
   io.fill.bits.bytes := head.bytes
   io.fill.bits.pattern := head.pattern
-  io.stridedCopy.valid := commands.io.deq.valid && isStrided
+  io.stridedCopy.valid := commands.io.deq.valid && dependencyKnown &&
+    !dependencyFailed && isStrided
   io.stridedCopy.bits.descriptorId := head.commandId
   io.stridedCopy.bits.sourceAddress := head.sourceAddress
   io.stridedCopy.bits.destinationAddress := head.destinationAddress
@@ -152,10 +174,13 @@ class GpuCommandRouter(
     io.stridedCopyCompletion.bits.success,
     io.stridedCopyCompletion.bits.bytesCopied)
   io.stridedCopyCompletion.ready := completionEvents.io.in(3).ready
-  mapCompletion(4, commands.io.deq.valid && !opcodeValid,
-    head.commandId, GpuCommandResultStatus.invalidOpcode, false.B, 0.U)
+  mapCompletion(4, commands.io.deq.valid && dependencyKnown &&
+    (!opcodeValid || dependencyFailed), head.commandId,
+    Mux(dependencyFailed, GpuCommandResultStatus.eventDependencyFailed,
+      GpuCommandResultStatus.invalidOpcode), false.B, 0.U)
 
-  commands.io.deq.ready := MuxCase(completionEvents.io.in(4).ready, Seq(
+  commands.io.deq.ready := dependencyKnown && MuxCase(
+    completionEvents.io.in(4).ready, Seq(
     isKernel -> io.kernel.ready,
     isCopy -> io.copy.ready,
     isFill -> io.fill.ready,
@@ -167,6 +192,12 @@ class GpuCommandRouter(
     reservedIds := reservedIds |
       UIntToOH(io.command.bits.commandId, idCount)
     commandOpcode(io.command.bits.commandId) := io.command.bits.opcode
+    commandSignalsEvent(io.command.bits.commandId) :=
+      io.command.bits.signalEvent
+    commandSignalId(io.command.bits.commandId) :=
+      io.command.bits.signalEventId
+    commandSignalGeneration(io.command.bits.commandId) :=
+      io.command.bits.signalEventGeneration
   }
   when(io.completion.fire) {
     assert(reservedIds(io.completion.bits.commandId),
@@ -179,6 +210,15 @@ class GpuCommandRouter(
     reservedIds := (reservedIds |
       UIntToOH(io.command.bits.commandId, idCount)) &
       ~UIntToOH(io.completion.bits.commandId, idCount)
+  }
+  private val completedId = completionEvents.io.out.bits.commandId
+  when(completionEvents.io.out.fire && commandSignalsEvent(completedId)) {
+    val eventId = commandSignalId(completedId)
+    eventValid := eventValid | UIntToOH(eventId, idCount)
+    eventSuccess := Mux(completionEvents.io.out.bits.success,
+      eventSuccess | UIntToOH(eventId, idCount),
+      eventSuccess & ~UIntToOH(eventId, idCount))
+    eventGeneration(eventId) := commandSignalGeneration(completedId)
   }
   io.busy := reservedIds.orR
 }
