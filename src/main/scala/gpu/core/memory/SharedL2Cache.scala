@@ -3,6 +3,7 @@ package gpu.core.memory
 import chisel3._
 import chisel3.util._
 import gpu.config.GpuConfig
+import gpu.util.CarrySaveEventCounter
 
 class L2PerformanceCounters extends Bundle {
   val loadHits = UInt(64.W)
@@ -122,16 +123,19 @@ class SharedL2Slice(
   private val storeTable = Module(new L2StoreTransactionTable(
     config, entries = 2, lineBytes = lineBytes,
     maxOutstanding = maxOutstanding, lowerIdBase = 4))
-  private val loadHitCount = RegInit(0.U(64.W))
-  private val loadMissCount = RegInit(0.U(64.W))
-  private val mshrMergeCount = RegInit(0.U(64.W))
-  private val storeAcceptedCount = RegInit(0.U(64.W))
-  private val storeBlockedCount = RegInit(0.U(64.W))
-  io.performance.loadHits := loadHitCount
-  io.performance.loadMisses := loadMissCount
-  io.performance.mshrMerges := mshrMergeCount
-  io.performance.storesAccepted := storeAcceptedCount
-  io.performance.storeBlockedCycles := storeBlockedCount
+  private val loadHitCounter = Module(new CarrySaveEventCounter())
+  private val loadMissCounter = Module(new CarrySaveEventCounter())
+  private val mshrMergeCounter = Module(new CarrySaveEventCounter())
+  private val storeAcceptedCounter = Module(new CarrySaveEventCounter())
+  private val storeBlockedCounter = Module(new CarrySaveEventCounter())
+  private val performanceCounters = Seq(loadHitCounter, loadMissCounter,
+    mshrMergeCounter, storeAcceptedCounter, storeBlockedCounter)
+  performanceCounters.foreach(_.io.clear := io.clearPerformanceCounters)
+  io.performance.loadHits := loadHitCounter.io.value
+  io.performance.loadMisses := loadMissCounter.io.value
+  io.performance.mshrMerges := mshrMergeCounter.io.value
+  io.performance.storesAccepted := storeAcceptedCounter.io.value
+  io.performance.storeBlockedCycles := storeBlockedCounter.io.value
 
   private val atomicArbiter = Module(new RRArbiter(
     new SharedAtomicRequest(config), numComputeUnits))
@@ -345,27 +349,14 @@ class SharedL2Slice(
   }
   storeTable.io.allocate.valid := state === State.storeAllocate
   storeTable.io.allocate.bits := request
-  when(io.clearPerformanceCounters) {
-    loadHitCount := 0.U
-    loadMissCount := 0.U
-    mshrMergeCount := 0.U
-    storeAcceptedCount := 0.U
-    storeBlockedCount := 0.U
-  }.otherwise {
-    when(state === State.lookup && !atomicMode && cacheable &&
-        !request.isWrite && hit) { loadHitCount := loadHitCount + 1.U }
-    when(missEngine.io.miss.fire) { loadMissCount := loadMissCount + 1.U }
-    when(state === State.missAllocate && missEngine.io.allocation.valid &&
-        missEngine.io.allocation.bits.merged) {
-      mshrMergeCount := mshrMergeCount + 1.U
-    }
-    when(storeTable.io.allocate.fire) {
-      storeAcceptedCount := storeAcceptedCount + 1.U
-    }
-    when(state === State.storeAllocate && !storeTable.io.allocate.ready) {
-      storeBlockedCount := storeBlockedCount + 1.U
-    }
-  }
+  loadHitCounter.io.increment := state === State.lookup && !atomicMode &&
+    cacheable && !request.isWrite && hit
+  loadMissCounter.io.increment := missEngine.io.miss.fire
+  mshrMergeCounter.io.increment := state === State.missAllocate &&
+    missEngine.io.allocation.valid && missEngine.io.allocation.bits.merged
+  storeAcceptedCounter.io.increment := storeTable.io.allocate.fire
+  storeBlockedCounter.io.increment := state === State.storeAllocate &&
+    !storeTable.io.allocate.ready
   missEngine.io.miss.valid := state === State.lookup && !atomicMode &&
     cacheable && !request.isWrite && !hit
   missEngine.io.miss.bits.lineAddress := activeLine
