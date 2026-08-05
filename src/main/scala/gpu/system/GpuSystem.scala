@@ -33,9 +33,14 @@ class GpuSystem(
   private val totalTransactions = numComputeUnits * transactionsPerCu
   private val copyTransactions = 4
   private val fillTransactions = 2
+  private val stridedCopyTransactions = 4
   private val copyBase = totalTransactions
   private val fillBase = copyBase + copyTransactions
-  private val totalSystemTransactions = fillBase + fillTransactions
+  private val stridedCopyBase = fillBase + fillTransactions
+  private val totalSystemTransactions =
+    stridedCopyBase + stridedCopyTransactions
+  private val systemTransactionWidth =
+    math.max(1, log2Ceil(totalSystemTransactions))
 
   val io = IO(new Bundle {
     val command = Flipped(Decoupled(
@@ -48,6 +53,10 @@ class GpuSystem(
     val fillDescriptor = Flipped(Decoupled(
       new FillDescriptor(config, commandIdWidth)))
     val fillCompletion = Decoupled(new FillCompletion(commandIdWidth))
+    val stridedCopyDescriptor = Flipped(Decoupled(
+      new StridedCopyDescriptor(config, commandIdWidth)))
+    val stridedCopyCompletion = Decoupled(
+      new StridedCopyCompletion(commandIdWidth))
 
     val memoryRequest = Decoupled(new ComputeMemoryRequest(
       config, 64, totalSystemTransactions))
@@ -91,6 +100,7 @@ class GpuSystem(
     val duplicateCommandId = Output(Bool())
     val copyEngineBusy = Output(Bool())
     val fillEngineBusy = Output(Bool())
+    val stridedCopyEngineBusy = Output(Bool())
   })
 
   private val commandProcessor = Module(new GpuCommandProcessor(
@@ -116,6 +126,10 @@ class GpuSystem(
     config, descriptorIdWidth = commandIdWidth, lineBytes = 64,
     maxOutstanding = fillTransactions,
     descriptorQueueDepth = config.fillDescriptorQueueDepth))
+  private val stridedCopyEngine = Module(new StridedCopyEngine(
+    config, descriptorIdWidth = commandIdWidth, lineBytes = 64,
+    maxOutstanding = stridedCopyTransactions,
+    descriptorQueueDepth = config.stridedCopyDescriptorQueueDepth))
 
   commandProcessor.io.command <> io.command
   io.commandCompletion <> commandProcessor.io.completion
@@ -132,22 +146,33 @@ class GpuSystem(
   fillEngine.io.descriptor <> io.fillDescriptor
   io.fillCompletion <> fillEngine.io.completion
   io.fillEngineBusy := fillEngine.io.busy
+  stridedCopyEngine.io.descriptor <> io.stridedCopyDescriptor
+  io.stridedCopyCompletion <> stridedCopyEngine.io.completion
+  io.stridedCopyEngineBusy := stridedCopyEngine.io.busy
 
   private val l2RequestArbiter = Module(new RRArbiter(
-    new ComputeMemoryRequest(config, 64, totalSystemTransactions), 3))
+    new ComputeMemoryRequest(config, 64, totalSystemTransactions), 4))
   l2RequestArbiter.io.in(0).valid := memory.io.memoryRequest.valid
   l2RequestArbiter.io.in(0).bits := memory.io.memoryRequest.bits
   memory.io.memoryRequest.ready := l2RequestArbiter.io.in(0).ready
   l2RequestArbiter.io.in(1).valid := copyEngine.io.memoryRequest.valid
   l2RequestArbiter.io.in(1).bits := copyEngine.io.memoryRequest.bits
-  l2RequestArbiter.io.in(1).bits.transactionId := copyBase.U +
+  l2RequestArbiter.io.in(1).bits.transactionId :=
+    copyBase.U(systemTransactionWidth.W) +
     copyEngine.io.memoryRequest.bits.transactionId
   copyEngine.io.memoryRequest.ready := l2RequestArbiter.io.in(1).ready
   l2RequestArbiter.io.in(2).valid := fillEngine.io.memoryRequest.valid
   l2RequestArbiter.io.in(2).bits := fillEngine.io.memoryRequest.bits
-  l2RequestArbiter.io.in(2).bits.transactionId := fillBase.U +
+  l2RequestArbiter.io.in(2).bits.transactionId :=
+    fillBase.U(systemTransactionWidth.W) +
     fillEngine.io.memoryRequest.bits.transactionId
   fillEngine.io.memoryRequest.ready := l2RequestArbiter.io.in(2).ready
+  l2RequestArbiter.io.in(3).valid := stridedCopyEngine.io.memoryRequest.valid
+  l2RequestArbiter.io.in(3).bits := stridedCopyEngine.io.memoryRequest.bits
+  l2RequestArbiter.io.in(3).bits.transactionId :=
+    stridedCopyBase.U(systemTransactionWidth.W) +
+    stridedCopyEngine.io.memoryRequest.bits.transactionId
+  stridedCopyEngine.io.memoryRequest.ready := l2RequestArbiter.io.in(3).ready
   l2.io.request <> l2RequestArbiter.io.out
 
   private val l2ResponseForCu =
@@ -157,6 +182,9 @@ class GpuSystem(
       l2.io.response.bits.transactionId < fillBase.U
   private val l2ResponseForFill =
     l2.io.response.bits.transactionId >= fillBase.U &&
+      l2.io.response.bits.transactionId < stridedCopyBase.U
+  private val l2ResponseForStridedCopy =
+    l2.io.response.bits.transactionId >= stridedCopyBase.U &&
       l2.io.response.bits.transactionId < totalSystemTransactions.U
   memory.io.memoryResponse.valid := l2.io.response.valid && l2ResponseForCu
   memory.io.memoryResponse.bits.readData := l2.io.response.bits.readData
@@ -175,13 +203,23 @@ class GpuSystem(
   fillEngine.io.memoryResponse.bits.fault := l2.io.response.bits.fault
   fillEngine.io.memoryResponse.bits.transactionId :=
     l2.io.response.bits.transactionId - fillBase.U
+  stridedCopyEngine.io.memoryResponse.valid :=
+    l2.io.response.valid && l2ResponseForStridedCopy
+  stridedCopyEngine.io.memoryResponse.bits.readData :=
+    l2.io.response.bits.readData
+  stridedCopyEngine.io.memoryResponse.bits.fault :=
+    l2.io.response.bits.fault
+  stridedCopyEngine.io.memoryResponse.bits.transactionId :=
+    l2.io.response.bits.transactionId - stridedCopyBase.U
   l2.io.response.ready := Mux(l2ResponseForCu,
     memory.io.memoryResponse.ready, Mux(l2ResponseForCopy,
       copyEngine.io.memoryResponse.ready,
-      l2ResponseForFill && fillEngine.io.memoryResponse.ready))
+      Mux(l2ResponseForFill, fillEngine.io.memoryResponse.ready,
+        l2ResponseForStridedCopy && stridedCopyEngine.io.memoryResponse.ready)))
   when(l2.io.response.valid) {
-    assert(l2ResponseForCu || l2ResponseForCopy || l2ResponseForFill,
-      "L2 response must target a CU, copy, or fill transaction")
+    assert(l2ResponseForCu || l2ResponseForCopy || l2ResponseForFill ||
+      l2ResponseForStridedCopy,
+      "L2 response must target a CU or DMA transaction")
   }
   io.memoryRequest <> l2.io.memoryRequest
   l2.io.memoryResponse <> io.memoryResponse

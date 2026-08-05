@@ -22,6 +22,7 @@ case class GpuConfig(
   completionQueueDepth: Int = 8,
   copyDescriptorQueueDepth: Int = 4,
   fillDescriptorQueueDepth: Int = 4,
+  stridedCopyDescriptorQueueDepth: Int = 4,
   enableFpu: Boolean = true,
   enableVector: Boolean = true
 ) {
@@ -54,6 +55,8 @@ case class GpuConfig(
     "the copy descriptor queue must contain at least one entry")
   require(fillDescriptorQueueDepth > 0,
     "the fill descriptor queue must contain at least one entry")
+  require(stridedCopyDescriptorQueueDepth > 0,
+    "the strided-copy descriptor queue must contain at least one entry")
 
   def warpIdWidth: Int = math.max(1, log2Ceil(warps))
 }

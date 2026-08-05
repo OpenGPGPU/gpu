@@ -21,6 +21,10 @@ class GpuSystemSpec extends AnyFlatSpec {
     dut.io.fillDescriptor.bits.poke(
       0.U.asTypeOf(dut.io.fillDescriptor.bits))
     dut.io.fillCompletion.ready.poke(true.B)
+    dut.io.stridedCopyDescriptor.valid.poke(false.B)
+    dut.io.stridedCopyDescriptor.bits.poke(
+      0.U.asTypeOf(dut.io.stridedCopyDescriptor.bits))
+    dut.io.stridedCopyCompletion.ready.poke(true.B)
     dut.io.memoryRequest.ready.poke(true.B)
     dut.io.memoryResponse.valid.poke(false.B)
     dut.io.memoryResponse.bits.poke(
@@ -58,6 +62,7 @@ class GpuSystemSpec extends AnyFlatSpec {
       dut.io.inFlightCommands.expect(0.U)
       dut.io.copyEngineBusy.expect(false.B)
       dut.io.fillEngineBusy.expect(false.B)
+      dut.io.stridedCopyEngineBusy.expect(false.B)
       dut.io.activeWarps(0).expect(0.U)
       dut.io.activeWarps(1).expect(0.U)
     }
@@ -97,6 +102,70 @@ class GpuSystemSpec extends AnyFlatSpec {
       dut.io.fillCompletion.valid.expect(true.B)
       dut.io.fillCompletion.bits.descriptorId.expect(6.U)
       dut.io.fillCompletion.bits.bytesFilled.expect(64.U)
+    }
+  }
+
+  it should "copy strided rows through the shared L2" in {
+    val config = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuSystem(config, numComputeUnits = 2)) { dut =>
+      initialize(dut, 2)
+      val rows = Seq(
+        (BigInt(0x1000), BigInt(0x4000), BigInt("1111222233334444", 16)),
+        (BigInt(0x1100), BigInt(0x4180), BigInt("aaaabbbbccccdddd", 16)))
+      dut.io.stridedCopyDescriptor.bits.descriptorId.poke(11.U)
+      dut.io.stridedCopyDescriptor.bits.sourceAddress.poke(0x1000.U)
+      dut.io.stridedCopyDescriptor.bits.destinationAddress.poke(0x4000.U)
+      dut.io.stridedCopyDescriptor.bits.widthBytes.poke(64.U)
+      dut.io.stridedCopyDescriptor.bits.height.poke(2.U)
+      dut.io.stridedCopyDescriptor.bits.sourceStride.poke(0x100.U)
+      dut.io.stridedCopyDescriptor.bits.destinationStride.poke(0x180.U)
+      dut.io.stridedCopyDescriptor.valid.poke(true.B)
+      dut.clock.step(); dut.io.stridedCopyDescriptor.valid.poke(false.B)
+
+      rows.foreach { case (source, destination, data) =>
+        var cycles = 0
+        while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 30) {
+          dut.clock.step(); cycles += 1
+        }
+        dut.io.memoryRequest.valid.expect(true.B)
+        dut.io.memoryRequest.bits.address.expect(source.U)
+        dut.io.memoryRequest.bits.isWrite.expect(false.B)
+        val readId = dut.io.memoryRequest.bits.transactionId.peek().litValue
+        dut.clock.step()
+        dut.io.memoryResponse.bits.transactionId.poke(readId.U)
+        dut.io.memoryResponse.bits.readData.poke(data.U)
+        dut.io.memoryResponse.bits.fault.poke(false.B)
+        dut.io.memoryResponse.valid.poke(true.B)
+        dut.io.memoryResponse.ready.expect(true.B)
+        dut.clock.step(); dut.io.memoryResponse.valid.poke(false.B)
+
+        cycles = 0
+        while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 30) {
+          dut.clock.step(); cycles += 1
+        }
+        dut.io.memoryRequest.valid.expect(true.B)
+        dut.io.memoryRequest.bits.address.expect(destination.U)
+        dut.io.memoryRequest.bits.isWrite.expect(true.B)
+        dut.io.memoryRequest.bits.writeData.expect(data.U)
+        val writeId = dut.io.memoryRequest.bits.transactionId.peek().litValue
+        dut.clock.step()
+        dut.io.memoryResponse.bits.transactionId.poke(writeId.U)
+        dut.io.memoryResponse.bits.readData.poke(0.U)
+        dut.io.memoryResponse.bits.fault.poke(false.B)
+        dut.io.memoryResponse.valid.poke(true.B)
+        dut.io.memoryResponse.ready.expect(true.B)
+        dut.clock.step(); dut.io.memoryResponse.valid.poke(false.B)
+      }
+
+      var cycles = 0
+      while (!dut.io.stridedCopyCompletion.valid.peek().litToBoolean &&
+          cycles < 30) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.stridedCopyCompletion.valid.expect(true.B)
+      dut.io.stridedCopyCompletion.bits.descriptorId.expect(11.U)
+      dut.io.stridedCopyCompletion.bits.success.expect(true.B)
+      dut.io.stridedCopyCompletion.bits.bytesCopied.expect(128.U)
     }
   }
 
