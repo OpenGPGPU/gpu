@@ -1,6 +1,7 @@
 package gpu.dispatch
 
 import chisel3._
+import chisel3.util._
 import gpu.config.GpuConfig
 
 /** One host-visible kernel launch. Grid dimensions count workgroups; local
@@ -43,5 +44,47 @@ class WarpCompletion extends Bundle {
 }
 
 class KernelCompletion extends Bundle {
+  val success = Bool()
+}
+
+/** Host-visible tagged command. The tag is retained outside a compute unit so
+  * independently completing CUs never rely on completion order.
+  */
+class TaggedKernelLaunch(config: GpuConfig, val commandIdWidth: Int) extends Bundle {
+  require(commandIdWidth > 0)
+  val commandId = UInt(commandIdWidth.W)
+  val launch = new KernelLaunch(config)
+}
+
+class TaggedKernelCompletion(val commandIdWidth: Int) extends Bundle {
+  require(commandIdWidth > 0)
+  val commandId = UInt(commandIdWidth.W)
+  val success = Bool()
+}
+
+/** Host-visible command descriptor. The launch payload remains shared with
+  * the internal dispatcher so software queueing does not duplicate execution
+  * semantics.
+  */
+class KernelCommand(config: GpuConfig, val commandIdWidth: Int) extends Bundle {
+  require(commandIdWidth > 0)
+  val commandId = UInt(commandIdWidth.W)
+  val launch = new KernelLaunch(config)
+}
+
+object KernelCommandStatus {
+  val width = 3
+  val success = 0.U(width.W)
+  val executionFailed = 1.U(width.W)
+  val invalidProgramCounter = 2.U(width.W)
+  val invalidGrid = 3.U(width.W)
+  val invalidLocalSize = 4.U(width.W)
+  val misalignedKernarg = 5.U(width.W)
+}
+
+class KernelCommandResult(val commandIdWidth: Int) extends Bundle {
+  require(commandIdWidth > 0)
+  val commandId = UInt(commandIdWidth.W)
+  val status = UInt(KernelCommandStatus.width.W)
   val success = Bool()
 }

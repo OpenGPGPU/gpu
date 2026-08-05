@@ -13,6 +13,7 @@ import gpu.core.backend.scoreboard.RegisterScoreboard
 import gpu.core.execute.fpu.Fp32FmaLane
 import gpu.core.frontend.decode.{DecodePipe, FullInstructionDecoder}
 import gpu.core.frontend.warp.WarpScheduler
+import gpu.core.memory.BankedSharedMemory
 import gpu.core.vector.{
   VectorConfigurationUnit,
   VectorIntegerAlu,
@@ -79,6 +80,11 @@ object EmitTimingRtl {
     )
     ChiselStage.emitSystemVerilogFile(
       new VectorConfigurationUnit(GpuConfig()),
+      stageArgs,
+      firtoolArgs
+    )
+    ChiselStage.emitSystemVerilogFile(
+      new BankedSharedMemory(GpuConfig()),
       stageArgs,
       firtoolArgs
     )

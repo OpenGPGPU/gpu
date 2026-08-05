@@ -54,6 +54,13 @@ class GpuCoreSpec extends AnyFlatSpec {
     dut.io.restore.bits.poke(0.U)
     dut.io.finish.valid.poke(false.B)
     dut.io.finish.bits.poke(0.U)
+    dut.io.l1Invalidate.valid.poke(false.B)
+    dut.io.l1Invalidate.bits.lineAddress.poke(0.U)
+    dut.io.l1InvalidateDone.ready.poke(true.B)
+    dut.io.globalAtomicRequest.ready.poke(true.B)
+    dut.io.globalAtomicResponse.valid.poke(false.B)
+    dut.io.globalAtomicResponse.bits.poke(
+      0.U.asTypeOf(dut.io.globalAtomicResponse.bits))
   }
 
   it should "advance fetch from a committed scalar branch" in {

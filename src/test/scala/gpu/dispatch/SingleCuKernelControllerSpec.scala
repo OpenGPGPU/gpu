@@ -29,7 +29,7 @@ class SingleCuKernelControllerSpec extends AnyFlatSpec {
       }
       dut.clock.step(); dut.io.kernel.valid.poke(false.B)
 
-      Seq(0xf, 0x1).foreach { expectedMask =>
+      Seq((0xf, 0), (0x1, 1)).foreach { case (expectedMask, warpId) =>
         var cycles = 0
         while (!dut.io.launch.valid.peek().litToBoolean && cycles < 32) {
           dut.clock.step(); cycles += 1
@@ -40,10 +40,10 @@ class SingleCuKernelControllerSpec extends AnyFlatSpec {
         dut.clock.step()
 
         // Model the scheduler active bitmap and the eventual cease event.
-        dut.io.activeWarps.poke(1.U)
+        dut.io.activeWarps.poke((1 << warpId).U)
         dut.clock.step()
         dut.io.finish.valid.poke(true.B)
-        dut.io.finish.bits.poke(0.U)
+        dut.io.finish.bits.poke(warpId.U)
         dut.clock.step()
         dut.io.finish.valid.poke(false.B)
         dut.io.activeWarps.poke(0.U)

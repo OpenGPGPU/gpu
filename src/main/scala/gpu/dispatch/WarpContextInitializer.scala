@@ -25,6 +25,7 @@ class WarpContextInitializer(config: GpuConfig = GpuConfig()) extends Module {
     val vector = Decoupled(new VectorRegisterWrite(config))
     val launch = Decoupled(new WarpLaunch(config))
     val assignedWarpId = Valid(UInt(config.warpIdWidth.W))
+    val launchedTask = Valid(new WarpTask(config))
   })
 
   private val idle :: scalarInit :: vectorInit :: launchWarp :: Nil = Enum(4)
@@ -84,4 +85,6 @@ class WarpContextInitializer(config: GpuConfig = GpuConfig()) extends Module {
 
   io.assignedWarpId.valid := state =/= idle
   io.assignedWarpId.bits := warpId
+  io.launchedTask.valid := io.launch.fire
+  io.launchedTask.bits := task
 }

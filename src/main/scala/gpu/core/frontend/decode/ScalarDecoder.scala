@@ -51,9 +51,12 @@ class DecodeSignals extends Bundle {
   val jump = Bool()
   val multiply = Bool()
   val divide = Bool()
+  val atomic = Bool()
+  val atomicOp = UInt(4.W)
   val csr = Bool()
   val system = Bool()
   val fence = Bool()
+  val barrier = Bool()
   val vectorBranch = Bool()
   val join = Bool()
   val cease = Bool()
@@ -82,9 +85,12 @@ private case class Rv32Pattern(
   jump: Boolean = false,
   multiply: Boolean = false,
   divide: Boolean = false,
+  atomic: Boolean = false,
+  atomicOp: Int = 0,
   csr: Boolean = false,
   system: Boolean = false,
   fence: Boolean = false,
+  barrier: Boolean = false,
   vectorBranch: Boolean = false,
   join: Boolean = false,
   cease: Boolean = false
@@ -153,6 +159,12 @@ private object Rv32Decode {
   object Divide extends BoolField("divide") {
     override protected def value(pattern: Rv32Pattern): Boolean = pattern.divide
   }
+  object Atomic extends BoolField("atomic") {
+    override protected def value(pattern: Rv32Pattern): Boolean = pattern.atomic
+  }
+  object AtomicOp extends UIntField("atomicOp", 4) {
+    override protected def value(pattern: Rv32Pattern): Int = pattern.atomicOp
+  }
   object Csr extends BoolField("csr") {
     override protected def value(pattern: Rv32Pattern): Boolean = pattern.csr
   }
@@ -161,6 +173,9 @@ private object Rv32Decode {
   }
   object Fence extends BoolField("fence") {
     override protected def value(pattern: Rv32Pattern): Boolean = pattern.fence
+  }
+  object Barrier extends BoolField("barrier") {
+    override protected def value(pattern: Rv32Pattern): Boolean = pattern.barrier
   }
   object VectorBranch extends BoolField("vectorBranch") {
     override protected def value(pattern: Rv32Pattern): Boolean = pattern.vectorBranch
@@ -232,6 +247,18 @@ private object Rv32Decode {
       writeRd = true,
       multiply = !isDivide,
       divide = isDivide
+    )
+
+  private def amo(name: String, funct5: String, operation: Int): Rv32Pattern =
+    Rv32Pattern(
+      name,
+      s"$funct5????????????010?????0101111",
+      useRs1 = true,
+      useRs2 = true,
+      writeRd = true,
+      memoryRead = true,
+      atomic = true,
+      atomicOp = operation
     )
 
   private def csr(name: String, funct3: String, immediate: Boolean): Rv32Pattern =
@@ -317,6 +344,16 @@ private object Rv32Decode {
     mulDiv("rem",    "110", isDivide = true),
     mulDiv("remu",   "111", isDivide = true),
 
+    amo("amoadd.w",  "00000", 1),
+    amo("amoswap.w", "00001", 0),
+    amo("amoxor.w",  "00100", 2),
+    amo("amoor.w",   "01000", 3),
+    amo("amoand.w",  "01100", 4),
+    amo("amomin.w",  "10000", 5),
+    amo("amomax.w",  "10100", 6),
+    amo("amominu.w", "11000", 7),
+    amo("amomaxu.w", "11100", 8),
+
     csr("csrrw",  "001", immediate = false),
     csr("csrrs",  "010", immediate = false),
     csr("csrrc",  "011", immediate = false),
@@ -329,6 +366,9 @@ private object Rv32Decode {
       system = true, fence = true),
     Rv32Pattern("fence.i", "00000000000000000001000000001111",
       system = true, fence = true),
+    // GPU workgroup barrier, encoded in the RISC-V custom-0 opcode space.
+    Rv32Pattern("gpu.barrier", "00000000000000000000000000001011",
+      system = true, barrier = true),
 
     vectorBranch("vbeq",  "000", BranchOp.eq.litValue.toInt),
     vectorBranch("vbne",  "001", BranchOp.ne.litValue.toInt),
@@ -357,9 +397,12 @@ private object Rv32Decode {
     Jump,
     Multiply,
     Divide,
+    Atomic,
+    AtomicOp,
     Csr,
     System,
     Fence,
+    Barrier,
     VectorBranch,
     Join,
     Cease
@@ -412,9 +455,12 @@ class RiscVDecoder extends Module {
   io.decoded.jump := decoded(Rv32Decode.Jump)
   io.decoded.multiply := decoded(Rv32Decode.Multiply)
   io.decoded.divide := decoded(Rv32Decode.Divide)
+  io.decoded.atomic := decoded(Rv32Decode.Atomic)
+  io.decoded.atomicOp := decoded(Rv32Decode.AtomicOp)
   io.decoded.csr := decoded(Rv32Decode.Csr)
   io.decoded.system := decoded(Rv32Decode.System)
   io.decoded.fence := decoded(Rv32Decode.Fence)
+  io.decoded.barrier := decoded(Rv32Decode.Barrier)
   io.decoded.vectorBranch := decoded(Rv32Decode.VectorBranch)
   io.decoded.join := decoded(Rv32Decode.Join)
   io.decoded.cease := decoded(Rv32Decode.Cease)

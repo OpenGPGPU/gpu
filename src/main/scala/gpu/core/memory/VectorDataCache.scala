@@ -12,6 +12,12 @@ class VectorLowerMemoryRequest(
   val writeData = UInt((lineBytes * 8).W)
   val byteMask = UInt(lineBytes.W)
   val isWrite = Bool()
+  /** Indicates that this request's line is resident in this private cache. */
+  val cacheResident = Bool()
+}
+
+class CacheLineInvalidate(config: GpuConfig) extends Bundle {
+  val lineAddress = UInt(config.xLen.W)
 }
 
 class VectorLowerMemoryResponse(val lineBytes: Int = 64) extends Bundle {
@@ -50,6 +56,8 @@ class VectorDataCache(
       Decoupled(new VectorLowerMemoryRequest(config, lineBytes))
     val lowerResponse =
       Flipped(Decoupled(new VectorLowerMemoryResponse(lineBytes)))
+    val invalidate = Flipped(Decoupled(new CacheLineInvalidate(config)))
+    val invalidateDone = Decoupled(new CacheLineInvalidate(config))
   })
 
   private val tags = Seq.fill(ways)(Mem(sets, UInt(tagWidth.W)))
@@ -63,9 +71,10 @@ class VectorDataCache(
   private val output = Reg(new VectorCacheLineResponse(lineBytes))
 
   private object State extends ChiselEnum {
-    val idle, lookup, lower, respond = Value
+    val idle, lookup, lower, respond, invalidateLookup, invalidateRespond = Value
   }
   private val state = RegInit(State.idle)
+  private val invalidateAddress = Reg(UInt(config.xLen.W))
 
   private val requestIndex =
     request.lineAddress(offsetWidth + indexWidth - 1, offsetWidth)
@@ -103,7 +112,9 @@ class VectorDataCache(
   }
   private val mergedStoreData = mergedStoreBytes.asUInt
 
-  io.in.ready := state === State.idle
+  // Give coherence probes priority so a normal request and an invalidation
+  // can never both consume the single tag-array access in one cycle.
+  io.in.ready := state === State.idle && !io.invalidate.valid
   io.out.valid := state === State.respond
   io.out.bits := output
   io.lowerRequest.valid := state === State.lower
@@ -111,7 +122,16 @@ class VectorDataCache(
   io.lowerRequest.bits.writeData := request.writeData
   io.lowerRequest.bits.byteMask := request.byteMask
   io.lowerRequest.bits.isWrite := request.isStore
+  io.lowerRequest.bits.cacheResident := cacheHit
   io.lowerResponse.ready := state === State.lower
+  io.invalidate.ready := state === State.idle
+  io.invalidateDone.valid := state === State.invalidateRespond
+  io.invalidateDone.bits.lineAddress := invalidateAddress
+
+  private val invalidateIndex =
+    io.invalidate.bits.lineAddress(offsetWidth + indexWidth - 1, offsetWidth)
+  private val invalidateTag =
+    io.invalidate.bits.lineAddress(config.xLen - 1, offsetWidth + indexWidth)
 
   when(io.in.fire) {
     request := io.in.bits
@@ -120,6 +140,17 @@ class VectorDataCache(
       io.in.bits.lineAddress(offsetWidth - 1, 0) === 0.U,
       "VectorDataCache requires cache-line-aligned requests"
     )
+  }
+
+  when(io.invalidate.fire) {
+    invalidateAddress := io.invalidate.bits.lineAddress
+    for (way <- 0 until ways) {
+      when(valid(way)(invalidateIndex) &&
+        tags(way)(invalidateIndex) === invalidateTag) {
+        valid(way)(invalidateIndex) := false.B
+      }
+    }
+    state := State.invalidateRespond
   }
 
   when(state === State.lookup) {
@@ -164,4 +195,5 @@ class VectorDataCache(
   when(io.out.fire) {
     state := State.idle
   }
+  when(io.invalidateDone.fire) { state := State.idle }
 }

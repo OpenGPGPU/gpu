@@ -6,11 +6,11 @@ import gpu.config.GpuConfig
 import gpu.core.backend.{FpuFlags}
 import gpu.core.backend.issue.{ScalarIssuedInstruction, VectorIssuedInstruction}
 import gpu.core.backend.register.{FpuRegisterWrite, ScalarRegisterWrite, VectorRegisterWrite}
-import gpu.core.execute.control.SimtBranchRequest
+import gpu.core.execute.control.{SimtBranchRequest, SimtPath}
 import gpu.core.frontend.{InstructionFetchRequest, InstructionFetchResponse}
 import gpu.core.frontend.decode.FpuDecodeResponse
 import gpu.core.memory._
-import gpu.core.system.WarpSystemControl
+import gpu.core.system.{WarpSystemControl, WorkgroupBarrierController}
 import gpu.core.trap.CoreTrapEvent
 import gpu.dispatch.{KernelCompletion, KernelLaunch, SingleCuKernelController}
 
@@ -47,11 +47,17 @@ class GpuComputeUnit(
     val committedFpuFlags = Valid(new FpuFlags(config))
     val active = Output(UInt(config.warps.W))
     val blocked = Output(UInt(config.warps.W))
+    val barrierWaiting = Output(UInt(config.warps.W))
+    val l1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(config)))
+    val l1InvalidateDone = Decoupled(new CacheLineInvalidate(config))
+    val globalAtomicRequest = Decoupled(new SharedAtomicRequest(config))
+    val globalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(config)))
   })
 
   private val controller = Module(new SingleCuKernelController(config))
   private val core = Module(new GpuCore(config, useBlackBoxes, enableFpuBackend))
   private val system = Module(new WarpSystemControl(config))
+  private val barrier = Module(new WorkgroupBarrierController(config))
   private val instructionCache = Module(new InstructionCache(config))
   private val instructionTlb = Module(new InstructionTlb(config))
   private val instructionPageTableWalker = Module(new Sv32PageTableWalker(config))
@@ -66,7 +72,14 @@ class GpuComputeUnit(
 
   system.io.in <> core.io.system
   core.io.restore <> system.io.restore
-  core.io.faultResume <> system.io.resume
+  barrier.io.arrive <> system.io.barrier
+  barrier.io.residentWarps := controller.io.residentWarps
+  barrier.io.dispatchComplete := controller.io.workgroupDispatchComplete
+  barrier.io.memoryIdle := core.io.sharedMemoryIdle
+  private val resumeArbiter = Module(new RRArbiter(new SimtPath(config), 2))
+  resumeArbiter.io.in(0) <> system.io.resume
+  resumeArbiter.io.in(1) <> barrier.io.release
+  core.io.faultResume <> resumeArbiter.io.out
   io.unsupportedSystem <> system.io.unsupported
   core.io.finish := system.io.finish
   controller.io.finish := system.io.finish
@@ -133,6 +146,10 @@ class GpuComputeUnit(
   core.io.vectorPageTableResponse <> memoryInterconnect.io.dataPageTableResponse
   io.memoryRequest <> memoryInterconnect.io.memoryRequest
   memoryInterconnect.io.memoryResponse <> io.memoryResponse
+  core.io.l1Invalidate <> io.l1Invalidate
+  io.l1InvalidateDone <> core.io.l1InvalidateDone
+  io.globalAtomicRequest <> core.io.globalAtomicRequest
+  core.io.globalAtomicResponse <> io.globalAtomicResponse
 
   io.fpu <> core.io.fpu
   core.io.fpuInitialize.valid := false.B
@@ -148,4 +165,5 @@ class GpuComputeUnit(
   io.committedFpuFlags := core.io.committedFpuFlags
   io.active := core.io.active
   io.blocked := core.io.blocked
+  io.barrierWaiting := barrier.io.waiting
 }

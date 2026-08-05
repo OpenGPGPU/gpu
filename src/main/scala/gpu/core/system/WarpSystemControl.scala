@@ -18,6 +18,7 @@ class WarpSystemControl(config: GpuConfig = GpuConfig()) extends Module {
     val finish = Valid(UInt(config.warpIdWidth.W))
     val restore = Decoupled(UInt(config.warpIdWidth.W))
     val resume = Decoupled(new SimtPath(config))
+    val barrier = Decoupled(new SimtPath(config))
     val unsupported = Decoupled(new ScalarIssuedInstruction(config))
   })
 
@@ -25,6 +26,7 @@ class WarpSystemControl(config: GpuConfig = GpuConfig()) extends Module {
   private val cease = decoded.cease
   private val join = decoded.join
   private val fence = decoded.fence
+  private val barrier = decoded.barrier
 
   // `valid` must not depend on `ready`: finish feeds scheduler state and can
   // otherwise close a combinational loop through the completion arbiter.
@@ -39,7 +41,12 @@ class WarpSystemControl(config: GpuConfig = GpuConfig()) extends Module {
   io.resume.bits.pc := io.in.bits.decode.pc + 4.U
   io.resume.bits.activeMask := io.in.bits.decode.activeMask
 
-  private val known = cease || join || fence
+  io.barrier.valid := io.in.valid && barrier
+  io.barrier.bits.warpId := io.in.bits.decode.warpId
+  io.barrier.bits.pc := io.in.bits.decode.pc + 4.U
+  io.barrier.bits.activeMask := io.in.bits.decode.activeMask
+
+  private val known = cease || join || fence || barrier
   io.unsupported.valid := io.in.valid && !known
   io.unsupported.bits := io.in.bits
 
@@ -48,7 +55,8 @@ class WarpSystemControl(config: GpuConfig = GpuConfig()) extends Module {
     Seq(
       cease -> true.B,
       join -> io.restore.ready,
-      fence -> io.resume.ready
+      fence -> io.resume.ready,
+      barrier -> io.barrier.ready
     )
   )
 }

@@ -28,24 +28,25 @@ class KernelDispatchPipelineSpec extends AnyFlatSpec {
       }
       dut.clock.step(); dut.io.launch.valid.poke(false.B)
 
-      val expected = Seq(
-        (0, 0, 0xf, false), (0, 4, 0x1, true),
-        (1, 0, 0xf, false), (1, 4, 0x1, true)
-      )
-      expected.foreach { case (groupX, base, mask, last) =>
-        var waited = 0
-        while (!dut.io.warp.valid.peek().litToBoolean && waited < 8) {
-          dut.clock.step(); waited += 1
+      Seq(0, 1).foreach { groupX =>
+        Seq((0, 0xf, false), (4, 0x1, true)).foreach {
+          case (base, mask, last) =>
+          var waited = 0
+          while (!dut.io.warp.valid.peek().litToBoolean && waited < 8) {
+            dut.clock.step(); waited += 1
+          }
+          dut.io.warp.valid.expect(true.B)
+          dut.io.warp.bits.groupId(0).expect(groupX.U)
+          dut.io.warp.bits.localLinearBase.expect(base.U)
+          dut.io.warp.bits.activeMask.expect(mask.U)
+          dut.io.warp.bits.lastWarp.expect(last.B)
+          dut.clock.step()
         }
-        dut.io.warp.valid.expect(true.B)
-        dut.io.warp.bits.groupId(0).expect(groupX.U)
-        dut.io.warp.bits.localLinearBase.expect(base.U)
-        dut.io.warp.bits.activeMask.expect(mask.U)
-        dut.io.warp.bits.lastWarp.expect(last.B)
-        dut.clock.step()
-        dut.io.warpCompletion.valid.poke(true.B)
-        dut.io.warpCompletion.bits.success.poke(true.B)
-        dut.clock.step()
+        (0 until 2).foreach { _ =>
+          dut.io.warpCompletion.valid.poke(true.B)
+          dut.io.warpCompletion.bits.success.poke(true.B)
+          dut.clock.step()
+        }
         dut.io.warpCompletion.valid.poke(false.B)
       }
 

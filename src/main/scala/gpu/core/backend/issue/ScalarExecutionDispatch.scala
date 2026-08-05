@@ -19,6 +19,7 @@ class ScalarExecutionDispatch(config: GpuConfig = GpuConfig()) extends Module {
     val divide = Decoupled(new ScalarIssuedInstruction(config))
     val branch = Decoupled(new ScalarIssuedInstruction(config))
     val memory = Decoupled(new ScalarIssuedInstruction(config))
+    val atomic = Decoupled(new ScalarIssuedInstruction(config))
     val system = Decoupled(new ScalarIssuedInstruction(config))
     val trap = Decoupled(new ScalarIssuedInstruction(config))
   })
@@ -39,7 +40,10 @@ class ScalarExecutionDispatch(config: GpuConfig = GpuConfig()) extends Module {
   private val selectBranch =
     !selectTrap && decoded.executionType === ExecutionType.branch
   private val selectMemory =
-    !selectTrap && decoded.executionType === ExecutionType.memory
+    !selectTrap && decoded.executionType === ExecutionType.memory &&
+      !scalar.atomic
+  private val selectAtomic =
+    !selectTrap && decoded.executionType === ExecutionType.memory && scalar.atomic
   private val selectSystem =
     !selectTrap && decoded.executionType === ExecutionType.system
 
@@ -49,6 +53,7 @@ class ScalarExecutionDispatch(config: GpuConfig = GpuConfig()) extends Module {
     (io.divide, selectDivide),
     (io.branch, selectBranch),
     (io.memory, selectMemory),
+    (io.atomic, selectAtomic),
     (io.system, selectSystem),
     (io.trap, selectTrap)
   )

@@ -17,6 +17,8 @@ class VectorDataCacheSpec extends AnyFlatSpec {
       dut.io.out.ready.poke(true.B)
       dut.io.lowerRequest.ready.poke(true.B)
       dut.io.lowerResponse.valid.poke(false.B)
+      dut.io.invalidate.valid.poke(false.B)
+      dut.io.invalidateDone.ready.poke(true.B)
       dut.clock.step()
       dut.reset.poke(false.B)
 
@@ -45,6 +47,8 @@ class VectorDataCacheSpec extends AnyFlatSpec {
       dut.io.lowerResponse.bits.fault.poke(false.B)
       dut.clock.step()
       dut.io.lowerResponse.valid.poke(false.B)
+      dut.io.invalidate.valid.poke(false.B)
+      dut.io.invalidateDone.ready.poke(true.B)
       dut.io.out.valid.expect(true.B)
       dut.io.out.bits.readData.expect(refill.U)
       dut.clock.step()
@@ -66,6 +70,8 @@ class VectorDataCacheSpec extends AnyFlatSpec {
       dut.io.out.ready.poke(true.B)
       dut.io.lowerRequest.ready.poke(true.B)
       dut.io.lowerResponse.valid.poke(false.B)
+      dut.io.invalidate.valid.poke(false.B)
+      dut.io.invalidateDone.ready.poke(true.B)
       dut.clock.step()
       dut.reset.poke(false.B)
 
@@ -161,6 +167,8 @@ class VectorDataCacheSpec extends AnyFlatSpec {
         dut.io.out.ready.poke(true.B)
         dut.io.lowerRequest.ready.poke(true.B)
         dut.io.lowerResponse.valid.poke(false.B)
+        dut.io.invalidate.valid.poke(false.B)
+        dut.io.invalidateDone.ready.poke(true.B)
         dut.clock.step()
         dut.reset.poke(false.B)
 
@@ -209,5 +217,44 @@ class VectorDataCacheSpec extends AnyFlatSpec {
         startLoad(0x00)
         dut.io.lowerRequest.valid.expect(true.B)
       }
+  }
+
+
+  it should "acknowledge an L2 probe only after invalidating the matching line" in {
+    val config = GpuConfig(lanes = 2, warps = 1)
+    simulate(new VectorDataCache(config, sets = 2, ways = 1, lineBytes = 16)) { dut =>
+      dut.reset.poke(true.B)
+      dut.io.in.valid.poke(false.B)
+      dut.io.out.ready.poke(true.B)
+      dut.io.lowerRequest.ready.poke(true.B)
+      dut.io.lowerResponse.valid.poke(false.B)
+      dut.io.invalidate.valid.poke(false.B)
+      dut.io.invalidateDone.ready.poke(true.B)
+      dut.clock.step(); dut.reset.poke(false.B)
+
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.poke(0.U.asTypeOf(dut.io.in.bits))
+      dut.io.in.bits.lineAddress.poke(0x40.U)
+      dut.clock.step(); dut.io.in.valid.poke(false.B)
+      dut.clock.step(2)
+      dut.io.lowerResponse.valid.poke(true.B)
+      dut.io.lowerResponse.bits.readData.poke(0x77.U)
+      dut.io.lowerResponse.bits.fault.poke(false.B)
+      dut.clock.step(); dut.io.lowerResponse.valid.poke(false.B)
+      dut.clock.step()
+
+      dut.io.invalidate.valid.poke(true.B)
+      dut.io.invalidate.bits.lineAddress.poke(0x40.U)
+      dut.clock.step(); dut.io.invalidate.valid.poke(false.B)
+      dut.io.invalidateDone.valid.expect(true.B)
+      dut.io.invalidateDone.bits.lineAddress.expect(0x40.U)
+      dut.clock.step()
+
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.lineAddress.poke(0x40.U)
+      dut.clock.step(); dut.io.in.valid.poke(false.B)
+      dut.clock.step()
+      dut.io.lowerRequest.valid.expect(true.B)
+    }
   }
 }

@@ -34,6 +34,13 @@ class GpuComputeUnitSpec extends AnyFlatSpec {
       dut.io.trap.ready.poke(false.B)
       dut.io.simtBranch.valid.poke(false.B)
       dut.io.simtBranch.bits.poke(0.U.asTypeOf(dut.io.simtBranch.bits))
+      dut.io.l1Invalidate.valid.poke(false.B)
+      dut.io.l1Invalidate.bits.lineAddress.poke(0.U)
+      dut.io.l1InvalidateDone.ready.poke(true.B)
+      dut.io.globalAtomicRequest.ready.poke(true.B)
+      dut.io.globalAtomicResponse.valid.poke(false.B)
+      dut.io.globalAtomicResponse.bits.poke(
+        0.U.asTypeOf(dut.io.globalAtomicResponse.bits))
 
       dut.io.kernel.valid.poke(true.B)
       dut.io.kernel.bits.kernelPc.poke(0x1000.U)

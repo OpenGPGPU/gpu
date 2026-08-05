@@ -16,8 +16,16 @@ import gpu.core.execute.integer.{
   IntegerExecuteStage,
   MultiplyExecuteStage
 }
+import gpu.core.execute.memory.SharedAtomicExecuteStage
 import gpu.core.frontend.decode.ScalarDecodeResponse
-import gpu.core.memory.{ScalarMemoryFault, ScalarMemoryUnit, VectorCacheLineRequest, VectorCacheLineResponse}
+import gpu.core.memory.{
+  ScalarMemoryFault,
+  ScalarMemoryUnit,
+  SharedAtomicRequest,
+  SharedAtomicResponse,
+  VectorCacheLineRequest,
+  VectorCacheLineResponse
+}
 
 /** Implemented scalar issue/execute/commit pipeline.
   *
@@ -42,6 +50,10 @@ class ScalarBackend(
     val cacheRequest = Decoupled(new VectorCacheLineRequest(config))
     val cacheResponse = Flipped(Decoupled(new VectorCacheLineResponse()))
     val memoryFault = Decoupled(new ScalarMemoryFault(config))
+    val sharedAtomicRequest = Decoupled(new SharedAtomicRequest(config))
+    val sharedAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(config)))
+    val globalAtomicRequest = Decoupled(new SharedAtomicRequest(config))
+    val globalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(config)))
 
     val memory = Decoupled(new ScalarIssuedInstruction(config))
     val system = Decoupled(new ScalarIssuedInstruction(config))
@@ -58,12 +70,13 @@ class ScalarBackend(
   private val divide = Module(new DivideExecuteStage(config))
   private val branch = Module(new ScalarBranchExecuteStage(config))
   private val memoryUnit = Module(new ScalarMemoryUnit(config))
+  private val atomic = Module(new SharedAtomicExecuteStage(config))
   private val integerAdapter = Module(new IntegerCommitAdapter(config))
   private val multiplyAdapter = Module(new IntegerCommitAdapter(config))
   private val divideAdapter = Module(new IntegerCommitAdapter(config))
   private val branchAdapter = Module(new BranchCommitAdapter(config))
   private val commitArbiter =
-    Module(new RRArbiter(new ScalarCommitRequest(config), 5))
+    Module(new RRArbiter(new ScalarCommitRequest(config), 6))
   private val commit = Module(new ScalarCommitStage(config))
 
   private val externalBusy =
@@ -94,9 +107,18 @@ class ScalarBackend(
   divide.io.in <> dispatch.io.divide
   branch.io.in <> dispatch.io.branch
   memoryUnit.io.in <> dispatch.io.memory
+  atomic.io.in <> dispatch.io.atomic
+  io.sharedAtomicRequest <> atomic.io.atomicRequest
+  atomic.io.atomicResponse <> io.sharedAtomicResponse
+  io.globalAtomicRequest <> atomic.io.globalAtomicRequest
+  atomic.io.globalAtomicResponse <> io.globalAtomicResponse
   io.cacheRequest <> memoryUnit.io.cacheRequest
   memoryUnit.io.cacheResponse <> io.cacheResponse
-  io.memoryFault <> memoryUnit.io.fault
+  private val memoryFaultArbiter = Module(new RRArbiter(
+    new ScalarMemoryFault(config), 2))
+  memoryFaultArbiter.io.in(0) <> memoryUnit.io.fault
+  memoryFaultArbiter.io.in(1) <> atomic.io.fault
+  io.memoryFault <> memoryFaultArbiter.io.out
   integerAdapter.io.in <> integer.io.out
   multiplyAdapter.io.in <> multiply.io.out
   divideAdapter.io.in <> divide.io.out
@@ -106,6 +128,7 @@ class ScalarBackend(
   commitArbiter.io.in(2) <> divideAdapter.io.out
   commitArbiter.io.in(3) <> branchAdapter.io.out
   commitArbiter.io.in(4) <> memoryUnit.io.commit
+  commitArbiter.io.in(5) <> atomic.io.out
   commit.io.in <> commitArbiter.io.out
 
   io.redirect <> commit.io.redirect
@@ -123,9 +146,9 @@ class ScalarBackend(
     commit.io.writeback.bits,
     Mux(io.externalWriteback.fire, io.externalWriteback.bits, io.initialize.bits)
   )
-  issue.io.cancel.valid := memoryUnit.io.fault.fire && memoryUnit.io.fault.bits.writeRd
-  issue.io.cancel.bits.warpId := memoryUnit.io.fault.bits.warpId
-  issue.io.cancel.bits.rd := memoryUnit.io.fault.bits.rd
+  issue.io.cancel.valid := io.memoryFault.fire && io.memoryFault.bits.writeRd
+  issue.io.cancel.bits.warpId := io.memoryFault.bits.warpId
+  issue.io.cancel.bits.rd := io.memoryFault.bits.rd
   io.committedWriteback.valid := commit.io.writeback.fire
   io.committedWriteback.bits := commit.io.writeback.bits
   io.appliedWriteback.valid :=
@@ -153,8 +176,7 @@ class ScalarBackend(
     )
   }
 
-  io.memory.valid := false.B
-  io.memory.bits := 0.U.asTypeOf(io.memory.bits)
+  io.memory <> atomic.io.unimplemented
   io.system <> dispatch.io.system
   io.trap <> dispatch.io.trap
   io.rawHazard := issue.io.rawHazard || externalRawHazard

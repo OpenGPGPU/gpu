@@ -14,6 +14,8 @@ import gpu.core.frontend.decode.{FpuDecodeResponse, VectorDecodeResponse}
 import gpu.core.frontend.warp.WarpLaunch
 import gpu.core.trap.{CoreTrapArbiter, CoreTrapEvent}
 import gpu.core.memory.{
+  BankedSharedMemory,
+  VectorMemorySpaceRouter,
   VectorDataCache,
   VectorLowerMemoryRequest,
   VectorLowerMemoryResponse,
@@ -23,7 +25,10 @@ import gpu.core.memory.{
   Sv32PageTableWalker,
   SharedCacheLinePort,
   VectorTlb,
-  VectorTlbFlush
+  VectorTlbFlush,
+  CacheLineInvalidate,
+  SharedAtomicRequest,
+  SharedAtomicResponse
 }
 
 /** Current synthesizable GPU core integration boundary.
@@ -73,6 +78,11 @@ class GpuCore(
     val committedWriteback = Valid(new ScalarRegisterWrite(config))
     val active = Output(UInt(config.warps.W))
     val blocked = Output(UInt(config.warps.W))
+    val sharedMemoryIdle = Output(Bool())
+    val l1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(config)))
+    val l1InvalidateDone = Decoupled(new CacheLineInvalidate(config))
+    val globalAtomicRequest = Decoupled(new SharedAtomicRequest(config))
+    val globalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(config)))
   })
 
   private val frontend = Module(new GpuFrontend(config))
@@ -81,6 +91,8 @@ class GpuCore(
   private val scalarVectorRead =
     Module(new gpu.core.backend.register.ScalarRegisterFile(config))
   private val vectorCoalescer = Module(new VectorMemoryCoalescer(config))
+  private val vectorMemoryRouter = Module(new VectorMemorySpaceRouter(config))
+  private val sharedMemory = Module(new BankedSharedMemory(config))
   private val vectorDataCache = Module(new VectorDataCache(config))
   private val vectorTlb = Module(new VectorTlb(config))
   private val vectorPageTableWalker = Module(new Sv32PageTableWalker(config))
@@ -122,8 +134,16 @@ class GpuCore(
   io.vector <> vector.io.unimplemented
   vector.io.initialize <> io.vectorInitialize
   io.committedVectorWriteback := vector.io.committedVectorWriteback
-  vectorCoalescer.io.in <> vector.io.memoryRequest
-  vector.io.memoryResponse <> vectorCoalescer.io.out
+  vectorMemoryRouter.io.in <> vector.io.memoryRequest
+  vectorCoalescer.io.in <> vectorMemoryRouter.io.globalRequest
+  vectorMemoryRouter.io.globalResponse <> vectorCoalescer.io.out
+  sharedMemory.io.in <> vectorMemoryRouter.io.localRequest
+  vectorMemoryRouter.io.localResponse <> sharedMemory.io.out
+  sharedMemory.io.atomicIn <> scalar.io.sharedAtomicRequest
+  scalar.io.sharedAtomicResponse <> sharedMemory.io.atomicOut
+  io.globalAtomicRequest <> scalar.io.globalAtomicRequest
+  scalar.io.globalAtomicResponse <> io.globalAtomicResponse
+  vector.io.memoryResponse <> vectorMemoryRouter.io.out
   sharedCachePort.io.vectorRequest <> vectorCoalescer.io.cacheRequest
   vectorCoalescer.io.cacheResponse <> sharedCachePort.io.vectorResponse
   sharedCachePort.io.scalarRequest <> scalar.io.cacheRequest
@@ -142,6 +162,8 @@ class GpuCore(
   vectorPageTableWalker.io.memoryResponse <> io.vectorPageTableResponse
   io.vectorMemoryRequest <> vectorDataCache.io.lowerRequest
   vectorDataCache.io.lowerResponse <> io.vectorMemoryResponse
+  vectorDataCache.io.invalidate <> io.l1Invalidate
+  io.l1InvalidateDone <> vectorDataCache.io.invalidateDone
   trapArbiter.io.vector <> vector.io.memoryFault
 
   scalarVectorRead.io.read := vector.io.scalarRead
@@ -163,4 +185,5 @@ class GpuCore(
   io.committedWriteback := scalar.io.committedWriteback
   io.active := frontend.io.active
   io.blocked := frontend.io.blocked
+  io.sharedMemoryIdle := sharedMemory.io.idle
 }

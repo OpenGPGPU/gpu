@@ -33,6 +33,14 @@ private class ScalarBackendHarness(config: GpuConfig) extends Module {
   backend.io.cacheResponse.valid := false.B
   backend.io.cacheResponse.bits := 0.U.asTypeOf(backend.io.cacheResponse.bits)
   backend.io.memoryFault.ready := false.B
+  backend.io.sharedAtomicRequest.ready := false.B
+  backend.io.sharedAtomicResponse.valid := false.B
+  backend.io.sharedAtomicResponse.bits :=
+    0.U.asTypeOf(backend.io.sharedAtomicResponse.bits)
+  backend.io.globalAtomicRequest.ready := false.B
+  backend.io.globalAtomicResponse.valid := false.B
+  backend.io.globalAtomicResponse.bits :=
+    0.U.asTypeOf(backend.io.globalAtomicResponse.bits)
   backend.io.externalWriteback.valid := false.B
   backend.io.externalWriteback.bits := 0.U.asTypeOf(
     backend.io.externalWriteback.bits

@@ -83,6 +83,17 @@ class ExtendedDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.legal.expect(true.B)
       dut.io.decoded.executionType.expect(ExecutionType.system)
       dut.io.decoded.scalar.cease.expect(true.B)
+
+      dut.io.instruction.poke("h0000000b".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.executionType.expect(ExecutionType.system)
+      dut.io.decoded.scalar.barrier.expect(true.B)
+
+      dut.io.instruction.poke("he020a1af".U) // amomaxu.w x3, x2, (x1)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.executionType.expect(ExecutionType.memory)
+      dut.io.decoded.scalar.atomic.expect(true.B)
+      dut.io.decoded.scalar.atomicOp.expect(8.U)
     }
   }
 

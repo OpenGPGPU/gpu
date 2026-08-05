@@ -40,6 +40,9 @@ class WorkgroupDispatcherSpec extends AnyFlatSpec {
         dut.io.warp.bits.firstWarp.expect(first.B)
         dut.io.warp.bits.lastWarp.expect(last.B)
         dut.clock.step()
+      }
+      dut.io.warp.valid.expect(false.B)
+      (0 until 3).foreach { _ =>
         dut.io.warpCompletion.valid.poke(true.B)
         dut.io.warpCompletion.bits.success.poke(true.B)
         dut.clock.step()
@@ -50,6 +53,30 @@ class WorkgroupDispatcherSpec extends AnyFlatSpec {
     }
   }
 
+  it should "keep multiple dispatched warps resident until all complete" in {
+    simulate(new WorkgroupDispatcher(config)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.workgroup.valid.poke(false.B)
+      dut.io.warp.ready.poke(true.B)
+      dut.io.warpCompletion.valid.poke(false.B)
+      dut.io.completion.ready.poke(false.B)
+      sendWorkgroup(dut, Seq(24, 1, 1))
+
+      dut.clock.step(3)
+      dut.io.warp.valid.expect(false.B)
+      dut.io.completion.valid.expect(false.B)
+      (0 until 2).foreach { _ =>
+        dut.io.warpCompletion.valid.poke(true.B)
+        dut.io.warpCompletion.bits.success.poke(true.B)
+        dut.clock.step()
+      }
+      dut.io.completion.valid.expect(false.B)
+      dut.clock.step()
+      dut.io.warpCompletion.valid.poke(false.B)
+      dut.io.completion.valid.expect(true.B)
+    }
+  }
+
   it should "report an empty local size as an unsuccessful workgroup" in {
     simulate(new WorkgroupDispatcher(config)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
@@ -57,6 +84,19 @@ class WorkgroupDispatcherSpec extends AnyFlatSpec {
       dut.io.warpCompletion.valid.poke(false.B)
       dut.io.completion.ready.poke(false.B)
       sendWorkgroup(dut, Seq(0, 1, 1))
+      dut.io.warp.valid.expect(false.B)
+      dut.io.completion.valid.expect(true.B)
+      dut.io.completion.bits.success.expect(false.B)
+    }
+  }
+
+  it should "reject a workgroup that cannot keep all barrier participants resident" in {
+    simulate(new WorkgroupDispatcher(config)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.warp.ready.poke(true.B)
+      dut.io.warpCompletion.valid.poke(false.B)
+      dut.io.completion.ready.poke(false.B)
+      sendWorkgroup(dut, Seq(config.lanes * config.warps + 1, 1, 1))
       dut.io.warp.valid.expect(false.B)
       dut.io.completion.valid.expect(true.B)
       dut.io.completion.bits.success.expect(false.B)

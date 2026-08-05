@@ -66,6 +66,19 @@ class DecoderSpec extends AnyFlatSpec {
       dut.io.decoded.legal.expect(true.B)
       dut.io.decoded.cease.expect(true.B)
 
+      dut.io.instruction.poke("h0000000b".U) // gpu.barrier
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.system.expect(true.B)
+      dut.io.decoded.barrier.expect(true.B)
+
+      dut.io.instruction.poke("h0020a1af".U) // amoadd.w x3, x2, (x1)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.atomic.expect(true.B)
+      dut.io.decoded.atomicOp.expect(1.U)
+      dut.io.decoded.useRs1.expect(true.B)
+      dut.io.decoded.useRs2.expect(true.B)
+      dut.io.decoded.writeRd.expect(true.B)
+
       // SYSTEM/funct3=000 is not generally legal: only explicit rows match.
       dut.io.instruction.poke("h00200073".U)
       dut.io.decoded.legal.expect(false.B)

@@ -15,6 +15,7 @@ class ScalarExecutionDispatchSpec extends AnyFlatSpec {
     dut.io.divide.ready.poke(true.B)
     dut.io.branch.ready.poke(true.B)
     dut.io.memory.ready.poke(true.B)
+    dut.io.atomic.ready.poke(true.B)
     dut.io.system.ready.poke(true.B)
     dut.io.trap.ready.poke(true.B)
     dut.io.in.valid.poke(true.B)
@@ -22,6 +23,7 @@ class ScalarExecutionDispatchSpec extends AnyFlatSpec {
     dut.io.in.bits.decode.illegalInstruction.poke(false.B)
     dut.io.in.bits.decode.decoded.multiply.poke(false.B)
     dut.io.in.bits.decode.decoded.divide.poke(false.B)
+    dut.io.in.bits.decode.decoded.atomic.poke(false.B)
   }
 
   it should "route each scalar class exclusively and honor selected backpressure" in {
@@ -48,6 +50,10 @@ class ScalarExecutionDispatchSpec extends AnyFlatSpec {
 
       dut.io.in.bits.decode.executionType.poke(ExecutionType.memory)
       dut.io.memory.valid.expect(true.B)
+
+      dut.io.in.bits.decode.decoded.atomic.poke(true.B)
+      dut.io.memory.valid.expect(false.B)
+      dut.io.atomic.valid.expect(true.B)
 
       dut.io.in.bits.decode.executionType.poke(ExecutionType.system)
       dut.io.system.valid.expect(true.B)

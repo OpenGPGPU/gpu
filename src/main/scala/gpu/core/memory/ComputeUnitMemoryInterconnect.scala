@@ -16,6 +16,10 @@ class ComputeMemoryRequest(
   val isWrite = Bool()
   /** log2(bytes): 2 for a PTE word, 6 for a 64-byte cache line. */
   val sizeLog2 = UInt(3.W)
+  /** True only for traffic backed by a private data-cache line. */
+  val cacheClient = Bool()
+  /** For a store, the requesting private cache currently holds the line. */
+  val cacheResident = Bool()
   val transactionId = UInt(math.max(1, log2Ceil(maxOutstanding)).W)
 }
 
@@ -83,6 +87,8 @@ class ComputeUnitMemoryInterconnect(
   arbiter.io.in(0).bits.byteMask := 0.U
   arbiter.io.in(0).bits.isWrite := false.B
   arbiter.io.in(0).bits.sizeLog2 := 6.U
+  arbiter.io.in(0).bits.cacheClient := false.B
+  arbiter.io.in(0).bits.cacheResident := false.B
   arbiter.io.in(0).bits.transactionId := allocatedId
   io.instructionRequest.ready := arbiter.io.in(0).ready && !sourceBusy(0)
 
@@ -92,6 +98,8 @@ class ComputeUnitMemoryInterconnect(
   arbiter.io.in(1).bits.byteMask := io.dataRequest.bits.byteMask
   arbiter.io.in(1).bits.isWrite := io.dataRequest.bits.isWrite
   arbiter.io.in(1).bits.sizeLog2 := 6.U
+  arbiter.io.in(1).bits.cacheClient := true.B
+  arbiter.io.in(1).bits.cacheResident := io.dataRequest.bits.cacheResident
   arbiter.io.in(1).bits.transactionId := allocatedId
   io.dataRequest.ready := arbiter.io.in(1).ready && !sourceBusy(1)
 
@@ -102,6 +110,8 @@ class ComputeUnitMemoryInterconnect(
     arbiter.io.in(index).bits.byteMask := 0.U
     arbiter.io.in(index).bits.isWrite := false.B
     arbiter.io.in(index).bits.sizeLog2 := 2.U
+    arbiter.io.in(index).bits.cacheClient := false.B
+    arbiter.io.in(index).bits.cacheResident := false.B
     arbiter.io.in(index).bits.transactionId := allocatedId
     request.ready := arbiter.io.in(index).ready && !sourceBusy(index)
   }
