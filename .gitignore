@@ -20,3 +20,6 @@ depends/cvfpu/
 timing/generated/
 timing/reports/
 timing/lib/
+
+# Reproducible RTL emission and local ChipAgent/OpenROAD run products.
+/generated/
