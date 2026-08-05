@@ -135,7 +135,8 @@ class GpuSystem(
     config, sets = config.l2Sets, ways = config.l2Ways, lineBytes = 64,
     maxOutstanding = totalSystemTransactions, numComputeUnits = numComputeUnits,
     transactionsPerCu = transactionsPerCu, banks = config.l2Banks,
-    requestQueueDepth = config.l2RequestQueueDepth))
+    requestQueueDepth = config.l2RequestQueueDepth,
+    useSramBlackBoxes = useBlackBoxes))
   l2.io.clearPerformanceCounters := io.clearPerformanceCounters
   private val computeUnits = Seq.fill(numComputeUnits) {
     Module(new GpuComputeUnit(config, useBlackBoxes, enableFpuBackend))

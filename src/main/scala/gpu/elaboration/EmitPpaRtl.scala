@@ -20,7 +20,8 @@ object EmitPpaRtl {
           new SharedL2Slice(
             GpuConfig(lanes = 4, l2Sets = 8, l2Ways = 2, l2Banks = 1),
             sets = 8, ways = 2, maxOutstanding = 8,
-            numComputeUnits = 2, transactionsPerCu = 4),
+            numComputeUnits = 2, transactionsPerCu = 4,
+            useSramBlackBoxes = true),
           stageArgs, firtoolArgs)
       case "command-router" =>
         ChiselStage.emitSystemVerilogFile(

@@ -29,7 +29,8 @@ class SharedL2Slice(
   lineBytes: Int = 64,
   maxOutstanding: Int = 8,
   numComputeUnits: Int = 2,
-  transactionsPerCu: Int = 4
+  transactionsPerCu: Int = 4,
+  useSramBlackBoxes: Boolean = false
 ) extends Module {
   require(isPow2(sets) && sets > 1)
   require(isPow2(ways) && ways > 0)
@@ -104,8 +105,10 @@ class SharedL2Slice(
   private val allocatedVictimSharers = Reg(UInt(numComputeUnits.W))
   private val allocatedVictimAddress = Reg(UInt(config.xLen.W))
 
-  private val tags = Seq.fill(ways)(SyncReadMem(sets, UInt(tagWidth.W)))
-  private val data = Seq.fill(ways)(SyncReadMem(sets, UInt(lineWidth.W)))
+  private val tags = Seq.fill(ways)(Module(
+    new L2SramArray(sets, tagWidth, useSramBlackBoxes)))
+  private val data = Seq.fill(ways)(Module(
+    new L2SramArray(sets, lineWidth, useSramBlackBoxes)))
   private val valid = Seq.fill(ways)(
     RegInit(VecInit(Seq.fill(sets)(false.B))))
   private val nextVictim =
@@ -136,11 +139,15 @@ class SharedL2Slice(
     atomicArbiter.io.in(cu) <> io.atomicRequest(cu)
   }
   private val loadMissesActive = missEngine.io.validEntries.orR
+  // The characterized ASAP7 SRAM is single-ported. A returning miss may
+  // write any way, so do not launch another synchronous lookup that cycle.
+  private val missResponsePresented = io.memoryResponse.valid &&
+    io.memoryResponse.bits.transactionId < 4.U
   private val acceptAtomic = state === State.idle && !loadMissesActive &&
-    !storeTable.io.active &&
+    !storeTable.io.active && !missResponsePresented &&
     atomicArbiter.io.out.valid
   atomicArbiter.io.out.ready := state === State.idle && !loadMissesActive &&
-    !storeTable.io.active
+    !storeTable.io.active && !missResponsePresented
   private val lookupAddress = Mux(acceptAtomic,
     atomicArbiter.io.out.bits.address, io.request.bits.address)
   private val lookupFire = atomicArbiter.io.out.fire || io.request.fire
@@ -150,10 +157,20 @@ class SharedL2Slice(
     request.address(offsetWidth + indexWidth - 1, offsetWidth)
   private val lookupReadIndex = Mux(lookupFire, incomingIndex, requestIndex)
   private val lookupReadEnable = lookupFire || state === State.lookup
-  private val tagRead = VecInit(tags.map(
-    _.read(lookupReadIndex, lookupReadEnable)))
-  private val dataRead = VecInit(data.map(
-    _.read(lookupReadIndex, lookupReadEnable)))
+  for (way <- 0 until ways) {
+    tags(way).io.readEnable := lookupReadEnable
+    tags(way).io.readAddress := lookupReadIndex
+    tags(way).io.writeEnable := false.B
+    tags(way).io.writeAddress := 0.U
+    tags(way).io.writeData := 0.U
+    data(way).io.readEnable := lookupReadEnable
+    data(way).io.readAddress := lookupReadIndex
+    data(way).io.writeEnable := false.B
+    data(way).io.writeAddress := 0.U
+    data(way).io.writeData := 0.U
+  }
+  private val tagRead = VecInit(tags.map(_.io.readData))
+  private val dataRead = VecInit(data.map(_.io.readData))
 
   private val requestTag =
     request.address(config.xLen - 1, offsetWidth + indexWidth)
@@ -253,6 +270,7 @@ class SharedL2Slice(
   private val incomingRequesterOH = UIntToOH(
     incomingRequesterCu, numComputeUnits)
   io.request.ready := (state === State.idle && !atomicArbiter.io.out.valid &&
+    !missResponsePresented &&
     (!io.request.bits.isWrite || !loadMissesActive) &&
     (!storeTable.io.active || io.request.bits.isWrite)) ||
     mergeLoad
@@ -569,8 +587,12 @@ class SharedL2Slice(
       when(!io.memoryResponse.bits.fault) {
         for (way <- 0 until ways) {
           when(atomicTargetWay === way.U) {
-            tags(way).write(requestIndex, requestTag)
-            data(way).write(requestIndex, atomicMergedLine)
+            tags(way).io.writeEnable := true.B
+            tags(way).io.writeAddress := requestIndex
+            tags(way).io.writeData := requestTag
+            data(way).io.writeEnable := true.B
+            data(way).io.writeAddress := requestIndex
+            data(way).io.writeData := atomicMergedLine
             valid(way)(requestIndex) := true.B
             sharers(way)(requestIndex) := 0.U
           }
@@ -584,8 +606,12 @@ class SharedL2Slice(
       when(!request.isWrite) {
         for (way <- 0 until ways) {
           when(lookupVictimWay === way.U) {
-            tags(way).write(requestIndex, requestTag)
-            data(way).write(requestIndex, io.memoryResponse.bits.readData)
+            tags(way).io.writeEnable := true.B
+            tags(way).io.writeAddress := requestIndex
+            tags(way).io.writeData := requestTag
+            data(way).io.writeEnable := true.B
+            data(way).io.writeAddress := requestIndex
+            data(way).io.writeData := io.memoryResponse.bits.readData
             valid(way)(requestIndex) := true.B
             sharers(way)(requestIndex) := waiterSharers
           }
@@ -594,7 +620,9 @@ class SharedL2Slice(
       }.elsewhen(lookupHit) {
         for (way <- 0 until ways) {
           when(lookupHitWay === way.U) {
-            data(way).write(requestIndex, mergedBytes.asUInt)
+            data(way).io.writeEnable := true.B
+            data(way).io.writeAddress := requestIndex
+            data(way).io.writeData := mergedBytes.asUInt
             sharers(way)(requestIndex) := Mux(
               request.cacheClient && request.cacheResident, requesterOH, 0.U)
           }
@@ -633,8 +661,12 @@ class SharedL2Slice(
       config.xLen - 1, offsetWidth + indexWidth)
     for (way <- 0 until ways) {
       when(fillWay === way.U) {
-        tags(way).write(fillSet, fillTag)
-        data(way).write(fillSet, missEngine.io.fill.bits.readData)
+        tags(way).io.writeEnable := true.B
+        tags(way).io.writeAddress := fillSet
+        tags(way).io.writeData := fillTag
+        data(way).io.writeEnable := true.B
+        data(way).io.writeAddress := fillSet
+        data(way).io.writeData := missEngine.io.fill.bits.readData
         valid(way)(fillSet) := true.B
         sharers(way)(fillSet) := missEngine.io.fill.bits.sharers
       }
@@ -658,7 +690,8 @@ class SharedL2Cache(
   numComputeUnits: Int = 2,
   transactionsPerCu: Int = 4,
   banks: Int = 2,
-  requestQueueDepth: Int = 2
+  requestQueueDepth: Int = 2,
+  useSramBlackBoxes: Boolean = false
 ) extends Module {
   require(isPow2(banks) && banks > 0)
   require(sets % banks == 0)
@@ -692,7 +725,7 @@ class SharedL2Cache(
 
   private val slices = Seq.fill(banks)(Module(new SharedL2Slice(
     config, setsPerBank, ways, lineBytes, maxOutstanding,
-    numComputeUnits, transactionsPerCu)))
+    numComputeUnits, transactionsPerCu, useSramBlackBoxes)))
   slices.foreach(_.io.clearPerformanceCounters := io.clearPerformanceCounters)
   io.performance.loadHits := slices.map(_.io.performance.loadHits).reduce(_ +& _)
   io.performance.loadMisses := slices.map(_.io.performance.loadMisses).reduce(_ +& _)

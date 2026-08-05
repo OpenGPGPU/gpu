@@ -1,3 +1,6 @@
 [submodule "depends/yunsuan"]
 	path = depends/yunsuan
 	url = https://github.com/OpenXiangShan/YunSuan.git
+[submodule "depends/asap7_sram_0p0"]
+	path = depends/asap7_sram_0p0
+	url = https://github.com/The-OpenROAD-Project/asap7_sram_0p0.git
