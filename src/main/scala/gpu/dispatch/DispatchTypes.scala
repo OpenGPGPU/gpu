@@ -70,6 +70,23 @@ class KernelCommand(config: GpuConfig, val commandIdWidth: Int) extends Bundle {
   require(commandIdWidth > 0)
   val commandId = UInt(commandIdWidth.W)
   val launch = new KernelLaunch(config)
+  val waitForDma = Bool()
+  val dmaSource = UInt(DmaEventSource.width.W)
+  val dmaDescriptorId = UInt(commandIdWidth.W)
+}
+
+object DmaEventSource {
+  val width = 2
+  val copy = 0.U(width.W)
+  val fill = 1.U(width.W)
+  val stridedCopy = 2.U(width.W)
+  val count = 3
+}
+
+class DmaCompletionEvent(val descriptorIdWidth: Int) extends Bundle {
+  val source = UInt(DmaEventSource.width.W)
+  val descriptorId = UInt(descriptorIdWidth.W)
+  val success = Bool()
 }
 
 object KernelCommandStatus {
@@ -80,6 +97,7 @@ object KernelCommandStatus {
   val invalidGrid = 3.U(width.W)
   val invalidLocalSize = 4.U(width.W)
   val misalignedKernarg = 5.U(width.W)
+  val dmaDependencyFailed = 6.U(width.W)
 }
 
 class KernelCommandResult(val commandIdWidth: Int) extends Bundle {

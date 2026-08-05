@@ -28,6 +28,8 @@ class GpuCommandProcessor(
     val dispatch = Decoupled(new TaggedKernelLaunch(config, commandIdWidth))
     val dispatchCompletion = Flipped(Decoupled(
       new TaggedKernelCompletion(commandIdWidth)))
+    val dmaCompletion = Input(Vec(DmaEventSource.count,
+      Valid(new DmaCompletionEvent(commandIdWidth))))
     val queued = Output(UInt(countWidth.W))
     val inFlight = Output(UInt(log2Ceil(idCount + 1).W))
     val busy = Output(Bool())
@@ -39,6 +41,10 @@ class GpuCommandProcessor(
   private val completions = Module(new Queue(
     new KernelCommandResult(commandIdWidth), completionQueueDepth))
   private val reservedIds = RegInit(0.U(idCount.W))
+  private val dmaSucceeded = RegInit(VecInit(
+    Seq.fill(DmaEventSource.count)(0.U(idCount.W))))
+  private val dmaFailed = RegInit(VecInit(
+    Seq.fill(DmaEventSource.count)(0.U(idCount.W))))
   private val incomingDuplicate = reservedIds(io.command.bits.commandId)
 
   commands.io.enq.valid := io.command.valid && !incomingDuplicate
@@ -57,13 +63,21 @@ class GpuCommandProcessor(
   private val localFits = localItems <= residentCapacity
   private val descriptorValid = pcAligned && kernargAligned &&
     gridValid && localValid && localFits
+  private val dependencySourceValid = head.dmaSource < DmaEventSource.count.U
+  private val dependencySucceeded = dependencySourceValid &&
+    dmaSucceeded(head.dmaSource)(head.dmaDescriptorId)
+  private val dependencyFailed = !dependencySourceValid ||
+    dmaFailed(head.dmaSource)(head.dmaDescriptorId)
+  private val dependencyKnown = !head.waitForDma ||
+    dependencySucceeded || dependencyFailed
   private val invalidStatus = Mux(!pcAligned,
     KernelCommandStatus.invalidProgramCounter,
     Mux(!gridValid, KernelCommandStatus.invalidGrid,
       Mux(!localValid || !localFits, KernelCommandStatus.invalidLocalSize,
         KernelCommandStatus.misalignedKernarg)))
 
-  io.dispatch.valid := commands.io.deq.valid && descriptorValid
+  io.dispatch.valid := commands.io.deq.valid && descriptorValid &&
+    dependencyKnown && !dependencyFailed
   io.dispatch.bits.commandId := head.commandId
   io.dispatch.bits.launch := head.launch
 
@@ -79,12 +93,15 @@ class GpuCommandProcessor(
     KernelCommandStatus.executionFailed)
   io.dispatchCompletion.ready := completionEvents.io.in(0).ready
 
-  completionEvents.io.in(1).valid := commands.io.deq.valid && !descriptorValid
+  completionEvents.io.in(1).valid := commands.io.deq.valid &&
+    dependencyKnown && (!descriptorValid || dependencyFailed)
   completionEvents.io.in(1).bits.commandId := head.commandId
   completionEvents.io.in(1).bits.success := false.B
-  completionEvents.io.in(1).bits.status := invalidStatus
+  completionEvents.io.in(1).bits.status := Mux(dependencyFailed,
+    KernelCommandStatus.dmaDependencyFailed, invalidStatus)
 
-  commands.io.deq.ready := Mux(descriptorValid,
+  commands.io.deq.ready := dependencyKnown && Mux(
+    descriptorValid && !dependencyFailed,
     io.dispatch.ready, completionEvents.io.in(1).ready)
   completions.io.enq <> completionEvents.io.out
   io.completion <> completions.io.deq
@@ -109,6 +126,26 @@ class GpuCommandProcessor(
     UIntToOH(io.completion.bits.commandId, idCount), 0.U)
   when(io.command.fire || io.completion.fire) {
     reservedIds := (reservedIds | reserveMask) & ~releaseMask
+  }
+
+  private val dependencyConsumed = commands.io.deq.fire && head.waitForDma
+  for (source <- 0 until DmaEventSource.count) {
+    val event = io.dmaCompletion(source)
+    val sourceMatches = head.dmaSource === source.U
+    val clearMask = Mux(dependencyConsumed && sourceMatches,
+      UIntToOH(head.dmaDescriptorId, idCount), 0.U)
+    val setSuccess = Mux(event.valid && event.bits.success,
+      UIntToOH(event.bits.descriptorId, idCount), 0.U)
+    val setFailure = Mux(event.valid && !event.bits.success,
+      UIntToOH(event.bits.descriptorId, idCount), 0.U)
+    when(clearMask.orR || event.valid) {
+      dmaSucceeded(source) := (dmaSucceeded(source) & ~clearMask) | setSuccess
+      dmaFailed(source) := (dmaFailed(source) & ~clearMask) | setFailure
+    }
+    when(event.valid) {
+      assert(event.bits.source === source.U,
+        "DMA event vector index must match its source field")
+    }
   }
 
   io.queued := commands.io.count

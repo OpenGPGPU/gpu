@@ -150,6 +150,35 @@ class GpuSystem(
   io.stridedCopyCompletion <> stridedCopyEngine.io.completion
   io.stridedCopyEngineBusy := stridedCopyEngine.io.busy
 
+  commandProcessor.io.dmaCompletion(DmaEventSource.copy.litValue.toInt).valid :=
+    copyEngine.io.completion.fire
+  commandProcessor.io.dmaCompletion(DmaEventSource.copy.litValue.toInt).bits.source :=
+    DmaEventSource.copy
+  commandProcessor.io.dmaCompletion(DmaEventSource.copy.litValue.toInt).bits.descriptorId :=
+    copyEngine.io.completion.bits.descriptorId
+  commandProcessor.io.dmaCompletion(DmaEventSource.copy.litValue.toInt).bits.success :=
+    copyEngine.io.completion.bits.success
+  commandProcessor.io.dmaCompletion(DmaEventSource.fill.litValue.toInt).valid :=
+    fillEngine.io.completion.fire
+  commandProcessor.io.dmaCompletion(DmaEventSource.fill.litValue.toInt).bits.source :=
+    DmaEventSource.fill
+  commandProcessor.io.dmaCompletion(DmaEventSource.fill.litValue.toInt).bits.descriptorId :=
+    fillEngine.io.completion.bits.descriptorId
+  commandProcessor.io.dmaCompletion(DmaEventSource.fill.litValue.toInt).bits.success :=
+    fillEngine.io.completion.bits.success
+  commandProcessor.io.dmaCompletion(
+    DmaEventSource.stridedCopy.litValue.toInt).valid :=
+    stridedCopyEngine.io.completion.fire
+  commandProcessor.io.dmaCompletion(
+    DmaEventSource.stridedCopy.litValue.toInt).bits.source :=
+    DmaEventSource.stridedCopy
+  commandProcessor.io.dmaCompletion(
+    DmaEventSource.stridedCopy.litValue.toInt).bits.descriptorId :=
+    stridedCopyEngine.io.completion.bits.descriptorId
+  commandProcessor.io.dmaCompletion(
+    DmaEventSource.stridedCopy.litValue.toInt).bits.success :=
+    stridedCopyEngine.io.completion.bits.success
+
   private val l2RequestArbiter = Module(new RRArbiter(
     new ComputeMemoryRequest(config, 64, totalSystemTransactions), 4))
   l2RequestArbiter.io.in(0).valid := memory.io.memoryRequest.valid
