@@ -3,6 +3,7 @@ package gpu.system
 import chisel3._
 import chisel3.simulator.EphemeralSimulator._
 import gpu.config.GpuConfig
+import gpu.command.GpuCommandOpcode
 import org.scalatest.flatspec.AnyFlatSpec
 
 class GpuSystemSpec extends AnyFlatSpec {
@@ -25,6 +26,9 @@ class GpuSystemSpec extends AnyFlatSpec {
     dut.io.stridedCopyDescriptor.bits.poke(
       0.U.asTypeOf(dut.io.stridedCopyDescriptor.bits))
     dut.io.stridedCopyCompletion.ready.poke(true.B)
+    dut.io.gpuCommand.valid.poke(false.B)
+    dut.io.gpuCommand.bits.poke(0.U.asTypeOf(dut.io.gpuCommand.bits))
+    dut.io.gpuCompletion.ready.poke(true.B)
     dut.io.memoryRequest.ready.poke(true.B)
     dut.io.memoryResponse.valid.poke(false.B)
     dut.io.memoryResponse.bits.poke(
@@ -300,6 +304,52 @@ class GpuSystemSpec extends AnyFlatSpec {
       dut.io.copyCompletion.bits.descriptorId.expect(9.U)
       dut.io.copyCompletion.bits.success.expect(true.B)
       dut.io.copyCompletion.bits.bytesCopied.expect(128.U)
+    }
+  }
+
+  it should "execute a fill through the unified command interface" in {
+    val config = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuSystem(config, numComputeUnits = 2,
+      enableUnifiedCommands = true)) { dut =>
+      initialize(dut, 2)
+      val pattern = BigInt("13579bdf", 16)
+      val line = BigInt(List.fill(16)("13579bdf").mkString, 16)
+      dut.io.command.ready.expect(false.B)
+      dut.io.fillDescriptor.ready.expect(false.B)
+      dut.io.gpuCommand.bits.commandId.poke(12.U)
+      dut.io.gpuCommand.bits.opcode.poke(GpuCommandOpcode.fill)
+      dut.io.gpuCommand.bits.destinationAddress.poke(0x5000.U)
+      dut.io.gpuCommand.bits.bytes.poke(64.U)
+      dut.io.gpuCommand.bits.pattern.poke(pattern.U)
+      dut.io.gpuCommand.valid.poke(true.B)
+      dut.io.gpuCommand.ready.expect(true.B)
+      dut.clock.step(); dut.io.gpuCommand.valid.poke(false.B)
+
+      var cycles = 0
+      while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 30) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.memoryRequest.bits.address.expect(0x5000.U)
+      dut.io.memoryRequest.bits.isWrite.expect(true.B)
+      dut.io.memoryRequest.bits.writeData.expect(line.U)
+      val transactionId =
+        dut.io.memoryRequest.bits.transactionId.peek().litValue
+      dut.clock.step()
+      dut.io.memoryResponse.bits.transactionId.poke(transactionId.U)
+      dut.io.memoryResponse.bits.fault.poke(false.B)
+      dut.io.memoryResponse.valid.poke(true.B)
+      dut.io.memoryResponse.ready.expect(true.B)
+      dut.clock.step(); dut.io.memoryResponse.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.gpuCompletion.valid.peek().litToBoolean && cycles < 20) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.gpuCompletion.valid.expect(true.B)
+      dut.io.gpuCompletion.bits.commandId.expect(12.U)
+      dut.io.gpuCompletion.bits.opcode.expect(GpuCommandOpcode.fill)
+      dut.io.gpuCompletion.bits.success.expect(true.B)
+      dut.io.gpuCompletion.bits.bytesProcessed.expect(64.U)
     }
   }
 }

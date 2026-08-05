@@ -3,6 +3,7 @@ package gpu.system
 import chisel3._
 import chisel3.util._
 import gpu.config.GpuConfig
+import gpu.command.{GpuCommand, GpuCommandResult, GpuCommandRouter}
 import gpu.core.GpuComputeUnit
 import gpu.core.backend.FpuFlags
 import gpu.core.backend.issue.{ScalarIssuedInstruction, VectorIssuedInstruction}
@@ -27,7 +28,8 @@ class GpuSystem(
   commandIdWidth: Int = 8,
   transactionsPerCu: Int = 4,
   useBlackBoxes: Boolean = false,
-  enableFpuBackend: Boolean = false
+  enableFpuBackend: Boolean = false,
+  enableUnifiedCommands: Boolean = false
 ) extends Module {
   require(numComputeUnits > 0)
   private val totalTransactions = numComputeUnits * transactionsPerCu
@@ -57,6 +59,9 @@ class GpuSystem(
       new StridedCopyDescriptor(config, commandIdWidth)))
     val stridedCopyCompletion = Decoupled(
       new StridedCopyCompletion(commandIdWidth))
+    val gpuCommand = Flipped(Decoupled(
+      new GpuCommand(config, commandIdWidth)))
+    val gpuCompletion = Decoupled(new GpuCommandResult(commandIdWidth))
 
     val memoryRequest = Decoupled(new ComputeMemoryRequest(
       config, 64, totalSystemTransactions))
@@ -101,9 +106,14 @@ class GpuSystem(
     val copyEngineBusy = Output(Bool())
     val fillEngineBusy = Output(Bool())
     val stridedCopyEngineBusy = Output(Bool())
+    val unifiedCommandRouterBusy = Output(Bool())
+    val duplicateUnifiedCommandId = Output(Bool())
   })
 
   private val commandProcessor = Module(new GpuCommandProcessor(
+    config, commandIdWidth, commandQueueDepth = config.commandQueueDepth,
+    completionQueueDepth = config.completionQueueDepth))
+  private val commandRouter = Module(new GpuCommandRouter(
     config, commandIdWidth, commandQueueDepth = config.commandQueueDepth,
     completionQueueDepth = config.completionQueueDepth))
   private val dispatcher = Module(new MultiCuKernelDispatcher(
@@ -131,8 +141,6 @@ class GpuSystem(
     maxOutstanding = stridedCopyTransactions,
     descriptorQueueDepth = config.stridedCopyDescriptorQueueDepth))
 
-  commandProcessor.io.command <> io.command
-  io.commandCompletion <> commandProcessor.io.completion
   dispatcher.io.launch <> commandProcessor.io.dispatch
   commandProcessor.io.dispatchCompletion <> dispatcher.io.completion
   io.busyComputeUnits := dispatcher.io.busy
@@ -140,15 +148,71 @@ class GpuSystem(
   io.queuedCommands := commandProcessor.io.queued
   io.inFlightCommands := commandProcessor.io.inFlight
   io.duplicateCommandId := commandProcessor.io.duplicateCommandId
-  copyEngine.io.descriptor <> io.copyDescriptor
-  io.copyCompletion <> copyEngine.io.completion
   io.copyEngineBusy := copyEngine.io.busy
-  fillEngine.io.descriptor <> io.fillDescriptor
-  io.fillCompletion <> fillEngine.io.completion
   io.fillEngineBusy := fillEngine.io.busy
-  stridedCopyEngine.io.descriptor <> io.stridedCopyDescriptor
-  io.stridedCopyCompletion <> stridedCopyEngine.io.completion
   io.stridedCopyEngineBusy := stridedCopyEngine.io.busy
+  io.unifiedCommandRouterBusy := commandRouter.io.busy
+  io.duplicateUnifiedCommandId := commandRouter.io.duplicateCommandId
+
+  if (enableUnifiedCommands) {
+    commandRouter.io.command <> io.gpuCommand
+    io.gpuCompletion <> commandRouter.io.completion
+    commandProcessor.io.command <> commandRouter.io.kernel
+    commandRouter.io.kernelCompletion <> commandProcessor.io.completion
+    copyEngine.io.descriptor <> commandRouter.io.copy
+    commandRouter.io.copyCompletion <> copyEngine.io.completion
+    fillEngine.io.descriptor <> commandRouter.io.fill
+    commandRouter.io.fillCompletion <> fillEngine.io.completion
+    stridedCopyEngine.io.descriptor <> commandRouter.io.stridedCopy
+    commandRouter.io.stridedCopyCompletion <> stridedCopyEngine.io.completion
+
+    io.command.ready := false.B
+    io.commandCompletion.valid := false.B
+    io.commandCompletion.bits := 0.U.asTypeOf(io.commandCompletion.bits)
+    io.copyDescriptor.ready := false.B
+    io.copyCompletion.valid := false.B
+    io.copyCompletion.bits := 0.U.asTypeOf(io.copyCompletion.bits)
+    io.fillDescriptor.ready := false.B
+    io.fillCompletion.valid := false.B
+    io.fillCompletion.bits := 0.U.asTypeOf(io.fillCompletion.bits)
+    io.stridedCopyDescriptor.ready := false.B
+    io.stridedCopyCompletion.valid := false.B
+    io.stridedCopyCompletion.bits :=
+      0.U.asTypeOf(io.stridedCopyCompletion.bits)
+  } else {
+    commandProcessor.io.command <> io.command
+    io.commandCompletion <> commandProcessor.io.completion
+    copyEngine.io.descriptor <> io.copyDescriptor
+    io.copyCompletion <> copyEngine.io.completion
+    fillEngine.io.descriptor <> io.fillDescriptor
+    io.fillCompletion <> fillEngine.io.completion
+    stridedCopyEngine.io.descriptor <> io.stridedCopyDescriptor
+    io.stridedCopyCompletion <> stridedCopyEngine.io.completion
+
+    io.gpuCommand.ready := false.B
+    io.gpuCompletion.valid := false.B
+    io.gpuCompletion.bits := 0.U.asTypeOf(io.gpuCompletion.bits)
+    commandRouter.io.command.valid := false.B
+    commandRouter.io.command.bits :=
+      0.U.asTypeOf(commandRouter.io.command.bits)
+    commandRouter.io.completion.ready := false.B
+    commandRouter.io.kernel.ready := false.B
+    commandRouter.io.copy.ready := false.B
+    commandRouter.io.fill.ready := false.B
+    commandRouter.io.stridedCopy.ready := false.B
+    commandRouter.io.kernelCompletion.valid := false.B
+    commandRouter.io.kernelCompletion.bits :=
+      0.U.asTypeOf(commandRouter.io.kernelCompletion.bits)
+    commandRouter.io.copyCompletion.valid := false.B
+    commandRouter.io.copyCompletion.bits :=
+      0.U.asTypeOf(commandRouter.io.copyCompletion.bits)
+    commandRouter.io.fillCompletion.valid := false.B
+    commandRouter.io.fillCompletion.bits :=
+      0.U.asTypeOf(commandRouter.io.fillCompletion.bits)
+    commandRouter.io.stridedCopyCompletion.valid := false.B
+    commandRouter.io.stridedCopyCompletion.bits :=
+      0.U.asTypeOf(commandRouter.io.stridedCopyCompletion.bits)
+  }
 
   commandProcessor.io.dmaCompletion(DmaEventSource.copy.litValue.toInt).valid :=
     copyEngine.io.completion.fire
