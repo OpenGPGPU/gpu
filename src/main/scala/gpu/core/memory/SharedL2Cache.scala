@@ -29,8 +29,8 @@ class SharedL2Slice(
   require(maxOutstanding > 0)
   require(numComputeUnits > 0)
   require(maxOutstanding >= numComputeUnits * transactionsPerCu)
-  require(maxOutstanding > 4,
-    "four load MSHRs plus one blocking store/AMO ID are required")
+  require(maxOutstanding > 6,
+    "four load MSHRs, two stores, and one blocking AMO ID are required")
 
   private val offsetWidth = log2Ceil(lineBytes)
   private val indexWidth = log2Ceil(sets)
@@ -58,7 +58,7 @@ class SharedL2Slice(
   })
 
   private object State extends ChiselEnum {
-    val idle, lookup, missAllocate, invalidate, lower, respond, atomicRead,
+    val idle, lookup, missAllocate, invalidate, storeAllocate, lower, respond, atomicRead,
       atomicExecute, atomicWrite, atomicRespond = Value
   }
   private val state = RegInit(State.idle)
@@ -106,6 +106,9 @@ class SharedL2Slice(
     config, entries = 4, maxOutstanding = maxOutstanding,
     numComputeUnits = numComputeUnits, lineBytes = lineBytes,
     sets = sets, ways = ways))
+  private val storeTable = Module(new L2StoreTransactionTable(
+    config, entries = 2, lineBytes = lineBytes,
+    maxOutstanding = maxOutstanding, lowerIdBase = 4))
 
   private val atomicArbiter = Module(new RRArbiter(
     new SharedAtomicRequest(config), numComputeUnits))
@@ -114,8 +117,10 @@ class SharedL2Slice(
   }
   private val loadMissesActive = missEngine.io.validEntries.orR
   private val acceptAtomic = state === State.idle && !loadMissesActive &&
+    !storeTable.io.active &&
     atomicArbiter.io.out.valid
-  atomicArbiter.io.out.ready := state === State.idle && !loadMissesActive
+  atomicArbiter.io.out.ready := state === State.idle && !loadMissesActive &&
+    !storeTable.io.active
   private val lookupAddress = Mux(acceptAtomic,
     atomicArbiter.io.out.bits.address, io.request.bits.address)
   private val lookupFire = atomicArbiter.io.out.fire || io.request.fire
@@ -228,7 +233,8 @@ class SharedL2Slice(
   private val incomingRequesterOH = UIntToOH(
     incomingRequesterCu, numComputeUnits)
   io.request.ready := (state === State.idle && !atomicArbiter.io.out.valid &&
-    (!io.request.bits.isWrite || !loadMissesActive)) ||
+    (!io.request.bits.isWrite || !loadMissesActive) &&
+    (!storeTable.io.active || io.request.bits.isWrite)) ||
     mergeLoad
   private val regularResponse = Wire(Decoupled(
     new ComputeMemoryResponse(lineBytes, maxOutstanding)))
@@ -236,7 +242,7 @@ class SharedL2Slice(
   regularResponse.bits := response
   regularResponse.bits.transactionId := PriorityEncoder(responseWaiters)
   private val responseArbiter = Module(new RRArbiter(
-    new ComputeMemoryResponse(lineBytes, maxOutstanding), 2))
+    new ComputeMemoryResponse(lineBytes, maxOutstanding), 3))
   responseArbiter.io.in(0) <> regularResponse
   responseArbiter.io.in(1).valid := missEngine.io.response.valid
   responseArbiter.io.in(1).bits.readData := missEngine.io.response.bits.readData
@@ -244,6 +250,7 @@ class SharedL2Slice(
     missEngine.io.response.bits.transactionId
   responseArbiter.io.in(1).bits.fault := missEngine.io.response.bits.fault
   missEngine.io.response.ready := responseArbiter.io.in(1).ready
+  responseArbiter.io.in(2) <> storeTable.io.response
   io.response <> responseArbiter.io.out
 
   private val blockingMemoryRequest = Wire(Decoupled(
@@ -251,7 +258,7 @@ class SharedL2Slice(
   blockingMemoryRequest.valid := (state === State.lower ||
     state === State.atomicRead || state === State.atomicWrite) && !lowerIssued
   blockingMemoryRequest.bits := request
-  blockingMemoryRequest.bits.transactionId := 4.U
+  blockingMemoryRequest.bits.transactionId := 6.U
   when(state === State.atomicRead) {
     blockingMemoryRequest.bits.address := atomicLineAddress
     blockingMemoryRequest.bits.writeData := 0.U
@@ -271,25 +278,35 @@ class SharedL2Slice(
     blockingMemoryRequest.bits.cacheResident := false.B
   }
   private val memoryRequestArbiter = Module(new RRArbiter(
-    new ComputeMemoryRequest(config, lineBytes, maxOutstanding), 2))
+    new ComputeMemoryRequest(config, lineBytes, maxOutstanding), 3))
   memoryRequestArbiter.io.in(0) <> blockingMemoryRequest
-  memoryRequestArbiter.io.in(1) <> missEngine.io.lowerRequest
+  memoryRequestArbiter.io.in(1) <> storeTable.io.lowerRequest
+  memoryRequestArbiter.io.in(2) <> missEngine.io.lowerRequest
   io.memoryRequest <> memoryRequestArbiter.io.out
   when(blockingMemoryRequest.fire) { lowerIssued := true.B }
 
   private val responseIsMiss = io.memoryResponse.bits.transactionId < 4.U
+  private val responseIsStore = io.memoryResponse.bits.transactionId >= 4.U &&
+    io.memoryResponse.bits.transactionId < 6.U
   missEngine.io.lowerResponse.valid := io.memoryResponse.valid && responseIsMiss
   missEngine.io.lowerResponse.bits := io.memoryResponse.bits
+  storeTable.io.lowerResponse.valid :=
+    io.memoryResponse.valid && responseIsStore
+  storeTable.io.lowerResponse.bits := io.memoryResponse.bits
   private val blockingMemoryResponseReady = state === State.lower ||
     state === State.atomicRead || state === State.atomicWrite
   io.memoryResponse.ready := Mux(responseIsMiss,
-    missEngine.io.lowerResponse.ready, blockingMemoryResponseReady)
+    missEngine.io.lowerResponse.ready, Mux(responseIsStore,
+      storeTable.io.lowerResponse.ready, blockingMemoryResponseReady))
   private val blockingMemoryResponseFire = io.memoryResponse.fire &&
-    !responseIsMiss
+    !responseIsMiss && !responseIsStore
   when(io.memoryResponse.valid) {
-    assert(responseIsMiss || io.memoryResponse.bits.transactionId === 4.U,
-      "L2 slice response must identify a load MSHR or blocking transaction")
+    assert(responseIsMiss || responseIsStore ||
+      io.memoryResponse.bits.transactionId === 6.U,
+      "L2 slice response must identify a load, store, or blocking transaction")
   }
+  storeTable.io.allocate.valid := state === State.storeAllocate
+  storeTable.io.allocate.bits := request
   missEngine.io.miss.valid := state === State.lookup && !atomicMode &&
     cacheable && !request.isWrite && !hit
   missEngine.io.miss.bits.lineAddress := activeLine
@@ -426,6 +443,8 @@ class SharedL2Slice(
         missVictimWay := followingWay(selectedMissWay)
         missVictimRotated := true.B
       }
+    }.elsewhen(request.isWrite) {
+      state := State.storeAllocate
     }.otherwise {
       state := State.lower
     }
@@ -480,9 +499,21 @@ class SharedL2Slice(
       }.otherwise {
         state := Mux(atomicMode,
           Mux(invalidateForReplacement, State.atomicRead, State.atomicExecute),
-          State.lower)
+          State.storeAllocate)
       }
     }
+  }
+
+  when(state === State.storeAllocate && storeTable.io.allocate.fire) {
+    when(cacheable && lookupHit) {
+      for (way <- 0 until ways) {
+        when(lookupHitWay === way.U) {
+          valid(way)(requestIndex) := false.B
+          sharers(way)(requestIndex) := 0.U
+        }
+      }
+    }
+    state := State.idle
   }
 
   when(blockingMemoryResponseFire) {

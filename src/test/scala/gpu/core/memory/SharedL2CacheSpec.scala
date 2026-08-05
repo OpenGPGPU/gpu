@@ -131,10 +131,11 @@ class SharedL2CacheSpec extends AnyFlatSpec {
       dut.clock.step()
 
       requestLine(dut, 0x8000, 2)
-      dut.clock.step()
+      // A non-blocking store conservatively invalidates its resident L2 line
+      // until the write-through acknowledgement, so the next load refills.
+      completeLower(dut, 0x1122aa44L, 2)
       dut.io.response.valid.expect(true.B)
       dut.io.response.bits.readData.expect(0x1122aa44L.U)
-      dut.io.memoryRequest.valid.expect(false.B)
     }
   }
 
@@ -175,7 +176,7 @@ class SharedL2CacheSpec extends AnyFlatSpec {
       dut.io.invalidateDone(0).bits.lineAddress.poke(0xc000.U)
       dut.clock.step()
       dut.io.invalidateDone(0).valid.poke(false.B)
-      dut.io.memoryRequest.valid.expect(true.B)
+      waitMemoryRequest(dut)
     }
   }
 
@@ -503,6 +504,42 @@ class SharedL2CacheSpec extends AnyFlatSpec {
       val lower1 = dut.io.memoryRequest.bits.transactionId.peek().litValue
       assert(lower1 != lower0)
       dut.io.memoryRequest.bits.address.expect(0x7600.U)
+    }
+  }
+
+  it should "issue different-line stores concurrently within one slice" in {
+    simulate(new SharedL2Cache(GpuConfig(lanes = 4), sets = 8, ways = 2,
+      banks = 2)) { dut =>
+      initialize(dut)
+      dut.io.memoryRequest.ready.poke(false.B)
+      requestLine(dut, 0x1000, 1, isWrite = true, data = 0x11, mask = 1)
+      requestLine(dut, 0x1080, 2, isWrite = true, data = 0x22, mask = 1)
+
+      dut.io.memoryRequest.ready.poke(true.B)
+      var lower = Seq.empty[(BigInt, BigInt)]
+      var cycles = 0
+      while (lower.size < 2 && cycles < 20) {
+        if (dut.io.memoryRequest.valid.peek().litToBoolean) {
+          lower :+= (
+            dut.io.memoryRequest.bits.address.peek().litValue,
+            dut.io.memoryRequest.bits.transactionId.peek().litValue)
+        }
+        dut.clock.step(); cycles += 1
+      }
+      assert(lower.map(_._1).toSet == Set[BigInt](0x1000, 0x1080))
+
+      dut.io.response.ready.poke(false.B)
+      lower.reverse.foreach { case (_, id) =>
+        dut.io.memoryResponse.bits.transactionId.poke(id.U)
+        dut.io.memoryResponse.bits.fault.poke(false.B)
+        dut.io.memoryResponse.valid.poke(true.B)
+        dut.io.memoryResponse.ready.expect(true.B)
+        dut.clock.step(); dut.io.memoryResponse.valid.poke(false.B)
+      }
+      dut.io.response.valid.expect(true.B)
+      dut.io.response.bits.transactionId.expect(1.U)
+      dut.io.response.ready.poke(true.B); dut.clock.step()
+      dut.io.response.bits.transactionId.expect(2.U)
     }
   }
 }
