@@ -71,7 +71,7 @@ class SharedL2Slice(
 
   private object State extends ChiselEnum {
     val idle, lookup, missAllocate, invalidate, storeAllocate, lower, respond, atomicRead,
-      atomicExecute, atomicWrite, atomicRespond = Value
+      atomicExtract, atomicExecute, atomicWrite, atomicRespond = Value
   }
   private val state = RegInit(State.idle)
   private val request = Reg(new ComputeMemoryRequest(
@@ -229,18 +229,18 @@ class SharedL2Slice(
     atomicRequest.operand
   )(Seq(
     AtomicMemoryOp.swap -> atomicRequest.operand,
-    AtomicMemoryOp.add -> (atomicReadWord + atomicRequest.operand),
-    AtomicMemoryOp.xor -> (atomicReadWord ^ atomicRequest.operand),
-    AtomicMemoryOp.or -> (atomicReadWord | atomicRequest.operand),
-    AtomicMemoryOp.and -> (atomicReadWord & atomicRequest.operand),
-    AtomicMemoryOp.min -> Mux(atomicReadWord.asSInt < atomicRequest.operand.asSInt,
-      atomicReadWord, atomicRequest.operand),
-    AtomicMemoryOp.max -> Mux(atomicReadWord.asSInt > atomicRequest.operand.asSInt,
-      atomicReadWord, atomicRequest.operand),
-    AtomicMemoryOp.minu -> Mux(atomicReadWord < atomicRequest.operand,
-      atomicReadWord, atomicRequest.operand),
-    AtomicMemoryOp.maxu -> Mux(atomicReadWord > atomicRequest.operand,
-      atomicReadWord, atomicRequest.operand)
+    AtomicMemoryOp.add -> (atomicOldValue + atomicRequest.operand),
+    AtomicMemoryOp.xor -> (atomicOldValue ^ atomicRequest.operand),
+    AtomicMemoryOp.or -> (atomicOldValue | atomicRequest.operand),
+    AtomicMemoryOp.and -> (atomicOldValue & atomicRequest.operand),
+    AtomicMemoryOp.min -> Mux(atomicOldValue.asSInt < atomicRequest.operand.asSInt,
+      atomicOldValue, atomicRequest.operand),
+    AtomicMemoryOp.max -> Mux(atomicOldValue.asSInt > atomicRequest.operand.asSInt,
+      atomicOldValue, atomicRequest.operand),
+    AtomicMemoryOp.minu -> Mux(atomicOldValue < atomicRequest.operand,
+      atomicOldValue, atomicRequest.operand),
+    AtomicMemoryOp.maxu -> Mux(atomicOldValue > atomicRequest.operand,
+      atomicOldValue, atomicRequest.operand)
   ))
   private val atomicWordMask = ("hf".U(lineBytes.W) << atomicRequest.address(offsetWidth - 1, 0))
   private val atomicWriteData = atomicNewValue <<
@@ -447,7 +447,7 @@ class SharedL2Slice(
           invalidateForReplacement := false.B
           state := State.invalidate
         }.otherwise {
-          state := State.atomicExecute
+          state := State.atomicExtract
         }
       }.elsewhen(victimValid && victimSharers.orR) {
         atomicTargetWay := victimWay
@@ -548,7 +548,7 @@ class SharedL2Slice(
         state := State.idle
       }.otherwise {
         state := Mux(atomicMode,
-          Mux(invalidateForReplacement, State.atomicRead, State.atomicExecute),
+          Mux(invalidateForReplacement, State.atomicRead, State.atomicExtract),
           State.storeAllocate)
       }
     }
@@ -572,7 +572,7 @@ class SharedL2Slice(
       atomicFault := io.memoryResponse.bits.fault
       atomicLineData := io.memoryResponse.bits.readData
       state := Mux(io.memoryResponse.bits.fault,
-        State.atomicRespond, State.atomicExecute)
+        State.atomicRespond, State.atomicExtract)
     }.elsewhen(state === State.atomicWrite) {
       atomicFault := io.memoryResponse.bits.fault
       when(!io.memoryResponse.bits.fault) {
@@ -625,8 +625,12 @@ class SharedL2Slice(
     }
   }
 
-  when(state === State.atomicExecute) {
+  when(state === State.atomicExtract) {
     atomicOldValue := atomicReadWord
+    state := State.atomicExecute
+  }
+
+  when(state === State.atomicExecute) {
     atomicNewValue := atomicResult
     state := State.atomicWrite
   }

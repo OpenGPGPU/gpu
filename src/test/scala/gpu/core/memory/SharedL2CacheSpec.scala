@@ -226,7 +226,9 @@ class SharedL2CacheSpec extends AnyFlatSpec {
       dut.io.invalidateDone(0).bits.lineAddress.poke(0x1000.U)
       dut.clock.step(); dut.io.invalidateDone(0).valid.poke(false.B)
 
-      // The AMO writes only the addressed word to memory.
+      // Word extraction and the AMO operation occupy separate cycles. The
+      // resulting write still updates only the addressed word in memory.
+      dut.clock.step()
       dut.clock.step()
       dut.io.memoryRequest.valid.expect(true.B)
       dut.io.memoryRequest.bits.isWrite.expect(true.B)
@@ -268,6 +270,8 @@ class SharedL2CacheSpec extends AnyFlatSpec {
       dut.io.memoryResponse.bits.readData.poke((BigInt(5) << 32).U)
       dut.io.memoryResponse.bits.fault.poke(false.B)
       dut.clock.step(); dut.io.memoryResponse.valid.poke(false.B)
+      // The refill word is registered before entering the AMO ALU stage.
+      dut.clock.step()
       dut.clock.step()
       dut.io.memoryRequest.valid.expect(true.B)
       dut.io.memoryRequest.bits.isWrite.expect(true.B)
