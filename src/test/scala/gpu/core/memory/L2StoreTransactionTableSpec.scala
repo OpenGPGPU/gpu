@@ -29,6 +29,7 @@ class L2StoreTransactionTableSpec extends AnyFlatSpec {
   }
 
   private def lowerRequest(dut: L2StoreTransactionTable): BigInt = {
+    if (!dut.io.lowerRequest.valid.peek().litToBoolean) dut.clock.step()
     dut.io.lowerRequest.valid.expect(true.B)
     val id = dut.io.lowerRequest.bits.transactionId.peek().litValue
     dut.clock.step()
@@ -79,6 +80,31 @@ class L2StoreTransactionTableSpec extends AnyFlatSpec {
       dut.io.allocate.ready.expect(false.B)
       dut.io.allocate.bits.address.poke(0x2040.U)
       dut.io.allocate.ready.expect(true.B)
+    }
+  }
+
+  it should "accept independent stores in consecutive cycles" in {
+    simulate(new L2StoreTransactionTable(
+      GpuConfig(lanes = 4), entries = 2)) { dut =>
+      initialize(dut)
+      dut.io.lowerRequest.ready.poke(false.B)
+
+      dut.io.allocate.bits.address.poke(0x3000.U)
+      dut.io.allocate.bits.transactionId.poke(3.U)
+      dut.io.allocate.bits.isWrite.poke(true.B)
+      dut.io.allocate.valid.poke(true.B)
+      dut.io.allocate.ready.expect(true.B)
+      dut.clock.step()
+
+      dut.io.allocate.bits.address.poke(0x3080.U)
+      dut.io.allocate.bits.transactionId.poke(4.U)
+      dut.io.allocate.ready.expect(true.B)
+      dut.clock.step()
+      dut.io.allocate.valid.poke(false.B)
+
+      dut.io.active.expect(true.B)
+      dut.io.allocate.ready.expect(false.B)
+      dut.io.lowerRequest.valid.expect(true.B)
     }
   }
 }

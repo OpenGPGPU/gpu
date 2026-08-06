@@ -47,21 +47,39 @@ class L2StoreTransactionTable(
     new ComputeMemoryRequest(config, lineBytes, maxOutstanding)))
   private val faults = Reg(Vec(entries, Bool()))
 
+  // Break the wide allocate-data path before the dynamically selected entry
+  // write.  This stage can commit one request and capture the next request in
+  // the same cycle, so it adds latency but does not reduce peak throughput.
+  private val allocationPending = RegInit(false.B)
+  private val pendingEntry = Reg(UInt(log2Ceil(entries).W))
+  private val pendingRequest = Reg(
+    new ComputeMemoryRequest(config, lineBytes, maxOutstanding))
+
   private val incomingLine = io.allocate.bits.address(
     config.xLen - 1, offsetWidth)
   private val lineConflict = VecInit((0 until entries).map { entry =>
     state(entry) =/= EntryState.free &&
       requests(entry).address(config.xLen - 1, offsetWidth) === incomingLine
-  }).asUInt.orR
-  private val freeEntries = VecInit(state.map(_ === EntryState.free))
+  }).asUInt.orR || (allocationPending &&
+    pendingRequest.address(config.xLen - 1, offsetWidth) === incomingLine)
+  private val reservedEntries = UIntToOH(pendingEntry, entries) &
+    Fill(entries, allocationPending)
+  private val freeEntries = VecInit((0 until entries).map { entry =>
+    state(entry) === EntryState.free && !reservedEntries(entry)
+  })
   private val hasFree = freeEntries.asUInt.orR
   private val allocateEntry = PriorityEncoder(freeEntries)
   io.allocate.ready := hasFree && !lineConflict
+  allocationPending := io.allocate.fire
   when(io.allocate.fire) {
     assert(io.allocate.bits.isWrite,
       "L2 store table accepts only write requests")
-    requests(allocateEntry) := io.allocate.bits
-    state(allocateEntry) := EntryState.issue
+    pendingEntry := allocateEntry
+    pendingRequest := io.allocate.bits
+  }
+  when(allocationPending) {
+    requests(pendingEntry) := pendingRequest
+    state(pendingEntry) := EntryState.issue
   }
 
   private val issueEntries = VecInit(state.map(_ === EntryState.issue))
@@ -97,5 +115,6 @@ class L2StoreTransactionTable(
   io.response.bits.fault := faults(responseEntry)
   when(io.response.fire) { state(responseEntry) := EntryState.free }
 
-  io.active := state.map(_ =/= EntryState.free).reduce(_ || _)
+  io.active := allocationPending ||
+    state.map(_ =/= EntryState.free).reduce(_ || _)
 }
