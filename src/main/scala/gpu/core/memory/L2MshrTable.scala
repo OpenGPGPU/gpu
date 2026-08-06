@@ -125,37 +125,49 @@ class L2MshrTable(
       victimWay(entry) === io.request.bits.victimWay
   }).asUInt.orR
 
+  // The lookup result is registered before any entry array is updated.  The
+  // original single-cycle path ran valid/line matching and priority selection
+  // directly into the dynamically selected waiter register.  Allocation was
+  // already a two-cycle handshake, so this boundary preserves its maximum
+  // acceptance rate while removing that long feedback path.
   private val allocationValid = RegInit(false.B)
-  private val allocationBits = Reg(new L2MshrAllocation(entries))
+  private val allocationRequest = Reg(new L2MshrRequest(
+    config, maxOutstanding, numComputeUnits, sets, ways))
+  private val allocationEntry = Reg(UInt(entryWidth.W))
+  private val allocationMerged = Reg(Bool())
   io.request.ready := !allocationValid &&
     (hasMatch || (hasFree && !victimConflict)) && !duplicateWaiter
   io.allocation.valid := allocationValid
-  io.allocation.bits := allocationBits
+  io.allocation.bits.entryId := allocationEntry
+  io.allocation.bits.merged := allocationMerged
   when(io.request.fire) {
-    when(!hasMatch) {
-      valid(freeEntry) := true.B
-      refilled(freeEntry) := false.B
-      fillSent(freeEntry) := false.B
-      lineAddress(freeEntry) := io.request.bits.lineAddress
-      waiters(freeEntry) := UIntToOH(
-        io.request.bits.transactionId, maxOutstanding)
-      sharers(freeEntry) := Mux(io.request.bits.trackSharer,
-        UIntToOH(io.request.bits.requester, numComputeUnits), 0.U)
-      victimSet(freeEntry) := io.request.bits.victimSet
-      victimWay(freeEntry) := io.request.bits.victimWay
-    }.otherwise {
-      waiters(matchedEntry) := waiters(matchedEntry) | UIntToOH(
-        io.request.bits.transactionId, maxOutstanding)
-      when(io.request.bits.trackSharer) {
-        sharers(matchedEntry) := sharers(matchedEntry) | UIntToOH(
-          io.request.bits.requester, numComputeUnits)
-      }
-    }
-    allocationBits.entryId := selectedEntry
-    allocationBits.merged := hasMatch
+    allocationRequest := io.request.bits
+    allocationEntry := selectedEntry
+    allocationMerged := hasMatch
     allocationValid := true.B
   }
-  when(io.allocation.fire) { allocationValid := false.B }
+  when(io.allocation.fire) {
+    when(!allocationMerged) {
+      valid(allocationEntry) := true.B
+      refilled(allocationEntry) := false.B
+      fillSent(allocationEntry) := false.B
+      lineAddress(allocationEntry) := allocationRequest.lineAddress
+      waiters(allocationEntry) := UIntToOH(
+        allocationRequest.transactionId, maxOutstanding)
+      sharers(allocationEntry) := Mux(allocationRequest.trackSharer,
+        UIntToOH(allocationRequest.requester, numComputeUnits), 0.U)
+      victimSet(allocationEntry) := allocationRequest.victimSet
+      victimWay(allocationEntry) := allocationRequest.victimWay
+    }.otherwise {
+      waiters(allocationEntry) := waiters(allocationEntry) | UIntToOH(
+        allocationRequest.transactionId, maxOutstanding)
+      when(allocationRequest.trackSharer) {
+        sharers(allocationEntry) := sharers(allocationEntry) | UIntToOH(
+          allocationRequest.requester, numComputeUnits)
+      }
+    }
+    allocationValid := false.B
+  }
 
   private val refillEntryValid = valid(io.refill.bits.entryId) &&
     !refilled(io.refill.bits.entryId)
@@ -185,7 +197,16 @@ class L2MshrTable(
   })
   private val responseEntry = PriorityEncoder(responseCandidates)
   private val responseTransaction = PriorityEncoder(waiters(responseEntry))
-  io.response.valid := responseCandidates.asUInt.orR
+  // Do not retire the final waiter while a merge targeting the same entry is
+  // being captured or committed.  Besides making the registered lookup safe,
+  // this closes a pre-existing same-cycle multiple-write corner case.
+  private val capturedMergeTargetsResponse = io.request.fire && hasMatch &&
+    matchedEntry === responseEntry
+  private val pendingMergeTargetsResponse = allocationValid &&
+    allocationMerged && allocationEntry === responseEntry
+  private val responseBlockedForMerge = capturedMergeTargetsResponse ||
+    pendingMergeTargetsResponse
+  io.response.valid := responseCandidates.asUInt.orR && !responseBlockedForMerge
   io.response.bits.lineAddress := lineAddress(responseEntry)
   io.response.bits.transactionId := responseTransaction
   io.response.bits.readData := refillData(responseEntry)
@@ -264,7 +285,10 @@ class L2MissEngine(
     }
   }
   when(io.authorize.valid) {
-    assert(table.io.validEntries(io.authorize.bits),
+    val allocationCommitsThisEntry = table.io.allocation.fire &&
+      !table.io.allocation.bits.merged &&
+      table.io.allocation.bits.entryId === io.authorize.bits
+    assert(table.io.validEntries(io.authorize.bits) || allocationCommitsThisEntry,
       "only an allocated L2 MSHR may be authorized")
     lowerPending(io.authorize.bits) := true.B
   }
