@@ -15,8 +15,9 @@ Compile / scalacOptions ++= Seq("-language:reflectiveCalls")
 
 Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-oD")
 
-// Compile the arithmetic implementation directly from YunSuan's Chisel
-// source.  Only FloatFMA is imported; small compatibility definitions live in
-// this repository, so the rest of YunSuan is not pulled into the GPU build.
-Compile / unmanagedSources +=
-  baseDirectory.value / "depends/yunsuan/src/main/scala/yunsuan/fpu/FloatFMA.scala"
+// FloatFMA is vendored at src/main/scala/yunsuan/fpu/FloatFMA.scala (a local
+// copy of YunSuan's FMA with an explicit intermediate register for the
+// infinity-sign selection, used by the FpuBackend timing closure) so the
+// build is self-contained and reproducible.  Its small compatibility
+// definitions live in src/main/scala/yunsuan/FmaCompatibility.scala; the
+// rest of YunSuan is not pulled into this build.
