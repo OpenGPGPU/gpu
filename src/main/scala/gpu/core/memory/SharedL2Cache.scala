@@ -23,7 +23,7 @@ class L2PerformanceCounters extends Bundle {
   * cannot overwrite a newer write. Tag and data arrays use synchronous reads
   * so emitted RTL can map to SRAM macros.
   */
-class SharedL2Slice(
+class SharedL2Slice( 
   config: GpuConfig = GpuConfig(),
   sets: Int = 128,
   ways: Int = 4,

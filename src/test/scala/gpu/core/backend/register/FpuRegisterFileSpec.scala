@@ -34,4 +34,27 @@ class FpuRegisterFileSpec extends AnyFlatSpec {
       dut.io.rs1Data.expect("h3f800000".U)
     }
   }
+
+  it should "expose a dedicated FVF read port with write bypass" in {
+    val config = GpuConfig(warps = 2)
+    simulate(new FpuRegisterFile(config)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.write.valid.poke(true.B)
+      dut.io.write.bits.warpId.poke(0.U)
+      dut.io.write.bits.rd.poke(7.U)
+      dut.io.write.bits.data.poke("h40400000".U)
+      dut.io.fvfRead.warpId.poke(0.U)
+      dut.io.fvfRead.rs1.poke(7.U)
+      dut.io.fvfData.expect("h40400000".U)
+      dut.clock.step()
+
+      dut.io.write.valid.poke(false.B)
+      dut.io.fvfRead.warpId.poke(1.U)
+      dut.io.fvfData.expect(0.U)
+      dut.io.fvfRead.warpId.poke(0.U)
+      dut.io.fvfData.expect("h40400000".U)
+    }
+  }
 }

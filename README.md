@@ -29,7 +29,22 @@ verifiable.
 - RV32I/M integer, branch, jump, load/store and upper-immediate decoding
 - Zicsr, system/fence, and explicit illegal-instruction reporting
 - F/D/Zfh floating-point pipeline routing and execution controls
+- FP32 FMA plus exact sign-injection, min/max, compare, classify, bit-move,
+  integer/FP32 conversion with dynamic frm, rtz, and NV/NX flags, and flw/fsw
+  memory execution in the FPU backend
 - Precise allow-listed RVV arithmetic, mask, configuration, and vector-memory routing
+- RVV integer divide/remainder (`vdivu/vdiv/vremu/vrem`) in vv/vx forms
+- RVV FP32 lane-local operations: sign injection, min/max, comparisons,
+  add/sub/mul/div, vfrdiv/vfrsub, vfmv.v.f/vfmerge.vfm, the
+  vfcvt.xu.f.v/vfcvt.x.f.v/vfcvt.f.xu.v/vfcvt.f.x.v and rtz integer forms,
+  vfclass.v/vfsqrt.v/vfrec7.v/vfrsqrt7.v, and all eight fused FMA forms
+  over FVV/FVF operands
+- RVV FP exception flags (NV/DZ/OF/UF/NX) committed alongside scalar FPU flags
+  and accumulated with scalar FPU flags into per-warp fflags state; frm feeds
+  vector FP rounding and scalar FPU dynamic rounding
+- Physical vector register file emission: per-warp 32 x VLEN register banks
+  mirror ASAP7 1RW SRAM macros for three reads plus one write, with write-through
+  bypass, selected by `useBlackBoxes` in `GpuCore` and emitted by `EmitTimingRtl`
 - OpenGPU-compatible vector-branch, join, and cease warp-control decoding
 - Round-robin hardware-warp allocation and active/blocked/finish state tracking
 - Independent per-warp SIMT divergence stacks with recycling clear
@@ -53,5 +68,5 @@ verifiable.
 - Parameterized SIMT lane count and active-lane masking
 - RV32I integer ALU operations
 
-Planned next stages are vector execution, system/trap handling, and the
-data-memory interface.
+Current development continues on RVV execution coverage, CSR/trap semantics,
+host/software integration, and full-system physical timing closure.

@@ -57,8 +57,12 @@ class Fp32FmaLane(tagWidth: Int = 16, pipeRegs: Int = 3) extends Module {
   private val responseQueue = withReset(resetOrFlush) {
     Module(new Queue(new Fp32Response(tagWidth), resultEntries))
   }
+  private val outValid = RegInit(false.B)
+  private val outBits = Reg(new Fp32Response(tagWidth))
+  private val outCaptureReady = !outValid || io.out.ready
+  private val outFire = outValid && io.out.ready
   private val outstanding = RegInit(0.U(log2Ceil(resultEntries + 1).W))
-  private val canRecycleCredit = io.out.valid && io.out.ready
+  private val canRecycleCredit = outFire
   io.in.ready := !io.flush &&
     (outstanding =/= resultEntries.U || canRecycleCredit)
   private val accept = io.in.valid && io.in.ready
@@ -79,19 +83,44 @@ class Fp32FmaLane(tagWidth: Int = 16, pipeRegs: Int = 3) extends Module {
     }
   }
 
-  responseQueue.io.enq.valid := validPipe(latency - 1)
-  responseQueue.io.enq.bits.result := core.io.fp_result(31, 0)
-  responseQueue.io.enq.bits.status := core.io.fflags
-  responseQueue.io.enq.bits.tag := tagPipe(latency - 1)
+  // Register the FMA result one cycle before the credit/response queue so
+  // the core-output to queue-pointer path never spans a full clock period.
+  private val resultReady = RegInit(false.B)
+  private val resultData = Reg(UInt(32.W))
+  private val resultStatus = Reg(UInt(5.W))
+  private val resultTag = Reg(UInt(tagWidth.W))
+  when(resetOrFlush) {
+    resultReady := false.B
+  }.otherwise {
+    resultReady := validPipe(latency - 1)
+    when(validPipe(latency - 1)) {
+      resultData := core.io.fp_result(31, 0)
+      resultStatus := core.io.fflags
+      resultTag := tagPipe(latency - 1)
+    }
+  }
+
+  responseQueue.io.enq.valid := resultReady
+  responseQueue.io.enq.bits.result := resultData
+  responseQueue.io.enq.bits.status := resultStatus
+  responseQueue.io.enq.bits.tag := resultTag
   assert(!responseQueue.io.enq.valid || responseQueue.io.enq.ready,
     "reserved YunSuan FMA result queue entry was unavailable")
 
-  io.out <> responseQueue.io.deq
+  responseQueue.io.deq.ready := outCaptureReady
+  io.out.valid := outValid
+  io.out.bits := outBits
+  when(outCaptureReady) {
+    outValid := responseQueue.io.deq.valid
+    when(responseQueue.io.deq.valid) {
+      outBits := responseQueue.io.deq.bits
+    }
+  }
 
   when(resetOrFlush) {
     outstanding := 0.U
   }.otherwise {
-    switch(Cat(accept, io.out.fire)) {
+    switch(Cat(accept, outFire)) {
       is("b10".U) { outstanding := outstanding + 1.U }
       is("b01".U) { outstanding := outstanding - 1.U }
     }

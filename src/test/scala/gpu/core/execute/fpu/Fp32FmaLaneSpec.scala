@@ -23,12 +23,13 @@ class Fp32FmaLaneSpec extends AnyFlatSpec {
     a: BigInt,
     b: BigInt,
     c: BigInt,
-    tag: Int
+    tag: Int,
+    roundingMode: Int = 0
   ): Unit = {
     dut.io.in.bits.operandA.poke(a.U)
     dut.io.in.bits.operandB.poke(b.U)
     dut.io.in.bits.operandC.poke(c.U)
-    dut.io.in.bits.roundingMode.poke(0.U)
+    dut.io.in.bits.roundingMode.poke(roundingMode.U)
     dut.io.in.bits.operation.poke(operation)
     dut.io.in.bits.operationModifier.poke(modifier.B)
     dut.io.in.bits.tag.poke(tag.U)
@@ -112,4 +113,35 @@ class Fp32FmaLaneSpec extends AnyFlatSpec {
       dut.io.busy.expect(false.B)
     }
   }
+
+  it should "report NV for zero times infinity" in {
+    simulate(new Fp32FmaLane()) { dut =>
+      initialize(dut)
+      send(dut, Fp32Operation.mul, false, 0,
+        BigInt("7f800000", 16), 0, 9)
+      var cycles = 0
+      while (!dut.io.out.valid.peek().litToBoolean && cycles < 16) {
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(dut.io.out.valid.peek().litToBoolean)
+      dut.io.out.bits.status.expect("h10".U)
+    }
+  }
+
+  it should "report NV for zero times infinity under RUP" in {
+    simulate(new Fp32FmaLane()) { dut =>
+      initialize(dut)
+      send(dut, Fp32Operation.mul, false, 0,
+        BigInt("7f800000", 16), 0, 9, roundingMode = 3)
+      var cycles = 0
+      while (!dut.io.out.valid.peek().litToBoolean && cycles < 16) {
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(dut.io.out.valid.peek().litToBoolean)
+      dut.io.out.bits.status.expect("h10".U)
+    }
+  }
+
 }

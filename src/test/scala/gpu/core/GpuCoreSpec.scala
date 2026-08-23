@@ -347,6 +347,69 @@ class GpuCoreSpec extends AnyFlatSpec {
     }
   }
 
+  it should "execute an FP load through the shared translated cache" in {
+    val config = GpuConfig(lanes = 4, warps = 1)
+    simulate(new GpuCore(config, enableFpuBackend = true)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      defaults(dut, config.lanes)
+      dut.io.fetchRequest.ready.poke(false.B)
+      dut.io.launch.valid.poke(true.B)
+      dut.io.launch.bits.startPc.poke(0x340.U)
+      dut.io.launch.bits.activeMask.poke(0xf.U)
+      dut.clock.step(); dut.io.launch.valid.poke(false.B)
+
+      var cycles = 0
+      while (!dut.io.fetchRequest.valid.peek().litToBoolean && cycles < 16) {
+        dut.clock.step(); cycles += 1
+      }
+      assert(dut.io.fetchRequest.valid.peek().litToBoolean)
+      dut.io.fetchRequest.ready.poke(true.B); dut.clock.step()
+      dut.io.fetchRequest.ready.poke(false.B)
+      dut.io.fetchResponse.valid.poke(true.B)
+      dut.io.fetchResponse.bits.instruction.poke(
+        "b000000000000_00000_010_00100_0000111".U) // flw f4, 0(x0)
+      while (!dut.io.fetchResponse.ready.peek().litToBoolean) {
+        dut.clock.step()
+      }
+      dut.clock.step(); dut.io.fetchResponse.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.vectorPageTableRequest.valid.peek().litToBoolean &&
+          cycles < 24) {
+        dut.clock.step(); cycles += 1
+      }
+      assert(dut.io.vectorPageTableRequest.valid.peek().litToBoolean)
+      dut.clock.step()
+      dut.io.vectorPageTableResponse.valid.poke(true.B)
+      dut.io.vectorPageTableResponse.bits.pte.poke("hc7".U)
+      dut.clock.step(); dut.io.vectorPageTableResponse.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.vectorMemoryRequest.valid.peek().litToBoolean &&
+          cycles < 24) {
+        dut.clock.step(); cycles += 1
+      }
+      assert(dut.io.vectorMemoryRequest.valid.peek().litToBoolean)
+      dut.io.vectorMemoryRequest.bits.lineAddress.expect(0.U)
+      dut.clock.step()
+      dut.io.vectorMemoryResponse.valid.poke(true.B)
+      dut.io.vectorMemoryResponse.bits.readData.poke("hdeadbeef".U)
+      dut.io.vectorMemoryResponse.bits.fault.poke(false.B)
+      dut.clock.step(); dut.io.vectorMemoryResponse.valid.poke(false.B)
+
+      var sawWrite = false
+      for (_ <- 0 until 32) {
+        if (dut.io.committedFpuWriteback.valid.peek().litToBoolean) {
+          dut.io.committedFpuWriteback.bits.rd.expect(4.U)
+          dut.io.committedFpuWriteback.bits.data.expect("hdeadbeef".U)
+          sawWrite = true
+        }
+        dut.clock.step()
+      }
+      assert(sawWrite)
+    }
+  }
+
   it should "resume a fault-blocked warp from the commanded PC" in {
     val config = GpuConfig(lanes = 4, warps = 1)
     simulate(new GpuCore(config)) { dut =>

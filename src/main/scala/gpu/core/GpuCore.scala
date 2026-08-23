@@ -8,6 +8,7 @@ import gpu.core.backend.VectorBackend
 import gpu.core.backend.{FpuBackend, FpuFlags}
 import gpu.core.backend.issue.{FpuIssuedInstruction, ScalarIssuedInstruction, VectorIssuedInstruction}
 import gpu.core.backend.register.{FpuRegisterWrite, ScalarRegisterWrite}
+import gpu.core.backend.scoreboard.RegisterReservation
 import gpu.core.execute.control.{SimtBranchRequest, SimtPath}
 import gpu.core.frontend._
 import gpu.core.frontend.decode.{FpuDecodeResponse, VectorDecodeResponse}
@@ -52,6 +53,7 @@ class GpuCore(
     val fpuInitialize = Flipped(Decoupled(new FpuRegisterWrite(config)))
     val committedFpuWriteback = Valid(new FpuRegisterWrite(config))
     val committedFpuFlags = Valid(new FpuFlags(config))
+    val committedFpuIntegerWriteback = Valid(new ScalarRegisterWrite(config))
     val vector = Decoupled(new VectorIssuedInstruction(config))
     val vectorInitialize =
       Flipped(Decoupled(new gpu.core.backend.register.VectorRegisterWrite(config)))
@@ -87,8 +89,10 @@ class GpuCore(
 
   private val frontend = Module(new GpuFrontend(config))
   private val scalar = Module(new ScalarBackend(config, useBlackBoxes))
-  private val vector = Module(new VectorBackend(config))
+  private val vector = Module(new VectorBackend(config, useBlackBoxes))
   private val scalarVectorRead =
+    Module(new gpu.core.backend.register.ScalarRegisterFile(config))
+  private val scalarFpuRead =
     Module(new gpu.core.backend.register.ScalarRegisterFile(config))
   private val vectorCoalescer = Module(new VectorMemoryCoalescer(config))
   private val vectorMemoryRouter = Module(new VectorMemorySpaceRouter(config))
@@ -114,6 +118,9 @@ class GpuCore(
   io.committedFpuWriteback.bits := 0.U.asTypeOf(io.committedFpuWriteback.bits)
   io.committedFpuFlags.valid := false.B
   io.committedFpuFlags.bits := 0.U.asTypeOf(io.committedFpuFlags.bits)
+  io.committedFpuIntegerWriteback.valid := false.B
+  io.committedFpuIntegerWriteback.bits :=
+    0.U.asTypeOf(io.committedFpuIntegerWriteback.bits)
 
   if (enableFpuBackend && config.enableFpu) {
     val fpu = Module(new FpuBackend(config))
@@ -123,12 +130,62 @@ class GpuCore(
     io.fpu.bits := fpu.io.unimplemented.bits.decode
     fpu.io.initialize <> io.fpuInitialize
     io.committedFpuWriteback := fpu.io.committedWriteback
-    io.committedFpuFlags := fpu.io.committedFlags
+    io.committedFpuFlags.valid :=
+      fpu.io.committedFlags.valid || vector.io.committedVectorFlags.valid
+    io.committedFpuFlags.bits := Mux(
+      fpu.io.committedFlags.valid,
+      fpu.io.committedFlags.bits,
+      vector.io.committedVectorFlags.bits
+    )
+    io.committedFpuIntegerWriteback.valid := fpu.io.scalarWriteback.valid
+    io.committedFpuIntegerWriteback.bits := fpu.io.scalarWriteback.bits
     fpu.io.flush := false.B
+    fpu.io.fvfRead := vector.io.scalarFpRead
+    fpu.io.frm := vector.io.frm
+    vector.io.scalarFpData := fpu.io.fvfData
+    vector.io.scalarFpBusy := fpu.io.fpuBusyByWarp
+    vector.io.scalarFlagsWrite.valid := fpu.io.committedFlags.valid
+    vector.io.scalarFlagsWrite.bits.warpId :=
+      fpu.io.committedFlags.bits.warpId
+    vector.io.scalarFlagsWrite.bits.flags :=
+      fpu.io.committedFlags.bits.flags
     completionArbiter.io.in(3) <> fpu.io.redirect
+    scalarFpuRead.io.read := fpu.io.scalarRead
+    fpu.io.scalarRs1Data := scalarFpuRead.io.rs1Data
+    sharedCachePort.io.fpuRequest <> fpu.io.memoryRequest
+    fpu.io.memoryResponse <> sharedCachePort.io.fpuResponse
+    trapArbiter.io.fpuMemory <> fpu.io.memoryFault
+    val fpuScalarReserveArbiter = Module(new RRArbiter(
+      new RegisterReservation(config), 2))
+    fpuScalarReserveArbiter.io.in(0) <> fpu.io.scalarReserve
+    fpuScalarReserveArbiter.io.in(1) <> vector.io.scalarReserve
+    scalar.io.externalReserve <> fpuScalarReserveArbiter.io.out
+    val fpuScalarWritebackArbiter = Module(new RRArbiter(
+      new ScalarRegisterWrite(config), 2))
+    fpuScalarWritebackArbiter.io.in(0) <> fpu.io.scalarWriteback
+    fpuScalarWritebackArbiter.io.in(1) <> vector.io.scalarWriteback
+    scalar.io.externalWriteback <> fpuScalarWritebackArbiter.io.out
   } else {
     io.fpu <> frontend.io.fpuOut
+    io.committedFpuFlags := vector.io.committedVectorFlags
+    scalar.io.externalWriteback <> vector.io.scalarWriteback
+    scalar.io.externalReserve <> vector.io.scalarReserve
+    vector.io.scalarFpData := 0.U
+    vector.io.scalarFpBusy := 0.U.asTypeOf(vector.io.scalarFpBusy)
+    vector.io.scalarFlagsWrite.valid := false.B
+    vector.io.scalarFlagsWrite.bits.warpId := 0.U
+    vector.io.scalarFlagsWrite.bits.flags := 0.U
+    scalarFpuRead.io.read := 0.U.asTypeOf(scalarFpuRead.io.read)
+    sharedCachePort.io.fpuRequest.valid := false.B
+    sharedCachePort.io.fpuRequest.bits :=
+      0.U.asTypeOf(sharedCachePort.io.fpuRequest.bits)
+    sharedCachePort.io.fpuResponse.ready := true.B
+    trapArbiter.io.fpuMemory.valid := false.B
+    trapArbiter.io.fpuMemory.bits :=
+      0.U.asTypeOf(trapArbiter.io.fpuMemory.bits)
   }
+  scalarFpuRead.io.write.valid := scalar.io.appliedWriteback.valid
+  scalarFpuRead.io.write.bits := scalar.io.appliedWriteback.bits
   frontend.io.scalarRedirect <> completionArbiter.io.out
   vector.io.in <> frontend.io.vectorOut
   io.vector <> vector.io.unimplemented
@@ -171,8 +228,6 @@ class GpuCore(
   vector.io.scalarRs2Data := scalarVectorRead.io.rs2Data
   scalarVectorRead.io.write.valid := scalar.io.appliedWriteback.valid
   scalarVectorRead.io.write.bits := scalar.io.appliedWriteback.bits
-  scalar.io.externalWriteback <> vector.io.scalarWriteback
-  scalar.io.externalReserve <> vector.io.scalarReserve
   io.memory <> scalar.io.memory
   io.system <> scalar.io.system
   trapArbiter.io.scalar <> scalar.io.trap

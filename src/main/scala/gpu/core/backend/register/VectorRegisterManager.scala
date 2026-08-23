@@ -17,7 +17,10 @@ class VectorIssueOperands(config: GpuConfig) extends Bundle {
 }
 
 /** Two-stage elastic vector RF/scoreboard issue boundary. */
-class VectorRegisterManager(config: GpuConfig = GpuConfig()) extends Module {
+class VectorRegisterManager(
+  config: GpuConfig = GpuConfig(),
+  useBlackBox: Boolean = false
+) extends Module {
   val io = IO(new Bundle {
     val request = Flipped(Decoupled(new VectorRegisterReservation(config)))
     val issue = Decoupled(new VectorIssueOperands(config))
@@ -27,7 +30,7 @@ class VectorRegisterManager(config: GpuConfig = GpuConfig()) extends Module {
     val wawHazard = Output(Bool())
   })
 
-  private val registerFile = Module(new VectorRegisterFile(config))
+  private val registerFile = Module(new VectorRegisterFile(config, useBlackBox))
   private val scoreboard = Module(new VectorRegisterScoreboard(config))
   private val requestValid = RegInit(false.B)
   private val requestBits = Reg(new VectorRegisterReservation(config))

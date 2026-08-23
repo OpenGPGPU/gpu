@@ -29,12 +29,19 @@ class VectorCsrState(config: GpuConfig) extends Bundle {
   val vstart = UInt(config.xLen.W)
   val vxrm = UInt(2.W)
   val vxsat = Bool()
+  val frm = UInt(3.W)
+  val fflags = UInt(5.W)
 }
 
 class VectorCsrWrite(config: GpuConfig) extends Bundle {
   val warpId = UInt(config.warpIdWidth.W)
   val address = UInt(12.W)
   val data = UInt(config.xLen.W)
+}
+
+class VectorFlagsWrite(config: GpuConfig) extends Bundle {
+  val warpId = UInt(config.warpIdWidth.W)
+  val flags = UInt(5.W)
 }
 
 /** Per-warp RVV configuration state for the fixed GPU vector profile.
@@ -50,7 +57,10 @@ class VectorConfigurationUnit(config: GpuConfig = GpuConfig()) extends Module {
     val out = Decoupled(new VectorConfigurationResult(config))
     val queryWarpId = Input(UInt(config.warpIdWidth.W))
     val state = Output(new VectorCsrState(config))
+    val frmByWarp = Output(Vec(config.warps, UInt(3.W)))
     val csrWrite = Flipped(Valid(new VectorCsrWrite(config)))
+    val flagsWrite = Flipped(Valid(new VectorFlagsWrite(config)))
+    val scalarFlagsWrite = Flipped(Valid(new VectorFlagsWrite(config)))
   })
 
   private val vl = RegInit(VecInit(Seq.fill(config.warps)(0.U(config.xLen.W))))
@@ -61,6 +71,8 @@ class VectorConfigurationUnit(config: GpuConfig = GpuConfig()) extends Module {
     RegInit(VecInit(Seq.fill(config.warps)(0.U(config.xLen.W))))
   private val vxrm = RegInit(VecInit(Seq.fill(config.warps)(0.U(2.W))))
   private val vxsat = RegInit(VecInit(Seq.fill(config.warps)(false.B)))
+  private val frm = RegInit(VecInit(Seq.fill(config.warps)(0.U(3.W))))
+  private val fflags = RegInit(VecInit(Seq.fill(config.warps)(0.U(5.W))))
 
   private val outputValid = RegInit(false.B)
   private val outputBits = Reg(new VectorConfigurationResult(config))
@@ -115,6 +127,9 @@ class VectorConfigurationUnit(config: GpuConfig = GpuConfig()) extends Module {
   io.state.vstart := vstart(io.queryWarpId)
   io.state.vxrm := vxrm(io.queryWarpId)
   io.state.vxsat := vxsat(io.queryWarpId)
+  io.state.frm := frm(io.queryWarpId)
+  io.state.fflags := fflags(io.queryWarpId)
+  io.frmByWarp := frm
 
   when(io.csrWrite.valid) {
     val warp = io.csrWrite.bits.warpId
@@ -122,11 +137,26 @@ class VectorConfigurationUnit(config: GpuConfig = GpuConfig()) extends Module {
       is("h008".U) { vstart(warp) := io.csrWrite.bits.data }
       is("h009".U) { vxsat(warp) := io.csrWrite.bits.data(0) }
       is("h00a".U) { vxrm(warp) := io.csrWrite.bits.data(1, 0) }
+      is("h002".U) { frm(warp) := io.csrWrite.bits.data(2, 0) }
+      is("h003".U) {
+        frm(warp) := io.csrWrite.bits.data(7, 5)
+        fflags(warp) := io.csrWrite.bits.data(4, 0)
+      }
       is("h00f".U) {
         vxrm(warp) := io.csrWrite.bits.data(2, 1)
         vxsat(warp) := io.csrWrite.bits.data(0)
       }
     }
+  }
+
+  when(io.flagsWrite.valid) {
+    fflags(io.flagsWrite.bits.warpId) :=
+      fflags(io.flagsWrite.bits.warpId) | io.flagsWrite.bits.flags
+  }
+
+  when(io.scalarFlagsWrite.valid) {
+    fflags(io.scalarFlagsWrite.bits.warpId) :=
+      fflags(io.scalarFlagsWrite.bits.warpId) | io.scalarFlagsWrite.bits.flags
   }
 
   when(outputReady) {

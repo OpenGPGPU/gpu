@@ -32,6 +32,7 @@ class CoreTrapArbiter(config: GpuConfig = GpuConfig()) extends Module {
     val scalar = Flipped(Decoupled(new ScalarIssuedInstruction(config)))
     val vector = Flipped(Decoupled(new VectorMemoryFault(config)))
     val scalarMemory = Flipped(Decoupled(new ScalarMemoryFault(config)))
+    val fpuMemory = Flipped(Decoupled(new ScalarMemoryFault(config)))
     val out = Decoupled(new CoreTrapEvent(config))
   })
 
@@ -88,7 +89,29 @@ class CoreTrapArbiter(config: GpuConfig = GpuConfig()) extends Module {
   memoryEvent.tval := io.scalarMemory.bits.address
   memoryEvent.laneFaultMask := io.scalarMemory.bits.activeMask
 
-  private val arbiter = Module(new RRArbiter(new CoreTrapEvent(config), 3))
+  private val fpuMemoryEvent = Wire(new CoreTrapEvent(config))
+  fpuMemoryEvent.warpId := io.fpuMemory.bits.warpId
+  fpuMemoryEvent.pc := io.fpuMemory.bits.pc
+  fpuMemoryEvent.activeMask := io.fpuMemory.bits.activeMask
+  fpuMemoryEvent.cause := Mux(
+    io.fpuMemory.bits.misaligned,
+    Mux(io.fpuMemory.bits.isStore,
+      TrapCause.storeAddressMisaligned.U,
+      TrapCause.loadAddressMisaligned.U),
+    Mux(
+      io.fpuMemory.bits.pageFault,
+      Mux(io.fpuMemory.bits.isStore,
+        TrapCause.storePageFault.U,
+        TrapCause.loadPageFault.U),
+      Mux(io.fpuMemory.bits.isStore,
+        TrapCause.storeAccessFault.U,
+        TrapCause.loadAccessFault.U)
+    )
+  )
+  fpuMemoryEvent.tval := io.fpuMemory.bits.address
+  fpuMemoryEvent.laneFaultMask := io.fpuMemory.bits.activeMask
+
+  private val arbiter = Module(new RRArbiter(new CoreTrapEvent(config), 4))
   arbiter.io.in(0).valid := io.scalar.valid
   arbiter.io.in(0).bits := scalarEvent
   io.scalar.ready := arbiter.io.in(0).ready
@@ -98,5 +121,8 @@ class CoreTrapArbiter(config: GpuConfig = GpuConfig()) extends Module {
   arbiter.io.in(2).valid := io.scalarMemory.valid
   arbiter.io.in(2).bits := memoryEvent
   io.scalarMemory.ready := arbiter.io.in(2).ready
+  arbiter.io.in(3).valid := io.fpuMemory.valid
+  arbiter.io.in(3).bits := fpuMemoryEvent
+  io.fpuMemory.ready := arbiter.io.in(3).ready
   io.out <> arbiter.io.out
 }

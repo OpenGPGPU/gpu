@@ -126,14 +126,18 @@ class SharedCacheLinePort(
     val scalarResponse = Decoupled(new VectorCacheLineResponse(lineBytes))
     val vectorRequest = Flipped(Decoupled(new VectorCacheLineRequest(config, lineBytes)))
     val vectorResponse = Decoupled(new VectorCacheLineResponse(lineBytes))
+    val fpuRequest = Flipped(Decoupled(new VectorCacheLineRequest(config, lineBytes)))
+    val fpuResponse = Decoupled(new VectorCacheLineResponse(lineBytes))
     val sharedRequest = Decoupled(new VectorCacheLineRequest(config, lineBytes))
     val sharedResponse = Flipped(Decoupled(new VectorCacheLineResponse(lineBytes)))
   })
-  private val arbiter = Module(new RRArbiter(new VectorCacheLineRequest(config, lineBytes), 2))
+  private val arbiter = Module(new RRArbiter(
+    new VectorCacheLineRequest(config, lineBytes), 3))
   private val busy = RegInit(false.B)
-  private val source = Reg(Bool())
+  private val source = Reg(UInt(2.W))
   arbiter.io.in(0) <> io.scalarRequest
   arbiter.io.in(1) <> io.vectorRequest
+  arbiter.io.in(2) <> io.fpuRequest
   io.sharedRequest.valid := arbiter.io.out.valid && !busy
   io.sharedRequest.bits := arbiter.io.out.bits
   arbiter.io.out.ready := io.sharedRequest.ready && !busy
@@ -141,10 +145,19 @@ class SharedCacheLinePort(
     busy := true.B
     source := arbiter.io.chosen
   }
-  io.scalarResponse.valid := io.sharedResponse.valid && busy && !source
-  io.vectorResponse.valid := io.sharedResponse.valid && busy && source
+  io.scalarResponse.valid :=
+    io.sharedResponse.valid && busy && source === 0.U
+  io.vectorResponse.valid :=
+    io.sharedResponse.valid && busy && source === 1.U
+  io.fpuResponse.valid :=
+    io.sharedResponse.valid && busy && source === 2.U
   io.scalarResponse.bits := io.sharedResponse.bits
   io.vectorResponse.bits := io.sharedResponse.bits
-  io.sharedResponse.ready := Mux(source, io.vectorResponse.ready, io.scalarResponse.ready) && busy
+  io.fpuResponse.bits := io.sharedResponse.bits
+  io.sharedResponse.ready := MuxLookup(source, false.B)(Seq(
+    0.U -> io.scalarResponse.ready,
+    1.U -> io.vectorResponse.ready,
+    2.U -> io.fpuResponse.ready
+  )) && busy
   when(io.sharedResponse.fire) { busy := false.B }
 }

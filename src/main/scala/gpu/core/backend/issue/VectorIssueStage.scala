@@ -4,17 +4,20 @@ import chisel3._
 import chisel3.util._
 import gpu.config.GpuConfig
 import gpu.core.backend.register.{
+  FpuRegisterRead,
   ScalarRegisterRead,
   VectorIssueOperands,
   VectorRegisterManager,
   VectorRegisterWrite
 }
+import gpu.core.backend.scoreboard.VectorRegisterReservation
 import gpu.core.frontend.decode.VectorDecodeResponse
 
 private class VectorIssueMetadata(config: GpuConfig) extends Bundle {
   val decode = new VectorDecodeResponse(config)
   val scalarRs1Data = UInt(config.xLen.W)
   val scalarRs2Data = UInt(config.xLen.W)
+  val scalarFpData = UInt(32.W)
 }
 
 class VectorIssuedInstruction(config: GpuConfig) extends Bundle {
@@ -25,6 +28,7 @@ class VectorIssuedInstruction(config: GpuConfig) extends Bundle {
   val predicateMask = UInt(config.lanes.W)
   val scalarRs1Data = UInt(config.xLen.W)
   val scalarRs2Data = UInt(config.xLen.W)
+  val scalarFpData = UInt(32.W)
 }
 
 /** Couples vector decode metadata to three-port vector RF operand issue.
@@ -33,7 +37,10 @@ class VectorIssuedInstruction(config: GpuConfig) extends Bundle {
   * arbitrate the scalar RF ports between scalar and vector issue. Scalar
   * values are captured atomically with the decoded instruction.
   */
-class VectorIssueStage(config: GpuConfig = GpuConfig()) extends Module {
+class VectorIssueStage(
+  config: GpuConfig = GpuConfig(),
+  useBlackBox: Boolean = false
+) extends Module {
   val io = IO(new Bundle {
     val in = Flipped(Decoupled(new VectorDecodeResponse(config)))
     val out = Decoupled(new VectorIssuedInstruction(config))
@@ -42,13 +49,23 @@ class VectorIssueStage(config: GpuConfig = GpuConfig()) extends Module {
     val scalarRead = Output(new ScalarRegisterRead(config))
     val scalarRs1Data = Input(UInt(config.xLen.W))
     val scalarRs2Data = Input(UInt(config.xLen.W))
+    val scalarFpRead = Output(new FpuRegisterRead(config))
+    val scalarFpData = Input(UInt(32.W))
+    val scalarFpBusy = Input(Vec(config.warps, UInt(32.W)))
     val rawHazard = Output(Bool())
     val wawHazard = Output(Bool())
   })
 
-  private val registers = Module(new VectorRegisterManager(config))
+  private val registers = Module(new VectorRegisterManager(config, useBlackBox))
+  private val reservationQueue = Module(
+    new Queue(new VectorRegisterReservation(config), 2))
   private val metadata =
     Module(new Queue(new VectorIssueMetadata(config), entries = 4))
+
+  // One-cycle input skid that captures the decoded instruction plus the scalar
+  // operand payload before it reaches the metadata / reservation queues.  This
+  // breaks the long combinational path from the dispatch output to the queue
+  // RAB write ports that dominates the whole-block VectorBackend layout.
   private val instruction = io.in.bits.instruction
   private val vs1 = instruction(19, 15)
   private val vs2 = instruction(24, 20)
@@ -57,27 +74,63 @@ class VectorIssueStage(config: GpuConfig = GpuConfig()) extends Module {
   io.scalarRead.warpId := io.in.bits.warpId
   io.scalarRead.rs1 := vs1
   io.scalarRead.rs2 := vs2
+  io.scalarFpRead.warpId := io.in.bits.warpId
+  io.scalarFpRead.rs1 := vs1
+  io.scalarFpRead.rs2 := 0.U
+  io.scalarFpRead.rs3 := 0.U
+
+  private val inValid = RegInit(false.B)
+  private val inDecode = Reg(new VectorDecodeResponse(config))
+  private val inScalarRs1Data = Reg(UInt(config.xLen.W))
+  private val inScalarRs2Data = Reg(UInt(config.xLen.W))
+  private val inScalarFpData = Reg(UInt(32.W))
+  private val skidVs1 = inDecode.instruction(19, 15)
+  private val skidVs2 = inDecode.instruction(24, 20)
+  private val skidVd = inDecode.instruction(11, 7)
+
+  io.in.ready := !inValid
+  when(io.in.fire) {
+    inValid := true.B
+    inDecode := io.in.bits
+    inScalarRs1Data := io.scalarRs1Data
+    inScalarRs2Data := io.scalarRs2Data
+    inScalarFpData := io.scalarFpData
+  }
 
   private val metadataCanAccept = metadata.io.enq.ready
-  private val registersCanAccept = registers.io.request.ready
-  io.in.ready := metadataCanAccept && registersCanAccept
-  metadata.io.enq.valid := io.in.valid && registersCanAccept
-  metadata.io.enq.bits.decode := io.in.bits
-  metadata.io.enq.bits.scalarRs1Data := io.scalarRs1Data
-  metadata.io.enq.bits.scalarRs2Data := io.scalarRs2Data
-  registers.io.request.valid := io.in.valid && metadataCanAccept
-  registers.io.request.bits.warpId := io.in.bits.warpId
-  registers.io.request.bits.vs1 := vs1
-  registers.io.request.bits.vs2 := vs2
-  registers.io.request.bits.vd := vd
-  registers.io.request.bits.useVs1 := io.in.bits.decoded.readsVs1
-  registers.io.request.bits.useVs2 := io.in.bits.decoded.readsVs2
+  private val selectedFpuBusy =
+    if (config.warps == 1) io.scalarFpBusy(0)
+    else io.scalarFpBusy(inDecode.warpId)
+  private val scalarFpHazard =
+    inDecode.decoded.readsFloat && selectedFpuBusy(skidVs1)
+  private val skidFire =
+    inValid && metadataCanAccept && reservationQueue.io.enq.ready && !scalarFpHazard
+  when(skidFire) {
+    inValid := false.B
+  }
+  metadata.io.enq.valid :=
+    inValid && reservationQueue.io.enq.ready && !scalarFpHazard
+  metadata.io.enq.bits.decode := inDecode
+  metadata.io.enq.bits.scalarRs1Data := inScalarRs1Data
+  metadata.io.enq.bits.scalarRs2Data := inScalarRs2Data
+  metadata.io.enq.bits.scalarFpData := inScalarFpData
+  reservationQueue.io.enq.valid :=
+    inValid && metadataCanAccept && !scalarFpHazard
+  reservationQueue.io.enq.bits.warpId := inDecode.warpId
+  reservationQueue.io.enq.bits.vs1 := skidVs1
+  reservationQueue.io.enq.bits.vs2 := skidVs2
+  reservationQueue.io.enq.bits.vd := skidVd
+  reservationQueue.io.enq.bits.useVs1 := inDecode.decoded.readsVs1
+  reservationQueue.io.enq.bits.useVs2 := inDecode.decoded.readsVs2
   // RVV stores encode their source vector as vs3 in the vd field.
-  registers.io.request.bits.readVd :=
-    io.in.bits.decoded.writesVd || io.in.bits.decoded.memoryWrite
-  registers.io.request.bits.useMask :=
-    !io.in.bits.decoded.configure && !io.in.bits.decoded.vm
-  registers.io.request.bits.writeVd := io.in.bits.decoded.writesVd
+  reservationQueue.io.enq.bits.readVd :=
+    inDecode.decoded.writesVd || inDecode.decoded.memoryWrite
+  reservationQueue.io.enq.bits.useMask :=
+    !inDecode.decoded.configure && !inDecode.decoded.vm
+  reservationQueue.io.enq.bits.writeVd := inDecode.decoded.writesVd
+  registers.io.request.valid := reservationQueue.io.deq.valid
+  registers.io.request.bits := reservationQueue.io.deq.bits
+  reservationQueue.io.deq.ready := registers.io.request.ready
 
   private val pairedValid =
     metadata.io.deq.valid && registers.io.issue.valid
@@ -96,6 +149,7 @@ class VectorIssueStage(config: GpuConfig = GpuConfig()) extends Module {
       outputBits.decode := metadata.io.deq.bits.decode
       outputBits.scalarRs1Data := metadata.io.deq.bits.scalarRs1Data
       outputBits.scalarRs2Data := metadata.io.deq.bits.scalarRs2Data
+      outputBits.scalarFpData := metadata.io.deq.bits.scalarFpData
       outputBits.vs1Data := registers.io.issue.bits.vs1Data
       outputBits.vs2Data := registers.io.issue.bits.vs2Data
       outputBits.oldVdData := registers.io.issue.bits.oldVdData

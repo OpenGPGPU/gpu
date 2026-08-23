@@ -23,19 +23,37 @@ and `vxsat` state for every warp. It implements `vsetvli`, `vsetivli`, and
 `vsetvl` for the fixed SEW=32, LMUL=1 profile and sets `vill` for unsupported
 types.
 
-Vector divide, floating point, memory, and a physical vector-register macro
-remain separate migration steps.
+`VectorFcvtAlu` implements lane-local `vfcvt.xu.f.v`, `vfcvt.x.f.v`,
+`vfcvt.f.xu.v`, `vfcvt.f.x.v`, the two `vfcvt.rtz` integer forms, and
+`vfclass.v` using the scalar exact-conversion lanes. Non-rtz conversions honor
+the per-warp `frm`; the rtz forms force truncation.
+
+`VectorFsqrtAlu` implements `vfsqrt.v` with one iterative restoring-square-root
+lane per vector lane. It honors the per-warp `frm` and reports NX/NV through
+the normal vector flag path.
+
+`VectorFEstimateAlu` implements the RVV 7-bit `vfrec7.v` and `vfrsqrt7.v`
+estimates with the standard mantissa lookup tables. It handles infinities,
+zeros, NaNs, and subnormal normalization, reports DZ/NV, and raises OF/NX when
+a `vfrec7` subnormal reciprocal overflows.
+
+Remaining RVV families (reductions, widening/narrowing, slide/gather, and the
+remaining VFUNARY1 forms) remain separate migration steps.
 
 The backend now contains a behavioral per-warp vector register file and issue
 boundary. Each warp owns 32 VLEN-wide registers with `vs1`, `vs2`, old-`vd`,
 and dedicated v0 predicate reads plus one write port. The accompanying vector
 scoreboard tracks all registers including v0 and supports same-cycle release
 and re-issue. This behavioral storage is the architectural reference; a
-multi-port macro wrapper remains the physical implementation step.
+multi-port macro wrapper is now available through
+`VectorRegisterFile(useBlackBox = true)`: each warp bank mirrors ASAP7 1RW
+SRAM macros for the three read ports and the write port, keeping writes
+visible to same-cycle reads through a write-through bypass. `GpuCore` selects
+this physical file when `useBlackBoxes = true`.
 
 `VectorBackend` connects vector issue, per-warp configuration, integer ALU,
-Booth multiply, and round-robin vector writeback. It applies `vl` to the lane
-mask, packs comparison bits into the architectural low bits of the destination
-register, updates `vxsat`, serializes `vset*` behind older operations from the
-same warp, and exposes launch-time VGPR initialization plus scalar RF bridge
-ports.
+Booth multiply, FP conversion, and round-robin vector writeback. It applies
+`vl` to the lane mask, packs comparison bits into the architectural low bits of
+the destination register, updates `vxsat`, serializes `vset*` behind older
+operations from the same warp, and exposes launch-time VGPR initialization
+plus scalar RF bridge ports.

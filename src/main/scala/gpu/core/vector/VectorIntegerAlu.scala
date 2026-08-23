@@ -32,6 +32,28 @@ private class VectorIntegerCandidates(config: GpuConfig) extends Bundle {
   val saturated = UInt(config.lanes.W)
 }
 
+private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
+  val warpId = UInt(config.warpIdWidth.W)
+  val pc = UInt(config.xLen.W)
+  val warpActiveMask = UInt(config.lanes.W)
+  val vd = UInt(5.W)
+  val oldVd = Vec(config.lanes, UInt(config.xLen.W))
+  val enabled = UInt(config.lanes.W)
+  val funct6 = UInt(6.W)
+  val lhs = Vec(config.lanes, UInt(config.xLen.W))
+  val rhs = Vec(config.lanes, UInt(config.xLen.W))
+  val add = Vec(config.lanes, UInt(config.xLen.W))
+  val sub = Vec(config.lanes, UInt(config.xLen.W))
+  val shift = Vec(config.lanes, UInt(config.xLen.W))
+  val less = Vec(config.lanes, Bool())
+  val lessSigned = Vec(config.lanes, Bool())
+  val greater = Vec(config.lanes, Bool())
+  val greaterSigned = Vec(config.lanes, Bool())
+  val equal = Vec(config.lanes, Bool())
+  val saturated = Vec(config.lanes, Bool())
+  val saturationLimit = Vec(config.lanes, UInt(config.xLen.W))
+}
+
 /** Lane-local RVV integer ALU for the fixed SEW=32, LMUL=1 GPU profile.
   *
   * The unit implements the precise funct6 encodings accepted by VectorDecoder.
@@ -46,13 +68,16 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
 
   private val inputValid = RegInit(false.B)
   private val inputBits = Reg(new NormalizedVectorIntegerRequest(config))
+  private val partialValid = RegInit(false.B)
+  private val partialBits = Reg(new VectorIntegerPartial(config))
   private val candidateValid = RegInit(false.B)
   private val candidateBits = Reg(new VectorIntegerCandidates(config))
   private val outputValid = RegInit(false.B)
   private val outputBits = Reg(new VectorIntegerResult(config))
   private val outputReady = !outputValid || io.out.ready
   private val candidateReady = !candidateValid || outputReady
-  private val inputReady = !inputValid || candidateReady
+  private val partialReady = !partialValid || candidateReady
+  private val inputReady = !inputValid || partialReady
 
   private val basicCandidates = Wire(Vec(config.lanes, UInt(config.xLen.W)))
   private val saturatingCandidates =
@@ -64,84 +89,49 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   private val laneSaturated = Wire(Vec(config.lanes, Bool()))
 
   for (lane <- 0 until config.lanes) {
-    val lhs = inputBits.lhs(lane)
-    val rhs = inputBits.rhs(lane)
-    val enabled = inputBits.enabled(lane)
+    val lhs = partialBits.lhs(lane)
+    val rhs = partialBits.rhs(lane)
+    val enabled = partialBits.enabled(lane)
     val shiftAmount = rhs(4, 0)
 
-    val unsignedAdd = lhs +& rhs
-    val addResult = unsignedAdd(31, 0)
-    val subResult = lhs - rhs
     val signedMax = ((BigInt(1) << 31) - 1).U(32.W)
     val signedMin = (BigInt(1) << 31).U(32.W)
-    // Detect signed overflow from operand/result sign bits.  This is exactly
-    // equivalent to comparing a 33-bit signed result against INT_MIN/MAX, but
-    // avoids putting a wide magnitude comparator after the adder.
-    val signedAddOverflow =
-      !lhs(31) && !rhs(31) && addResult(31)
-    val signedAddUnderflow =
-      lhs(31) && rhs(31) && !addResult(31)
-    val signedSubOverflow =
-      !lhs(31) && rhs(31) && subResult(31)
-    val signedSubUnderflow =
-      lhs(31) && !rhs(31) && !subResult(31)
 
-    val basicResult = MuxLookup(inputBits.funct6, 0.U(32.W))(Seq(
-      "h00".U -> addResult,
-      "h02".U -> subResult,
-      "h03".U -> (rhs - lhs),
-      "h04".U -> Mux(lhs < rhs, lhs, rhs),
-      "h05".U -> Mux(lhs.asSInt < rhs.asSInt, lhs, rhs),
-      "h06".U -> Mux(lhs > rhs, lhs, rhs),
-      "h07".U -> Mux(lhs.asSInt > rhs.asSInt, lhs, rhs),
+    val basicResult = MuxLookup(partialBits.funct6, 0.U(32.W))(Seq(
+      "h00".U -> partialBits.add(lane),
+      "h02".U -> partialBits.sub(lane),
+      "h03".U -> (0.U - partialBits.sub(lane)),
+      "h04".U -> Mux(partialBits.less(lane), lhs, rhs),
+      "h05".U -> Mux(partialBits.lessSigned(lane), lhs, rhs),
+      "h06".U -> Mux(partialBits.greater(lane), lhs, rhs),
+      "h07".U -> Mux(partialBits.greaterSigned(lane), lhs, rhs),
       "h09".U -> (lhs & rhs),
       "h0a".U -> (lhs | rhs),
       "h0b".U -> (lhs ^ rhs)
     ))
-    // Register the raw arithmetic result here and apply the saturation clamp
-    // in the existing output stage.  This keeps carry propagation and result
-    // clamping on opposite sides of the candidate register.
     val saturatingResult = Mux(
-      inputBits.funct6 === "h20".U || inputBits.funct6 === "h21".U,
-      addResult,
-      subResult
+      partialBits.funct6 === "h20".U || partialBits.funct6 === "h21".U,
+      partialBits.add(lane),
+      partialBits.sub(lane)
     )
-    val saturationLimit = MuxLookup(inputBits.funct6, 0.U(32.W))(Seq(
-      "h20".U -> Fill(32, 1.U),
-      "h21".U -> Mux(lhs(31), signedMin, signedMax),
-      "h22".U -> 0.U,
-      "h23".U -> Mux(lhs(31), signedMin, signedMax)
-    ))
-    val shiftResult = MuxLookup(inputBits.funct6, 0.U(32.W))(Seq(
-      "h25".U -> (lhs << shiftAmount)(31, 0),
-      "h28".U -> (lhs >> shiftAmount),
-      "h29".U -> (lhs.asSInt >> shiftAmount).asUInt
-    ))
 
-    val predicate = MuxLookup(inputBits.funct6, false.B)(Seq(
-      "h18".U -> (lhs === rhs),
-      "h19".U -> (lhs =/= rhs),
-      "h1a".U -> (lhs < rhs),
-      "h1b".U -> (lhs.asSInt < rhs.asSInt),
-      "h1c".U -> (lhs <= rhs),
-      "h1d".U -> (lhs.asSInt <= rhs.asSInt),
-      "h1e".U -> (lhs > rhs),
-      "h1f".U -> (lhs.asSInt > rhs.asSInt)
-    ))
-
-    val saturatedLane = MuxLookup(inputBits.funct6, false.B)(Seq(
-      "h20".U -> unsignedAdd(32),
-      "h21".U -> (signedAddOverflow || signedAddUnderflow),
-      "h22".U -> (lhs < rhs),
-      "h23".U -> (signedSubOverflow || signedSubUnderflow)
+    val predicate = MuxLookup(partialBits.funct6, false.B)(Seq(
+      "h18".U -> partialBits.equal(lane),
+      "h19".U -> !partialBits.equal(lane),
+      "h1a".U -> partialBits.less(lane),
+      "h1b".U -> partialBits.lessSigned(lane),
+      "h1c".U -> (partialBits.less(lane) || partialBits.equal(lane)),
+      "h1d".U -> (partialBits.lessSigned(lane) || partialBits.equal(lane)),
+      "h1e".U -> partialBits.greater(lane),
+      "h1f".U -> partialBits.greaterSigned(lane)
     ))
 
     basicCandidates(lane) := basicResult
     saturatingCandidates(lane) := saturatingResult
-    saturationLimits(lane) := saturationLimit
-    shiftCandidates(lane) := shiftResult
+    saturationLimits(lane) := partialBits.saturationLimit(lane)
+    shiftCandidates(lane) := partialBits.shift(lane)
     laneComparisons(lane) := predicate
-    laneSaturated(lane) := saturatedLane
+    laneSaturated(lane) := partialBits.saturated(lane)
   }
 
   private val outputComparison =
@@ -193,21 +183,92 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   }
 
   when(candidateReady) {
-    candidateValid := inputValid
-    when(inputValid) {
-      candidateBits.warpId := inputBits.warpId
-      candidateBits.pc := inputBits.pc
-      candidateBits.warpActiveMask := inputBits.warpActiveMask
-      candidateBits.vd := inputBits.vd
-      candidateBits.oldVd := inputBits.oldVd
-      candidateBits.enabled := inputBits.enabled
-      candidateBits.funct6 := inputBits.funct6
+    candidateValid := partialValid
+    when(partialValid) {
+      candidateBits.warpId := partialBits.warpId
+      candidateBits.pc := partialBits.pc
+      candidateBits.warpActiveMask := partialBits.warpActiveMask
+      candidateBits.vd := partialBits.vd
+      candidateBits.oldVd := partialBits.oldVd
+      candidateBits.enabled := partialBits.enabled
+      candidateBits.funct6 := partialBits.funct6
       candidateBits.basic := basicCandidates
       candidateBits.saturating := saturatingCandidates
       candidateBits.saturationLimit := saturationLimits
       candidateBits.shift := shiftCandidates
       candidateBits.comparison := laneComparisons.asUInt
       candidateBits.saturated := laneSaturated.asUInt
+    }
+  }
+
+  when(partialReady) {
+    partialValid := inputValid
+    when(inputValid) {
+      partialBits.warpId := inputBits.warpId
+      partialBits.pc := inputBits.pc
+      partialBits.warpActiveMask := inputBits.warpActiveMask
+      partialBits.vd := inputBits.vd
+      partialBits.oldVd := inputBits.oldVd
+      partialBits.enabled := inputBits.enabled
+      partialBits.funct6 := inputBits.funct6
+      for (lane <- 0 until config.lanes) {
+        val lhs = inputBits.lhs(lane)
+        val rhs = inputBits.rhs(lane)
+        val shiftAmount = rhs(4, 0)
+        val unsignedAdd = lhs +& rhs
+        val addResult = unsignedAdd(31, 0)
+        val subResult = lhs - rhs
+        val signedAddOverflow =
+          !lhs(31) && !rhs(31) && addResult(31)
+        val signedAddUnderflow =
+          lhs(31) && rhs(31) && !addResult(31)
+        val signedSubOverflow =
+          !lhs(31) && rhs(31) && subResult(31)
+        val signedSubUnderflow =
+          lhs(31) && !rhs(31) && !subResult(31)
+        val less = lhs < rhs
+        val lessSigned = lhs.asSInt < rhs.asSInt
+        val greater = lhs > rhs
+        val greaterSigned = lhs.asSInt > rhs.asSInt
+        val equal = lhs === rhs
+        partialBits.lhs(lane) := lhs
+        partialBits.rhs(lane) := rhs
+        partialBits.add(lane) := addResult
+        partialBits.sub(lane) := subResult
+        partialBits.shift(lane) := MuxLookup(inputBits.funct6, 0.U(32.W))(Seq(
+          "h25".U -> (lhs << shiftAmount)(31, 0),
+          "h28".U -> (lhs >> shiftAmount),
+          "h29".U -> (lhs.asSInt >> shiftAmount).asUInt
+        ))
+        partialBits.less(lane) := less
+        partialBits.lessSigned(lane) := lessSigned
+        partialBits.greater(lane) := greater
+        partialBits.greaterSigned(lane) := greaterSigned
+        partialBits.equal(lane) := equal
+        partialBits.saturated(lane) := MuxLookup(
+          inputBits.funct6, false.B
+        )(Seq(
+          "h20".U -> unsignedAdd(32),
+          "h21".U -> (signedAddOverflow || signedAddUnderflow),
+          "h22".U -> less,
+          "h23".U -> (signedSubOverflow || signedSubUnderflow)
+        ))
+        partialBits.saturationLimit(lane) :=
+          MuxLookup(inputBits.funct6, 0.U(32.W))(Seq(
+            "h20".U -> Fill(32, 1.U),
+            "h21".U -> Mux(
+              lhs(31),
+              (BigInt(1) << 31).U(32.W),
+              ((BigInt(1) << 31) - 1).U(32.W)
+            ),
+            "h22".U -> 0.U,
+            "h23".U -> Mux(
+              lhs(31),
+              (BigInt(1) << 31).U(32.W),
+              ((BigInt(1) << 31) - 1).U(32.W)
+            )
+          ))
+      }
     }
   }
 

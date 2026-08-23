@@ -45,6 +45,7 @@ class GpuComputeUnit(
     val committedVectorWriteback = Valid(new VectorRegisterWrite(config))
     val committedFpuWriteback = Valid(new FpuRegisterWrite(config))
     val committedFpuFlags = Valid(new FpuFlags(config))
+    val committedFpuIntegerWriteback = Valid(new ScalarRegisterWrite(config))
     val active = Output(UInt(config.warps.W))
     val blocked = Output(UInt(config.warps.W))
     val barrierWaiting = Output(UInt(config.warps.W))
@@ -163,6 +164,7 @@ class GpuComputeUnit(
   io.committedVectorWriteback := core.io.committedVectorWriteback
   io.committedFpuWriteback := core.io.committedFpuWriteback
   io.committedFpuFlags := core.io.committedFpuFlags
+  io.committedFpuIntegerWriteback := core.io.committedFpuIntegerWriteback
   io.active := core.io.active
   io.blocked := core.io.blocked
   io.barrierWaiting := barrier.io.waiting

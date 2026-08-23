@@ -36,6 +36,12 @@ class VectorConfigurationUnitSpec extends AnyFlatSpec {
     dut.io.csrWrite.bits.warpId.poke(0.U)
     dut.io.csrWrite.bits.address.poke(0.U)
     dut.io.csrWrite.bits.data.poke(0.U)
+    dut.io.flagsWrite.valid.poke(false.B)
+    dut.io.flagsWrite.bits.warpId.poke(0.U)
+    dut.io.flagsWrite.bits.flags.poke(0.U)
+    dut.io.scalarFlagsWrite.valid.poke(false.B)
+    dut.io.scalarFlagsWrite.bits.warpId.poke(0.U)
+    dut.io.scalarFlagsWrite.bits.flags.poke(0.U)
   }
 
   private def issue(
@@ -147,6 +153,49 @@ class VectorConfigurationUnitSpec extends AnyFlatSpec {
       dut.io.out.valid.expect(true.B)
       dut.io.out.bits.data.expect(3.U)
       dut.io.state.vl.expect(3.U)
+    }
+  }
+
+  it should "track frm and accumulate fflags per warp" in {
+    simulate(new VectorConfigurationUnit(config)) { dut =>
+      dut.reset.poke(true.B)
+      defaults(dut)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      dut.io.state.frm.expect(0.U)
+      dut.io.state.fflags.expect(0.U)
+
+      dut.io.csrWrite.valid.poke(true.B)
+      dut.io.csrWrite.bits.warpId.poke(2.U)
+      dut.io.csrWrite.bits.address.poke("h002".U)
+      dut.io.csrWrite.bits.data.poke("b011".U)
+      dut.clock.step()
+      dut.io.csrWrite.valid.poke(false.B)
+
+      dut.io.queryWarpId.poke(2.U)
+      dut.io.state.frm.expect(3.U)
+      dut.io.frmByWarp(2).expect(3.U)
+
+      dut.io.flagsWrite.valid.poke(true.B)
+      dut.io.flagsWrite.bits.warpId.poke(2.U)
+      dut.io.flagsWrite.bits.flags.poke("h11".U)
+      dut.clock.step()
+      dut.io.state.fflags.expect("h11".U)
+
+      dut.io.flagsWrite.valid.poke(true.B)
+      dut.io.flagsWrite.bits.flags.poke("h04".U)
+      dut.clock.step()
+      dut.io.flagsWrite.valid.poke(false.B)
+      dut.io.state.fflags.expect("h15".U)
+
+      dut.io.scalarFlagsWrite.valid.poke(true.B)
+      dut.io.scalarFlagsWrite.bits.warpId.poke(3.U)
+      dut.io.scalarFlagsWrite.bits.flags.poke("h08".U)
+      dut.clock.step()
+      dut.io.scalarFlagsWrite.valid.poke(false.B)
+      dut.io.queryWarpId.poke(3.U)
+      dut.io.state.fflags.expect("h08".U)
     }
   }
 }

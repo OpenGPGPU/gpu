@@ -160,6 +160,7 @@ private object VectorDecodeTable {
     VectorInstruction("vfsgnj",  0x08, Seq(FVV, FVF), unit = 4),
     VectorInstruction("vfsgnjn", 0x09, Seq(FVV, FVF), unit = 4),
     VectorInstruction("vfsgnjx", 0x0a, Seq(FVV, FVF), unit = 4),
+    VectorInstruction("vfmerge", 0x17, Seq(FVF), unit = 4),
     VectorInstruction("vmfeq",   0x18, Seq(FVV, FVF), unit = 4),
     VectorInstruction("vmfle",   0x19, Seq(FVV, FVF), unit = 4),
     VectorInstruction("vmflt",   0x1b, Seq(FVV, FVF), unit = 4),
@@ -178,6 +179,35 @@ private object VectorDecodeTable {
     VectorInstruction("vfnmacc", 0x2d, Seq(FVV, FVF), unit = 4),
     VectorInstruction("vfmsac",  0x2e, Seq(FVV, FVF), unit = 4),
     VectorInstruction("vfnmsac", 0x2f, Seq(FVV, FVF), unit = 4)
+  )
+
+  // VFUNARY0: funct6 010010 carries the conversion opcode in the vs1 field.
+  // Only the implemented SEW=32 conversions are allow-listed.
+  private val unary0Patterns = Seq(
+    VectorPattern("vfcvt_xu_f_v", "010010??????00000001?????1010111", 4,
+      readsVs2 = true, writesVd = true),
+    VectorPattern("vfcvt_x_f_v", "010010??????00001001?????1010111", 4,
+      readsVs2 = true, writesVd = true),
+    VectorPattern("vfcvt_f_xu_v", "010010??????00010001?????1010111", 4,
+      readsVs2 = true, writesVd = true),
+    VectorPattern("vfcvt_f_x_v", "010010??????00011001?????1010111", 4,
+      readsVs2 = true, writesVd = true),
+    VectorPattern("vfcvt_rtz_xu_f_v", "010010??????00110001?????1010111", 4,
+      readsVs2 = true, writesVd = true),
+    VectorPattern("vfcvt_rtz_x_f_v", "010010??????00111001?????1010111", 4,
+      readsVs2 = true, writesVd = true)
+  )
+
+  // VFUNARY1: funct6 010011 carries the unary FP opcode in the vs1 field.
+  private val unary1Patterns = Seq(
+    VectorPattern("vfsqrt_v", "010011??????00000001?????1010111", 4,
+      readsVs2 = true, writesVd = true),
+    VectorPattern("vfrsqrt7_v", "010011??????00101001?????1010111", 4,
+      readsVs2 = true, writesVd = true),
+    VectorPattern("vfrec7_v", "010011??????00100001?????1010111", 4,
+      readsVs2 = true, writesVd = true),
+    VectorPattern("vfclass_v", "010011??????10000001?????1010111", 4,
+      readsVs2 = true, writesVd = true)
   )
 
   private val arithmeticPatterns =
@@ -215,7 +245,8 @@ private object VectorDecodeTable {
   )
 
   val patterns: Seq[VectorPattern] =
-    memoryPatterns ++ configPatterns ++ arithmeticPatterns
+    memoryPatterns ++ configPatterns ++ arithmeticPatterns ++
+      unary0Patterns ++ unary1Patterns
   val fields: Seq[DecodeField[VectorPattern, _ <: Data]] = Seq(
     Legal,
     Unit,

@@ -3,13 +3,34 @@ package gpu.elaboration
 import circt.stage.ChiselStage
 import gpu.command.GpuCommandRouter
 import gpu.config.GpuConfig
-import gpu.core.memory.SharedL2Slice
+import gpu.core.backend.{FpuBackend, ScalarBackend, VectorBackend}
+import gpu.core.frontend.GpuFrontend
+import gpu.core.GpuComputeUnit
+import gpu.core.memory.{
+  BankedSharedMemory,
+  ComputeUnitMemoryInterconnect,
+  InstructionCache,
+  SharedL2Slice,
+  VectorDataCache,
+  VectorMemoryCoalescer
+}
+import gpu.core.execute.fpu.Fp32FmaLane
+import gpu.core.execute.fpu.Fp32ExactUnit
+import gpu.core.execute.fpu.Fp32DivLane
+import gpu.core.vector.{
+  VectorFcvtAlu,
+  VectorFdivAlu,
+  VectorFEstimateAlu,
+  VectorFmaAlu,
+  VectorFpuAlu,
+  VectorFsqrtAlu
+}
 
 /** Emits bounded, real project blocks for ChipAgent physical evaluation. */
 object EmitPpaRtl {
   def main(args: Array[String]): Unit = {
     require(args.nonEmpty,
-      "usage: EmitPpaRtl <shared-l2-slice|command-router> [target-dir]")
+      "usage: EmitPpaRtl <block> [target-dir]")
     val targetDir = args.lift(1).getOrElse("generated/ppa")
     val stageArgs = Array("--target-dir", targetDir)
     val firtoolArgs = Array(
@@ -28,6 +49,85 @@ object EmitPpaRtl {
           new GpuCommandRouter(
             GpuConfig(lanes = 4), commandIdWidth = 4,
             commandQueueDepth = 8, completionQueueDepth = 8),
+          stageArgs, firtoolArgs)
+      case "compute-unit" =>
+        ChiselStage.emitSystemVerilogFile(
+          new GpuComputeUnit(
+            GpuConfig(),
+            useBlackBoxes = true,
+            enableFpuBackend = true),
+          stageArgs, firtoolArgs)
+      case "vector-backend" =>
+        ChiselStage.emitSystemVerilogFile(
+          new VectorBackend(GpuConfig(), useBlackBox = true),
+          stageArgs, firtoolArgs)
+      case "scalar-backend" =>
+        ChiselStage.emitSystemVerilogFile(
+          new ScalarBackend(GpuConfig(), useBlackBoxes = true),
+          stageArgs, firtoolArgs)
+      case "fpu-backend" =>
+        ChiselStage.emitSystemVerilogFile(
+          new FpuBackend(GpuConfig()),
+          stageArgs, firtoolArgs)
+      case "fma-lane" =>
+        ChiselStage.emitSystemVerilogFile(
+          new Fp32FmaLane(),
+          stageArgs, firtoolArgs)
+      case "exact-unit" =>
+        ChiselStage.emitSystemVerilogFile(
+          new Fp32ExactUnit(),
+          stageArgs, firtoolArgs)
+      case "div-lane" =>
+        ChiselStage.emitSystemVerilogFile(
+          new Fp32DivLane(),
+          stageArgs, firtoolArgs)
+      case "vector-fpu-alu" =>
+        ChiselStage.emitSystemVerilogFile(
+          new VectorFpuAlu(GpuConfig()),
+          stageArgs, firtoolArgs)
+      case "vector-fma-alu" =>
+        ChiselStage.emitSystemVerilogFile(
+          new VectorFmaAlu(GpuConfig()),
+          stageArgs, firtoolArgs)
+      case "vector-fcvt-alu" =>
+        ChiselStage.emitSystemVerilogFile(
+          new VectorFcvtAlu(GpuConfig()),
+          stageArgs, firtoolArgs)
+      case "vector-festimate-alu" =>
+        ChiselStage.emitSystemVerilogFile(
+          new VectorFEstimateAlu(GpuConfig()),
+          stageArgs, firtoolArgs)
+      case "vector-fsqrt-alu" =>
+        ChiselStage.emitSystemVerilogFile(
+          new VectorFsqrtAlu(GpuConfig()),
+          stageArgs, firtoolArgs)
+      case "vector-fdiv-alu" =>
+        ChiselStage.emitSystemVerilogFile(
+          new VectorFdivAlu(GpuConfig()),
+          stageArgs, firtoolArgs)
+      case "frontend" =>
+        ChiselStage.emitSystemVerilogFile(
+          new GpuFrontend(GpuConfig()),
+          stageArgs, firtoolArgs)
+      case "shared-memory" =>
+        ChiselStage.emitSystemVerilogFile(
+          new BankedSharedMemory(GpuConfig()),
+          stageArgs, firtoolArgs)
+      case "vector-memory-coalescer" =>
+        ChiselStage.emitSystemVerilogFile(
+          new VectorMemoryCoalescer(GpuConfig()),
+          stageArgs, firtoolArgs)
+      case "instruction-cache" =>
+        ChiselStage.emitSystemVerilogFile(
+          new InstructionCache(GpuConfig()),
+          stageArgs, firtoolArgs)
+      case "vector-data-cache" =>
+        ChiselStage.emitSystemVerilogFile(
+          new VectorDataCache(GpuConfig()),
+          stageArgs, firtoolArgs)
+      case "memory-interconnect" =>
+        ChiselStage.emitSystemVerilogFile(
+          new ComputeUnitMemoryInterconnect(GpuConfig()),
           stageArgs, firtoolArgs)
       case other =>
         throw new IllegalArgumentException(s"unknown PPA block: $other")

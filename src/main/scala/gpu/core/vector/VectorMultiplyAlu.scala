@@ -21,6 +21,11 @@ private class VectorBoothStageOne(config: GpuConfig) extends Bundle {
   val terms = Vec(config.lanes, Vec(12, UInt(68.W)))
 }
 
+private class VectorBoothEncoded(config: GpuConfig) extends Bundle {
+  val metadata = new VectorMultiplyMetadata(config)
+  val terms = Vec(config.lanes, Vec(17, UInt(68.W)))
+}
+
 private class VectorBoothStageTwo(config: GpuConfig) extends Bundle {
   val metadata = new VectorMultiplyMetadata(config)
   val terms = Vec(config.lanes, Vec(4, UInt(68.W)))
@@ -99,6 +104,10 @@ class VectorMultiplyAlu(config: GpuConfig = GpuConfig()) extends Module {
 
   private val stageOneValid = RegInit(false.B)
   private val stageOneBits = Reg(new VectorBoothStageOne(config))
+  private val inputValid = RegInit(false.B)
+  private val inputBits = Reg(new VectorMultiplyRequest(config))
+  private val boothValid = RegInit(false.B)
+  private val boothBits = Reg(new VectorBoothEncoded(config))
   private val stageTwoValid = RegInit(false.B)
   private val stageTwoBits = Reg(new VectorBoothStageTwo(config))
   private val stageThreeValid = RegInit(false.B)
@@ -116,6 +125,8 @@ class VectorMultiplyAlu(config: GpuConfig = GpuConfig()) extends Module {
   private val stageThreeReady = !stageThreeValid || productReady
   private val stageTwoReady = !stageTwoValid || stageThreeReady
   private val stageOneReady = !stageOneValid || stageTwoReady
+  private val boothReady = !boothValid || stageOneReady
+  private val inputReady = !inputValid || boothReady
 
   private val isMultiplyVv = io.in.bits.operandType === "b010".U
   private val isMultiplyVx = io.in.bits.operandType === "b110".U
@@ -134,14 +145,25 @@ class VectorMultiplyAlu(config: GpuConfig = GpuConfig()) extends Module {
       io.in.bits.funct6 === "h26".U || io.in.bits.funct6 === "h27".U
   private val rhsSigned =
     saturatingOperation || io.in.bits.funct6 === "h27".U
+  private val inputIsMultiplyVv = inputBits.operandType === "b010".U
+  private val inputIsSaturatingVv = inputBits.operandType === "b000".U
+  private val inputSaturatingOperation =
+    inputBits.funct6 === "h27".U &&
+      (inputIsSaturatingVv || inputBits.operandType === "b100".U)
+  private val inputLhsSigned =
+    inputSaturatingOperation ||
+      inputBits.funct6 === "h26".U || inputBits.funct6 === "h27".U
+  private val inputRhsSigned =
+    inputSaturatingOperation || inputBits.funct6 === "h27".U
 
   private val firstTerms = Wire(Vec(config.lanes, Vec(12, UInt(68.W))))
   for (lane <- 0 until config.lanes) {
-    val vectorRhs = isMultiplyVv || isSaturatingVv
-    val rhsData = Mux(vectorRhs, io.in.bits.vs1(lane), io.in.bits.scalar)
-    val lhs = Cat(lhsSigned && io.in.bits.vs2(lane)(31), io.in.bits.vs2(lane))
-    val rhs = Cat(rhsSigned && rhsData(31), rhsData)
-    firstTerms(lane) := VecInit(reduceTo(boothTerms(lhs, rhs), 12))
+    val vectorRhs = inputIsMultiplyVv || inputIsSaturatingVv
+    val rhsData = Mux(vectorRhs, inputBits.vs1(lane), inputBits.scalar)
+    val lhs = Cat(inputLhsSigned && inputBits.vs2(lane)(31), inputBits.vs2(lane))
+    val rhs = Cat(inputRhsSigned && rhsData(31), rhsData)
+    firstTerms(lane) :=
+      VecInit(reduceTo(boothBits.terms(lane).toSeq, 12))
   }
 
   private val secondTerms = Wire(Vec(config.lanes, Vec(4, UInt(68.W))))
@@ -156,7 +178,7 @@ class VectorMultiplyAlu(config: GpuConfig = GpuConfig()) extends Module {
       stageThreeBits.terms(lane)(0) + stageThreeBits.terms(lane)(1)
   }
 
-  io.in.ready := stageOneReady && supported
+  io.in.ready := inputReady && supported
   io.out.valid := outputValid
   io.out.bits := outputBits
 
@@ -258,20 +280,48 @@ class VectorMultiplyAlu(config: GpuConfig = GpuConfig()) extends Module {
   }
 
   when(stageOneReady) {
-    stageOneValid := io.in.valid && supported
-    when(io.in.valid && supported) {
-      stageOneBits.metadata.warpId := io.in.bits.warpId
-      stageOneBits.metadata.pc := io.in.bits.pc
-      stageOneBits.metadata.warpActiveMask := io.in.bits.warpActiveMask
-      stageOneBits.metadata.vd := io.in.bits.vd
-      stageOneBits.metadata.oldVd := io.in.bits.oldVd
-      stageOneBits.metadata.enabled :=
-        io.in.bits.activeMask &
-          Mux(io.in.bits.vm, Fill(config.lanes, 1.U), io.in.bits.predicateMask)
-      stageOneBits.metadata.highHalf := io.in.bits.funct6 =/= "h25".U
-      stageOneBits.metadata.saturating := saturatingOperation
-      stageOneBits.metadata.vxrm := io.in.bits.vxrm
+    stageOneValid := boothValid
+    when(boothValid) {
+      stageOneBits.metadata := boothBits.metadata
       stageOneBits.terms := firstTerms
+    }
+  }
+
+  when(boothReady) {
+    boothValid := inputValid
+    when(inputValid) {
+      boothBits.metadata.warpId := inputBits.warpId
+      boothBits.metadata.pc := inputBits.pc
+      boothBits.metadata.warpActiveMask := inputBits.warpActiveMask
+      boothBits.metadata.vd := inputBits.vd
+      boothBits.metadata.oldVd := inputBits.oldVd
+      boothBits.metadata.enabled :=
+        inputBits.activeMask &
+          Mux(
+            inputBits.vm,
+            Fill(config.lanes, 1.U),
+            inputBits.predicateMask
+          )
+      boothBits.metadata.highHalf := inputBits.funct6 =/= "h25".U
+      boothBits.metadata.saturating := inputSaturatingOperation
+      boothBits.metadata.vxrm := inputBits.vxrm
+      for (lane <- 0 until config.lanes) {
+        val vectorRhs = inputIsMultiplyVv || inputIsSaturatingVv
+        val rhsData = Mux(vectorRhs, inputBits.vs1(lane), inputBits.scalar)
+        val lhs = Cat(
+          inputLhsSigned && inputBits.vs2(lane)(31),
+          inputBits.vs2(lane)
+        )
+        val rhs = Cat(inputRhsSigned && rhsData(31), rhsData)
+        boothBits.terms(lane) := VecInit(boothTerms(lhs, rhs))
+      }
+    }
+  }
+
+  when(inputReady) {
+    inputValid := io.in.valid
+    when(io.in.valid) {
+      inputBits := io.in.bits
     }
   }
 

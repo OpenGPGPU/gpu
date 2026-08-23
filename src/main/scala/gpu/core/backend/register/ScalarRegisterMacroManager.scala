@@ -3,37 +3,24 @@ package gpu.core.backend.register
 import chisel3._
 import chisel3.util._
 import gpu.config.GpuConfig
+import gpu.core.memory.Asap7Sram1Rw256x32
 import gpu.core.backend.scoreboard.{
   RegisterScoreboardState,
   RegisterReservation,
   RegisterRelease
 }
 
-/** FakeRAM2.0-compatible 32 x 32, synchronous 1RW macro interface. */
-class FakeRam7OneRw32x32 extends BlackBox {
-  override def desiredName = "fakeram7_1rw_32x32"
-
-  val io = IO(new Bundle {
-    val rd_out = Output(UInt(32.W))
-    val addr_in = Input(UInt(5.W))
-    val we_in = Input(Bool())
-    val wd_in = Input(UInt(32.W))
-    val clk = Input(Clock())
-    val ce_in = Input(Bool())
-  })
-}
-
 /** Per-warp synchronous 2R1W RF made from two mirrored 1RW arrays.
   *
   * A write occupies both copies for one cycle. Otherwise each copy serves one
   * read port. `useBlackBoxes=false` is the cycle-accurate simulation model;
-  * ASIC timing emission selects the FakeRAM black boxes.
+  * ASIC timing emission selects the ASAP7 32-bit SRAM black boxes.
   */
 class ScalarRegisterMacroFile(
   config: GpuConfig,
   useBlackBoxes: Boolean = false
 ) extends Module {
-  require(config.xLen == 32, "FakeRAM RF macro is fixed at XLEN=32")
+  require(config.xLen == 32, "ASAP7 RF macro is fixed at XLEN=32")
 
   val io = IO(new Bundle {
     val read = Flipped(Valid(new ScalarRegisterRead(config)))
@@ -55,20 +42,21 @@ class ScalarRegisterMacroFile(
         io.write.bits.warpId === warp.U
 
     if (useBlackBoxes) {
-      val rs1Macro = Module(new FakeRam7OneRw32x32)
-      val rs2Macro = Module(new FakeRam7OneRw32x32)
+      val rs1Macro = Module(new Asap7Sram1Rw256x32)
+      val rs2Macro = Module(new Asap7Sram1Rw256x32)
       for ((macroPort, address) <- Seq(
         (rs1Macro.io, io.read.bits.rs1),
         (rs2Macro.io, io.read.bits.rs2)
       )) {
         macroPort.clk := clock
-        macroPort.ce_in := selectedRead || selectedWrite
-        macroPort.we_in := selectedWrite
-        macroPort.addr_in := Mux(selectedWrite, io.write.bits.rd, address)
-        macroPort.wd_in := io.write.bits.data
+        macroPort.ADDRESS := Mux(selectedWrite, io.write.bits.rd, address).pad(8)
+        macroPort.banksel := selectedRead || selectedWrite
+        macroPort.read := selectedRead && !selectedWrite
+        macroPort.write := selectedWrite
+        macroPort.wd := io.write.bits.data
       }
-      rs1ByWarp(warp) := rs1Macro.io.rd_out
-      rs2ByWarp(warp) := rs2Macro.io.rd_out
+      rs1ByWarp(warp) := rs1Macro.io.dataout
+      rs2ByWarp(warp) := rs2Macro.io.dataout
     } else {
       val rs1Memory = SyncReadMem(32, UInt(32.W))
       val rs2Memory = SyncReadMem(32, UInt(32.W))

@@ -4,7 +4,8 @@ import chisel3._
 
 object Fp32Operation extends ChiselEnum {
   val fmadd, fnmsub, add, mul, div, sqrt, sgnj, minmax, compare, classify,
-      fpToFp, fpToInt, intToFp, packAB, packCD = Value
+      fmvX, fmvFromX, fpToFp, fpToInt, intToFp, recip7, rsqrt7,
+      packAB, packCD = Value
 }
 
 class Fp32Request(tagWidth: Int) extends Bundle {
@@ -14,6 +15,7 @@ class Fp32Request(tagWidth: Int) extends Bundle {
   val roundingMode = UInt(3.W)
   val operation = Fp32Operation()
   val operationModifier = Bool()
+  val exactFunction = UInt(3.W)
   val tag = UInt(tagWidth.W)
 }
 

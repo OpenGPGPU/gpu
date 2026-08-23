@@ -54,6 +54,47 @@ class ExtendedDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.executionType.expect(ExecutionType.vector)
       dut.io.decoded.vector.memoryRead.expect(true.B)
       dut.io.decoded.vector.unit.expect(VectorUnit.loadStore)
+
+      // vfcvt.xu.f.v v3, v2
+      dut.io.instruction.poke("h4a2011d7".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.executionType.expect(ExecutionType.vector)
+      dut.io.decoded.vector.valid.expect(true.B)
+      dut.io.decoded.vector.unit.expect(VectorUnit.floatingPoint)
+      dut.io.decoded.vector.readsVs1.expect(false.B)
+      dut.io.decoded.vector.readsVs2.expect(true.B)
+
+      // vfclass.v v3, v2
+      dut.io.instruction.poke("h4e2811d7".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.executionType.expect(ExecutionType.vector)
+      dut.io.decoded.vector.valid.expect(true.B)
+      dut.io.decoded.vector.unit.expect(VectorUnit.floatingPoint)
+      dut.io.decoded.vector.readsVs2.expect(true.B)
+
+      // vfsqrt.v v3, v2
+      dut.io.instruction.poke("h4e2011d7".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.executionType.expect(ExecutionType.vector)
+      dut.io.decoded.vector.valid.expect(true.B)
+      dut.io.decoded.vector.unit.expect(VectorUnit.floatingPoint)
+      dut.io.decoded.vector.readsVs2.expect(true.B)
+
+      // vfrsqrt7.v v3, v2
+      dut.io.instruction.poke("h4e2291d7".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.executionType.expect(ExecutionType.vector)
+      dut.io.decoded.vector.valid.expect(true.B)
+      dut.io.decoded.vector.unit.expect(VectorUnit.floatingPoint)
+      dut.io.decoded.vector.readsVs2.expect(true.B)
+
+      // vfrec7.v v3, v2
+      dut.io.instruction.poke("h4e2211d7".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.executionType.expect(ExecutionType.vector)
+      dut.io.decoded.vector.valid.expect(true.B)
+      dut.io.decoded.vector.unit.expect(VectorUnit.floatingPoint)
+      dut.io.decoded.vector.readsVs2.expect(true.B)
     }
   }
 
@@ -61,6 +102,12 @@ class ExtendedDecoderSpec extends AnyFlatSpec {
     simulate(new FullInstructionDecoder) { dut =>
       // Reserved vsub.vi encoding.
       dut.io.instruction.poke("b000010_1_00001_00010_011_00011_1010111".U)
+      dut.io.decoded.legal.expect(false.B)
+      dut.io.decoded.illegalInstruction.expect(true.B)
+      dut.io.decoded.executionType.expect(ExecutionType.illegal)
+
+      // Reserved VFUNARY0 opcode (vs1 = 01000).
+      dut.io.instruction.poke("h4a2411d7".U)
       dut.io.decoded.legal.expect(false.B)
       dut.io.decoded.illegalInstruction.expect(true.B)
       dut.io.decoded.executionType.expect(ExecutionType.illegal)

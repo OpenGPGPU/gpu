@@ -77,14 +77,22 @@ class VectorMemoryUnit(config: GpuConfig = GpuConfig()) extends Module {
   private val requestValid = RegInit(false.B)
   private val requestBits = Reg(new VectorMemoryExecuteRequest(config))
   private val issued = RegInit(false.B)
+  private val responsePending = RegInit(false.B)
+  private val responseBits = Reg(new VectorMemoryResponse(config))
   private val outputValid = RegInit(false.B)
   private val outputBits = Reg(new VectorMemoryResult(config))
+  private val precomputedAddresses =
+    Reg(Vec(config.lanes, UInt(config.xLen.W)))
 
   io.in.ready := !requestValid && !outputValid
   when(io.in.fire) {
     requestValid := true.B
     requestBits := io.in.bits
     issued := false.B
+    for (lane <- 0 until config.lanes) {
+      precomputedAddresses(lane) :=
+        io.in.bits.baseAddress + (lane.U << io.in.bits.elementSize)
+    }
   }
 
   io.memoryRequest.valid := requestValid && !issued
@@ -101,8 +109,14 @@ class VectorMemoryUnit(config: GpuConfig = GpuConfig()) extends Module {
     issued := true.B
   }
 
-  io.memoryResponse.ready := requestValid && issued && !outputValid
+  io.memoryResponse.ready := requestValid && issued && !outputValid && !responsePending
   when(io.memoryResponse.fire) {
+    responsePending := true.B
+    responseBits := io.memoryResponse.bits
+  }
+
+  when(responsePending) {
+    responsePending := false.B
     requestValid := false.B
     issued := false.B
     outputValid := true.B
@@ -112,22 +126,19 @@ class VectorMemoryUnit(config: GpuConfig = GpuConfig()) extends Module {
     outputBits.vd := requestBits.vd
     outputBits.writesVd := !requestBits.isStore
     outputBits.faultMask :=
-      io.memoryResponse.bits.faultMask & requestBits.activeMask
-    outputBits.pageFault := io.memoryResponse.bits.pageFault
+      responseBits.faultMask & requestBits.activeMask
+    outputBits.pageFault := responseBits.pageFault
     outputBits.isStore := requestBits.isStore
-    for (lane <- 0 until config.lanes) {
-      outputBits.addresses(lane) :=
-        requestBits.baseAddress + (lane.U << requestBits.elementSize)
-    }
+    outputBits.addresses := precomputedAddresses
     for (lane <- 0 until config.lanes) {
       val loaded = MuxLookup(
         requestBits.elementSize,
-        io.memoryResponse.bits.readData(lane)
+        responseBits.readData(lane)
       )(
         Seq(
-          0.U -> io.memoryResponse.bits.readData(lane)(7, 0),
-          1.U -> io.memoryResponse.bits.readData(lane)(15, 0),
-          2.U -> io.memoryResponse.bits.readData(lane)
+          0.U -> responseBits.readData(lane)(7, 0),
+          1.U -> responseBits.readData(lane)(15, 0),
+          2.U -> responseBits.readData(lane)
         )
       )
       outputBits.data(lane) :=

@@ -7,7 +7,8 @@ import gpu.core.backend.FpuBackend
 import gpu.core.backend.issue.FpuIssueStage
 import gpu.core.backend.register.{
   ScalarRegisterMacroManager,
-  ScalarRegisterManager
+  ScalarRegisterManager,
+  VectorRegisterFile
 }
 import gpu.core.backend.scoreboard.RegisterScoreboard
 import gpu.core.execute.fpu.Fp32FmaLane
@@ -60,6 +61,11 @@ object EmitTimingRtl {
     )
     ChiselStage.emitSystemVerilogFile(
       new ScalarRegisterMacroManager(GpuConfig(), useBlackBoxes = true),
+      stageArgs,
+      firtoolArgs
+    )
+    ChiselStage.emitSystemVerilogFile(
+      new VectorRegisterFile(GpuConfig(), useBlackBox = true),
       stageArgs,
       firtoolArgs
     )
