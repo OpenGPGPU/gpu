@@ -55,6 +55,7 @@ class VectorMemoryUnitSpec extends AnyFlatSpec {
       }
       dut.clock.step()
       dut.io.memoryResponse.valid.poke(false.B)
+      dut.clock.step()
       dut.io.out.valid.expect(true.B)
       dut.io.out.bits.writesVd.expect(true.B)
       dut.io.out.bits.faultMask.expect(0.U)
@@ -110,6 +111,7 @@ class VectorMemoryUnitSpec extends AnyFlatSpec {
       }
       dut.clock.step()
       dut.io.memoryResponse.valid.poke(false.B)
+      dut.clock.step()
       dut.io.out.valid.expect(true.B)
       dut.io.out.bits.writesVd.expect(false.B)
       dut.clock.step(2)
