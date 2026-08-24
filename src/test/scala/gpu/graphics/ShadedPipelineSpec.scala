@@ -32,10 +32,10 @@ class ShadedPipelineSpec extends AnyFlatSpec {
         dut.io.prog(i).op.poke(o.U); dut.io.prog(i).dst.poke(d.U)
         dut.io.prog(i).a.poke(a.U); dut.io.prog(i).b.poke(b.U); dut.io.prog(i).imm.poke(imm.S)
       }
-      op(0, 7, 0, 0, 0, 0) // out = r0 (interpolated colour), no uniform
-      op(1, 0, 0, 0, 0, 0)
-      op(2, 0, 0, 0, 0, 0)
-      op(3, 0, 0, 0, 0, 0)
+      op(0, 2, 3, 0, 0, 0) // r3 = uniform[0]
+      op(1, 3, 3, 3, 0, 0) // r3 = r3 + r0
+      op(2, 6, 3, 3, 0, 0) // sat r3
+      op(3, 7, 0, 3, 0, 0) // out = r3
       dut.io.uniform(0).poke(100.S)
 
       dut.io.colors(0).r.poke(128.U); dut.io.colors(0).g.poke(0.U); dut.io.colors(0).b.poke(0.U)
@@ -70,13 +70,14 @@ class ShadedPipelineSpec extends AnyFlatSpec {
       }
       assert(guard < 4000, "did not drain")
       assert(colorWrites > 0)
-      // Every fragment is shaded through the SIMT program: interpolated colour
-      // 128 -> OUT r0 -> grayscale (128,128,128) written to the framebuffer.
+      // uniform-tint program: r3 = sat(100 + r0); r0=red=128 -> 228, applied
+      // grayscale (ShaderFragStage emits one channel). All fragments agree.
       def rgb(x: Int, y: Int): (Int, Int, Int) = {
         val c = mem(colorBase / 4 + (y * 16 + x))
         (((c >> 24) & 0xff), ((c >> 16) & 0xff), ((c >> 8) & 0xff))
       }
-      assert(rgb(2, 2) == (128, 128, 128), s"SIMT-shaded pixel should be grayscale 128, got ${rgb(2, 2)}")
+      val c = rgb(2, 2)
+      assert(c == (228, 228, 228), s"uniform-tinted pixel should be (228,228,228), got $c")
     }
   }
 }

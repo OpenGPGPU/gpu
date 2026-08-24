@@ -51,7 +51,10 @@ class ShaderCore(
 
   when(io.init) {
     regFile := io.initReg
+    running := false.B
+    pc := 0.U
     finished := false.B
+    outColor := VecInit(Seq.fill(lanes)(0.U(8.W)))
   }.elsewhen(!running && io.start) {
     running := true.B
     pc := 0.U
