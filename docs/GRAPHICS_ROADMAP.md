@@ -47,9 +47,14 @@ divide/viewport), the rasterizer (top-left fill rule, culling), the
 interpolators (screen-space and perspective-correct colour + depth), the
 output merger (depth test / write to software colour+depth buffers), the
 command-buffer parser, and the composite `RenderPipeline`/`RenderCore` that
-renders a command-driven scene into an exported PPM image. 22 graphics tests
-pass. Remaining: **M5 unified (SIMT) shading** (the substantive step), then
-M6 host/Linux device, M7 display, M8 userspace.
+renders a command-driven scene into an exported PPM image. M5 shading is in
+progress: `ShaderCore` (lock-step SIMT, uniform bank), `ShaderFragStage`
+(fragment -> SIMT shade), and `RV32ShaderCore` (real RV32IM instruction
+execution) validate the shading model. The production direction is
+**commercial-GPU-aligned unified shading**: reuse `GpuComputeUnit`'s SIMT
+kernel launch/completion (see the resolved decision above) so a shader is a
+kernel on the core, superseding the standalone shader cores. 33 graphics tests
+pass.
 
 Compute core already present: RV32 SIMT lanes + FPU (FMA/div/sqrt/est), RVV
 ALU, register files, L1/L2 (SharedL2Slice), memory hierarchy with a standardized
@@ -122,6 +127,20 @@ that hardware interfaces can be frozen.
   engine. This is exactly how Adreno/Mali/PowerVR integrated GPUs do it. A
   later dedicated/discrete form may add an IOMMU or a coherence engine; the
   MMIO/command interface stays compatible so it can be layered in.
+
+- **Commercial GPU alignment (unified shading):** shading is executed on the
+  **same SIMT lanes as the compute kernel** (an NVIDIA SM / AMD CU model),
+  fixed-function graphics (rasterizer, texture, ROP) remain separate. The
+  repository already provides this: `GpuComputeUnit.io.kernel` /
+  `io.completion` carry a `KernelLaunch{kernelPc, kernargAddress, gridSize,
+  localSize}` and `KernelCompletion`, so a vertex/fragment shader is a **kernel
+  launched on the core's SIMT warps** with its varyings/uniforms/output placed
+  in the kernarg buffer. The `gpu.graphics` `ShaderCore`/`RV32ShaderCore` are
+  standalone verification stepping stones; the production path is to emit a
+  `KernelLaunch` per draw and consume `KernelCompletion`, reusing the core's
+  warp/register/ALU/FPU machinery rather than a separate shader datapath. Real
+  GPUs use a dedicated GPU ISA (PTX/SASS/GCN/RDNA) + compiler; this design uses
+  the RISC-V RV32IMF+V the core already executes, for toolchain reuse.
 
 ---
 
@@ -335,8 +354,8 @@ Verification:
 ## Small-step bias
 Each milestone is verifiable in simulation (Chisel spec + a software
 reference), and none requires a full graphics API to demonstrate. M1–M4 are
-complete (see the status note above); the confirmed next step is **M5 unified
-(SIMT) shading** — the instruction-set/toolchain work stays on the existing
-RISC-V RV32IMF(+V) toolchain, so the split is: (a) fragment dispatch +
-uniform bank + trivial colour program, (b) texture unit, (c) derivatives and
-`discard`.
+complete (see the status note above). The confirmed direction for M5 is to
+**align with commercial GPUs**: run vertex/fragment shaders as kernels on the
+core's SIMT lanes via `GpuComputeUnit`'s kernel launch/completion, reusing the
+existing RISC-V toolchain. The standalone `ShaderCore`/`RV32ShaderCore` are
+reference implementations; the production path is the core-kernel unification.
