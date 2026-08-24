@@ -22,6 +22,7 @@ class ShaderFragStage(
   val io = IO(new Bundle {
     val fragIn = Flipped(Decoupled(new RasterFragment(config)))
     val prog = Input(Vec(progSize, new ShaderOp))
+    val programBase = Input(UInt(8.W))
     val uniform = Input(Vec(16, SInt(32.W)))
     val out = Decoupled(new RasterFragment(config))
   })
@@ -36,6 +37,7 @@ class ShaderFragStage(
 
   shader.io.uniform := io.uniform
   shader.io.prog := io.prog
+  shader.io.programBase := io.programBase
   shader.io.start := state === sRun
   shader.io.init := state === sInit
   // Load the latched interpolated colour into lane0 r0/r1/r2.

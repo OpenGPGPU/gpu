@@ -18,6 +18,7 @@ class ShadedPipeline(config: GraphicsConfig, progSize: Int = 8) extends Module {
     val depths = Input(Vec(3, SInt(32.W)))
     val cullMode = Input(UInt(2.W))
     val prog = Input(Vec(progSize, new ShaderOp))
+    val programBase = Input(UInt(8.W))
     val uniform = Input(Vec(16, SInt(32.W)))
     val mem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
@@ -45,6 +46,7 @@ class ShadedPipeline(config: GraphicsConfig, progSize: Int = 8) extends Module {
   fragShader.io.fragIn.bits := shader.io.pixel.bits
   shader.io.pixel.ready := fragShader.io.fragIn.ready
   fragShader.io.prog := io.prog
+  fragShader.io.programBase := io.programBase
   fragShader.io.uniform := io.uniform
 
   om.io.fragIn.valid := fragShader.io.out.valid

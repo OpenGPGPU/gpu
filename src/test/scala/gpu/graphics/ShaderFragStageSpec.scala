@@ -10,7 +10,7 @@ class ShaderFragStageSpec extends AnyFlatSpec {
   it should "shade a fragment through the SIMT shader with a tint program" in {
     val config = GraphicsConfig()
     simulate(new ShaderFragStage(config, lanes = 1, progSize = 4)) { dut =>
-      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B); dut.io.programBase.poke(0.U)
       // Program: r0 = sat(r0 + uniform[3]); out = r0.  uniform[3] tint = +10.
       def op(i: Int, o: Int, d: Int, a: Int, b: Int, imm: Int): Unit = {
         dut.io.prog(i).op.poke(o.U)
@@ -51,7 +51,7 @@ class ShaderFragStageSpec extends AnyFlatSpec {
   it should "apply an SAT after an ADD (uniform tint) to the fragment colour" in {
     val config = GraphicsConfig()
     simulate(new ShaderFragStage(config, lanes = 1, progSize = 5)) { dut =>
-      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B); dut.io.programBase.poke(0.U)
       def op(i: Int, o: Int, d: Int, a: Int, b: Int, imm: Int): Unit = {
         dut.io.prog(i).op.poke(o.U); dut.io.prog(i).dst.poke(d.U)
         dut.io.prog(i).a.poke(a.U); dut.io.prog(i).b.poke(b.U); dut.io.prog(i).imm.poke(imm.S)

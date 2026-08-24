@@ -17,7 +17,7 @@ class ShadedPipelineSpec extends AnyFlatSpec {
       val mem = Array.fill(1 << 16)(0)
       for (i <- 0 until (16 * 16)) mem(depthBase / 4 + i) = 0xffffffff
 
-      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B); dut.io.programBase.poke(0.U)
       dut.io.colorBase.poke(colorBase.U)
       dut.io.depthBase.poke(depthBase.U)
       dut.io.stride.poke(stride.U)

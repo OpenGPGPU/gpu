@@ -27,6 +27,7 @@ class ShaderCore(
 ) extends Module {
   val io = IO(new Bundle {
     val prog = Input(Vec(progSize, new ShaderOp))
+    val programBase = Input(UInt(8.W)) // program starts here within prog
     val uniform = Input(Vec(16, SInt(32.W)))
     val init = Input(Bool())                                  // load per-lane regs
     val initReg = Input(Vec(lanes, Vec(regs, SInt(32.W))))
@@ -45,7 +46,10 @@ class ShaderCore(
   io.pc := pc
   io.done := finished
 
-  private val inst = io.prog(pc)
+  // Fetch the instruction at the program's base address + pc (the program
+  // memory is the `prog` store); a shader is a base-addressed program.
+  private val fetchIdx = io.programBase + pc
+  private val inst = io.prog(fetchIdx(log2Ceil(progSize) - 1, 0))
 
   private def reg(idx: UInt, lane: Int): SInt = regFile(lane)(idx(log2Ceil(regs) - 1, 0))
 
