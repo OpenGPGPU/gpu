@@ -210,7 +210,7 @@ class GpuComputeUnitSpec extends AnyFlatSpec {
       // request-to-response spacing the interconnect requires).  Count data-path
       // traffic so we prove a read and a write each traversed the interconnect.
       var respValid = false; var respId = BigInt(0); var respData = BigInt(0)
-      var dataReads = 0; var dataWrites = 0
+      var dataReads = 0; var dataWrites = 0; var firstDataAddr = -1L
       var guard = 0
       while (!dut.io.completion.valid.peek().litToBoolean && guard < 200) {
         if (respValid) {
@@ -226,6 +226,7 @@ class GpuComputeUnitSpec extends AnyFlatSpec {
           val isWrite = dut.io.memoryRequest.bits.isWrite.peek().litToBoolean
           if ((addr & 0xffffffffL) != 0x1000L) {
             if (isWrite) dataWrites += 1 else dataReads += 1
+            firstDataAddr = addr
           }
           respId = id
           respData = lineFor(addr)
@@ -235,6 +236,8 @@ class GpuComputeUnitSpec extends AnyFlatSpec {
         guard += 1
       }
       assert(guard < 200, "did not complete within a bounded number of cycles")
+      assert(firstDataAddr == 0x8000L,
+        f"kernarg read must target x1=kernargAddress (0x8000), got 0x$firstDataAddr%x")
       assert(dataReads >= 1, "kernel must perform a kernarg read")
       assert(dataWrites >= 1, "kernel must perform an output write")
       dut.io.completion.valid.expect(true.B)
