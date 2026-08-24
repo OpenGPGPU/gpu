@@ -35,6 +35,21 @@ class ComputeMemoryResponse(
 /** Serializes instruction refill, data-cache traffic, and both PTWs onto one
   * physical memory port. The selected source is retained until its response
   * is accepted, so arbitrary response latency cannot misroute data.
+  *
+  * Response-timing contract (a testbench backing `memoryRequest/memoryResponse`
+  * must obey these):
+  *  - A transaction slot (`transactionValid`) is allocated on `memoryRequest.fire`
+  *    and is released only when the matching `memoryResponse` is accepted. Writes
+  *    are *not* fire-and-forget: they hold a slot until acknowledged (write-through
+  *    cache dependency), so a harness that never answers a write exhausts the
+  *    `maxOutstanding` slots and stalls the interconnect.
+  *  - Response routing reads `transactionValid/transactionSource`, which are
+  *    registered on the request-fire edge. A response may therefore reference only
+  *    a transaction committed in a *prior* cycle (minimum one-cycle request-to-
+  *    response spacing); a same-cycle response would reference a not-yet-committed
+  *    slot and is a protocol violation rejected by the assert below.
+  *  - `memoryResponse.ready` is the ready of the downstream sink chosen by the
+  *    stored source, so response-side backpressure propagates naturally.
   */
 class ComputeUnitMemoryInterconnect(
   config: GpuConfig = GpuConfig(),
