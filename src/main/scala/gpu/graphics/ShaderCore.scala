@@ -28,6 +28,8 @@ class ShaderCore(
   val io = IO(new Bundle {
     val prog = Input(Vec(progSize, new ShaderOp))
     val uniform = Input(Vec(16, SInt(32.W)))
+    val init = Input(Bool())                                  // load per-lane regs
+    val initReg = Input(Vec(lanes, Vec(regs, SInt(32.W))))
     val start = Input(Bool())
     val done = Output(Bool())
     val pc = Output(UInt(8.W))
@@ -37,18 +39,23 @@ class ShaderCore(
   private val regFile = Reg(Vec(lanes, Vec(regs, SInt(32.W))))
   private val pc = RegInit(0.U(8.W))
   private val running = RegInit(false.B)
+  private val finished = RegInit(false.B)
   private val outColor = Reg(Vec(lanes, UInt(8.W)))
 
   io.pc := pc
-  io.done := !running
+  io.done := finished
 
   private val inst = io.prog(pc)
 
   private def reg(idx: UInt, lane: Int): SInt = regFile(lane)(idx(log2Ceil(regs) - 1, 0))
 
-  when(!running && io.start) {
+  when(io.init) {
+    regFile := io.initReg
+    finished := false.B
+  }.elsewhen(!running && io.start) {
     running := true.B
     pc := 0.U
+    finished := false.B
   }.elsewhen(running) {
     // execute one instruction across all lanes (lock-step SIMT)
     for (lane <- 0 until lanes) {
@@ -71,6 +78,7 @@ class ShaderCore(
     }
     when(pc === (progSize - 1).U) {
       running := false.B
+      finished := true.B
     }.otherwise {
       pc := pc + 1.U
     }
