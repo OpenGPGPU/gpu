@@ -36,7 +36,7 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
   })
 
   private val record = RegInit(0.U(16.W))
-  private val word = RegInit(0.U(6.W)) // 0..25
+  private val word = RegInit(0.U(log2Ceil(wordsPerRecord).W)) // 0..25
   private val waiting = RegInit(false.B) // a read is in flight
   private val words = Reg(Vec(wordsPerRecord, UInt(32.W)))
   private val running = RegInit(false.B)
