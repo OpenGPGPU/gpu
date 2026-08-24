@@ -91,6 +91,20 @@ that hardware interfaces can be frozen.
   scope for v1 (kept in mind so the MMIO/command interface stays portable
   across both).
 
+- **Cache coherence (CPU-GPU):** v1 uses **driver-driven synchronization,
+  not a hardware snooping protocol.** Point of coherence: the shared L2
+  (`SharedL2Slice`). (a) For a CPU→GPU submission the driver writes the
+  command/data, then issues a **cache-clean (write-back) to the coherence
+  point + a barrier** before writing the doorbell/MMIO that releases the
+  GPU, so the GPU always reads the command stream at the L2. (b) For a
+  GPU→CPU result (frame, compute output) the GPU flushes its writes and
+  raises an interrupt/fence; the driver waits before reading. (c) Hardware
+  support is performance-only: a doorbell (MMIO write) plus an optional
+  cache-maintenance command (clean/invalidate) — no MESI/IO-coherence
+  engine. This is exactly how Adreno/Mali/PowerVR integrated GPUs do it. A
+  later dedicated/discrete form may add an IOMMU or a coherence engine; the
+  MMIO/command interface stays compatible so it can be layered in.
+
 ---
 
 ## Roadmap
