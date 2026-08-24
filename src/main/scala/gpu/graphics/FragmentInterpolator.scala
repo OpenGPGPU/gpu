@@ -65,6 +65,7 @@ class RasterShader(config: GraphicsConfig) extends Module {
   val io = IO(new Bundle {
     val draw = Flipped(Decoupled(new TriangleVertices(config)))
     val colors = Input(Vec(3, new Varyings))
+    val cullMode = Input(UInt(2.W))
     val done = Output(Bool())
     val pixel = Decoupled(new RasterFragment(config))
   })
@@ -73,6 +74,7 @@ class RasterShader(config: GraphicsConfig) extends Module {
   private val interp = Module(new FragmentInterpolator(config))
 
   raster.io.draw <> io.draw
+  raster.io.cullMode := io.cullMode
   interp.io.c0 := io.colors(0)
   interp.io.c1 := io.colors(1)
   interp.io.c2 := io.colors(2)

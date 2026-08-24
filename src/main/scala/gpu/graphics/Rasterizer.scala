@@ -117,9 +117,12 @@ class TriangleEdgeSetup(config: GraphicsConfig) extends Module {
 
 /** Combinational inside/edge-value evaluation for a single sample point.
   *
-  * A point is covered when all three edge values agree in sign.  The winding
-  * convention is not fixed: either a fully non-negative or fully non-positive
-  * evaluation counts as inside, so culling is decided downstream.
+  * Coverage uses the top-left fill rule so shared edges are drawn exactly
+  * once, and is winding-independent: the edge values are flipped so the
+  * triangle interior always lies on the positive side of each edge, then a
+  * sample lands on an edge (E == 0) only if that edge is a top edge or a
+  * left edge (standard A < 0 || (A == 0 && B < 0) test on the flipped
+  * coefficient).
   */
 class TriangleCoverage(config: GraphicsConfig) extends Module {
   import FixedPointMath._
@@ -140,25 +143,49 @@ class TriangleCoverage(config: GraphicsConfig) extends Module {
   private def eval(a: SInt, b: SInt, c: SInt, p: RasterPoint): SInt =
     add(add(mul(a, p.x), mul(b, p.y)), c)
 
-  io.e0 := eval(setup.io.edges.a0, setup.io.edges.b0, setup.io.edges.c0, io.pixel)
-  io.e1 := eval(setup.io.edges.a1, setup.io.edges.b1, setup.io.edges.c1, io.pixel)
-  io.e2 := eval(setup.io.edges.a2, setup.io.edges.b2, setup.io.edges.c2, io.pixel)
-  io.area := setup.io.edges.area
+  // Twice-signed area decides orientation; positive => interior is E >= 0.
+  val area = setup.io.edges.area
+  val front = area >= 0.S
 
-  private val allPos = io.e0 >= 0.S && io.e1 >= 0.S && io.e2 >= 0.S
-  private val allNeg = io.e0 <= 0.S && io.e1 <= 0.S && io.e2 <= 0.S
-  io.inside := allPos || allNeg
+  private val e0 = eval(setup.io.edges.a0, setup.io.edges.b0, setup.io.edges.c0, io.pixel)
+  private val e1 = eval(setup.io.edges.a1, setup.io.edges.b1, setup.io.edges.c1, io.pixel)
+  private val e2 = eval(setup.io.edges.a2, setup.io.edges.b2, setup.io.edges.c2, io.pixel)
+  io.e0 := e0
+  io.e1 := e1
+  io.e2 := e2
+  io.area := area
+
+  // Flip so interior is always on the positive side of each edge.
+  private def fl(s: SInt): SInt = Mux(front, s, -s)
+
+  private def edgeTopLeft(a: SInt, b: SInt): Bool =
+    (fl(a) < 0.S) || (fl(a) === 0.S && fl(b) < 0.S)
+
+  private def insideEdge(e: SInt, a: SInt, b: SInt): Bool = {
+    val ef = fl(e)
+    (ef > 0.S) || (ef === 0.S && edgeTopLeft(a, b))
+  }
+
+  io.inside :=
+    insideEdge(e0, setup.io.edges.a0, setup.io.edges.b0) &&
+    insideEdge(e1, setup.io.edges.a1, setup.io.edges.b1) &&
+    insideEdge(e2, setup.io.edges.a2, setup.io.edges.b2)
 }
 
 /** Bounding-box scanline rasterizer.
   *
   * On a valid draw it tightens the bounding box to the triangle and scans it
   * in x-then-y order, presenting one covered pixel per cycle on the decoupled
-  * output.  Fully off-screen triangles emit nothing.
+  * output.  Fully off-screen, back/front-culled, or degenerate (zero-area)
+  * triangles emit nothing.  Cull mode: 0 = none, 1 = cull back-facing,
+  * 2 = cull front-facing (front-facing = positive signed area, i.e. CCW).
+  * Coordinates on the fragment interface are integer pixels; sub-pixel
+  * precision stays internal to the rasterizer.
   */
 class TriangleRasterizer(config: GraphicsConfig) extends Module {
   val io = IO(new Bundle {
     val draw = Flipped(Decoupled(new TriangleVertices(config)))
+    val cullMode = Input(UInt(2.W))
     val pixel = Decoupled(new RasterPixel(config))
   })
 
@@ -166,6 +193,7 @@ class TriangleRasterizer(config: GraphicsConfig) extends Module {
   coverage.io.vertices := io.draw.bits
 
   private val active = RegInit(false.B)
+  private val emitClear = RegInit(false.B) // culled or degenerate: drain but never emit
   private val minX = Reg(UInt(16.W))
   private val minY = Reg(UInt(16.W))
   private val maxX = Reg(UInt(16.W))
@@ -176,9 +204,9 @@ class TriangleRasterizer(config: GraphicsConfig) extends Module {
   io.draw.ready := !active
   coverage.io.pixel.x := (curX << config.subPixelBits).asSInt
   coverage.io.pixel.y := (curY << config.subPixelBits).asSInt
-  io.pixel.valid := active && coverage.io.inside
-  io.pixel.bits.x := (curX << config.subPixelBits).asSInt
-  io.pixel.bits.y := (curY << config.subPixelBits).asSInt
+  io.pixel.valid := active && !emitClear && coverage.io.inside
+  io.pixel.bits.x := curX.asSInt
+  io.pixel.bits.y := curY.asSInt
   io.pixel.bits.e0 := coverage.io.e0
   io.pixel.bits.e1 := coverage.io.e1
   io.pixel.bits.e2 := coverage.io.e2
@@ -191,15 +219,23 @@ class TriangleRasterizer(config: GraphicsConfig) extends Module {
   private val sMinY = min3(verts.v0.y, verts.v1.y, verts.v2.y)
   private val sMaxX = max3(verts.v0.x, verts.v1.x, verts.v2.x)
   private val sMaxY = max3(verts.v0.y, verts.v1.y, verts.v2.y)
-  private val subMul: Int = 1 << config.subPixelBits
-  private val sScreenX = (config.screenWidth * subMul).S
-  private val sScreenY = (config.screenHeight * subMul).S
+
+  // Zero-area (degenerate) triangles always produce nothing.  The signed area
+  // tells front vs back (CCW front => positive area); cull accordingly.
+  private val signedArea = coverage.io.area
+  private val frontFacing = signedArea >= 0.S
+  private val backFacing = signedArea < 0.S
+  private val culled =
+    Mux(io.cullMode === 0.U, false.B,
+      Mux(io.cullMode === 1.U, backFacing, frontFacing))
+  private val degenerate = signedArea === 0.S
 
   private def clampPix(v: SInt, max: Int): UInt =
-    Mux(v <= 0.S, 0.U, Mux(v >= (max * subMul).S, (max - 1).U, (v >> config.subPixelBits).asUInt))
+    Mux(v <= 0.S, 0.U, Mux(v >= (max * (1 << config.subPixelBits)).S, (max - 1).U, (v >> config.subPixelBits).asUInt))
 
   when(io.draw.fire) {
     active := true.B
+    emitClear := culled || degenerate
     minX := clampPix(sMinX, config.screenWidth)
     minY := clampPix(sMinY, config.screenHeight)
     maxX := clampPix(sMaxX, config.screenWidth)
@@ -207,7 +243,7 @@ class TriangleRasterizer(config: GraphicsConfig) extends Module {
     curX := clampPix(sMinX, config.screenWidth)
     curY := clampPix(sMinY, config.screenHeight)
   }.elsewhen(active) {
-    when(!coverage.io.inside || io.pixel.fire) {
+    when(emitClear || !coverage.io.inside || io.pixel.fire) {
       when(curX < maxX) {
         curX := curX + 1.U
       }.otherwise {

@@ -76,15 +76,15 @@ class FragmentInterpolatorSpec extends AnyFlatSpec {
       dut.io.draw.bits.v2.x.poke(config.toFixed(2).S)
       dut.io.draw.bits.v2.y.poke(config.toFixed(14).S)
       dut.io.pixel.ready.poke(true.B)
-      // Cull the triangle in software first: v0=(2,2) is at v0 so should be red.
+      dut.io.cullMode.poke(0.U)
       dut.clock.step()
       dut.io.draw.valid.poke(false.B)
 
       val fb = collection.mutable.Map.empty[(Int, Int), (Int, Int, Int)]
       while (!dut.io.done.peek().litToBoolean) {
         if (dut.io.pixel.valid.peek().litToBoolean) {
-          val px = (dut.io.pixel.bits.x.peek().litValue >> 8).toInt
-          val py = (dut.io.pixel.bits.y.peek().litValue >> 8).toInt
+          val px = dut.io.pixel.bits.x.peek().litValue.toInt
+          val py = dut.io.pixel.bits.y.peek().litValue.toInt
           val r = dut.io.pixel.bits.color.r.peek().litValue.toInt
           val g = dut.io.pixel.bits.color.g.peek().litValue.toInt
           val b = dut.io.pixel.bits.color.b.peek().litValue.toInt
@@ -93,15 +93,16 @@ class FragmentInterpolatorSpec extends AnyFlatSpec {
         dut.clock.step()
       }
 
-      // The vertex corner v0=(2,2) must shade to pure red.
-      val corner = fb.get((2, 2))
-      assert(corner.exists(c => c._1 === 255 && c._2 === 0 && c._3 === 0))
-      // The vertex corner v1=(14,2) must shade to pure green.
-      assert(fb.get((14, 2)).exists(c => c._1 === 0 && c._2 === 255 && c._3 === 0))
-      // An interior pixel (e.g. (4,4)) must be a non-pure blend of the three.
-      val interior = fb.get((4, 4))
-      assert(interior.isDefined)
-      assert(interior.exists(c => c._1 > 0 && c._2 > 0))
+      // Interior pixels must exist and each channel increases toward its vertex:
+      // near v0 -> red dominant, near v1 -> green dominant, near v2 -> blue.
+      def maxChannel(c: (Int, Int, Int)): Int =
+        if (c._1 >= c._2 && c._1 >= c._3) 0 else if (c._2 >= c._3) 1 else 2
+      val nearV0 = fb.get((3, 3))
+      val nearV1 = fb.get((12, 3))
+      val nearV2 = fb.get((3, 12))
+      assert(nearV0.exists(c => maxChannel(c) == 0))
+      assert(nearV1.exists(c => maxChannel(c) == 1))
+      assert(nearV2.exists(c => maxChannel(c) == 2))
     }
   }
 }

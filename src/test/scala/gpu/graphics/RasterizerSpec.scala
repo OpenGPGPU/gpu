@@ -78,24 +78,96 @@ class RasterizerSpec extends AnyFlatSpec {
       var cycles = 0
       while (!dut.io.draw.ready.peek().litToBoolean && cycles < 10000) {
         if (dut.io.pixel.valid.peek().litToBoolean) {
-          val px = (dut.io.pixel.bits.x.peek().litValue >> 8).toInt
-          val py = (dut.io.pixel.bits.y.peek().litValue >> 8).toInt
+          val px = dut.io.pixel.bits.x.peek().litValue.toInt
+          val py = dut.io.pixel.bits.y.peek().litValue.toInt
           covered += ((px, py))
         }
         dut.clock.step()
         cycles += 1
       }
-      // Software reference: a point is covered iff all three cross products >= 0.
-      val expected = (0 until 16).flatMap { y =>
-        (0 until 16).flatMap { x =>
-          val p = (config.toFixed(x), config.toFixed(y))
-          val ab0 = (v1._1 - v0._1) * (p._2 - v0._2) - (v1._2 - v0._2) * (p._1 - v0._1)
-          val ab1 = (v2._1 - v1._1) * (p._2 - v1._2) - (v2._2 - v1._2) * (p._1 - v1._1)
-          val ab2 = (v0._1 - v2._1) * (p._2 - v2._2) - (v0._2 - v2._2) * (p._1 - v2._1)
-          if (ab0 >= 0 && ab1 >= 0 && ab2 >= 0) Some((x, y)) else None
+      // Software reference mirroring the RTL top-left fill rule.
+      def plane(ax: Long, ay: Long, bx: Long, by: Long): (Long, Long, Long) =
+        ((ay - by), (bx - ax), (ax * by - bx * ay))
+      val planes = Array(
+        plane(v1._1, v1._2, v2._1, v2._2),
+        plane(v2._1, v2._2, v0._1, v0._2),
+        plane(v0._1, v0._2, v1._1, v1._2)
+      )
+      def inside(px: Int, py: Int): Boolean = {
+        val x = config.toFixed(px).toLong
+        val y = config.toFixed(py).toLong
+        val e = planes.map { case (a, b, c) => a * x + b * y + c }
+        val area = { val (a, b, c) = planes(0); a * v0._1 + b * v0._2 + c }
+        val front = area >= 0
+        (0 until 3).forall { i =>
+          val (a, b, _) = planes(i)
+          val ef = if (front) e(i) else -e(i)
+          val af = if (front) a else -a
+          val bf = if (front) b else -b
+          ef > 0 || (ef == 0 && (af < 0 || (af == 0 && bf < 0)))
         }
-      }.toSet
+      }
+      val expected = (0 until 16).flatMap { y => (0 until 16).flatMap { x =>
+        if (inside(x, y)) Some((x, y)) else None
+      } }.toSet
       assert(covered == expected, s"coverage mismatch: ${(covered -- expected)} vs ${(expected -- covered)}")
+    }
+  }
+
+  it should "cover edge-sharing triangles exactly once (no cracks, no double-draw)" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    // Above-left triangle: shares the diagonal with the below-right triangle.
+    val t1 = ((config.toFixed(2), config.toFixed(2)), (config.toFixed(14), config.toFixed(2)), (config.toFixed(2), config.toFixed(14)))
+    // Below-right triangle: shares the diagonal x+y==16 edge boundary pixels.
+    val t2 = ((config.toFixed(14), config.toFixed(2)), (config.toFixed(14), config.toFixed(14)), (config.toFixed(2), config.toFixed(14)))
+    simulate(new TriangleRasterizer(config)) { dut =>
+      def drain(t: ((Int, Int), (Int, Int), (Int, Int))): Set[(Int, Int)] = {
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        dut.io.pixel.ready.poke(true.B)
+        dut.io.cullMode.poke(0.U)
+        dut.io.draw.valid.poke(true.B)
+        dut.io.draw.bits.v0.x.poke(t._1._1.S); dut.io.draw.bits.v0.y.poke(t._1._2.S)
+        dut.io.draw.bits.v1.x.poke(t._2._1.S); dut.io.draw.bits.v1.y.poke(t._2._2.S)
+        dut.io.draw.bits.v2.x.poke(t._3._1.S); dut.io.draw.bits.v2.y.poke(t._3._2.S)
+        dut.clock.step(); dut.io.draw.valid.poke(false.B)
+        val set = collection.mutable.Set.empty[(Int, Int)]
+        while (!dut.io.draw.ready.peek().litToBoolean) {
+          if (dut.io.pixel.valid.peek().litToBoolean) {
+            set += ((dut.io.pixel.bits.x.peek().litValue.toInt, dut.io.pixel.bits.y.peek().litValue.toInt))
+          }
+          dut.clock.step()
+        }
+        set.toSet
+      }
+      val a = drain(t1)
+      val b = drain(t2)
+      // Shared edges (the diagonal from (2,14) to (14,2)) must be drawn by
+      // exactly one of the two triangles, never both and never neither.
+      val overlap = a.intersect(b)
+      assert(overlap.isEmpty, s"double-draw on shared pixels: $overlap")
+      assert(a.nonEmpty && b.nonEmpty)
+    }
+  }
+
+  it should "skip a back-facing triangle when cull mode is back" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    // Same geometry, but reversed winding => back-facing (negative area).
+    val tri = ((config.toFixed(2), config.toFixed(2)), (config.toFixed(2), config.toFixed(14)), (config.toFixed(14), config.toFixed(2)))
+    simulate(new TriangleRasterizer(config)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.pixel.ready.poke(true.B)
+      dut.io.cullMode.poke(1.U) // cull back-facing
+      dut.io.draw.valid.poke(true.B)
+      dut.io.draw.bits.v0.x.poke(tri._1._1.S); dut.io.draw.bits.v0.y.poke(tri._1._2.S)
+      dut.io.draw.bits.v1.x.poke(tri._2._1.S); dut.io.draw.bits.v1.y.poke(tri._2._2.S)
+      dut.io.draw.bits.v2.x.poke(tri._3._1.S); dut.io.draw.bits.v2.y.poke(tri._3._2.S)
+      dut.clock.step(); dut.io.draw.valid.poke(false.B)
+      var emitted = 0
+      while (!dut.io.draw.ready.peek().litToBoolean) {
+        if (dut.io.pixel.valid.peek().litToBoolean) emitted += 1
+        dut.clock.step()
+      }
+      assert(emitted == 0, s"back-facing triangle emitted $emitted pixels despite cull back")
     }
   }
 }
