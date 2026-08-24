@@ -16,6 +16,8 @@ class RenderCoreSpec extends AnyFlatSpec {
     for (i <- 0 until 3) { w += tri(i)._1._1; w += tri(i)._1._2; w += tri(i)._1._3; w += tri(i)._1._4 }
     for (i <- 0 until 3) { w += tri(i)._2._1; w += tri(i)._2._2; w += tri(i)._2._3 }
     for (i <- 0 until 3) { w += tri(i)._3 }
+    w += 0x9000 // shader entry PC
+    w += 0x20000 // kernarg buffer address
     w.result()
   }
 

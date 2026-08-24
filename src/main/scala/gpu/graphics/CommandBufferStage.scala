@@ -7,17 +7,21 @@ import chisel3.util._
   *
   * Reads `count` sequential draw-call records from software-allocated host
   * memory starting at `base` and emits each as a SceneTriangle on `draw`.
-  * A record is a fixed 24-word layout (little-endian word index):
+  * A record is a fixed 26-word layout (little-endian word index):
   *
   *   [0..11]  v0/v1/v2 clip-space (x,y,z,w) as Q16.16   (12 words)
   *   [12..20] v0/v1/v2 colour (r,g,b) as 8-bit          (9 words)
   *   [21..23] v0/v1/v2 depth as signed 32-bit           (3 words)
+  *   [24]     shader entry PC (the draw's shader descriptor)
+  *   [25]     kernarg buffer address
   *
   * This is the hardware side of "the driver writes a command list, the GPU
-  * executes it", the prerequisite for a host-driven (M6) Linux device.
+  * executes it", the prerequisite for a host-driven (M6) Linux device.  The
+  * phase-D shader descriptor lets a draw select a compiled RV32 shader program
+  * and point at it kernarg buffer.
   */
 class CommandBufferStage(config: GraphicsConfig) extends Module {
-  private val wordsPerRecord = 24
+  private val wordsPerRecord = 26
 
   val io = IO(new Bundle {
     val base = Input(UInt(32.W))
@@ -32,7 +36,7 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
   })
 
   private val record = RegInit(0.U(16.W))
-  private val word = RegInit(0.U(6.W)) // 0..23
+  private val word = RegInit(0.U(6.W)) // 0..25
   private val waiting = RegInit(false.B) // a read is in flight
   private val words = Reg(Vec(wordsPerRecord, UInt(32.W)))
   private val running = RegInit(false.B)
@@ -72,6 +76,8 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
   io.draw.bits.depth(0) := words(21).asSInt
   io.draw.bits.depth(1) := words(22).asSInt
   io.draw.bits.depth(2) := words(23).asSInt
+  io.draw.bits.shaderPc := words(24)
+  io.draw.bits.shaderKernarg := words(25)
 
   private val lastRecord = record === io.count - 1.U
 

@@ -3,11 +3,19 @@ package gpu.graphics
 import chisel3._
 import chisel3.util._
 
-/** A scene triangle in clip space (Q16.16) with per-vertex colour and depth. */
+/** A scene triangle in clip space (Q16.16) with per-vertex colour and depth.
+  *
+  * `shaderPc`/`shaderKernarg` carry the draw's shader descriptor (Phase D): the
+  * fragment/vertex shader entry PC and the kernel-arg buffer address, decoded
+  * from the draw-call record.  A core-backed shader reads varyings/uniforms
+  * from the kernarg buffer and writes its output through the same memory.
+  */
 class SceneTriangle(config: GraphicsConfig) extends Bundle {
   val clip = Vec(3, new ClipVertex)
   val color = Vec(3, new Varyings)
   val depth = Vec(3, SInt(32.W))
+  val shaderPc = UInt(32.W)
+  val shaderKernarg = UInt(32.W)
 }
 
 /** Top-of-pipeline renderer.
