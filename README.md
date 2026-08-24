@@ -13,9 +13,11 @@ verifiable.
 - `src/main/scala/gpu/core/frontend/simt/` — SIMT divergence/reconvergence state
 - `src/main/scala/gpu/core/execute/` — execution units
 - `src/main/scala/gpu/core/simt/` — SIMT lane wrapper
+- `src/main/scala/gpu/graphics/` — graphics pipeline (rasterizer, interpolators, output merger, geometry, command buffer), see `docs/GRAPHICS_ROADMAP.md`
 - `src/main/scala/gpu/config/` — architectural configuration
 - `src/test/scala/` — tests
 - `build.sbt` — Scala and Chisel dependency configuration
+- `docs/GRAPHICS_ROADMAP.md` — graphics pipeline roadmap and resolved design decisions
 
 ## Quick start
 
@@ -68,5 +70,20 @@ verifiable.
 - Parameterized SIMT lane count and active-lane masking
 - RV32I integer ALU operations
 
+## Graphics pipeline
+
+`src/main/scala/gpu/graphics/` implements a graphics front-end and render
+pipeline on the unified-shader + separated-fixed-function model:
+`MatrixTransform` (4x4 MVP) -> `GeometryStage` (perspective divide + viewport)
+-> `NearClipStage` (Sutherland-Hodgman clipping) -> `TriangleRasterizer`
+(fixed-point, top-left fill rule, cull) -> `FragmentInterpolator` /
+`PerspectiveInterpolator` (barycentric colour + depth, perspective-correct) ->
+`OutputMerger` (depth test + write to software-allocated colour/depth buffers),
+driven by `CommandBufferStage` (reads draw-call records from host memory) and
+composed in `RenderPipeline` / `RenderCore`. The framebuffer, depth buffer and
+command buffer are all software-allocated shared memory; hardware only computes
+addresses and issues reads/writes. See `docs/GRAPHICS_ROADMAP.md`.
+
 Current development continues on RVV execution coverage, CSR/trap semantics,
-host/software integration, and full-system physical timing closure.
+host/software integration, unified (SIMT) shading, and full-system physical
+timing closure.

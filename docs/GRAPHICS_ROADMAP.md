@@ -28,10 +28,28 @@ here is the same **unified-shader + separated-fixed-function** model:
 | M1 rasterizer | `6caff90` | Fixed-point bounding-box triangle rasterizer (plane-coefficient `A·x+B·y+C`, Vortex-style), `TriangleCoverage` correct |
 | M2 barycentrics | (folded into `9f576a6`) | Per-pixel barycentric coordinates: `RasterPixel` carries the three edge values `e0/e1/e2` and twice-area `area`, i.e. unnormalized barycentrics `λᵢ = eᵢ/area`. Delivered as part of the M3a commit rather than as a standalone milestone |
 | M3a interpolation | `9f576a6` | `FragmentInterpolator` (screen-space barycentric `attr=(Σ eᵢ·aᵢ)/area`), `RasterShader` emitting `RasterFragment(x,y,color)`; full-triangle shading verified |
+| M3b correct coverage | `9806680` | Top-left fill rule (winding-independent), cull mode (none/back/front), degenerate-triangle rejection, integer pixel coords at the fragment interface |
+| M3c output merger | `2bd1224` | `OutputMerger` serialized depth read-modify-write: programmable colour/depth base, stride, depth func, depth-write enable; writes through the shared memory port |
+| M4a viewport/perspective | `93291e8` | `GeometryStage`: clip (Q16.16) -> fixed-point screen space + per-vertex `1/w` (perspective divide) |
+| M4b near-plane clip | `d6e3086` | `NearClipStage`: 4-cycle Sutherland-Hodgman clip against `w >= wNear`, interpolating position/depth/varyings, emitting up to two triangles |
+| MVP transform | `a60ada7` | `MatrixTransform`: programmable row-major 4x4 matrix (Q16.16) applied to a vertex (retired by M5) |
+| perspective correction | `9508b19` | `PerspectiveInterpolator`: correct `1/w`-weighted interpolation of varyings |
+| render pipeline | `aaa6e41` | `RenderPipeline` (composite Geometry -> RasterShader -> OutputMerger) + PPM export |
+| command buffer | `0610c33` | `CommandBufferStage`: reads draw-call records from host memory |
+| render core | `53f996c` | `RenderCore`: composite CommandBufferStage -> RenderPipeline with separate command/framebuffer memory ports |
 
 Numbering note: M2 (barycentric coordinate generation) was implemented
-together with M3a and is recorded above for completeness. New milestones
-below continue from M3b.
+together with M3a and is recorded above for completeness.
+
+**Status (2026-08-24):** M1 through M4 are complete and verified — the fixed
+function geometry front-end (MVP transform, near-plane clip, perspective
+divide/viewport), the rasterizer (top-left fill rule, culling), the
+interpolators (screen-space and perspective-correct colour + depth), the
+output merger (depth test / write to software colour+depth buffers), the
+command-buffer parser, and the composite `RenderPipeline`/`RenderCore` that
+renders a command-driven scene into an exported PPM image. 22 graphics tests
+pass. Remaining: **M5 unified (SIMT) shading** (the substantive step), then
+M6 host/Linux device, M7 display, M8 userspace.
 
 Compute core already present: RV32 SIMT lanes + FPU (FMA/div/sqrt/est), RVV
 ALU, register files, L1/L2 (SharedL2Slice), memory hierarchy with a standardized
@@ -316,8 +334,9 @@ Verification:
 
 ## Small-step bias
 Each milestone is verifiable in simulation (Chisel spec + a software
-reference), and none requires a full graphics API to demonstrate. Preferred
-order: **M3b → M3c → M4 → M4b → M5**. M3b makes coverage correct, M3c
-makes pixels memory-visible *and* depth-correct, M4 adds draw-call-driven
-geometry with real clipping and projection, M4b removes the throughput
-ceiling, and M5 delivers programmable shading on the ISA we already have.
+reference), and none requires a full graphics API to demonstrate. M1–M4 are
+complete (see the status note above); the confirmed next step is **M5 unified
+(SIMT) shading** — the instruction-set/toolchain work stays on the existing
+RISC-V RV32IMF(+V) toolchain, so the split is: (a) fragment dispatch +
+uniform bank + trivial colour program, (b) texture unit, (c) derivatives and
+`discard`.
