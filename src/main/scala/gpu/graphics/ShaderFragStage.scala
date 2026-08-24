@@ -31,16 +31,17 @@ class ShaderFragStage(
   private val fragX = Reg(SInt(config.coordWidth.W))
   private val fragY = Reg(SInt(config.coordWidth.W))
   private val fragDepth = Reg(SInt(32.W))
+  private val fragColor = Reg(new Varyings)
   private val shaded = Reg(UInt(8.W))
 
   shader.io.uniform := io.uniform
   shader.io.prog := io.prog
   shader.io.start := state === sRun
   shader.io.init := state === sInit
-  // Load the interpolated colour into lane0 r0/r1/r2.
-  shader.io.initReg(0)(0) := io.fragIn.bits.color.r.pad(32).asSInt
-  shader.io.initReg(0)(1) := io.fragIn.bits.color.g.pad(32).asSInt
-  shader.io.initReg(0)(2) := io.fragIn.bits.color.b.pad(32).asSInt
+  // Load the latched interpolated colour into lane0 r0/r1/r2.
+  shader.io.initReg(0)(0) := fragColor.r.pad(32).asSInt
+  shader.io.initReg(0)(1) := fragColor.g.pad(32).asSInt
+  shader.io.initReg(0)(2) := fragColor.b.pad(32).asSInt
   for (r <- 3 until 8) shader.io.initReg(0)(r) := 0.S
   if (lanes > 1) {
     for (l <- 1 until lanes) for (r <- 0 until 8) shader.io.initReg(l)(r) := 0.S
@@ -61,6 +62,7 @@ class ShaderFragStage(
         fragX := io.fragIn.bits.x
         fragY := io.fragIn.bits.y
         fragDepth := io.fragIn.bits.depth
+        fragColor := io.fragIn.bits.color
         state := sInit
       }
     }
