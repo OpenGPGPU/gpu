@@ -304,6 +304,61 @@ Risks: still the largest milestone, but the ISA/toolchain deletion removes
 the worst of it. Split as: (a) dispatch + uniform bank + trivial color
 program, (b) texture unit, (c) derivatives/discard, with a test at each.
 
+### M5 Phase D — wire graphics to the core's kernel execution
+
+**Goal:** the production, commercial-GPU-aligned path — a vertex/fragment
+shader is a kernel launched on `GpuComputeUnit`'s SIMT warps, reusing the
+core's fetch/decode/issue/RF/ALU/FPU/commit machinery. The standalone
+`gpu.graphics` `ShaderCore`/`RV32ShaderCore` are verification stepping stones
+and are superseded by this.
+
+Starting state (already present):
+- `GpuComputeUnit.io.kernel: Decoupled(KernelLaunch{kernelPc, kernargAddress,
+  gridSize, localSize})` and `io.completion: Decoupled(KernelCompletion)`
+  (see `gpu/dispatch/DispatchTypes.scala`).
+- `KernelEmit` (in `gpu.graphics`) assembles a `KernelLaunch` from a draw's
+  shader descriptor (the graphics side of the contract).
+
+Steps:
+1. **Core kernel-execution harness.** Build a testbench that drives
+   `GpuComputeUnit.io.kernel`, provides `fetchRequest/fetchResponse` (the
+   shader program from a program memory) and `memoryRequest/memoryResponse`
+   (kernarg/uniform reads and shader output writes), and observes
+   `io.completion`. Sanity: a trivial RV32 kernel (e.g. `addi` + `ecall` /
+   `halt`) launches and completes on the core.
+2. **Shader descriptor in the command stream.** Extend the draw-call record
+   (or add a shader-setup command) so a draw carries a shader entry PC +
+   kernel-arg buffer address (plus grid/local = fragment/pixel counts). The
+   driver writes the kernarg buffer (per-draw uniforms, and per-fragment
+   varyings once the raster/interpolate stage has produced them).
+3. **Graphics → core connectivity.** A top-level driver wires
+   `CommandBufferStage` -> (per draw) `KernelEmit.kernel ->
+   GpuComputeUnit.io.kernel`; `GpuComputeUnit.io.completion` -> draw-done;
+   `KernelEmit` produces the launch; the core executes the shader on its SIMT
+   warps and raises completion. This replaces `ShaderFragStage` in
+   `ShadedPipeline` with the core-backed kernel.
+4. **Fragment varyings as kernarg.** For a fragment shader, pack the
+   interpolated per-fragment attributes (x, y, perspective-correct varyings,
+   depth, barycentrics/1/w) into the kernarg buffer; the RV32 shader reads
+   them (`ld`), applies the uniform, writes the output colour/depth word.
+5. **Output to OM.** The shader writes the colour (and depth, or leaves it to
+   the fixed-function OM) to the output pointer; the OM depth-tests and writes
+   the software colour/depth buffers as already implemented.
+6. **Pacing.** Per-draw wait on `KernelCompletion`; multi-buffer pipeline
+   (double buffering) is a later throughput optimization.
+
+Verification:
+- Compile a small RV32 fragment shader (reads a varying + a uniform from
+  kernarg, writes a colour) with the existing RISC-V toolchain; run it through
+  CommandBuffer -> KernelEmit -> GpuComputeUnit (with the harness) -> OM;
+  compare the framebuffer against a software shader reference. A texture and a
+  `discard`/derivative shader are follow-on tests.
+
+Note: this is a large cross-system integration requiring the core's
+kernel-execution harness (fetch + memory + completion) plus the graphics
+wiring; it should be done as a focused effort rather than layered onto other
+work.
+
 ---
 
 ### M6 — Host interface / Linux device
