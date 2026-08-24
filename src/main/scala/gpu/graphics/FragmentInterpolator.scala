@@ -29,11 +29,15 @@ class FragmentInterpolator(config: GraphicsConfig) extends Module {
     val c0 = Input(new Varyings)
     val c1 = Input(new Varyings)
     val c2 = Input(new Varyings)
+    val d0 = Input(SInt(32.W))
+    val d1 = Input(SInt(32.W))
+    val d2 = Input(SInt(32.W))
     val e0 = Input(SInt(config.edgeWidth.W))
     val e1 = Input(SInt(config.edgeWidth.W))
     val e2 = Input(SInt(config.edgeWidth.W))
     val area = Input(SInt(config.edgeWidth.W))
     val color = Output(new Varyings)
+    val depth = Output(SInt(32.W))
   })
 
   private def interp(u0: UInt, u1: UInt, u2: UInt): UInt = {
@@ -41,30 +45,37 @@ class FragmentInterpolator(config: GraphicsConfig) extends Module {
     (num / io.area)(7, 0)
   }
 
+  private def interpS(s0: SInt, s1: SInt, s2: SInt): SInt = {
+    val num = io.e0 * s0 + io.e1 * s1 + io.e2 * s2
+    (num / io.area)(31, 0).asSInt
+  }
+
   io.color.r := interp(io.c0.r, io.c1.r, io.c2.r)
   io.color.g := interp(io.c0.g, io.c1.g, io.c2.g)
   io.color.b := interp(io.c0.b, io.c1.b, io.c2.b)
+  io.depth := interpS(io.d0, io.d1, io.d2)
 }
 
-/** A shaded fragment: screen position plus interpolated colour. */
+/** A shaded fragment: screen position, interpolated colour, and depth. */
 class RasterFragment(config: GraphicsConfig) extends Bundle {
   val x = SInt(config.coordWidth.W)
   val y = SInt(config.coordWidth.W)
   val color = new Varyings
+  val depth = SInt(32.W)
 }
 
 /** Shades a rasterized triangle into fixed-point screen fragments.
   *
   * This is a combinator->registered pipeline that, given one triangle, emits
-  * every covered pixel's barycentrically-interpolated colour together with its
-  * screen position.  It is the minimal reproducible front-end of the fragment
-  * stage; a later milestone moves the per-pixel maths onto the SIMT shader
-  * lanes.
+  * every covered pixel's barycentrically-interpolated colour and depth together
+  * with its screen position.  A later milestone moves the per-pixel maths onto
+  * the SIMT shader lanes.
   */
 class RasterShader(config: GraphicsConfig) extends Module {
   val io = IO(new Bundle {
     val draw = Flipped(Decoupled(new TriangleVertices(config)))
     val colors = Input(Vec(3, new Varyings))
+    val depths = Input(Vec(3, SInt(32.W)))
     val cullMode = Input(UInt(2.W))
     val done = Output(Bool())
     val pixel = Decoupled(new RasterFragment(config))
@@ -78,6 +89,9 @@ class RasterShader(config: GraphicsConfig) extends Module {
   interp.io.c0 := io.colors(0)
   interp.io.c1 := io.colors(1)
   interp.io.c2 := io.colors(2)
+  interp.io.d0 := io.depths(0)
+  interp.io.d1 := io.depths(1)
+  interp.io.d2 := io.depths(2)
   interp.io.e0 := raster.io.pixel.bits.e0
   interp.io.e1 := raster.io.pixel.bits.e1
   interp.io.e2 := raster.io.pixel.bits.e2
@@ -87,6 +101,7 @@ class RasterShader(config: GraphicsConfig) extends Module {
   io.pixel.bits.x := raster.io.pixel.bits.x
   io.pixel.bits.y := raster.io.pixel.bits.y
   io.pixel.bits.color := interp.io.color
+  io.pixel.bits.depth := interp.io.depth
   raster.io.pixel.ready := io.pixel.ready
   io.done := raster.io.draw.ready
 }
