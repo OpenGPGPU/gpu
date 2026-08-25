@@ -377,12 +377,45 @@ Status (implementation):
 - Verified end to end: a command-driven draw is rasterized, shaded by a
   pass-through core kernel reading a varying from kernarg (x1), depth-tested
   and written to the framebuffer (`RenderCoreSpec`, `fragCore`).
+- **Batched fragment dispatch (2026-08-25).** `KernelFragStage` no longer
+  launches one kernel per fragment: it accumulates fragments into a batch of up
+  to `warps*lanes` and, at the draw boundary (`flush`), launches **one** kernel
+  with `localSize = count`, waits for completion, reads back the per-fragment
+  output words, and re-emits the batch in submission order. Fragments buffer
+  their x/y/depth locally so geometry and ordering survive the round-trip. The
+  kernarg ABI for a batch is:
+  `[0, 4*count)` per-fragment packed-colour inputs, `[64, 64+4*count)`
+  per-fragment colour outputs, `[128, ...)` per-draw uniforms. `flush` is
+  pulsed by the pipeline when the rasterizer goes idle (draw boundary) so a
+  batch never mixes draws; `drained` reports an empty in-flight batch.
+  `RenderPipeline`'s `fragCore` branch wires `kernelFrag.io.flush :=
+  shader.io.done` and `io.done` reflects the drained batch. Verified in
+  `KernelFragStageSpec` for a single fragment, a uniform-adding kernel, and a
+  multi-fragment batch (geometry/order preserved).
+- **Multi-fragment per-lane shading requires vector memory, which is gated on a
+  pre-existing core defect.** Correct batched shading needs a lane-aware shader
+  (fragment `i` is lane `i`, so it must index `kernarg + 4*i` via a vector
+  `vle32`/`vse32` with a base of `x1 + 4*localLinearBase`, reading
+  `v1`/`x8`). Scalar registers are per-warp broadcast, so a scalar shader only
+  shades fragment 0 of each warp correctly; the KernelFragStage FSM still
+  emits the whole batch, but lanes > 0 produce stale/zero colour. The
+  end-to-end vector load/store round-trip on `GpuComputeUnit` is corrupt: a
+  unit-stride 4-lane word store to a fresh line emits a masked/rotated
+  `byteMask` (e.g. `0x3fc3c`/`0xfff` for an expected `0xffff`) and the
+  `vle32` load issues no lower-memory request (data is masked), so `v2` holds
+  stale `oldVd`. The individual units (`VectorMemoryUnit`, `VectorMemoryCoalescer`,
+  `VectorDataCache`, `VectorTlb`) all pass their own specs, so this is an
+  integration defect in the vector memory path, not a lane-mapping or
+  encoding issue. Fixing it is a separate core-memory effort; until then the
+  per-fragment (count>1) fragCore integration test cannot assert distinct
+  per-lane colour.
 - The standalone `ShaderCore`/`RV32ShaderCore`/`ShaderFragStage` remain as the
   fixed-function stepping stones (default `fragCore = false`) and are to be
   removed once the core-backed path is the sole shading backend.
 - Remaining: full varying/depth kernarg packing beyond the packed colour word,
-  multi-fragment grid dispatch (grid/local sizing), per-draw pacing and double
-  buffering, and off-chip memory arbitration via `SharedL2Cache`.
+  per-draw pacing and double buffering, off-chip memory arbitration via
+  `SharedL2Cache`, and fixing the core vector-memory load/store round-trip so
+  per-lane (count>1) batched shading is verifiable.
 
 Resolved — multi-workgroup / multi-warp completion accounting.  The failure
 (kernels with more than one concurrent warp tripping `SingleCuKernelController`'s

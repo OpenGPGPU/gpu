@@ -8,18 +8,20 @@ import org.scalatest.flatspec.AnyFlatSpec
 class KernelFragStageSpec extends AnyFlatSpec {
   behavior of "KernelFragStage"
 
-  // Pass-through shader: read packed colour at x1+0, write it to x1+4, halt.
-  private val lw = BigInt("0000a503", 16)   // lw x10, 0(x1)
-  private val sw = BigInt("00a0a223", 16)   // sw x10, 4(x1)
-  private val cease = BigInt("30500073", 16)
+  // Batched ABI (byte offsets from the draw's kernarg base):
+  //   [0, 4*count)      per-fragment packed-colour inputs
+  //   [64, 64+4*count)  per-fragment colour outputs
+  //   [128, ...)        per-draw uniforms
 
-  // Shared physical line memory model keyed by line address (per-byte writes).
+  /** Byte-addressed 64-byte line memory model shared by the core and the
+    * word->line bridge.  Lines are keyed by their aligned byte address.
+    */
   private class MemModel {
     val lines = scala.collection.mutable.LongMap[BigInt]()
-    def putWord(line: Long, wordIdx: Int, value: BigInt): Unit = {
-      val base = lines.getOrElse(line, BigInt(0))
+    def putWord(lineAddr: Long, wordIdx: Int, value: BigInt): Unit = {
+      val base = lines.getOrElse(lineAddr, BigInt(0))
       val mask = (BigInt(0xffffffffL) << (wordIdx * 32))
-      lines(line) = (base & ~mask) | (value << (wordIdx * 32))
+      lines(lineAddr) = (base & ~mask) | (value << (wordIdx * 32))
     }
     def applyWrite(addr: Long, writeData: BigInt, byteMask: BigInt): Unit = {
       var line = lines.getOrElse(addr, BigInt(0))
@@ -34,91 +36,140 @@ class KernelFragStageSpec extends AnyFlatSpec {
     def readLine(addr: Long): BigInt = lines.getOrElse(addr, BigInt(0))
   }
 
-  it should "shade one fragment via a core-backed kernel and read the output back" in {
+  /** Shader program snippet helpers (RV32I + the RVV subset). */
+  private def lw(rd: Int, rs1: Int, imm: Int): BigInt =
+    ((BigInt(imm & 0xfff)) << 20) | ((BigInt(rs1 & 0x1f)) << 15) |
+      ((BigInt(2)) << 12) | ((BigInt(rd & 0x1f)) << 7) | 0x03
+  private def sw(rs2: Int, rs1: Int, imm: Int): BigInt = {
+    val i = imm & 0xfff
+    ((BigInt(i >> 5)) << 25) | ((BigInt(rs2 & 0x1f)) << 20) |
+      ((BigInt(rs1 & 0x1f)) << 15) | ((BigInt(2)) << 12) |
+      ((BigInt(i & 0x1f)) << 7) | 0x23
+  }
+  private def add(rd: Int, rs1: Int, rs2: Int): BigInt =
+    ((BigInt(rs2 & 0x1f)) << 20) | ((BigInt(rs1 & 0x1f)) << 15) |
+      ((BigInt(rd & 0x1f)) << 7) | 0x33
+  private def slli(rd: Int, rs1: Int, shamt: Int): BigInt =
+    ((BigInt(shamt & 0x1f)) << 20) | ((BigInt(rs1 & 0x1f)) << 15) |
+      ((BigInt(rd & 0x1f)) << 7) | 0x13
+  private def addi(rd: Int, rs1: Int, imm: Int): BigInt =
+    ((BigInt(imm & 0xfff)) << 20) | ((BigInt(rs1 & 0x1f)) << 15) |
+      ((BigInt(rd & 0x1f)) << 7) | 0x13
+  private def vsetivli(uimm: Int): BigInt =
+    (BigInt(0x3) << 30) | (BigInt(0x10) << 20) | (BigInt(uimm & 0x1f) << 15) |
+      (BigInt(0x7) << 12) | 0x57
+  private def vle32(rs1: Int, vd: Int): BigInt =
+    (BigInt(0x6) << 12) | (BigInt(vd & 0x1f) << 7) |
+      (BigInt(rs1 & 0x1f) << 15) | 0x07
+  private def vse32(rs1: Int, vs3: Int): BigInt =
+    (BigInt(0x6) << 12) | (BigInt(vs3 & 0x1f) << 7) |
+      (BigInt(rs1 & 0x1f) << 15) | 0x27
+  private val cease = BigInt("30500073", 16)
+
+  /** Services KernelFragStage's two memory ports against `mem` until `pred`
+    * becomes true or a guard timeout expires.  Returns the final predicate.
+    */
+  private def pump(
+    dut: KernelFragStage,
+    mem: MemModel,
+    pred: () => Boolean,
+    guard: Int = 400
+  ): Boolean = {
+    var kResp = false; var kId = BigInt(0); var kData = BigInt(0)
+    var wResp = false; var wId = BigInt(0); var wData = BigInt(0)
+    var g = 0
+    var hit = pred()
+    while (!hit && g < guard) {
+      dut.io.memResp.valid.poke(kResp)
+      if (kResp) {
+        dut.io.memResp.bits.transactionId.poke(kId.U)
+        dut.io.memResp.bits.readData.poke(kData.U)
+        dut.io.memResp.bits.fault.poke(false.B)
+      }
+      dut.io.wordMemResp.valid.poke(wResp)
+      if (wResp) {
+        dut.io.wordMemResp.bits.transactionId.poke(wId.U)
+        dut.io.wordMemResp.bits.readData.poke(wData.U)
+        dut.io.wordMemResp.bits.fault.poke(false.B)
+      }
+      val kFired = dut.io.memReq.valid.peek().litToBoolean &&
+        dut.io.memReq.ready.peek().litToBoolean
+      if (kFired) {
+        val addr = dut.io.memReq.bits.address.peek().litValue.toLong
+        val id = dut.io.memReq.bits.transactionId.peek().litValue
+        if (dut.io.memReq.bits.isWrite.peek().litToBoolean) {
+          val wd = dut.io.memReq.bits.writeData.peek().litValue
+          val bm = dut.io.memReq.bits.byteMask.peek().litValue
+          mem.applyWrite(addr, wd, bm); kData = 0
+        } else kData = mem.readLine(addr)
+        kId = id; kResp = true
+      } else kResp = false
+      val wFired = dut.io.wordMemReq.valid.peek().litToBoolean &&
+        dut.io.wordMemReq.ready.peek().litToBoolean
+      if (wFired) {
+        val addr = dut.io.wordMemReq.bits.address.peek().litValue.toLong
+        val id = dut.io.wordMemReq.bits.transactionId.peek().litValue
+        if (dut.io.wordMemReq.bits.isWrite.peek().litToBoolean) {
+          val wd = dut.io.wordMemReq.bits.writeData.peek().litValue
+          val bm = dut.io.wordMemReq.bits.byteMask.peek().litValue
+          mem.applyWrite(addr, wd, bm); wData = 0
+        } else wData = mem.readLine(addr)
+        wId = id; wResp = true
+      } else wResp = false
+      dut.clock.step()
+      g += 1
+      hit = pred()
+    }
+    hit
+  }
+
+  private def pokeDefaults(dut: KernelFragStage): Unit = {
+    dut.io.fragIn.valid.poke(false.B)
+    dut.io.out.ready.poke(true.B)
+    dut.io.flush.poke(false.B)
+    dut.io.memReq.ready.poke(true.B)
+    dut.io.memResp.valid.poke(false.B)
+    dut.io.memResp.bits.readData.poke(0.U)
+    dut.io.memResp.bits.fault.poke(false.B)
+    dut.io.memResp.bits.transactionId.poke(0.U)
+    dut.io.wordMemReq.ready.poke(true.B)
+    dut.io.wordMemResp.valid.poke(false.B)
+    dut.io.wordMemResp.bits.readData.poke(0.U)
+    dut.io.wordMemResp.bits.fault.poke(false.B)
+    dut.io.wordMemResp.bits.transactionId.poke(0.U)
+  }
+
+  it should "shade a single fragment via a batched pass-through kernel" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new KernelFragStage(config)) { dut =>
       val mem = new MemModel
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-      dut.io.fragIn.valid.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.shaderPc.poke(0x1000.U)
+      dut.io.kernargBase.poke(0x8000.U)
+
+      // Program: lw x10,0(x1); sw x10,64(x1); cease.
+      mem.putWord(0x1000L, 0, lw(10, 1, 0))
+      mem.putWord(0x1000L, 1, sw(10, 1, 64))
+      mem.putWord(0x1000L, 2, cease)
+
       dut.io.fragIn.bits.x.poke(3.S)
       dut.io.fragIn.bits.y.poke(4.S)
       dut.io.fragIn.bits.depth.poke(0x20.S)
       dut.io.fragIn.bits.color.r.poke(0xab.U)
       dut.io.fragIn.bits.color.g.poke(0xcd.U)
       dut.io.fragIn.bits.color.b.poke(0xef.U)
-      dut.io.out.ready.poke(true.B)
-      dut.io.shaderPc.poke(0x1000.U)
-      dut.io.kernargBase.poke(0x8000.U)
-      dut.io.memReq.ready.poke(true.B)
-      dut.io.memResp.valid.poke(false.B)
-      dut.io.memResp.bits.readData.poke(0.U)
-      dut.io.memResp.bits.fault.poke(false.B)
-      dut.io.memResp.bits.transactionId.poke(0.U)
-      dut.io.wordMemReq.ready.poke(true.B)
-      dut.io.wordMemResp.valid.poke(false.B)
-      dut.io.wordMemResp.bits.readData.poke(0.U)
-      dut.io.wordMemResp.bits.fault.poke(false.B)
-      dut.io.wordMemResp.bits.transactionId.poke(0.U)
-
-      // Preload the shader program into the shared line memory.
-      mem.putWord(0x1000L, 0, lw)
-      mem.putWord(0x1000L, 1, sw)
-      mem.putWord(0x1000L, 2, cease)
-
-      // Feed one fragment.
       dut.io.fragIn.valid.poke(true.B)
       dut.clock.step()
       dut.io.fragIn.valid.poke(false.B)
 
-      // Serve the two memory ports (core + bridge) against the shared model.
-      var kResp = false; var kId = BigInt(0); var kData = BigInt(0)
-      var wResp = false; var wId = BigInt(0); var wData = BigInt(0)
-      var guard = 0
-      var done = false
-      while (!done && guard < 400) {
-        dut.io.memResp.valid.poke(kResp)
-        if (kResp) {
-          dut.io.memResp.bits.transactionId.poke(kId.U)
-          dut.io.memResp.bits.readData.poke(kData.U)
-          dut.io.memResp.bits.fault.poke(false.B)
-        }
-        dut.io.wordMemResp.valid.poke(wResp)
-        if (wResp) {
-          dut.io.wordMemResp.bits.transactionId.poke(wId.U)
-          dut.io.wordMemResp.bits.readData.poke(wData.U)
-          dut.io.wordMemResp.bits.fault.poke(false.B)
-        }
-        val kFired = dut.io.memReq.valid.peek().litToBoolean &&
-          dut.io.memReq.ready.peek().litToBoolean
-        if (kFired) {
-          val addr = dut.io.memReq.bits.address.peek().litValue.toLong
-          val id = dut.io.memReq.bits.transactionId.peek().litValue
-          val isWrite = dut.io.memReq.bits.isWrite.peek().litToBoolean
-          if (isWrite) {
-            val wd = dut.io.memReq.bits.writeData.peek().litValue
-            val bm = dut.io.memReq.bits.byteMask.peek().litValue
-            mem.applyWrite(addr, wd, bm); kData = 0
-          } else kData = mem.readLine(addr)
-          kId = id; kResp = true
-        } else kResp = false
-        val wFired = dut.io.wordMemReq.valid.peek().litToBoolean &&
-          dut.io.wordMemReq.ready.peek().litToBoolean
-        if (wFired) {
-          val addr = dut.io.wordMemReq.bits.address.peek().litValue.toLong
-          val id = dut.io.wordMemReq.bits.transactionId.peek().litValue
-          val isWrite = dut.io.wordMemReq.bits.isWrite.peek().litToBoolean
-          if (isWrite) {
-            val wd = dut.io.wordMemReq.bits.writeData.peek().litValue
-            val bm = dut.io.wordMemReq.bits.byteMask.peek().litValue
-            mem.applyWrite(addr, wd, bm); wData = 0
-          } else wData = mem.readLine(addr)
-          wId = id; wResp = true
-        } else wResp = false
-        dut.clock.step()
-        guard += 1
-        done = dut.io.out.valid.peek().litToBoolean
-      }
-      assert(guard < 400, "fragment did not finish within a bounded time")
+      // Flush the (non-empty) batch: draw boundary.
+      dut.io.flush.poke(true.B)
+      dut.clock.step()
+      dut.io.flush.poke(false.B)
+
+      val done = pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean)
+      assert(done, "fragment did not finish within a bounded time")
       dut.io.out.bits.x.expect(3.S)
       dut.io.out.bits.y.expect(4.S)
       dut.io.out.bits.depth.expect(0x20.S)
@@ -128,119 +179,161 @@ class KernelFragStageSpec extends AnyFlatSpec {
     }
   }
 
-  it should "shade a fragment through a compute kernel adding a uniform" in {
-    // Program: x10 = kernarg word0 (packed colour), x11 = word2 (uniform),
-    // x10 += x11, store x10 to word1, halt.  Verifies a real (non-pass-through)
-    // kernel: output colour = input colour + a per-draw uniform, checked against
-    // a software reference.
+  it should "shade a single fragment through a kernel adding a uniform" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new KernelFragStage(config)) { dut =>
       val mem = new MemModel
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-      dut.io.fragIn.valid.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.shaderPc.poke(0x1000.U)
+      dut.io.kernargBase.poke(0x8000.U)
+
+      // Program: lw x10,0(x1); lw x11,128(x1); add x10,x10,x11;
+      //          sw x10,64(x1); cease.
+      mem.putWord(0x1000L, 0, lw(10, 1, 0))
+      mem.putWord(0x1000L, 1, lw(11, 1, 128))
+      mem.putWord(0x1000L, 2, add(10, 10, 11))
+      mem.putWord(0x1000L, 3, sw(10, 1, 64))
+      mem.putWord(0x1000L, 4, cease)
+
+      // Uniform at kernarg+128 (line 0x8080, word 0): +1 blue.
+      mem.putWord(0x8080L, 0, BigInt("00000100", 16))
+
       dut.io.fragIn.bits.x.poke(3.S)
       dut.io.fragIn.bits.y.poke(4.S)
       dut.io.fragIn.bits.depth.poke(0x20.S)
       dut.io.fragIn.bits.color.r.poke(0xab.U)
       dut.io.fragIn.bits.color.g.poke(0xcd.U)
       dut.io.fragIn.bits.color.b.poke(0xef.U)
-      dut.io.out.ready.poke(true.B)
-      dut.io.shaderPc.poke(0x1000.U)
-      dut.io.kernargBase.poke(0x8000.U)
-      dut.io.memReq.ready.poke(true.B)
-      dut.io.memResp.valid.poke(false.B)
-      dut.io.memResp.bits.readData.poke(0.U)
-      dut.io.memResp.bits.fault.poke(false.B)
-      dut.io.memResp.bits.transactionId.poke(0.U)
-      dut.io.wordMemReq.ready.poke(true.B)
-      dut.io.wordMemResp.valid.poke(false.B)
-      dut.io.wordMemResp.bits.readData.poke(0.U)
-      dut.io.wordMemResp.bits.fault.poke(false.B)
-      dut.io.wordMemResp.bits.transactionId.poke(0.U)
-
-      // Shader program at 0x1000: lw x10,0(x1); lw x11,8(x1); add x10,x10,x11;
-      // sw x10,4(x1); cease.
-      val lw0 = BigInt("0000a503", 16)      // lw x10, 0(x1)
-      val lw1 = BigInt("0080a583", 16)      // lw x11, 8(x1)
-      val add = BigInt("00b50533", 16)      // add x10, x10, x11
-      val sw = BigInt("00a0a223", 16)       // sw x10, 4(x1)
-      val cease = BigInt("30500073", 16)
-      mem.putWord(0x1000L, 0, lw0)
-      mem.putWord(0x1000L, 1, lw1)
-      mem.putWord(0x1000L, 2, add)
-      mem.putWord(0x1000L, 3, sw)
-      mem.putWord(0x1000L, 4, cease)
-
-      // Per-draw uniform at kernarg word2 (kernargBase+8): +1 on the blue byte.
-      val uniform = BigInt("00000100", 16)
-      mem.putWord(0x8000L, 2, uniform)
-
       dut.io.fragIn.valid.poke(true.B)
       dut.clock.step()
       dut.io.fragIn.valid.poke(false.B)
 
-      var kResp = false; var kId = BigInt(0); var kData = BigInt(0)
-      var wResp = false; var wId = BigInt(0); var wData = BigInt(0)
-      var guard = 0
-      var done = false
-      while (!done && guard < 400) {
-        dut.io.memResp.valid.poke(kResp)
-        if (kResp) {
-          dut.io.memResp.bits.transactionId.poke(kId.U)
-          dut.io.memResp.bits.readData.poke(kData.U)
-          dut.io.memResp.bits.fault.poke(false.B)
-        }
-        dut.io.wordMemResp.valid.poke(wResp)
-        if (wResp) {
-          dut.io.wordMemResp.bits.transactionId.poke(wId.U)
-          dut.io.wordMemResp.bits.readData.poke(wData.U)
-          dut.io.wordMemResp.bits.fault.poke(false.B)
-        }
-        val kFired = dut.io.memReq.valid.peek().litToBoolean &&
-          dut.io.memReq.ready.peek().litToBoolean
-        if (kFired) {
-          val addr = dut.io.memReq.bits.address.peek().litValue.toLong
-          val id = dut.io.memReq.bits.transactionId.peek().litValue
-          val isWrite = dut.io.memReq.bits.isWrite.peek().litToBoolean
-          if (isWrite) {
-            val wd = dut.io.memReq.bits.writeData.peek().litValue
-            val bm = dut.io.memReq.bits.byteMask.peek().litValue
-            mem.applyWrite(addr, wd, bm); kData = 0
-          } else kData = mem.readLine(addr)
-          kId = id; kResp = true
-        } else kResp = false
-        val wFired = dut.io.wordMemReq.valid.peek().litToBoolean &&
-          dut.io.wordMemReq.ready.peek().litToBoolean
-        if (wFired) {
-          val addr = dut.io.wordMemReq.bits.address.peek().litValue.toLong
-          val id = dut.io.wordMemReq.bits.transactionId.peek().litValue
-          val isWrite = dut.io.wordMemReq.bits.isWrite.peek().litToBoolean
-          if (isWrite) {
-            val wd = dut.io.wordMemReq.bits.writeData.peek().litValue
-            val bm = dut.io.wordMemReq.bits.byteMask.peek().litValue
-            mem.applyWrite(addr, wd, bm); wData = 0
-          } else wData = mem.readLine(addr)
-          wId = id; wResp = true
-        } else wResp = false
-        dut.clock.step()
-        guard += 1
-        done = dut.io.out.valid.peek().litToBoolean
-      }
-      assert(guard < 400, "fragment did not finish within a bounded time")
+      dut.io.flush.poke(true.B)
+      dut.clock.step()
+      dut.io.flush.poke(false.B)
 
-      // Reference: packed colour (0xab,0xcd,0xef,0xff) + uniform (blue+1) with no
-      // cross-byte carry -> (0xab,0xcd,0xf0).
-      val packed = BigInt("abcdefff", 16) // r g b alpha
-      val ref = packed + uniform
-      val expectedR = (ref >> 24) & 0xff
-      val expectedG = (ref >> 16) & 0xff
-      val expectedB = (ref >> 8) & 0xff
+      val done = pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean)
+      assert(done, "fragment did not finish within a bounded time")
+      // Reference: (0xab,0xcd,0xef,0xff) + (blue+1) -> (0xab,0xcd,0xf0).
       dut.io.out.bits.x.expect(3.S)
       dut.io.out.bits.y.expect(4.S)
-      dut.io.out.bits.color.r.expect(expectedR.U)
-      dut.io.out.bits.color.g.expect(expectedG.U)
-      dut.io.out.bits.color.b.expect(expectedB.U)
-      assert(expectedB == 0xf0, "test setup must produce a blue+1 reference")
+      dut.io.out.bits.color.r.expect(0xab.U)
+      dut.io.out.bits.color.g.expect(0xcd.U)
+      dut.io.out.bits.color.b.expect(0xf0.U)
+    }
+  }
+
+  it should "accumulate multiple fragments into one flushed batch, emitted in order" in {
+    // Batched dispatch: several fragments are accumulated and flushed as ONE
+    // kernel launch (localSize = count) rather than one launch per fragment.
+    // The FSM buffers each fragment's x/y/depth locally and re-emits the batch
+    // in submission order after the kernel's output words are read back.  Here
+    // a scalar pass-through kernel is used (scalar registers are per-warp
+    // broadcast, so only fragment 0's colour slot holds a value); the geometry
+    // and ordering of every batched fragment are the contract under test.
+    val config = GpuConfig(lanes = 4, warps = 2)
+    val count = 3
+    simulate(new KernelFragStage(config)) { dut =>
+      val mem = new MemModel
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.shaderPc.poke(0x1000.U)
+      dut.io.kernargBase.poke(0x8000.U)
+
+      // Pass-through scalar kernel: lw x10,0(x1); sw x10,64(x1); cease.
+      mem.putWord(0x1000L, 0, lw(10, 1, 0))
+      mem.putWord(0x1000L, 1, sw(10, 1, 64))
+      mem.putWord(0x1000L, 2, cease)
+
+      // Feed a batch of fragments with distinct x/y/depth.
+      val inputs = Seq(
+        (0, 10, 0x20),
+        (1, 11, 0x30),
+        (2, 12, 0x40)
+      )
+      for ((x, y, d) <- inputs) {
+        dut.io.fragIn.bits.x.poke(x.S)
+        dut.io.fragIn.bits.y.poke(y.S)
+        dut.io.fragIn.bits.depth.poke(d.S)
+        dut.io.fragIn.bits.color.r.poke(0xab.U)
+        dut.io.fragIn.bits.color.g.poke(0xcd.U)
+        dut.io.fragIn.bits.color.b.poke(0xef.U)
+        dut.io.fragIn.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.fragIn.valid.poke(false.B)
+      }
+
+      // The batch is not yet launched: no output is pending until flush.
+      assert(!dut.io.out.valid.peek().litToBoolean,
+        "an unflushed batch must not emit fragments")
+
+      // Flush the (non-empty) batch: draw boundary launches one kernel.
+      dut.io.flush.poke(true.B)
+      dut.clock.step()
+      dut.io.flush.poke(false.B)
+
+      // Collect every emitted fragment in order, serving memory with deferred
+      // responses: a request is captured on the cycle it fires and its response
+      // is presented on a later cycle once the port re-asserts validity.
+      val emitted = scala.collection.mutable.ArrayBuffer.empty[(Long, Long, Long)]
+      val kQueue = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
+      val wQueue = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
+      var guard = 0
+      var drained = false
+      while (!drained && guard < 4000) {
+        if (kQueue.nonEmpty) {
+          dut.io.memResp.valid.poke(true.B)
+          dut.io.memResp.bits.transactionId.poke(kQueue.head._1.U)
+          dut.io.memResp.bits.readData.poke(kQueue.head._2.U)
+          dut.io.memResp.bits.fault.poke(false.B)
+        } else dut.io.memResp.valid.poke(false.B)
+        if (kQueue.nonEmpty && dut.io.memResp.ready.peek().litToBoolean) kQueue.dequeue()
+        if (dut.io.memReq.valid.peek().litToBoolean && dut.io.memReq.ready.peek().litToBoolean) {
+          val addr = dut.io.memReq.bits.address.peek().litValue.toLong
+          val id = dut.io.memReq.bits.transactionId.peek().litValue
+          if (dut.io.memReq.bits.isWrite.peek().litToBoolean) {
+            mem.applyWrite(addr, dut.io.memReq.bits.writeData.peek().litValue,
+              dut.io.memReq.bits.byteMask.peek().litValue)
+            kQueue.enqueue((id, BigInt(0)))
+          } else kQueue.enqueue((id, mem.readLine(addr)))
+        }
+        if (wQueue.nonEmpty) {
+          dut.io.wordMemResp.valid.poke(true.B)
+          dut.io.wordMemResp.bits.transactionId.poke(wQueue.head._1.U)
+          dut.io.wordMemResp.bits.readData.poke(wQueue.head._2.U)
+          dut.io.wordMemResp.bits.fault.poke(false.B)
+        } else dut.io.wordMemResp.valid.poke(false.B)
+        if (wQueue.nonEmpty && dut.io.wordMemResp.ready.peek().litToBoolean) wQueue.dequeue()
+        if (dut.io.wordMemReq.valid.peek().litToBoolean &&
+          dut.io.wordMemReq.ready.peek().litToBoolean) {
+          val addr = dut.io.wordMemReq.bits.address.peek().litValue.toLong
+          val id = dut.io.wordMemReq.bits.transactionId.peek().litValue
+          if (dut.io.wordMemReq.bits.isWrite.peek().litToBoolean) {
+            mem.applyWrite(addr, dut.io.wordMemReq.bits.writeData.peek().litValue,
+              dut.io.wordMemReq.bits.byteMask.peek().litValue)
+            wQueue.enqueue((id, BigInt(0)))
+          } else wQueue.enqueue((id, mem.readLine(addr)))
+        }
+        if (dut.io.out.valid.peek().litToBoolean) {
+          emitted += ((dut.io.out.bits.x.peek().litValue.toLong,
+            dut.io.out.bits.y.peek().litValue.toLong,
+            dut.io.out.bits.depth.peek().litValue.toLong))
+          dut.io.out.ready.poke(true.B)
+        } else dut.io.out.ready.poke(false.B)
+        dut.clock.step()
+        guard += 1
+        if (emitted.size == count && dut.io.drained.peek().litToBoolean)
+          drained = true
+      }
+      assert(emitted.size == count, s"expected $count fragments, got ${emitted.size}")
+
+      // Fragments are emitted in submission order with geometry/depth preserved.
+      for ((expected, got) <- inputs zip emitted) {
+        assert(got._1 == expected._1 &&
+          got._2 == expected._2 && got._3 == expected._3,
+          s"fragment geometry mismatch: expected $expected got $got")
+      }
     }
   }
 }

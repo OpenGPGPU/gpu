@@ -106,6 +106,12 @@ class RenderPipeline(
     shader.io.pixel.ready := kernelFrag.io.fragIn.ready
     kernelFrag.io.shaderPc := io.draw.bits.shaderPc
     kernelFrag.io.kernargBase := io.draw.bits.shaderKernarg
+    // The batch must be flushed exactly at the draw boundary: once the
+    // rasterizer has gone idle (all pixels of the current draw emitted), any
+    // accumulated-but-unlaunched fragments are launched as one kernel.  The
+    // batch is empty at that same point iff the draw produced no fragments, in
+    // which case flush is a no-op.
+    kernelFrag.io.flush := shader.io.done
 
     om.io.fragIn.valid := kernelFrag.io.out.valid
     om.io.fragIn.bits.x := kernelFrag.io.out.bits.x(15, 0).asUInt
@@ -123,7 +129,10 @@ class RenderPipeline(
     io.kernelWordMemReq <> kernelFrag.io.wordMemReq
     kernelFrag.io.wordMemResp <> io.kernelWordMemResp
 
-    io.done := shader.io.done && kernelFrag.io.fragIn.ready && om.io.fragIn.ready
+    // Done only once every rasterized fragment has been flushed, shaded, and
+    // handed to the OM: the batch must be empty (drained) so an in-flight batch
+    // is never mistaken for an idle pipeline during a draw boundary.
+    io.done := shader.io.done && kernelFrag.io.drained && om.io.fragIn.ready
   } else {
     om.io.fragIn.valid := shader.io.pixel.valid
     om.io.fragIn.bits.x := shader.io.pixel.bits.x(15, 0).asUInt
