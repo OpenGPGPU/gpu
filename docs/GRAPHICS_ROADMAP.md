@@ -384,6 +384,36 @@ Status (implementation):
   multi-fragment grid dispatch (grid/local sizing), per-draw pacing and double
   buffering, and off-chip memory arbitration via `SharedL2Cache`.
 
+Known issue — multi-workgroup grid completion (previously mislabeled a
+completion-accounting bug).  A kernel launched with `gridSize > 1` (or any
+workgroup of more than one concurrent warp) trips
+`SingleCuKernelController`'s "completion must identify a resident dispatched
+warp" assertion.  Instrumented trace (`GpuFrontend`/`WarpScheduler`/
+`ScalarIssueStage`/`ScalarCommitStage`) shows the chain:
+  - a warp's instruction (**PC 0x1000**) is re-presented by `WarpScheduler`'s
+    single-slot `issueBits` before its PC advances — the scheduler cannot reload
+    (`canLoadIssue` is false) because the frontend's single-fetch port is gated
+    by `canLaunchFetch = !fetchPending(issueBits.warpId)`, so `issueBits` keeps a
+    stale warp/pc and re-presents it once the warp's in-flight fetch resolves;
+  - the repeated `addi` double-commits → double `resume` → the `cease` at
+    `PC+4` is issued twice → `WarpSystemControl` emits `finish` twice →
+    `SingleCuKernelController.running` and `WorkgroupDispatcher`'s warp count
+    are corrupted.
+  Attempting a scheduler fix (block-on-issue-acceptance) removed the duplicate
+  present but exposed a second, deeper issue: a second warp's instruction stalls
+  in the scalar backend (issued once but never commits).  So there are
+  interlocking core-frontend (issue/present) and core-backend (multi-warp
+  instruction retirement) races.
+
+This is the "concurrency added later with explicit tags" milestone the
+`KernelDispatchPipeline` comment anticipates: attribute warp completion with an
+explicit per-warp/per-command tag (as `TaggedKernelLaunch`/`commandId`
+already model) instead of relying on warp-slot order, and make the frontend's
+single-fetch port / scheduler `issueBits` not re-present a warp whose
+instruction is still in flight.  Treat as a focused core-integrity effort, not a
+quick patch; until it lands, keep `localSize <= lanes` (one warp per workgroup)
+and `gridSize` effectively 1 for the core-backed path.
+
 ---
 
 ### M6 — Host interface / Linux device
