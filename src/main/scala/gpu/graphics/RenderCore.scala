@@ -2,6 +2,8 @@ package gpu.graphics
 
 import chisel3._
 import chisel3.util._
+import gpu.config.GpuConfig
+import gpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse}
 
 /** Top-level command-driven renderer.
   *
@@ -11,11 +13,22 @@ import chisel3.util._
   * two separate memory ports, mirroring a real integrated SoC where the
   * command ring and the render targets are distinct traffic.
   *
+  * `fragCore` selects the shading backend (passed to `RenderPipeline`).  With
+  * `fragCore = true` fragments are shaded by a compiled RV32 kernel launched on
+  * the compute unit's SIMT warps (the phase-D unified-shader path); the
+  * kernel's program/kernarg/output live in the line-based memory behind
+  * `kernelMemReq/Resp` and `kernelWordMemReq/Resp`.  With `fragCore = false`
+  * the fixed-function interpolated colour is used and those ports are idle.
+  *
   * A `start` pulse makes the command stage read `cmdCount` records starting at
   * `cmdBase` and, for each, render one triangle; `done` goes high once every
   * record has been consumed and the last read-modify-write has retired.
   */
-class RenderCore(config: GraphicsConfig) extends Module {
+class RenderCore(
+  config: GraphicsConfig = GraphicsConfig(),
+  gpuConfig: GpuConfig = GpuConfig(),
+  fragCore: Boolean = false
+) extends Module {
   val io = IO(new Bundle {
     val cmdBase = Input(UInt(32.W))
     val cmdCount = Input(UInt(16.W))
@@ -28,6 +41,10 @@ class RenderCore(config: GraphicsConfig) extends Module {
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
     }
+    val kernelMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig))
+    val kernelMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
+    val kernelWordMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig))
+    val kernelWordMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
     val colorBase = Input(UInt(32.W))
     val depthBase = Input(UInt(32.W))
     val stride = Input(UInt(32.W))
@@ -39,7 +56,7 @@ class RenderCore(config: GraphicsConfig) extends Module {
   })
 
   private val cb = Module(new CommandBufferStage(config))
-  private val rp = Module(new RenderPipeline(config))
+  private val rp = Module(new RenderPipeline(config, gpuConfig, fragCore))
 
   cb.io.base := io.cmdBase
   cb.io.count := io.cmdCount
@@ -58,6 +75,11 @@ class RenderCore(config: GraphicsConfig) extends Module {
   rp.io.cullMode := io.cullMode
   rp.io.mem.req <> io.fbMem.req
   rp.io.mem.resp <> io.fbMem.resp
+
+  io.kernelMemReq <> rp.io.kernelMemReq
+  rp.io.kernelMemResp <> io.kernelMemResp
+  io.kernelWordMemReq <> rp.io.kernelWordMemReq
+  rp.io.kernelWordMemResp <> io.kernelWordMemResp
 
   // Done once every command has been consumed and the render pipeline is idle.
   io.done := cb.io.done && rp.io.done

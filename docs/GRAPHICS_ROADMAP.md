@@ -359,6 +359,31 @@ kernel-execution harness (fetch + memory + completion) plus the graphics
 wiring; it should be done as a focused effort rather than layered onto other
 work.
 
+Status (implementation):
+- The **core-backed path is folded into the existing single modules** rather
+  than parallel `Kernel*` clones. `RenderCore`/`RenderPipeline` take a
+  `fragCore: Boolean` parameter: `false` (default) is the fixed-function
+  interpolated-colour path; `true` inserts `KernelFragStage` between the
+  raster/interp stage and the OM, so each fragment is shaded by a compiled RV32
+  kernel launched on `GpuComputeUnit` via `KernelShaderStage` (KernelEmit).
+  `KernelFragStage`, `KernelShaderStage` and `OmWordToLinePort` are reusable
+  parts; the former `KernelShadedPipeline`/`KernelRenderCore` clones were
+  consolidated away.
+- The draw record carries a shader descriptor (entry PC + kernarg address) that
+  `CommandBufferStage` decodes; with `fragCore = true` the kernel's program,
+  kernarg and output live in the line-based memory exposed on
+  `RenderCore.kernelMemReq/Resp` + `kernelWordMemReq/Resp`, which a shared L2
+  arbitrates with the command/framebuffer ports.
+- Verified end to end: a command-driven draw is rasterized, shaded by a
+  pass-through core kernel reading a varying from kernarg (x1), depth-tested
+  and written to the framebuffer (`RenderCoreSpec`, `fragCore`).
+- The standalone `ShaderCore`/`RV32ShaderCore`/`ShaderFragStage` remain as the
+  fixed-function stepping stones (default `fragCore = false`) and are to be
+  removed once the core-backed path is the sole shading backend.
+- Remaining: full varying/depth kernarg packing beyond the packed colour word,
+  multi-fragment grid dispatch (grid/local sizing), per-draw pacing and double
+  buffering, and off-chip memory arbitration via `SharedL2Cache`.
+
 ---
 
 ### M6 — Host interface / Linux device
