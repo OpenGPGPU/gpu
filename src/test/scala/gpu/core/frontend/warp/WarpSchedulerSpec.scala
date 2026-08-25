@@ -8,8 +8,9 @@ import org.scalatest.flatspec.AnyFlatSpec
 class WarpSchedulerSpec extends AnyFlatSpec {
   private val config = GpuConfig(lanes = 8, warps = 4)
 
-  private def launch(dut: WarpScheduler, pc: Int, mask: Int): Unit = {
+  private def launch(dut: WarpScheduler, warpId: Int, pc: Int, mask: Int): Unit = {
     dut.io.launch.valid.poke(true.B)
+    dut.io.launch.bits.warpId.poke(warpId.U)
     dut.io.launch.bits.startPc.poke(pc.U)
     dut.io.launch.bits.activeMask.poke(mask.U)
     dut.io.launch.ready.expect(true.B)
@@ -28,9 +29,9 @@ class WarpSchedulerSpec extends AnyFlatSpec {
       dut.io.resume.valid.poke(false.B)
       dut.io.finish.valid.poke(false.B)
 
-      launch(dut, 0x100, 0xff)
-      launch(dut, 0x200, 0x0f)
-      launch(dut, 0x300, 0xf0)
+      launch(dut, 0, 0x100, 0xff)
+      launch(dut, 1, 0x200, 0x0f)
+      launch(dut, 2, 0x300, 0xf0)
 
       dut.io.active.expect("b0111".U)
       dut.io.issue.ready.poke(true.B)
@@ -74,8 +75,8 @@ class WarpSchedulerSpec extends AnyFlatSpec {
       dut.io.resume.valid.poke(false.B)
       dut.io.finish.valid.poke(false.B)
 
-      launch(dut, 0x400, 0xaa)
-      launch(dut, 0x500, 0x55)
+      launch(dut, 0, 0x400, 0xaa)
+      launch(dut, 1, 0x500, 0x55)
 
       dut.io.issue.valid.expect(true.B)
       dut.io.issue.bits.warpId.expect(0.U)
@@ -96,14 +97,19 @@ class WarpSchedulerSpec extends AnyFlatSpec {
       dut.io.active.expect("b0010".U)
       dut.io.issue.bits.warpId.expect(1.U)
 
-      // Lowest free slot is reused on the next launch.
-      launch(dut, 0x600, 0xff)
+      // A finished slot is reused when the launch names it explicitly.
+      launch(dut, 0, 0x600, 0xff)
       dut.io.active.expect("b0011".U)
       dut.io.launch.valid.poke(true.B)
+      dut.io.launch.bits.warpId.poke(2.U)
       dut.io.launch.bits.startPc.poke(0.U)
       dut.io.launch.bits.activeMask.poke(0.U)
-      // Two slots remain free in this four-warp configuration.
+      // Slots 2 and 3 remain free in this four-warp configuration; the
+      // launch is backpressured only when the named slot is occupied.
       dut.io.launch.ready.expect(true.B)
+      dut.io.launch.bits.warpId.poke(1.U)
+      dut.io.launch.ready.expect(false.B)
+      dut.io.launch.valid.poke(false.B)
     }
   }
 
@@ -116,7 +122,7 @@ class WarpSchedulerSpec extends AnyFlatSpec {
       dut.io.resume.valid.poke(false.B)
       dut.io.finish.valid.poke(false.B)
 
-      (0 until config.warps).foreach(i => launch(dut, 0x1000 + i * 4, 0xff))
+      (0 until config.warps).foreach(i => launch(dut, i, 0x1000 + i * 4, 0xff))
       dut.io.active.expect("b1111".U)
       dut.io.launch.ready.expect(false.B)
     }
@@ -133,6 +139,7 @@ class WarpSchedulerSpec extends AnyFlatSpec {
       dut.io.finish.valid.poke(false.B)
 
       dut.io.launch.valid.poke(true.B)
+      dut.io.launch.bits.warpId.poke(0.U)
       dut.io.launch.bits.startPc.poke(0x80.U)
       dut.io.launch.bits.activeMask.poke("b1111".U)
       dut.clock.step()

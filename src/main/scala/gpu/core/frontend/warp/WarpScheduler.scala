@@ -9,6 +9,11 @@ import gpu.config.GpuConfig
   * A successful issue blocks that warp, preventing multiple unresolved
   * frontend transactions for the same warp. `resume` clears the block and
   * updates the PC; `finish` releases the hardware warp for a future launch.
+  *
+  * Launches name their target slot explicitly (`WarpLaunch.warpId`): the
+  * dispatcher initializes that slot's registers while other warps may still
+  * finish and free lower slots, so the scheduler must not re-derive the slot
+  * at launch time. `launch.ready` backpressures unless the named slot is free.
   */
 class WarpScheduler(config: GpuConfig = GpuConfig()) extends Module {
   val io = IO(new Bundle {
@@ -61,18 +66,40 @@ class WarpScheduler(config: GpuConfig = GpuConfig()) extends Module {
   io.issue.bits := issueBits
 
   private val freeWarps = ~active
-  private val launchWarp = PriorityEncoder(freeWarps)
-  io.launch.ready := freeWarps.orR
+  // The launch names its target slot; only that slot's freeness backpressures
+  // the launch, so a lower slot freed by a concurrent `finish` cannot steal
+  // the launch away from the slot the dispatcher already initialized.
+  private val launchTargetOH = UIntToOH(io.launch.bits.warpId, config.warps)
+  io.launch.ready := (freeWarps & launchTargetOH).orR
+
+  // `active`/`blocked` are whole-register state: compose every event into a
+  // single next-state assignment. Separate `when` blocks would make a
+  // coincident resume/finish/launch silently drop the block bit set by an
+  // issue load in the same cycle (last write wins), re-exposing an in-flight
+  // warp to the selector.
+  private val launchFireOH =
+    Mux(io.launch.fire, launchTargetOH, 0.U(config.warps.W))
+  private val resumeClearOH = Mux(
+    io.resume.valid && validWarpId(io.resume.bits.warpId),
+    UIntToOH(io.resume.bits.warpId, config.warps),
+    0.U(config.warps.W)
+  )
+  private val issueBlockOH = Mux(
+    loadSelectedWarp,
+    UIntToOH(selectedWarp, config.warps),
+    0.U(config.warps.W)
+  )
+  active := (active | launchFireOH) & ~finishOH
+  blocked :=
+    (blocked & ~(resumeClearOH | finishOH | launchFireOH)) | issueBlockOH
 
   when(io.launch.fire) {
-    active := active | UIntToOH(launchWarp, config.warps)
-    blocked := blocked & ~UIntToOH(launchWarp, config.warps)
     if (config.warps == 1) {
       pcs(0) := io.launch.bits.startPc
       masks(0) := io.launch.bits.activeMask
     } else {
-      pcs(launchWarp) := io.launch.bits.startPc
-      masks(launchWarp) := io.launch.bits.activeMask
+      pcs(io.launch.bits.warpId) := io.launch.bits.startPc
+      masks(io.launch.bits.warpId) := io.launch.bits.activeMask
     }
   }
 
@@ -84,7 +111,6 @@ class WarpScheduler(config: GpuConfig = GpuConfig()) extends Module {
     issueBits.warpId := selectedWarp
     issueBits.pc := selectedPc
     issueBits.activeMask := selectedMask
-    blocked := blocked | UIntToOH(selectedWarp, config.warps)
     roundRobinHead := Mux(
       selectedWarp === (config.warps - 1).U,
       0.U,
@@ -93,7 +119,6 @@ class WarpScheduler(config: GpuConfig = GpuConfig()) extends Module {
   }
 
   when(io.resume.valid && validWarpId(io.resume.bits.warpId)) {
-    blocked := blocked & ~UIntToOH(io.resume.bits.warpId, config.warps)
     if (config.warps == 1) {
       pcs(0) := io.resume.bits.nextPc
       masks(0) := io.resume.bits.activeMask
@@ -101,11 +126,6 @@ class WarpScheduler(config: GpuConfig = GpuConfig()) extends Module {
       pcs(io.resume.bits.warpId) := io.resume.bits.nextPc
       masks(io.resume.bits.warpId) := io.resume.bits.activeMask
     }
-  }
-
-  when(io.finish.valid && validWarpId(io.finish.bits)) {
-    active := active & ~finishOH
-    blocked := blocked & ~finishOH
   }
 
   io.active := active

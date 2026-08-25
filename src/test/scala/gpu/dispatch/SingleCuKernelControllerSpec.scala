@@ -35,6 +35,7 @@ class SingleCuKernelControllerSpec extends AnyFlatSpec {
           dut.clock.step(); cycles += 1
         }
         assert(dut.io.launch.valid.peek().litToBoolean)
+        dut.io.launch.bits.warpId.expect(warpId.U)
         dut.io.launch.bits.startPc.expect(0x1000.U)
         dut.io.launch.bits.activeMask.expect(expectedMask.U)
         dut.clock.step()

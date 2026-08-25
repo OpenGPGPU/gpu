@@ -3,7 +3,12 @@
 `WarpScheduler` owns the active, blocked, PC, lane-mask, and round-robin state
 for every hardware warp.
 
-- `launch.fire` allocates the lowest free hardware warp.
+- `launch.fire` allocates the hardware warp slot named by
+  `WarpLaunch.warpId`. The dispatcher snapshots the slot before initializing
+  its registers, so the scheduler must honor the named slot rather than
+  re-deriving the lowest free one — a concurrent `finish` can free a lower
+  slot during the initialization window. `launch.ready` backpressures unless
+  the named slot is free.
 - A runnable warp is selected fairly and placed in a one-entry registered
   `issue` output.
 - Selection blocks that warp immediately, so backpressure cannot create a

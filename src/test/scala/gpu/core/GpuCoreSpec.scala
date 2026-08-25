@@ -10,6 +10,7 @@ class GpuCoreSpec extends AnyFlatSpec {
 
   private def defaults(dut: GpuCore, lanes: Int): Unit = {
     dut.io.launch.valid.poke(false.B)
+    dut.io.launch.bits.warpId.poke(0.U)
     dut.io.scalarInitialize.valid.poke(false.B)
     dut.io.scalarInitialize.bits.warpId.poke(0.U)
     dut.io.scalarInitialize.bits.rd.poke(0.U)

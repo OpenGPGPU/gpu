@@ -14,8 +14,10 @@ import gpu.core.frontend.warp.WarpLaunch
   * Vector v1 contains local-linear IDs. v0 remains reserved for RVV masks.
   *
   * This module owns the frontend launch port. It snapshots the lowest free
-  * hardware slot before initialization, and dispatch serialization guarantees
-  * that no competing launch can consume that slot.
+  * hardware slot before initialization and names that slot in the launch
+  * command; dispatch serialization guarantees no competing launch can consume
+  * the slot, and the scheduler honors the named slot even when a concurrent
+  * finish frees a lower slot during the initialization window.
   */
 class WarpContextInitializer(config: GpuConfig = GpuConfig()) extends Module {
   val io = IO(new Bundle {
@@ -77,6 +79,7 @@ class WarpContextInitializer(config: GpuConfig = GpuConfig()) extends Module {
   }
 
   io.launch.valid := state === launchWarp
+  io.launch.bits.warpId := warpId
   io.launch.bits.startPc := task.kernelPc
   io.launch.bits.activeMask := task.activeMask
   when(io.launch.fire) {

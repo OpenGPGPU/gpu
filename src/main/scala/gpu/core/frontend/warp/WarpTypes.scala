@@ -3,8 +3,16 @@ package gpu.core.frontend.warp
 import chisel3._
 import gpu.config.GpuConfig
 
-/** Command that allocates a free hardware warp. */
+/** Command that allocates a hardware warp slot.
+  *
+  * The dispatcher (WarpContextInitializer) snapshots the target slot before
+  * initializing its registers and names it explicitly here. The scheduler must
+  * launch exactly this slot: a concurrent `finish` can free a lower slot while
+  * initialization is in flight, so re-deriving the lowest free slot at
+  * `launch.fire` would mismatch the initialized context.
+  */
 class WarpLaunch(config: GpuConfig) extends Bundle {
+  val warpId = UInt(config.warpIdWidth.W)
   val startPc = UInt(config.xLen.W)
   val activeMask = UInt(config.lanes.W)
 }

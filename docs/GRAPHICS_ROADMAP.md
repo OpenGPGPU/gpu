@@ -384,35 +384,35 @@ Status (implementation):
   multi-fragment grid dispatch (grid/local sizing), per-draw pacing and double
   buffering, and off-chip memory arbitration via `SharedL2Cache`.
 
-Known issue — multi-workgroup grid completion (previously mislabeled a
-completion-accounting bug).  A kernel launched with `gridSize > 1` (or any
-workgroup of more than one concurrent warp) trips
-`SingleCuKernelController`'s "completion must identify a resident dispatched
-warp" assertion.  Instrumented trace (`GpuFrontend`/`WarpScheduler`/
-`ScalarIssueStage`/`ScalarCommitStage`) shows the chain:
-  - a warp's instruction (**PC 0x1000**) is re-presented by `WarpScheduler`'s
-    single-slot `issueBits` before its PC advances — the scheduler cannot reload
-    (`canLoadIssue` is false) because the frontend's single-fetch port is gated
-    by `canLaunchFetch = !fetchPending(issueBits.warpId)`, so `issueBits` keeps a
-    stale warp/pc and re-presents it once the warp's in-flight fetch resolves;
-  - the repeated `addi` double-commits → double `resume` → the `cease` at
-    `PC+4` is issued twice → `WarpSystemControl` emits `finish` twice →
-    `SingleCuKernelController.running` and `WorkgroupDispatcher`'s warp count
-    are corrupted.
-  Attempting a scheduler fix (block-on-issue-acceptance) removed the duplicate
-  present but exposed a second, deeper issue: a second warp's instruction stalls
-  in the scalar backend (issued once but never commits).  So there are
-  interlocking core-frontend (issue/present) and core-backend (multi-warp
-  instruction retirement) races.
+Resolved — multi-workgroup / multi-warp completion accounting.  The failure
+(kernels with more than one concurrent warp tripping `SingleCuKernelController`'s
+"completion must identify a resident dispatched warp" assertion) had two
+interlocking causes in the warp-launch/schedule path, both now fixed:
 
-This is the "concurrency added later with explicit tags" milestone the
-`KernelDispatchPipeline` comment anticipates: attribute warp completion with an
-explicit per-warp/per-command tag (as `TaggedKernelLaunch`/`commandId`
-already model) instead of relying on warp-slot order, and make the frontend's
-single-fetch port / scheduler `issueBits` not re-present a warp whose
-instruction is still in flight.  Treat as a focused core-integrity effort, not a
-quick patch; until it lands, keep `localSize <= lanes` (one warp per workgroup)
-and `gridSize` effectively 1 for the core-backed path.
+  1. **Lost updates on `WarpScheduler`'s whole-register state.** `blocked` and
+     `active` were assigned inside four separate `when` blocks (launch /
+     issue-load / resume / finish); Chisel's last-write-wins semantics made a
+     coincident `resume` (or `finish`/`launch`) silently drop the block bit set
+     by an issue load in the same cycle. The just-issued warp became eligible
+     again while its fetch was still in flight, so `issueBits` re-loaded the
+     stale `(warp, pc)` — duplicate `addi`, double `resume`, the `cease` fetched
+     and issued twice, `finish` emitted twice, and `running`/workgroup warp
+     counts corrupted. `active`/`blocked` now have a single composed next-state
+     assignment (`WarpScheduler`), so coincident events merge bit-wise.
+  2. **Launch slot re-derived at the wrong time.** `WarpContextInitializer`
+     snapshots the lowest free slot *before* initializing its registers, but
+     the scheduler independently re-picked the lowest free slot at
+     `launch.fire`; a concurrent `finish` freeing a lower slot during the
+     initialization window made the scheduler launch a different slot than the
+     one whose registers were initialized (and than the controller's
+     `running` accounting). `WarpLaunch` now carries an explicit `warpId`
+     chosen by the dispatcher, and `launch.ready` backpressures unless that
+     named slot is free.
+
+Regression coverage: `GpuComputeUnitSpec` gains a three-warp single-workgroup
+test (the deterministic reproduction: warp A finishes during warp C's
+initialization window) and a multi-workgroup grid test
+(`gridSize=(2,1,1)`).
 
 ---
 

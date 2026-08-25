@@ -33,6 +33,7 @@ class SimtFrontendControlSpec extends AnyFlatSpec {
       dut.io.finish.bits.poke(0.U)
 
       dut.io.launch.valid.poke(true.B)
+      dut.io.launch.bits.warpId.poke(0.U)
       dut.io.launch.bits.startPc.poke(0x100.U)
       dut.io.launch.bits.activeMask.poke(0xf.U)
       dut.io.launch.ready.expect(true.B)
@@ -96,6 +97,7 @@ class SimtFrontendControlSpec extends AnyFlatSpec {
       dut.reset.poke(false.B)
       dut.io.issue.ready.poke(true.B)
       dut.io.launch.valid.poke(true.B)
+      dut.io.launch.bits.warpId.poke(0.U)
       dut.io.launch.bits.startPc.poke(0x100.U)
       dut.io.launch.bits.activeMask.poke(0xf.U)
       dut.io.branch.valid.poke(false.B)

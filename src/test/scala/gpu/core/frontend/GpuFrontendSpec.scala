@@ -10,10 +10,12 @@ class GpuFrontendSpec extends AnyFlatSpec {
 
   private def launch(
     dut: GpuFrontend,
+    warpId: Int,
     pc: Int,
     activeMask: Int
   ): Unit = {
     dut.io.launch.valid.poke(true.B)
+    dut.io.launch.bits.warpId.poke(warpId.U)
     dut.io.launch.bits.startPc.poke(pc.U)
     dut.io.launch.bits.activeMask.poke(activeMask.U)
     dut.io.launch.ready.expect(true.B)
@@ -44,8 +46,8 @@ class GpuFrontendSpec extends AnyFlatSpec {
       dut.io.finish.valid.poke(false.B)
       dut.io.finish.bits.poke(0.U)
 
-      launch(dut, pc = 0x100, activeMask = 0xf)
-      launch(dut, pc = 0x200, activeMask = 0x3)
+      launch(dut, warpId = 0, pc = 0x100, activeMask = 0xf)
+      launch(dut, warpId = 1, pc = 0x200, activeMask = 0x3)
 
       dut.io.fetchRequest.ready.poke(true.B)
       while (!dut.io.fetchRequest.valid.peek().litToBoolean) {

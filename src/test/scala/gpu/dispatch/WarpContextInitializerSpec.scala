@@ -51,6 +51,7 @@ class WarpContextInitializerSpec extends AnyFlatSpec {
       dut.io.vector.ready.poke(true.B)
       dut.clock.step()
       dut.io.launch.valid.expect(true.B)
+      dut.io.launch.bits.warpId.expect(1.U)
       dut.io.launch.bits.startPc.expect(0x1000.U)
       dut.io.launch.bits.activeMask.expect("b0011".U)
     }
