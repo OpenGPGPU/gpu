@@ -114,12 +114,12 @@ class RenderCoreL2Spec extends AnyFlatSpec {
       dut.io.colorBase.poke(colorBase.U)
       dut.io.depthBase.poke(depthBase.U)
       dut.io.stride.poke(stride.U)
-      // Depth write enabled but no test: the depth buffer read at the OM
-      // happens via the framebuffer word bridge into the L2.  The OM's depth
-      // RMW through the shared cache is covered by OutputMergerSpec / the
-      // non-L2 RenderCoreSpec; here we isolate what the L2 arbitration
-      // contributes (shading + write-through to one off-chip port).
-      dut.io.depthTestEnable.poke(false.B)
+      // Full depth test through the shared L2: the OM's per-pixel
+      // read-modify-write runs over the framebuffer word bridge while the
+      // previous fragment's write acknowledgements are still in flight.
+      // Write acks are tagged (OmMemoryResponse.write) so the OM cannot
+      // mistake an overtaking ack (data=0) for the depth word it awaits.
+      dut.io.depthTestEnable.poke(true.B)
       dut.io.depthFunc.poke(0.U)
       dut.io.depthWriteEnable.poke(true.B)
       dut.io.cullMode.poke(0.U)
@@ -137,9 +137,17 @@ class RenderCoreL2Spec extends AnyFlatSpec {
       // Service the L2 off-chip line port.  The L2 registers its lower
       // transaction slot on the request-fire edge, so a request committed this
       // cycle only becomes eligible for a response on the following cycle.
+      //
+      // `done` fires when the OM accepts its final write REQUEST; the write
+      // itself is still in flight inside the L2 store queue (write-through to
+      // the off-chip port completes several cycles later).  Like a driver
+      // fencing on completion, the testbench keeps servicing the port until
+      // it has been quiet for 64 consecutive cycles before reading back.
       val respQ = mutable.Queue.empty[(BigInt, BigInt)]
       var guard = 0
-      while (!dut.io.done.peek().litToBoolean && guard < 200000) {
+      var doneSeen = false
+      var quiet = 0
+      while ((!doneSeen || quiet < 64) && guard < 200000) {
         dut.io.memoryRequest.ready.poke(true.B)
         val hadPending = respQ.nonEmpty
         if (dut.io.memoryRequest.valid.peek().litToBoolean &&
@@ -166,10 +174,14 @@ class RenderCoreL2Spec extends AnyFlatSpec {
         } else {
           dut.io.memoryResponse.valid.poke(false.B)
         }
+        if (dut.io.done.peek().litToBoolean) doneSeen = true
+        val busy = dut.io.memoryRequest.valid.peek().litToBoolean || respQ.nonEmpty
+        quiet = if (busy || !doneSeen) 0 else quiet + 1
         dut.clock.step()
         guard += 1
       }
-      assert(guard < 200000, "core-backed renderer over the L2 did not drain")
+      assert(doneSeen, "core-backed renderer over the L2 did not drain")
+      assert(guard < 200000, "L2 off-chip port did not quiesce after done")
 
       def rgb(x: Int, y: Int): (Int, Int, Int) = {
         val c = m.word(colorBase + (y * 16 + x) * 4).toInt
@@ -177,10 +189,18 @@ class RenderCoreL2Spec extends AnyFlatSpec {
       }
       // Every covered pixel is shaded by the core kernel and depth-tested
       // through the shared L2, then written to the single off-chip memory.
-      // The full-screen triangle covers these interior pixels.
-      assert(rgb(2, 2) == (255, 0, 0), s"core-shaded (2,2) got ${rgb(2, 2)}")
-      assert(rgb(5, 5) == (255, 0, 0), s"core-shaded (5,5) got ${rgb(5, 5)}")
-      assert(rgb(8, 2) == (255, 0, 0), s"core-shaded (8,2) got ${rgb(8, 2)}")
+      // Sampling at integer coordinates with the top-left fill rule, the
+      // triangle covers exactly {x >= 1, y >= 1, x+y <= 16}: the top and left
+      // edges (y=0, x=0) are not top-left edges, the diagonal is.  Every such
+      // pixel is touched exactly once and 0x10 < 0xffffffff passes LESS, so a
+      // black pixel or a stale depth word here means the depth RMW through
+      // the L2 read a stale line.
+      for (y <- 0 until 16; x <- 0 until 16 if x >= 1 && y >= 1 && x + y <= 16) {
+        assert(rgb(x, y) == (255, 0, 0),
+          s"covered pixel ($x,$y) rejected or mis-shaded, got ${rgb(x, y)}")
+        assert(m.word(depthBase + (y * 16 + x) * 4) == 0x10,
+          s"covered depth ($x,$y) got 0x${m.word(depthBase + (y * 16 + x) * 4).toHexString}")
+      }
       // The OM wrote the fragment depth through the same L2.
       assert(m.word(depthBase + (5 * 16 + 5) * 4) == 0x10,
         s"core-shaded depth (5,5) got 0x${m.word(depthBase + (5 * 16 + 5) * 4).toHexString}")

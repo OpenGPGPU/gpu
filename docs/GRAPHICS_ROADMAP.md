@@ -423,6 +423,37 @@ each module's `fragCore=false` branch ties them off on the correct side
 and checks the shaded colour and depth land in the single off-chip memory, and
 the 44 prior graphics tests stay green.
 
+Resolved — OM depth RMW through the shared L2 (2026-08-26).  Enabling
+`depthTestEnable` on the `RenderCoreL2` path spuriously depth-rejected about
+half of the covered pixels (the direct, no-L2 path rendered the same triangle
+solid).  Root cause was response attribution, not the L2's data ordering: the
+OM advances past a write at request *accept* (fire-and-forget), so a
+fragment's colour/depth write acknowledgements are still in flight when the
+next fragment's depth read is awaited.  The L2 returns store acks from the
+store-transaction table on a different response channel than load fills and
+arbitrates two banks onto one response port, so an ack (data = 0) can overtake
+the read response — and the untagged `OmMemoryResponse` let the OM consume it
+as the stored depth word, failing every LESS test.  (The direct word-memory
+models never ack writes, so the hazard was invisible off the L2.)
+`OmMemoryResponse` now echoes the request's `write` bit (tracked per
+transaction slot in `OmWordToLinePort`), and the OM pops tagged write acks
+wherever they arrive, consuming only `write = false` data in its depth-wait
+state.  Read-after-write *data* ordering to a line is preserved by the L2
+itself (reads are held while a store transaction is active, stores wait for
+load MSHRs), so no cache change was needed.  `CommandBufferStage` is
+read-only and `KernelFragStage` allows a single outstanding word transaction
+(`wordPending`), so neither can misattribute a response.  Also found while
+verifying: `RenderCoreL2.io.done` fires when the OM accepts its final write
+request, while the write-through store is still in the L2's store queue — the
+readback side must fence (the spec now services the off-chip port until it
+has been quiet for 64 cycles).  A completion/fence signal that already
+implies store-drain belongs to the M6 host-interface work.  Regression:
+`OutputMergerSpec` gains a model that releases write acks only while a later
+read is in flight, and `RenderCoreL2Spec` now runs the full depth test
+(`depthTestEnable = true`) through the shared L2, asserting every covered
+pixel (integer sampling + top-left rule: `x >= 1, y >= 1, x+y <= 16`) is
+shaded and its depth word written.  46 graphics tests green.
+
 Resolved — vector-memory load/store round-trip (2026-08-26).  Per-lane
 batched shading (fragment `i` = lane `i`, indexing `kernarg + 4*i` via a
 unit-stride `vle32`/`vse32` based at `x1 + 4*localLinearBase`, i.e. `x1 +

@@ -122,12 +122,88 @@ class OutputMergerSpec extends AnyFlatSpec {
       dut.io.depthFunc.poke(0.U) // less
       dut.io.depthWriteEnable.poke(true.B)
       dut.io.mem.resp.valid.poke(false.B)
+      dut.io.mem.resp.bits.write.poke(false.B)
       dut.io.blendEnable.poke(false.B)
 
       runFragment(dut, mem, 0, 0, 0x11111111, 0x00000010, true, 0, true)
       runFragment(dut, mem, 0, 0, 0x22222222, 0x00000020, true, 0, true) // larger depth => fail
       val color = mem(colorBase + 0 + 0)
       assert(color == 0x11111111, s"failing fragment must not overwrite, got 0x${color.toHexString}")
+    }
+  }
+
+  it should "ignore write acknowledgements that arrive while a depth read is in flight" in {
+    simulate(new OutputMerger(GraphicsConfig())) { dut =>
+      val mem = Array.fill(1 << 15)(0xffffffff)
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.colorBase.poke(colorBase.U)
+      dut.io.depthBase.poke(depthBase.U)
+      dut.io.stride.poke(stride.U)
+      dut.io.depthTestEnable.poke(true.B)
+      dut.io.depthFunc.poke(0.U) // less
+      dut.io.depthWriteEnable.poke(true.B)
+      dut.io.mem.resp.valid.poke(false.B)
+      dut.io.mem.resp.bits.write.poke(false.B)
+      dut.io.blendEnable.poke(false.B)
+
+      // Memory model emulating an out-of-order shared memory (the L2 path):
+      // write acknowledgements are held back and released ONLY once a later
+      // read is in flight, so an ack overtakes the read response.  The OM
+      // must pop the ack (tagged write=true, data=0) and keep waiting for the
+      // real read data; consuming the ack as depth (0) would fail every
+      // LESS test and reject the fragment.
+      val respQ = scala.collection.mutable.Queue.empty[(Boolean, Long)]
+      var heldAcks = 0
+      def runFragOOO(x: Int, y: Int, color: Int, depth: Int): Unit = {
+        dut.io.fragIn.valid.poke(true.B)
+        dut.io.fragIn.bits.x.poke(x.U)
+        dut.io.fragIn.bits.y.poke(y.U)
+        dut.io.fragIn.bits.color.poke((color.toLong & 0xffffffffL).U)
+        dut.io.fragIn.bits.depth.poke((depth.toLong & 0xffffffffL).U)
+        dut.io.fragIn.ready.expect(true.B)
+        dut.clock.step()
+        var guard = 0
+        while (!dut.io.fragIn.ready.peek().litToBoolean && guard < 80) {
+          dut.io.mem.req.ready.poke(true.B)
+          if (respQ.nonEmpty) {
+            val (isWrite, data) = respQ.dequeue()
+            dut.io.mem.resp.valid.poke(true.B)
+            dut.io.mem.resp.bits.write.poke(isWrite.B)
+            dut.io.mem.resp.bits.data.poke(data.U)
+          } else {
+            dut.io.mem.resp.valid.poke(false.B)
+          }
+          if (dut.io.mem.req.valid.peek().litToBoolean) {
+            val addr = dut.io.mem.req.bits.addr.peek().litValue.toInt
+            val write = dut.io.mem.req.bits.write.peek().litToBoolean
+            val data = dut.io.mem.req.bits.data.peek().litValue.toInt
+            if (write) {
+              mem(addr) = data
+              heldAcks += 1
+            } else {
+              // Release every held write ack ahead of this read's response.
+              while (heldAcks > 0) { respQ.enqueue((true, 0L)); heldAcks -= 1 }
+              respQ.enqueue((false, mem(addr) & 0xffffffffL))
+            }
+          }
+          dut.clock.step()
+          guard += 1
+        }
+        assert(guard < 80, "OM did not drain")
+        dut.io.fragIn.valid.poke(false.B)
+        dut.clock.step()
+      }
+
+      runFragOOO(1, 1, 0xAA000000, 0x00000010) // passes against the clear value
+      // Nearer fragment: must read back the stored 0x10, not the ack's 0.
+      runFragOOO(1, 1, 0x00BB0000, 0x00000008)
+      val color = mem(colorBase + (1 * stride) + 1 * 4)
+      assert(color == 0x00BB0000,
+        s"nearer fragment must pass the depth test despite overtaking write acks, got 0x${color.toHexString}")
+      assert(mem(depthBase + (1 * stride) + 1 * 4) == 0x00000008,
+        "depth buffer must hold the winning fragment's depth")
     }
   }
 }
