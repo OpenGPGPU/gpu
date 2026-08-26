@@ -383,21 +383,27 @@ Status (implementation):
   with `localSize = count`, waits for completion, reads back the per-fragment
   output words, and re-emits the batch in submission order. Fragments buffer
   their x/y/depth locally so geometry and ordering survive the round-trip. The
-  kernarg ABI for a batch is:
-  `[0, 4*count)` per-fragment packed-colour inputs, `[64, 64+4*count)`
-  per-fragment colour outputs, `[128, ...)` per-draw uniforms. `flush` is
+  kernarg ABI for a batch is structure-of-arrays (so a lane-aware shader can
+  fetch each attribute with one unit-stride vector load — an AoS record would
+  need the strided/gather accesses the vector memory unit does not implement);
+  with `stride = 4 * warps * lanes`:
+  `[0*stride, 1*stride)` per-fragment x (i32), `[1*stride, 2*stride)` y,
+  `[2*stride, 3*stride)` depth, `[3*stride, 4*stride)` packed-colour inputs,
+  `[4*stride, 5*stride)` colour outputs, `[6*stride, ...)` per-draw uniforms.
+  `flush` is
   pulsed by the pipeline when the rasterizer goes idle (draw boundary) so a
   batch never mixes draws; `drained` reports an empty in-flight batch.
   `RenderPipeline`'s `fragCore` branch wires `kernelFrag.io.flush :=
   shader.io.done` and `io.done` reflects the drained batch. Verified in
-  `KernelFragStageSpec` for a single fragment, a uniform-adding kernel, and a
-  multi-fragment batch (geometry/order preserved).
+  `KernelFragStageSpec` for a single fragment, a uniform-adding kernel, a
+  multi-fragment batch (geometry/order preserved), and a full-warp vector
+  batch whose shader reads the per-lane x array and adds it to the colour
+  (reference computed per fragment in the spec).
 - The standalone `ShaderCore`/`RV32ShaderCore`/`ShaderFragStage` remain as the
   fixed-function stepping stones (default `fragCore = false`) and are to be
   removed once the core-backed path is the sole shading backend.
-- Remaining: full varying/depth kernarg packing beyond the packed colour word,
-  per-draw pacing and double buffering, and off-chip memory arbitration via
-  `SharedL2Cache`.
+- Remaining: per-draw pacing and double buffering, and off-chip memory
+  arbitration via `SharedL2Cache`.
 
 Resolved — vector-memory load/store round-trip (2026-08-26).  Per-lane
 batched shading (fragment `i` = lane `i`, indexing `kernarg + 4*i` via a

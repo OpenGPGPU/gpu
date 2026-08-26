@@ -8,10 +8,14 @@ import org.scalatest.flatspec.AnyFlatSpec
 class KernelFragStageSpec extends AnyFlatSpec {
   behavior of "KernelFragStage"
 
-  // Batched ABI (byte offsets from the draw's kernarg base):
-  //   [0, 4*count)      per-fragment packed-colour inputs
-  //   [64, 64+4*count)  per-fragment colour outputs
-  //   [128, ...)        per-draw uniforms
+  // Batched SoA ABI (byte offsets from the draw's kernarg base; stride =
+  // 4 * warps * lanes = 32 for the test config):
+  //   [0,   32)   per-fragment x (sign-extended i32)
+  //   [32,  64)   per-fragment y
+  //   [64,  96)   per-fragment depth
+  //   [96,  128)  per-fragment packed-colour inputs
+  //   [128, 160)  per-fragment colour outputs
+  //   [192, ...)  per-draw uniforms
 
   /** Byte-addressed 64-byte line memory model shared by the core and the
     * word->line bridge.  Lines are keyed by their aligned byte address.
@@ -66,6 +70,9 @@ class KernelFragStageSpec extends AnyFlatSpec {
   private def vse32(rs1: Int, vs3: Int): BigInt =
     (BigInt(1) << 25) | (BigInt(0x6) << 12) | (BigInt(vs3 & 0x1f) << 7) |
       (BigInt(rs1 & 0x1f) << 15) | 0x27
+  private def vaddVv(vd: Int, vs2: Int, vs1: Int): BigInt =
+    (BigInt(1) << 25) | (BigInt(vs2 & 0x1f) << 20) |
+      (BigInt(vs1 & 0x1f) << 15) | (BigInt(vd & 0x1f) << 7) | 0x57
   private val cease = BigInt("30500073", 16)
 
   /** Services KernelFragStage's two memory ports against `mem` until `pred`
@@ -150,9 +157,10 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.shaderPc.poke(0x1000.U)
       dut.io.kernargBase.poke(0x8000.U)
 
-      // Program: lw x10,0(x1); sw x10,64(x1); cease.
-      mem.putWord(0x1000L, 0, lw(10, 1, 0))
-      mem.putWord(0x1000L, 1, sw(10, 1, 64))
+      // Program: read the packed-colour input array (kernarg+96), write the
+      // output array (kernarg+128), halt.
+      mem.putWord(0x1000L, 0, lw(10, 1, 96))
+      mem.putWord(0x1000L, 1, sw(10, 1, 128))
       mem.putWord(0x1000L, 2, cease)
 
       dut.io.fragIn.bits.x.poke(3.S)
@@ -190,16 +198,16 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.shaderPc.poke(0x1000.U)
       dut.io.kernargBase.poke(0x8000.U)
 
-      // Program: lw x10,0(x1); lw x11,128(x1); add x10,x10,x11;
-      //          sw x10,64(x1); cease.
-      mem.putWord(0x1000L, 0, lw(10, 1, 0))
-      mem.putWord(0x1000L, 1, lw(11, 1, 128))
+      // Program: colour = input[0] (kernarg+96) + uniform (kernarg+192);
+      //          output[0] (kernarg+128); cease.
+      mem.putWord(0x1000L, 0, lw(10, 1, 96))
+      mem.putWord(0x1000L, 1, lw(11, 1, 192))
       mem.putWord(0x1000L, 2, add(10, 10, 11))
-      mem.putWord(0x1000L, 3, sw(10, 1, 64))
+      mem.putWord(0x1000L, 3, sw(10, 1, 128))
       mem.putWord(0x1000L, 4, cease)
 
-      // Uniform at kernarg+128 (line 0x8080, word 0): +1 blue.
-      mem.putWord(0x8080L, 0, BigInt("00000100", 16))
+      // Uniform at kernarg+192 (line 0x80c0, word 0): +1 blue.
+      mem.putWord(0x80c0L, 0, BigInt("00000100", 16))
 
       dut.io.fragIn.bits.x.poke(3.S)
       dut.io.fragIn.bits.y.poke(4.S)
@@ -243,9 +251,10 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.shaderPc.poke(0x1000.U)
       dut.io.kernargBase.poke(0x8000.U)
 
-      // Pass-through scalar kernel: lw x10,0(x1); sw x10,64(x1); cease.
-      mem.putWord(0x1000L, 0, lw(10, 1, 0))
-      mem.putWord(0x1000L, 1, sw(10, 1, 64))
+      // Pass-through scalar kernel: read the colour input word, write the
+      // output word, cease.
+      mem.putWord(0x1000L, 0, lw(10, 1, 96))
+      mem.putWord(0x1000L, 1, sw(10, 1, 128))
       mem.putWord(0x1000L, 2, cease)
 
       // Feed a batch of fragments with distinct x/y/depth.
@@ -355,21 +364,27 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.shaderPc.poke(0x1000.U)
       dut.io.kernargBase.poke(0x8000.U)
 
-      // Program:
-      //   slli x5, x8, 2     // x5 = 4 * localLinearBase (this warp's slice)
-      //   add  x5, x1, x5    // x5 = kernarg input word for lane 0 of the warp
+      // Program (lane = fragment; x1 = kernarg, x8 = localLinearBase):
+      //   slli x5, x8, 2      // x5 = 4 * localLinearBase (this warp's slice)
+      //   add  x5, x1, x5     // x5 = kernarg base of this warp's slice
       //   vsetivli x0, 4, e32
-      //   vle32.v v2, (x5)   // per-lane packed-colour inputs
-      //   addi x6, x5, 64    // x6 = kernarg output word for lane 0 of the warp
-      //   vse32.v v2, (x6)   // per-lane colour outputs
+      //   vle32.v v2, (x5)    // per-lane x array
+      //   addi x6, x5, 96
+      //   vle32.v v3, (x6)    // per-lane packed-colour inputs
+      //   vadd.vv v4, v3, v2  // colour + x, per lane
+      //   addi x6, x5, 128
+      //   vse32.v v4, (x6)    // per-lane colour outputs
       //   cease
       mem.putWord(0x1000L, 0, slli(5, 8, 2))
       mem.putWord(0x1000L, 1, add(5, 1, 5))
       mem.putWord(0x1000L, 2, vsetivli(4))
       mem.putWord(0x1000L, 3, vle32(5, 2))
-      mem.putWord(0x1000L, 4, addi(6, 5, 64))
-      mem.putWord(0x1000L, 5, vse32(6, 2))
-      mem.putWord(0x1000L, 6, cease)
+      mem.putWord(0x1000L, 4, addi(6, 5, 96))
+      mem.putWord(0x1000L, 5, vle32(6, 3))
+      mem.putWord(0x1000L, 6, vaddVv(4, 3, 2))
+      mem.putWord(0x1000L, 7, addi(6, 5, 128))
+      mem.putWord(0x1000L, 8, vse32(6, 4))
+      mem.putWord(0x1000L, 9, cease)
 
       // Feed a full-warp batch of fragments with distinct colours.
       val colors = Seq(
@@ -451,15 +466,21 @@ class KernelFragStageSpec extends AnyFlatSpec {
       assert(emitted.size == count, s"expected $count fragments, got ${emitted.size}")
 
       // The vector output store covers all four lanes of the warp in one
-      // 16-byte mask at kernarg+64.
+      // 16-byte mask at kernarg+128.
       assert(kernelStores.exists { case (addr, bm) =>
-        addr == 0x8040L && bm == BigInt(0xffff)
-      }, s"expected a full 4-lane store at 0x8040, got $kernelStores")
+        addr == 0x8080L && bm == BigInt(0xffff)
+      }, s"expected a full 4-lane store at 0x8080, got $kernelStores")
 
-      // Every fragment gets its own colour back, in submission order.
-      for ((expected, got) <- colors zip emitted) {
-        assert(got == (expected._1.toLong, expected._2.toLong, expected._3.toLong),
-          s"per-lane colour mismatch: expected $expected got $got")
+      // Every fragment gets colour + its own x back, in submission order.
+      for (i <- 0 until count) {
+        val packed = (BigInt(colors(i)._1) << 24) | (BigInt(colors(i)._2) << 16) |
+          (BigInt(colors(i)._3) << 8) | 0xff
+        val reference = (packed + i) & 0xffffffffL
+        val expected = ((reference >> 24) & 0xff, (reference >> 16) & 0xff,
+          (reference >> 8) & 0xff)
+        val got = (emitted(i)._1, emitted(i)._2, emitted(i)._3)
+        assert(got == expected,
+          s"per-lane shade mismatch at fragment $i: expected $expected got $got")
       }
     }
   }

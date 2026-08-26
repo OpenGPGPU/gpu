@@ -157,12 +157,14 @@ class RenderCoreSpec extends AnyFlatSpec {
       }
     }
     encode(record, shaderPc, kernarg).zipWithIndex.foreach { case (w, i) => wwrite(cmdBase + i * 4, w) }
-    // Lane-aware batched pass-through (the FSM writes fragment inputs at
-    // kernarg+4*i and reads outputs at kernarg+64+4*i).  Each warp shades its
-    // own slice of the batch: x8 = localLinearBase gives the warp's first
-    // fragment index, so one vector load/store pair moves all four lanes.
+    // Lane-aware batched pass-through over the SoA kernarg ABI (stride = 32
+    // for warps=2, lanes=4): colour inputs at kernarg+96+4*i, outputs at
+    // kernarg+128+4*i.  Each warp shades its own slice of the batch:
+    // x8 = localLinearBase gives the warp's first fragment index, so one
+    // vector load/store pair moves all four lanes.
     //   slli x5, x8, 2 ; add x5, x1, x5 ; vsetivli x0, 4, e32 ;
-    //   vle32.v v2, (x5) ; addi x6, x5, 64 ; vse32.v v2, (x6) ; cease
+    //   addi x6, x5, 96 ; vle32.v v2, (x6) ;
+    //   addi x6, x5, 128 ; vse32.v v2, (x6) ; cease
     def slli(rd: Int, rs1: Int, sh: Int): Int = (sh << 20) | (rs1 << 15) | (1 << 12) | (rd << 7) | 0x13
     def add(rd: Int, rs1: Int, rs2: Int): Int = (rs2 << 20) | (rs1 << 15) | (rd << 7) | 0x33
     def addi(rd: Int, rs1: Int, imm: Int): Int = ((imm & 0xfff) << 20) | (rs1 << 15) | (rd << 7) | 0x13
@@ -171,8 +173,8 @@ class RenderCoreSpec extends AnyFlatSpec {
     def vse32(rs1: Int, vs3: Int): Int = (1 << 25) | (0x6 << 12) | (vs3 << 7) | (rs1 << 15) | 0x27
     val cease = 0x30500073
     val program = Seq(
-      slli(5, 8, 2), add(5, 1, 5), vsetivli(4), vle32(5, 2),
-      addi(6, 5, 64), vse32(6, 2), cease)
+      slli(5, 8, 2), add(5, 1, 5), vsetivli(4), addi(6, 5, 96),
+      vle32(6, 2), addi(6, 5, 128), vse32(6, 2), cease)
     program.zipWithIndex.foreach { case (w, i) => wwrite(shaderPc + i * 4, w) }
     for (i <- 0 until (16 * 16)) wwrite(depthBase + i * 4, 0xffffffff) // depth far
 
