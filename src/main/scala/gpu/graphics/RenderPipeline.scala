@@ -3,7 +3,13 @@ package gpu.graphics
 import chisel3._
 import chisel3.util._
 import gpu.config.GpuConfig
-import gpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse}
+import gpu.core.memory.{
+  CacheLineInvalidate,
+  ComputeMemoryRequest,
+  ComputeMemoryResponse,
+  SharedAtomicRequest,
+  SharedAtomicResponse
+}
 
 /** A scene triangle in clip space (Q16.16) with per-vertex colour and depth.
   *
@@ -56,6 +62,10 @@ class RenderPipeline(
     val kernelMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
     val kernelWordMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig))
     val kernelWordMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
+    val kernelL1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(gpuConfig)))
+    val kernelL1InvalidateDone = Decoupled(new CacheLineInvalidate(gpuConfig))
+    val kernelGlobalAtomicRequest = Decoupled(new SharedAtomicRequest(gpuConfig))
+    val kernelGlobalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(gpuConfig)))
     val colorBase = Input(UInt(32.W))
     val depthBase = Input(UInt(32.W))
     val stride = Input(UInt(32.W))
@@ -128,6 +138,10 @@ class RenderPipeline(
     kernelFrag.io.memResp <> io.kernelMemResp
     io.kernelWordMemReq <> kernelFrag.io.wordMemReq
     kernelFrag.io.wordMemResp <> io.kernelWordMemResp
+    kernelFrag.io.l1Invalidate <> io.kernelL1Invalidate
+    io.kernelL1InvalidateDone <> kernelFrag.io.l1InvalidateDone
+    io.kernelGlobalAtomicRequest <> kernelFrag.io.globalAtomicRequest
+    kernelFrag.io.globalAtomicResponse <> io.kernelGlobalAtomicResponse
 
     // Done only once every rasterized fragment has been flushed, shaded, and
     // handed to the OM: the batch must be empty (drained) so an in-flight batch
@@ -151,6 +165,14 @@ class RenderPipeline(
     io.kernelWordMemReq.valid := false.B
     io.kernelWordMemReq.bits := 0.U.asTypeOf(io.kernelWordMemReq.bits)
     io.kernelWordMemResp.ready := false.B
+    io.kernelL1Invalidate.ready := true.B
+    io.kernelL1InvalidateDone.valid := false.B
+    io.kernelL1InvalidateDone.bits :=
+      0.U.asTypeOf(io.kernelL1InvalidateDone.bits)
+    io.kernelGlobalAtomicRequest.valid := false.B
+    io.kernelGlobalAtomicRequest.bits :=
+      0.U.asTypeOf(io.kernelGlobalAtomicRequest.bits)
+    io.kernelGlobalAtomicResponse.ready := true.B
     io.done := shader.io.done && om.io.fragIn.ready
   }
 }

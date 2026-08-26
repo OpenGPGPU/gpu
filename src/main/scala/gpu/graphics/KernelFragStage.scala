@@ -3,7 +3,13 @@ package gpu.graphics
 import chisel3._
 import chisel3.util._
 import gpu.config.GpuConfig
-import gpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse}
+import gpu.core.memory.{
+  CacheLineInvalidate,
+  ComputeMemoryRequest,
+  ComputeMemoryResponse,
+  SharedAtomicRequest,
+  SharedAtomicResponse
+}
 
 /** Core-backed fragment shader stage (Phase D), batched dispatch.
   *
@@ -67,6 +73,10 @@ class KernelFragStage(
     val memResp = Flipped(Decoupled(new ComputeMemoryResponse()))
     val wordMemReq = Decoupled(new ComputeMemoryRequest(config))
     val wordMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
+    val l1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(config)))
+    val l1InvalidateDone = Decoupled(new CacheLineInvalidate(config))
+    val globalAtomicRequest = Decoupled(new SharedAtomicRequest(config))
+    val globalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(config)))
   })
 
   // Word-client request/response interface to the bridge (driven by the FSM).
@@ -90,6 +100,10 @@ class KernelFragStage(
   kernel.io.trap.ready := true.B
   kernel.io.simtBranch.valid := false.B
   kernel.io.simtBranch.bits := 0.U.asTypeOf(kernel.io.simtBranch.bits)
+  kernel.io.l1Invalidate <> io.l1Invalidate
+  io.l1InvalidateDone <> kernel.io.l1InvalidateDone
+  io.globalAtomicRequest <> kernel.io.globalAtomicRequest
+  kernel.io.globalAtomicResponse <> io.globalAtomicResponse
 
   bridge.io.in.valid := wordValid
   bridge.io.in.bits := wordBits

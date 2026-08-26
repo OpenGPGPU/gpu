@@ -402,8 +402,26 @@ Status (implementation):
 - The standalone `ShaderCore`/`RV32ShaderCore`/`ShaderFragStage` remain as the
   fixed-function stepping stones (default `fragCore = false`) and are to be
   removed once the core-backed path is the sole shading backend.
-- Remaining: per-draw pacing and double buffering, and off-chip memory
-  arbitration via `SharedL2Cache`.
+- Remaining: per-draw pacing and double buffering.
+
+Resolved — off-chip memory arbitration via `SharedL2Cache` (2026-08-26).
+`RenderCoreL2` (`src/main/scala/gpu/graphics/RenderCoreL2.scala`) composes
+`RenderCore` with a `SharedL2Cache`, so the command-buffer, framebuffer, shader
+kernarg, and the core-backed kernel's line traffic all arbitrate onto **one**
+off-chip memory port (the integrated-SoC morphology where graphics and compute
+share a single coherent L2).  Its four line-level clients each hold a disjoint
+slice of the L2 transaction-ID space; the shader compute unit is requester slot
+0 (the only private-L1 holder) and the word bridges occupy the remaining slots,
+so an external write to a shared line triggers the L2 to invalidate the shader
+unit's L1 (real coherence rather than a silent stale share).  To wire this, the
+compute unit's L1-invalidate + global-atomic ports were threaded up through
+`KernelShaderStage` → `KernelFragStage` → `RenderPipeline` → `RenderCore` (the
+starting point of the previous in-progress `CacheLineInvalidate` import), and
+each module's `fragCore=false` branch ties them off on the correct side
+(`ready` for the Flipped inputs, `valid` for the outputs).  Verified:
+`RenderCoreL2Spec` runs the lane-aware batched fragment shader through the L2
+and checks the shaded colour and depth land in the single off-chip memory, and
+the 44 prior graphics tests stay green.
 
 Resolved — vector-memory load/store round-trip (2026-08-26).  Per-lane
 batched shading (fragment `i` = lane `i`, indexing `kernarg + 4*i` via a

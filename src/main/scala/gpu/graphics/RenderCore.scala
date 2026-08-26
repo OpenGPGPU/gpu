@@ -3,7 +3,13 @@ package gpu.graphics
 import chisel3._
 import chisel3.util._
 import gpu.config.GpuConfig
-import gpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse}
+import gpu.core.memory.{
+  CacheLineInvalidate,
+  ComputeMemoryRequest,
+  ComputeMemoryResponse,
+  SharedAtomicRequest,
+  SharedAtomicResponse
+}
 
 /** Top-level command-driven renderer.
   *
@@ -45,6 +51,10 @@ class RenderCore(
     val kernelMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
     val kernelWordMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig))
     val kernelWordMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
+    val kernelL1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(gpuConfig)))
+    val kernelL1InvalidateDone = Decoupled(new CacheLineInvalidate(gpuConfig))
+    val kernelGlobalAtomicRequest = Decoupled(new SharedAtomicRequest(gpuConfig))
+    val kernelGlobalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(gpuConfig)))
     val colorBase = Input(UInt(32.W))
     val depthBase = Input(UInt(32.W))
     val stride = Input(UInt(32.W))
@@ -80,6 +90,10 @@ class RenderCore(
   rp.io.kernelMemResp <> io.kernelMemResp
   io.kernelWordMemReq <> rp.io.kernelWordMemReq
   rp.io.kernelWordMemResp <> io.kernelWordMemResp
+  rp.io.kernelL1Invalidate <> io.kernelL1Invalidate
+  io.kernelL1InvalidateDone <> rp.io.kernelL1InvalidateDone
+  io.kernelGlobalAtomicRequest <> rp.io.kernelGlobalAtomicRequest
+  rp.io.kernelGlobalAtomicResponse <> io.kernelGlobalAtomicResponse
 
   // Done once every command has been consumed and the render pipeline is idle.
   io.done := cb.io.done && rp.io.done

@@ -5,7 +5,13 @@ import chisel3.util._
 import gpu.config.GpuConfig
 import gpu.core.GpuComputeUnit
 import gpu.core.execute.control.SimtBranchRequest
-import gpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse}
+import gpu.core.memory.{
+  CacheLineInvalidate,
+  ComputeMemoryRequest,
+  ComputeMemoryResponse,
+  SharedAtomicRequest,
+  SharedAtomicResponse
+}
 import gpu.core.trap.CoreTrapEvent
 import gpu.dispatch.KernelCompletion
 
@@ -44,6 +50,10 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
     val memoryResponse = Flipped(Decoupled(new ComputeMemoryResponse()))
     val trap = Decoupled(new CoreTrapEvent(config))
     val simtBranch = Flipped(Decoupled(new SimtBranchRequest(config)))
+    val l1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(config)))
+    val l1InvalidateDone = Decoupled(new CacheLineInvalidate(config))
+    val globalAtomicRequest = Decoupled(new SharedAtomicRequest(config))
+    val globalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(config)))
   })
 
   private val emit = Module(new KernelEmit(config))
@@ -69,6 +79,10 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   cu.io.memoryResponse <> io.memoryResponse
   io.trap <> cu.io.trap
   io.simtBranch <> cu.io.simtBranch
+  cu.io.l1Invalidate <> io.l1Invalidate
+  io.l1InvalidateDone <> cu.io.l1InvalidateDone
+  io.globalAtomicRequest <> cu.io.globalAtomicRequest
+  cu.io.globalAtomicResponse <> io.globalAtomicResponse
 
   cu.io.invalidateInstructionCache := false.B
   cu.io.instructionSatp := 0.U
@@ -81,10 +95,4 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   cu.io.vector.ready := false.B
   cu.io.memory.ready := false.B
   cu.io.unsupportedSystem.ready := false.B
-  cu.io.l1Invalidate.valid := false.B
-  cu.io.l1Invalidate.bits.lineAddress := 0.U
-  cu.io.l1InvalidateDone.ready := true.B
-  cu.io.globalAtomicRequest.ready := true.B
-  cu.io.globalAtomicResponse.valid := false.B
-  cu.io.globalAtomicResponse.bits := 0.U.asTypeOf(cu.io.globalAtomicResponse.bits)
 }
