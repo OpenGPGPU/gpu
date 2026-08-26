@@ -53,8 +53,8 @@ progress: `ShaderCore` (lock-step SIMT, uniform bank), `ShaderFragStage`
 execution) validate the shading model. The production direction is
 **commercial-GPU-aligned unified shading**: reuse `GpuComputeUnit`'s SIMT
 kernel launch/completion (see the resolved decision above) so a shader is a
-kernel on the core, superseding the standalone shader cores. 33 graphics tests
-pass.
+kernel on the core, superseding the standalone shader cores. 44 graphics
+tests pass.
 
 Compute core already present: RV32 SIMT lanes + FPU (FMA/div/sqrt/est), RVV
 ALU, register files, L1/L2 (SharedL2Slice), memory hierarchy with a standardized
@@ -392,30 +392,35 @@ Status (implementation):
   shader.io.done` and `io.done` reflects the drained batch. Verified in
   `KernelFragStageSpec` for a single fragment, a uniform-adding kernel, and a
   multi-fragment batch (geometry/order preserved).
-- **Multi-fragment per-lane shading requires vector memory, which is gated on a
-  pre-existing core defect.** Correct batched shading needs a lane-aware shader
-  (fragment `i` is lane `i`, so it must index `kernarg + 4*i` via a vector
-  `vle32`/`vse32` with a base of `x1 + 4*localLinearBase`, reading
-  `v1`/`x8`). Scalar registers are per-warp broadcast, so a scalar shader only
-  shades fragment 0 of each warp correctly; the KernelFragStage FSM still
-  emits the whole batch, but lanes > 0 produce stale/zero colour. The
-  end-to-end vector load/store round-trip on `GpuComputeUnit` is corrupt: a
-  unit-stride 4-lane word store to a fresh line emits a masked/rotated
-  `byteMask` (e.g. `0x3fc3c`/`0xfff` for an expected `0xffff`) and the
-  `vle32` load issues no lower-memory request (data is masked), so `v2` holds
-  stale `oldVd`. The individual units (`VectorMemoryUnit`, `VectorMemoryCoalescer`,
-  `VectorDataCache`, `VectorTlb`) all pass their own specs, so this is an
-  integration defect in the vector memory path, not a lane-mapping or
-  encoding issue. Fixing it is a separate core-memory effort; until then the
-  per-fragment (count>1) fragCore integration test cannot assert distinct
-  per-lane colour.
 - The standalone `ShaderCore`/`RV32ShaderCore`/`ShaderFragStage` remain as the
   fixed-function stepping stones (default `fragCore = false`) and are to be
   removed once the core-backed path is the sole shading backend.
 - Remaining: full varying/depth kernarg packing beyond the packed colour word,
-  per-draw pacing and double buffering, off-chip memory arbitration via
-  `SharedL2Cache`, and fixing the core vector-memory load/store round-trip so
-  per-lane (count>1) batched shading is verifiable.
+  per-draw pacing and double buffering, and off-chip memory arbitration via
+  `SharedL2Cache`.
+
+Resolved — vector-memory load/store round-trip (2026-08-26).  Per-lane
+batched shading (fragment `i` = lane `i`, indexing `kernarg + 4*i` via a
+unit-stride `vle32`/`vse32` based at `x1 + 4*localLinearBase`, i.e. `x1 +
+(x8 << 2)`) was gated on a corrupt vector memory round-trip: a 4-lane word
+store to a fresh line emitted a masked/rotated `byteMask`, and a `vle32`
+issued no lower-memory request at all, leaving `vd` stale.  Root cause was
+not in the memory path (the coalescer/cache/TLB units all passed their own
+specs) but in the operand read: `VectorRegisterBank` derived `predicateMask`
+from the **vs1 read port's** lane-0 low bits instead of from **v0**.  For
+loads/stores `instruction(19,15)` encodes the scalar base register `rs1`,
+so the "mask" was whatever unrelated vector register `v<rs1>` happened to
+hold — for `vle32 v2, (x1)` that is `v1`, whose lane 0 the context
+initializer sets to `localLinearBase` (= 0 for warp 0), giving
+`predicateMask = 0` and a coalescer short-circuit with no request.  The bank
+now reads v0 on a dedicated port (a fourth macro set in the ASAP7 physical
+bank) and exposes its lane-0 word's low `lanes` bits as `predicateMask`,
+matching the packed layout mask-producing instructions write back
+(`packedMask` in `VectorBackend`); the scoreboard already tracked v0 as a
+source under `useMask`.  Verified: `VectorRegisterFileSpec` (mask follows
+v0, not vs1), `KernelFragStageSpec` full-warp batched shading with distinct
+per-lane colours and a single `0xffff` output store, and `RenderCoreSpec`
+`fragCore` shading every covered pixel through the core kernel.
 
 Resolved — multi-workgroup / multi-warp completion accounting.  The failure
 (kernels with more than one concurrent warp tripping `SingleCuKernelController`'s

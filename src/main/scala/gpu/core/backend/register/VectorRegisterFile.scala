@@ -28,6 +28,12 @@ class VectorRegisterBankWrite(config: GpuConfig) extends Bundle {
   * The physical bank mirrors one 1RW macro set per read port plus one macro
   * set for writes. Writes remain visible to the same-cycle read via bypass,
   * preserving the latency contract of the behavioral register file.
+  *
+  * `predicateMask` is the architectural v0 mask: the low `lanes` bits of v0's
+  * flat data (lane 0's word), matching the packed layout mask-producing
+  * instructions write back.  It reads register v0 regardless of the
+  * instruction's vs1 field — for loads/stores that field encodes the scalar
+  * base register rs1, not a vector operand.
   */
 class VectorRegisterBank(config: GpuConfig, useBlackBox: Boolean = false)
     extends Module {
@@ -91,6 +97,8 @@ class VectorRegisterBank(config: GpuConfig, useBlackBox: Boolean = false)
     io.vs1Data := readPort(io.vs1, true)
     io.vs2Data := readPort(io.vs2, true)
     io.oldVdData := readPort(io.vd, true)
+    io.predicateMask :=
+      readPort(0.U, true).asUInt(config.lanes - 1, 0)
   } else {
     val storage = Mem(32, UInt(vectorWidth.W))
     when(io.write.valid) {
@@ -106,8 +114,8 @@ class VectorRegisterBank(config: GpuConfig, useBlackBox: Boolean = false)
     io.vs1Data := readPort(io.vs1)
     io.vs2Data := readPort(io.vs2)
     io.oldVdData := readPort(io.vd)
+    io.predicateMask := readPort(0.U).asUInt(config.lanes - 1, 0)
   }
-  io.predicateMask := io.vs1Data.asUInt
 }
 
 /** Per-warp vector RF. Unlike the scalar RF, v0 is ordinary writable state. */

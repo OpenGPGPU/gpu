@@ -157,11 +157,23 @@ class RenderCoreSpec extends AnyFlatSpec {
       }
     }
     encode(record, shaderPc, kernarg).zipWithIndex.foreach { case (w, i) => wwrite(cmdBase + i * 4, w) }
-    // Batched-ABI pass-through (the FSM writes fragment inputs at kernarg+4*i
-    // and reads outputs at kernarg+64+4*i): read colour word 0, write it to the
-    // fragment-0 output slot, halt.
-    val lw = 0x0000a503; val sw = 0x04a0a023; val cease = 0x30500073
-    wwrite(shaderPc, lw); wwrite(shaderPc + 4, sw); wwrite(shaderPc + 8, cease)
+    // Lane-aware batched pass-through (the FSM writes fragment inputs at
+    // kernarg+4*i and reads outputs at kernarg+64+4*i).  Each warp shades its
+    // own slice of the batch: x8 = localLinearBase gives the warp's first
+    // fragment index, so one vector load/store pair moves all four lanes.
+    //   slli x5, x8, 2 ; add x5, x1, x5 ; vsetivli x0, 4, e32 ;
+    //   vle32.v v2, (x5) ; addi x6, x5, 64 ; vse32.v v2, (x6) ; cease
+    def slli(rd: Int, rs1: Int, sh: Int): Int = (sh << 20) | (rs1 << 15) | (1 << 12) | (rd << 7) | 0x13
+    def add(rd: Int, rs1: Int, rs2: Int): Int = (rs2 << 20) | (rs1 << 15) | (rd << 7) | 0x33
+    def addi(rd: Int, rs1: Int, imm: Int): Int = ((imm & 0xfff) << 20) | (rs1 << 15) | (rd << 7) | 0x13
+    def vsetivli(uimm: Int): Int = (0x3 << 30) | (0x10 << 20) | (uimm << 15) | (0x7 << 12) | 0x57
+    def vle32(rs1: Int, vd: Int): Int = (1 << 25) | (0x6 << 12) | (vd << 7) | (rs1 << 15) | 0x07
+    def vse32(rs1: Int, vs3: Int): Int = (1 << 25) | (0x6 << 12) | (vs3 << 7) | (rs1 << 15) | 0x27
+    val cease = 0x30500073
+    val program = Seq(
+      slli(5, 8, 2), add(5, 1, 5), vsetivli(4), vle32(5, 2),
+      addi(6, 5, 64), vse32(6, 2), cease)
+    program.zipWithIndex.foreach { case (w, i) => wwrite(shaderPc + i * 4, w) }
     for (i <- 0 until (16 * 16)) wwrite(depthBase + i * 4, 0xffffffff) // depth far
 
     simulate(new RenderCore(gfx, cfg, fragCore = true)) { dut =>
@@ -224,8 +236,6 @@ class RenderCoreSpec extends AnyFlatSpec {
           dut.io.kernelMemResp.bits.readData.poke(kuQ.head._2.U)
           dut.io.kernelMemResp.bits.fault.poke(false.B)
         } else dut.io.kernelMemResp.valid.poke(false.B)
-        if (kuQ.nonEmpty) System.err.println(
-          s"g=$guard kuQ=${kuQ.size} present=true ready=${dut.io.kernelMemResp.ready.peek().litToBoolean} id=0x${kuQ.head._1.toString(16)}")
         if (kuQ.nonEmpty && dut.io.kernelMemResp.ready.peek().litToBoolean) kuQ.dequeue()
         if (dut.io.kernelMemReq.valid.peek().litToBoolean && dut.io.kernelMemReq.ready.peek().litToBoolean) {
           val a = dut.io.kernelMemReq.bits.address.peek().litValue.toLong
@@ -260,12 +270,17 @@ class RenderCoreSpec extends AnyFlatSpec {
 
       def depth(x: Int, y: Int): Int =
         word(depthBase + (y * 16 + x) * 4).toInt
-      // The core-backed path requires a lane-aware shader to shade every lane of
-      // a batched draw.  The scalar pass-through here only shades the fragment
-      // written into the kernel's scalar slot; it proves the kernel ran, but the
-      // OM depth-test/write path operates on every fragment regardless.  Assert
-      // the depth write (the shader + OM path, independent of the per-lane
-      // colour limitation documented in the roadmap) for the covered pixel.
+      def rgb(x: Int, y: Int): (Int, Int, Int) = {
+        val c = word(colorBase + (y * 16 + x) * 4).toInt
+        (((c >> 24) & 0xff), ((c >> 16) & 0xff), ((c >> 8) & 0xff))
+      }
+      // The lane-aware vector kernel shades every lane of each flushed batch,
+      // so every covered pixel gets the interpolated (red) colour — not just
+      // the fragment that landed in a scalar slot.  Several interior pixels
+      // plus the depth write pin the full rasterize -> kernel -> OM path.
+      assert(rgb(2, 2) == (255, 0, 0), s"core-shaded (2,2) should be red, got ${rgb(2, 2)}")
+      assert(rgb(5, 5) == (255, 0, 0), s"core-shaded (5,5) should be red, got ${rgb(5, 5)}")
+      assert(rgb(8, 2) == (255, 0, 0), s"core-shaded (8,2) should be red, got ${rgb(8, 2)}")
       assert(depth(5, 5) == 0x10, s"core-shaded depth (5,5) should be 0x10, got ${depth(5, 5)}")
     }
   }

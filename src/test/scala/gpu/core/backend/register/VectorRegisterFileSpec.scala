@@ -59,6 +59,45 @@ class VectorRegisterFileSpec extends AnyFlatSpec {
     }
   }
 
+  it should "take the predicate mask from v0 regardless of the vs1 field" in {
+    // The predicate mask is the architectural v0 mask (the low `lanes` bits of
+    // v0's lane-0 word, matching the packed layout mask-producing instructions
+    // write back).  It must not follow the vs1 read port: for loads/stores
+    // instruction(19,15) encodes the scalar base register rs1, not a vector
+    // operand.
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new VectorRegisterFile(config)) { dut =>
+      dut.io.read.warpId.poke(0.U)
+      dut.io.read.vs1.poke(3.U)
+      dut.io.read.vs2.poke(0.U)
+      dut.io.read.vd.poke(0.U)
+      dut.io.write.valid.poke(false.B)
+      dut.clock.step()
+
+      // v0 lane 0 word = 0b0101; v3 lane 0 word = 0xff (must be ignored).
+      dut.io.write.valid.poke(true.B)
+      dut.io.write.bits.warpId.poke(0.U)
+      dut.io.write.bits.vd.poke(0.U)
+      for (lane <- 0 until config.lanes) {
+        dut.io.write.bits.data(lane).poke((if (lane == 0) 0x5 else 0).U)
+      }
+      dut.clock.step()
+      dut.io.write.bits.vd.poke(3.U)
+      for (lane <- 0 until config.lanes) {
+        dut.io.write.bits.data(lane).poke(0xff.U)
+      }
+      dut.clock.step()
+      dut.io.write.valid.poke(false.B)
+
+      dut.io.vs1Data(0).expect(0xff.U)
+      dut.io.predicateMask.expect("b0101".U)
+
+      // The mask is warp-local: warp 1's v0 was never written.
+      dut.io.read.warpId.poke(1.U)
+      dut.io.predicateMask.expect(0.U)
+    }
+  }
+
   it should "emit the physical RF as ASAP7 SRAM macro instances" in {
     val target = Files.createTempDirectory("vrf-macro")
     try {
