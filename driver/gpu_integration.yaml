@@ -1,0 +1,42 @@
+# ARTI (RTL-to-QEMU integration) profile for the RISC-V SIMT GPU.
+#
+# ARTI parses the emitted SystemVerilog top (GpuHostAxi, see
+# src/main/scala/gpu/elaboration/EmitGpuHostAxi.scala), infers an AXI4 slave
+# from the s_axi_* port names, and generates the embedded QEMU device model
+# plus the device-tree node.  This profile keeps the integration metadata next
+# to the driver so it can be copied into any project.
+#
+# The renderer's shared-memory ports are NOT bridged by ARTI (it targets
+# slave/peripheral RTL); the SoC attaches them to the coherent off-chip L2 so
+# the GPU reads the command buffer and writes the framebuffer in the same
+# physical memory the host (RV64) allocates.
+project:
+  name: riscv_simt_opengpu_linux
+  qemu_flavor: upstream
+  qemu_machine: virt
+
+rtl:
+  top_module: GpuHostAxi
+  # Emitted by the Chisel flow:
+  #   sbt "runMain opengpu.elaboration.EmitGpuHostAxi"
+  source_files: [opengpu_host/GpuHostAxi.sv]
+  clk_freq_mhz: 100
+
+bridge:
+  protocol: axi4
+  base_address: "0x0B00_0000"
+  data_width: 32
+  mode: qemu-embedded
+  irq_number: 180
+
+integration:
+  irq_base: 180
+  dt_compat: ["riscv-simt,opengpu"]
+  driver_ko: gpu_drv.ko
+  driver_deps: ""
+  driver_manifest: ""
+  driver_marker: "OPENGPU DRIVER PASS"
+  skip_generic_test: true
+
+advanced:
+  timeout_cycles: 1000

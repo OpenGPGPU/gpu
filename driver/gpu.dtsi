@@ -1,0 +1,25 @@
+/*
+ * RISC-V SIMT GPU device-tree binding.
+ *
+ * The GPU is an accelerator on the SoC bus with a single AXI4 memory-mapped
+ * control port (the ctrl resource) and a completion interrupt.  ALL buffers
+ * (command buffer, kernarg, colour, depth) are software-allocated regions in
+ * the host's physical memory; the driver programs their addresses through the
+ * control registers.  This matches the integrated-SoC morphology: host RV64
+ * and GPU share one coherent DRAM through the shared L2.
+ */
+/ {
+    opengpu: gpu@b000000 {
+        compatible = "riscv-simt,opengpu";
+        reg = <0x0b000000 0x1000>;
+        reg-names = "ctrl";
+        interrupts = <180>;                 /* completion (wired by ARTI) */
+        interrupt-parent = <&intc>;
+        /* Optional boot-time mode used by the self-test draw. */
+        opengpu,width = <16>;
+        opengpu,height = <16>;
+        opengpu,stride = <0x40>;                /* 16 * 4 */
+        #address-cells = <1>;
+        #size-cells = <1>;
+    };
+};
