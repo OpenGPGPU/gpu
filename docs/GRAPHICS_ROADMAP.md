@@ -135,7 +135,7 @@ that hardware interfaces can be frozen.
   `io.completion` carry a `KernelLaunch{kernelPc, kernargAddress, gridSize,
   localSize}` and `KernelCompletion`, so a vertex/fragment shader is a **kernel
   launched on the core's SIMT warps** with its varyings/uniforms/output placed
-  in the kernarg buffer. The `gpu.graphics` `ShaderCore`/`RV32ShaderCore` are
+  in the kernarg buffer. The `opengpu.graphics` `ShaderCore`/`RV32ShaderCore` are
   standalone verification stepping stones; the production path is to emit a
   `KernelLaunch` per draw and consume `KernelCompletion`, reusing the core's
   warp/register/ALU/FPU machinery rather than a separate shader datapath. Real
@@ -257,6 +257,52 @@ Hardware:
 Verification:
 - Bit-exact coverage match against M3b tests (fill rule unchanged).
 
+Status (implementation, 2026-08-27):
+- **Incremental edge stepping landed.** `TriangleRasterizer`
+  (`src/main/scala/opengpu/graphics/Rasterizer.scala`) now runs a two-stage
+  engine: setup (one cycle after draw capture) evaluates each edge once at the
+  clamped-bbox origin and precomputes the sub-pixel deltas
+  (`A/B << subPixelBits`) plus hoisted per-edge top-left fill-rule flags; the
+  scan loop advances the running edge values with one 64-bit add per edge per
+  column step and one on each row wrap.  Modular addition distributes over the
+  plane equation, so stepped values equal direct evaluation bit-exactly even
+  under 64-bit wraparound.  The M1 contract (clamped bbox, top-left rule,
+  strict x-then-y order, ready/done semantics that keep the M5 draw-boundary
+  batch flush correct) is unchanged, so nothing downstream moved.
+- Emitted SV check: the block's remaining multiplies sit only in the setup
+  cone; the steady-state scan/emission datapath contains adds and sign tests
+  only — the per-cycle multiply array is gone.
+- **2×2 quad evaluation delivered as a reusable unit, not yet wired into
+  emission.**  `QuadCoverage` evaluates all four lanes of a quad with pure
+  additions from base + dx/dy and is spec-tested directly; wiring four-lane
+  packed emission into the raster output lands with M5's quad-dispatch/
+  derivative work so the OM stays single-fragment until then.
+- Verification: `RasterizerSpec` keeps all four M3b tests green unchanged and
+  adds a 24-triangle randomized sweep (solid/sliver/off-screen/reversed
+  winding) asserted set-equal against the same software fill-rule reference;
+  edge-sharing triangles still cover exactly once.
+- PPA: `EmitPpaRtl raster-quad` emits the standalone block to
+  `generated/ppa_raster_quad` and `scripts/run_raster_physical.py` drives the
+  ASAP7 flow with the same settings as the compute blocks (1 GHz target,
+  util 25 / density 60 / TC / SLVT).  Measured with ChipAgent (post-route,
+  yosys, no retiming):
+
+  | revision | fmax | slack | instances | area (µm²) | power |
+  |---|---|---|---|---|---|
+  | first incremental cut: whole setup cone in ONE cycle, operands padded to
+    64b everywhere (13× 64x64 multiplies) | 525.85 MHz | −902 ps | 233k | 8 549 | 1.07 W |
+  | + two-stage setup (coeffs → origin eval) and natural-width arithmetic
+    (multipliers sized to real coordinate ranges) | 824.4 MHz | −213 ps | 227k | 8 457 | 0.36 W |
+  | + third stage (product terms registered; final summation adds-only)
+    | **1011.0 MHz** | **+10.9 ps** | 227k | 8 185 | 0.41 W |
+
+  Final revision **passes the 1 GHz constraint** (post-route, TC/SLVT, zero
+  setup violations, hold clean, zero route DRC).  The critical path moved
+  exactly as predicted: off the scan loop entirely and down the setup cone
+  one stage at a time, ending at `vHold → coeffReg` (the C cross-product,
+  two narrow multiplies and a subtract).  Compared with the first cut, the
+  final engine is ~2x faster at less than half the power.
+
 ---
 
 ### M5 — Unified shading on the SIMT lanes (the substantive step)
@@ -309,14 +355,14 @@ program, (b) texture unit, (c) derivatives/discard, with a test at each.
 **Goal:** the production, commercial-GPU-aligned path — a vertex/fragment
 shader is a kernel launched on `GpuComputeUnit`'s SIMT warps, reusing the
 core's fetch/decode/issue/RF/ALU/FPU/commit machinery. The standalone
-`gpu.graphics` `ShaderCore`/`RV32ShaderCore` are verification stepping stones
+`opengpu.graphics` `ShaderCore`/`RV32ShaderCore` are verification stepping stones
 and are superseded by this.
 
 Starting state (already present):
 - `GpuComputeUnit.io.kernel: Decoupled(KernelLaunch{kernelPc, kernargAddress,
   gridSize, localSize})` and `io.completion: Decoupled(KernelCompletion)`
   (see `gpu/dispatch/DispatchTypes.scala`).
-- `KernelEmit` (in `gpu.graphics`) assembles a `KernelLaunch` from a draw's
+- `KernelEmit` (in `opengpu.graphics`) assembles a `KernelLaunch` from a draw's
   shader descriptor (the graphics side of the contract).
 
 Steps:
@@ -405,7 +451,7 @@ Status (implementation):
 - Remaining: per-draw pacing and double buffering.
 
 Resolved — off-chip memory arbitration via `SharedL2Cache` (2026-08-26).
-`RenderCoreL2` (`src/main/scala/gpu/graphics/RenderCoreL2.scala`) composes
+`RenderCoreL2` (`src/main/scala/opengpu/graphics/RenderCoreL2.scala`) composes
 `RenderCore` with a `SharedL2Cache`, so the command-buffer, framebuffer, shader
 kernarg, and the core-backed kernel's line traffic all arbitrate onto **one**
 off-chip memory port (the integrated-SoC morphology where graphics and compute
@@ -526,6 +572,50 @@ Software / host:
 Verification:
 - QEMU host + device model; driver submits a draw and reads the
   framebuffer back.
+
+Status (implementation, 2026-08-26):
+- **Register file + engine control + completion interrupt (hardware).**
+  `RenderHost` (`src/main/scala/opengpu/graphics/RenderHost.scala`) presents a
+  software-programmable MMIO register file wrapping `RenderCore`: a device ID
+  (`RenderHostRegs.ID`), engine control (`CONTROL.START`), status
+  (`STATUS.BUSY/DONE/ERROR`, write-1-to-clear), an interrupt enable/pending pair
+  (`IRQ`), and the render configuration (command-buffer base, render-target
+  bases, stride, depth test/func/write, cull mode).  The host writes the config
+  registers then sets START; the engine snapshots the config into a shadow the
+  render core runs from (so a host can programme the next frame while the
+  current one is in flight) and asserts the completion interrupt when `done`
+  rises.  The renderer's memory ports (command-buffer/framebuffer word ports and
+  the core-backed shader kernel's line + coherence/atomic ports) pass straight
+  through for the SoC to attach to the shared off-chip hierarchy.  Verified in
+  `RenderHostSpec` (register read/write, ID, status lifecycle, interrupt, an
+  end-to-end draw driven purely through the register file) plus the 46 prior
+  graphics tests.
+- A minimal AXI4/NoC bus attachment (the `aw`/`w`/`b`/`ar`/`r` channels) is the
+  remaining hardware piece; the word interface here is the register-file spine a
+  bus adapter can sit on.  The QEMU host model, Linux driver, and device-tree
+  binding are the software side and still open.
+
+Resolved — AXI4 host-control interface + Linux driver (2026-08-26).  `GpuHostAxi`
+(`src/main/scala/opengpu/graphics/GpuHostAxi.scala`) wraps `RenderHost` in a
+standard AXI4 slave: `s_axi_aw*/w*/b*` (burst-capable, word-at-a-time) and
+`s_axi_ar*/r*`, `s_axi_aclk/aresetn`, and the completion interrupt `m_irq`.
+This is the top ARTI (the RTL-to-QEMU integration tool) auto-bridges: it infers
+AXI4 from the standard signal names and generates the embedded QEMU device
+model + device-tree node.  Verified in `GpuHostAxiSpec` (single-beat and INCR
+-burst register R/W, SLVERR on unaligned/out-of-map reads, and a full draw
+-submitted purely over the bus until the interrupt fires); 50 graphics tests
+-green.  `EmitGpuHostAxi` (`gpu/elaboration`) emits `GpuHostAxi.sv` for ARTI.
+-The shared ABI is exported to `driver/gpu_abi.h` (register map, the 26-word
+-draw record, the SoA kernarg layout).  `driver/gpu_drv.c` is a platform driver
+-binding to `riscv-simt,gpu`: it maps the `ctrl` resource, allocates the
+-software command/colour/depth buffers, submits a self-test draw, waits on the
+-completion IRQ (with a STATUS poll fallback), exposes `/dev/gpu0`, and prints
+-`GPU DRIVER PASS` for the ARTI harness.  `driver/gpu.dtsi` and
+-`driver/gpu_integration.yaml` give the device-tree node and the ARTI profile.
+-See `docs/HOST_INTERFACE.md` for the full interface/driver design.  The
+-remaining M6 software (QEMU host model booting the real kernel, full Linux
+-module load, DRM handoff) is exercised by ARTI's harness rather than this repo.
+
 
 ---
 

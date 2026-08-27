@@ -3,18 +3,18 @@
 This repository is a Chisel 7.x implementation of a GPU core whose lanes
 execute the RISC-V ISA using a SIMT execution model.
 
-The design takes architectural guidance from the sibling `opengpu` project,
-but keeps this implementation small, dependency-light, and incrementally
-verifiable.
+The design adopts a commercial-GPU-style architecture: unified shading on the
+SIMT lanes plus separated fixed-function graphics, in a small, dependency-light
+package that is incrementally verifiable.
 
 ## Structure
 
-- `src/main/scala/gpu/core/frontend/decode/` — unified scalar/FPU/RVV decoder and pipeline
-- `src/main/scala/gpu/core/frontend/simt/` — SIMT divergence/reconvergence state
-- `src/main/scala/gpu/core/execute/` — execution units
-- `src/main/scala/gpu/core/simt/` — SIMT lane wrapper
-- `src/main/scala/gpu/graphics/` — graphics pipeline (rasterizer, interpolators, output merger, geometry, command buffer), see `docs/GRAPHICS_ROADMAP.md`
-- `src/main/scala/gpu/config/` — architectural configuration
+- `src/main/scala/opengpu/core/frontend/decode/` — unified scalar/FPU/RVV decoder and pipeline
+- `src/main/scala/opengpu/core/frontend/simt/` — SIMT divergence/reconvergence state
+- `src/main/scala/opengpu/core/execute/` — execution units
+- `src/main/scala/opengpu/core/simt/` — SIMT lane wrapper
+- `src/main/scala/opengpu/graphics/` — graphics pipeline (rasterizer, interpolators, output merger, geometry, command buffer), see `docs/GRAPHICS_ROADMAP.md`
+- `src/main/scala/opengpu/config/` — architectural configuration
 - `src/test/scala/` — tests
 - `build.sbt` — Scala and Chisel dependency configuration
 - `docs/GRAPHICS_ROADMAP.md` — graphics pipeline roadmap and resolved design decisions
@@ -72,7 +72,7 @@ verifiable.
 
 ## Graphics pipeline
 
-`src/main/scala/gpu/graphics/` implements a graphics front-end and render
+`src/main/scala/opengpu/graphics/` implements a graphics front-end and render
 pipeline on the unified-shader + separated-fixed-function model:
 `MatrixTransform` (4x4 MVP) -> `GeometryStage` (perspective divide + viewport)
 -> `NearClipStage` (Sutherland-Hodgman clipping) -> `TriangleRasterizer`
