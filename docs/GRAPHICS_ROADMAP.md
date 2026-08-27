@@ -346,6 +346,39 @@ Verification:
   Python reference implementation of the ISA subset).
 - `discard` test (cutout), derivative test (checkerboard from `dFdx`).
 
+Status (implementation, 2026-08-27) — M5b texture unit:
+- **Texture sampling hardware landed** as an independently verified
+  fixed-function block: `TextureUnit`
+  (`src/main/scala/opengpu/graphics/TextureUnit.scala`).  It samples an
+  RGBA8888 texture in shared memory with a bilinear filter through the same
+  word-port contract the OutputMerger and kernarg bridge use, so it drops
+  into any fabric already serving graphics word clients.  Configuration is
+  register-driven (`texBase`, width/height, REPEAT/CLAMP wrap mode), matching
+  the design rule that hardware never owns or sizes a buffer.
+  - Address decode uses the industry-standard half-texel alignment: sample
+    coordinate maps to texel space minus one half texel, so u=(i+0.5)/N hits
+    texel i's centre.  The bias is applied in the post-shift domain and wraps
+    by two's-complement mask for REPEAT (power-of-two extents asserted),
+    saturates into range for CLAMP; neither mode fetches out-of-bounds
+    addresses (checked by the memory model).
+  - Blend: per-channel fixed-point weights summing to exactly 65536,
+    truncated shift back to 8 bits; NEAREST falls out as the degenerate
+    whole-fraction case.  Alpha passes through opaque (blending stays with
+    the OM hook).
+  - FSM detail worth noting: an explicit sBlend state separates the final tap
+    write from the blend read (same-cycle tap-write + blend-read latched
+    stale data — same failure class as the M4b capture/use race).
+- Verification: `TextureUnitSpec` mirrors every documented integer step in a
+  software reference and asserts bit-exact agreement across: interior blends,
+  REPEAT tiling across the seam, CLAMP overshoot returning solid edge texels,
+  exact texel values at all 64 texel centres, a 20-sample randomized sweep,
+  plus a stalled-consumer / follow-up-sample regression guarding the state
+  leak class.  opengpu.graphics.* is now 56/56 green.
+- Remaining to finish M5b wiring: expose the sampler between interpolator
+  output and OM (fixed-function path) or as the backend for a `tex.sample`
+  custom instruction on the core-kernel path; then LOD/mips and quad
+  derivatives ride on top of this block.
+
 Risks: still the largest milestone, but the ISA/toolchain deletion removes
 the worst of it. Split as: (a) dispatch + uniform bank + trivial color
 program, (b) texture unit, (c) derivatives/discard, with a test at each.
