@@ -6,10 +6,8 @@
 # plus the device-tree node.  This profile keeps the integration metadata next
 # to the driver so it can be copied into any project.
 #
-# The renderer's shared-memory ports are NOT bridged by ARTI (it targets
-# slave/peripheral RTL); the SoC attaches them to the coherent off-chip L2 so
-# the GPU reads the command buffer and writes the framebuffer in the same
-# physical memory the host (RV64) allocates.
+# Embedded ARTI adapts the renderer's memory clients to QEMU guest RAM. A
+# hardware SoC attaches the same ports to its coherent off-chip L2/DRAM.
 project:
   name: riscv_simt_opengpu_linux
   qemu_flavor: upstream
@@ -40,3 +38,13 @@ integration:
 
 advanced:
   timeout_cycles: 1000
+
+display:
+  enabled: true
+  source: guest-memory
+  width: 16
+  height: 16
+  format: a8r8g8b8
+  address_register: 0x18
+  stride_register: 0x20
+  framebuffer_size: 0x400

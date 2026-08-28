@@ -638,7 +638,7 @@ Verification:
 - QEMU host + device model; driver submits a draw and reads the
   framebuffer back.
 
-Status (implementation, 2026-08-26):
+Status (implementation, 2026-08-28):
 - **Register file + engine control + completion interrupt (hardware).**
   `RenderHost` (`src/main/scala/opengpu/graphics/RenderHost.scala`) presents a
   software-programmable MMIO register file wrapping `RenderCore`: a device ID
@@ -677,9 +677,14 @@ command/colour/depth buffers, submits a self-test draw, waits on the completion
 IRQ (with a STATUS poll fallback), exposes `/dev/gpu0`, and prints `GPU DRIVER
 PASS` for the ARTI harness. `driver/gpu.dtsi` and
 `driver/gpu_integration.yaml` give the device-tree node and ARTI profile. See
-`docs/HOST_INTERFACE.md` for the full interface/driver design. The remaining
-M6 software (QEMU host model booting the real kernel, full Linux module load,
-DRM handoff) is exercised by ARTI's harness rather than this repo.
+`docs/HOST_INTERFACE.md` for the full interface/driver design.
+
+Resolved — embedded QEMU/Linux integration (2026-08-28). ARTI compiles the
+generated RTL into its QEMU SysBus device, bridges the renderer's command,
+framebuffer, texture, and kernel memory clients directly to QEMU guest RAM, and
+boots the real AArch64 Linux kernel with `gpu_drv.ko`. The end-to-end harness
+passes device probe, AXI register access, interrupt-backed draw submission, and
+framebuffer readback (`OPENGPU DRIVER PASS`). DRM handoff belongs to M7.
 
 
 ---
@@ -697,6 +702,17 @@ Software:
 
 Verification:
 - QEMU virtual display; draw a framebuffer and confirm output.
+
+Status (phase 1 virtual display, 2026-08-28):
+- **Complete.** ARTI's `guest-memory` display source watches `COLOR_BASE` and
+  `STRIDE`, scans the driver-allocated render target from QEMU guest physical
+  memory, converts packed RGBA8888 pixels to the QEMU display surface, and
+  refreshes through `GraphicHwOps`. The GPU integration profile uses the 16x16
+  self-test target; both the headless regression path and the macOS Cocoa
+  display backend complete with `OPENGPU DRIVER PASS`.
+- The next display phase is a Linux DRM/KMS driver exposing a real scanout
+  framebuffer and modesetting API. Hardware scanout DMA, timing generation,
+  and the board-specific video PHY remain separate RTL milestones.
 
 ---
 

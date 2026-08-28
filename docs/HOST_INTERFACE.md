@@ -192,3 +192,14 @@ model, and the GPU host driver loaded from an initramfs. The AXI control path,
 device identification, guest-memory bridge, draw completion, and framebuffer
 readback are functional. The end-to-end harness reports `OPENGPU DRIVER PASS`
 after submitting a triangle and verifying the rendered red pixel.
+
+With `display.source: guest-memory`, ARTI also watches `COLOR_BASE` (0x18) and
+`STRIDE` (0x20), reads the driver-allocated framebuffer through QEMU's guest
+address space, converts the renderer's packed RGBA8888 words to the QEMU
+surface, and refreshes the graphics console. The integration profile enables a
+16x16 scanout matching the current driver self-test. Run it on macOS with:
+
+```bash
+INTEGRATION_CONFIG=/Users/duckdonald/workspace/gpu/driver/gpu_integration.yaml \
+  /Users/duckdonald/workspace/arti/examples/linux_arti_driver/run_gpu_display.sh
+```
