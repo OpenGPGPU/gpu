@@ -5,5 +5,6 @@
 # which produces gpu_drv.ko.
 
 obj-m += gpu_drv.o
+gpu_drv-y := opengpu_drv.o opengpu_hw.o opengpu_memory.o opengpu_compute.o
 
 ccflags-y := -I$(src)

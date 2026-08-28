@@ -146,8 +146,8 @@ gpu@b000000 {
 
 ## 5. Linux driver
 
-`driver/gpu_drv.c` is a **platform driver** binding to `riscv-simt,opengpu`
-(character device first, DRM later, per the roadmap):
+The layered driver under `driver/` binds to `riscv-simt,opengpu` (execution
+character device first, DRM display client next, per the roadmap):
 
 - **probe**: map the `ctrl` resource, verify the device ID, allocate the
   command/colour/depth buffers with `dma_alloc_coherent`, request the
@@ -160,9 +160,14 @@ gpu@b000000 {
 - **readback**: `/dev/opengpu0` exposes the framebuffer; `GPU_IOCTL_SUBMIT` re-runs
   a draw from userspace.
 
-The DRM/KMS controller is a later milestone (M7). The scanout path there points
-at the same shared framebuffer the renderer writes, mirroring ARTI's
-`simple-framebuffer` -> real-driver handoff.
+`opengpu_drv.c` owns platform lifetime, `opengpu_hw.c` owns MMIO/IRQ/job launch,
+`opengpu_memory.c` owns shared buffers, and `opengpu_compute.c` owns the current
+execution userspace ABI. See `DRIVER_ARCHITECTURE.md` for the Nova/AMDGPU-based
+display and execution separation used by the DRM phase.
+
+The DRM/KMS client is the next M7 phase. It consumes shared GEM DMA framebuffer
+objects and programs a dedicated display register bank; it does not take
+ownership of the execution client's bring-up buffers.
 
 ## 6. ARTI integration flow
 

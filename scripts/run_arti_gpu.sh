@@ -79,11 +79,18 @@ DRIVER_KO= DRIVER_MANIFEST= \
     "$ARTI_DIR/examples/linux_arti_driver/setup_env.sh"
 
 echo "=== 3/4 Build gpu_drv.ko for the QEMU kernel ==="
+DRIVER_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/opengpu-driver.XXXXXX")"
+cleanup() {
+    rm -rf "$DRIVER_STAGE"
+}
+trap cleanup EXIT
+cp "$GPU_DIR/driver/Makefile" "$DRIVER_STAGE/"
+cp "$GPU_DIR"/driver/*.c "$GPU_DIR"/driver/*.h "$DRIVER_STAGE/"
 LINUX_BUILD="$LINUX_BUILD" \
 ARTI_DIR="$ARTI_DIR" \
     "$ARTI_DIR/examples/linux_arti_driver/build_driver.sh" \
-        --source "$GPU_DIR/driver/gpu_drv.c" \
-        --name gpu_drv \
+        --dir "$DRIVER_STAGE" \
+        --module gpu_drv \
         --output "$DRIVER_OUTPUT"
 
 DRIVER_KO="$DRIVER_OUTPUT/gpu_drv.ko"
@@ -93,4 +100,4 @@ DRIVER_MANIFEST="$DRIVER_OUTPUT/gpu_drv.deps"
 echo "=== 4/4 Boot Linux and run the GPU draw test ==="
 export ARTI_DIR INTEGRATION_CONFIG LINUX_BUILD DRIVER_KO DRIVER_MANIFEST
 export QEMU_DISPLAY HOLD_AFTER_TEST
-exec "$ARTI_DIR/examples/linux_arti_driver/run_linux_test.sh"
+"$ARTI_DIR/examples/linux_arti_driver/run_linux_test.sh"

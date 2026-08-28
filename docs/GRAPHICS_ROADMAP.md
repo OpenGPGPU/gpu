@@ -671,11 +671,12 @@ burst register R/W, SLVERR on unaligned/out-of-map reads, and a full draw
 submitted purely over the bus until the interrupt fires). `EmitGpuHostAxi`
 (`gpu/elaboration`) emits `GpuHostAxi.sv` for ARTI. The shared ABI is exported
 to `driver/gpu_abi.h` (register map, the 32-word draw record, texture state and
-the SoA kernarg layout). `driver/gpu_drv.c` is a platform driver binding to
-`riscv-simt,gpu`: it maps the `ctrl` resource, allocates the software
-command/colour/depth buffers, submits a self-test draw, waits on the completion
-IRQ (with a STATUS poll fallback), exposes `/dev/gpu0`, and prints `GPU DRIVER
-PASS` for the ARTI harness. `driver/gpu.dtsi` and
+the SoA kernarg layout). The layered driver under `driver/` binds to
+`riscv-simt,gpu`: its platform, hardware, memory, and execution modules map the
+`ctrl` resource, allocate software command/colour/depth buffers, submit a
+self-test draw, wait on the completion IRQ (with a STATUS poll fallback),
+expose `/dev/opengpu0`, and print `OPENGPU DRIVER PASS` for the ARTI harness.
+`driver/gpu.dtsi` and
 `driver/gpu_integration.yaml` give the device-tree node and ARTI profile. See
 `docs/HOST_INTERFACE.md` for the full interface/driver design.
 
@@ -713,6 +714,13 @@ Status (phase 1 virtual display, 2026-08-28):
 - The next display phase is a Linux DRM/KMS driver exposing a real scanout
   framebuffer and modesetting API. Hardware scanout DMA, timing generation,
   and the board-specific video PHY remain separate RTL milestones.
+
+Driver architecture for phase 2 is specified in
+`docs/DRIVER_ARCHITECTURE.md`. It follows Nova's device/file/GEM ownership
+boundaries and AMDGPU's hardware-IP/display/execution separation at a scale
+appropriate to this GPU. The existing `COLOR_BASE` scanout hook remains a
+bring-up compatibility path; production KMS uses a dedicated display register
+bank so display and render/compute state have independent ownership.
 
 ---
 
