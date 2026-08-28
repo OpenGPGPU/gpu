@@ -178,20 +178,17 @@ at the same shared framebuffer the renderer writes, mirroring ARTI's
 
 ### Caveat: the memory (master) port
 
-ARTI auto-bridges **slave/peripheral** RTL. The GPU's memory client (the
-coalesced L2 line port behind `RenderCoreL2`) is a **master** that reads the
-command buffer and writes the framebuffer in the host's physical RAM. That port
-is exposed through `GpuHostAxi` and must be attached to the SoC's coherent L2 /
-DRAM by the platform — it is **not** something ARTI's MMIO bridge drives. In
-the embedded-QEMU model the framebuffer the driver allocates is the host's own
-RAM, so the renderer and the host CPU observe the same pixels with
-driver-driven coherence (cache-clean before submission, fence on completion).
+ARTI auto-bridges the AXI **slave/control** port and, in embedded-QEMU mode,
+adapts the renderer's memory-client ports to one guest-memory callback ABI.
+QEMU services that ABI with `address_space_read/write`, so command buffers,
+framebuffers, textures, and core-backed line requests all address the same
+guest physical RAM used by the Linux driver. A hardware SoC still attaches
+those client ports to its coherent L2 / DRAM hierarchy instead.
 
 ### Embedded full-system status
 
 The AArch64 Linux boot path now runs with QEMU, the generated `GpuHostAxi`
-model, and the GPU host driver loaded from an initramfs. The AXI control path
-and device identification are functional. Draw submission still requires a
-guest-memory callback bridge for the command-buffer, framebuffer, texture, and
-kernel-memory client ports; without that master-port bridge the GPU remains
-busy after `START` even though Linux and the driver have booted successfully.
+model, and the GPU host driver loaded from an initramfs. The AXI control path,
+device identification, guest-memory bridge, draw completion, and framebuffer
+readback are functional. The end-to-end harness reports `OPENGPU DRIVER PASS`
+after submitting a triangle and verifying the rendered red pixel.
