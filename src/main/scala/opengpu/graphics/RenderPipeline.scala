@@ -146,6 +146,12 @@ class RenderPipeline(
 
   if (fragCore) {
     val kernelFrag = Module(new KernelFragStage(gpuConfig, config))
+    // Do not accept the next command-buffer record until the previous draw's
+    // batched kernel output has reached the OM.  RasterShader becomes idle as
+    // soon as it emits its last pixel, but the core-backed sampler can still
+    // be draining that batch; gating here keeps shader descriptors and
+    // per-draw kernarg state from overlapping.
+    io.draw.ready := shader.io.draw.ready && kernelFrag.io.drained
     kernelFrag.io.fragIn.valid := shader.io.pixel.valid
     kernelFrag.io.fragIn.bits := shader.io.pixel.bits
     shader.io.pixel.ready := kernelFrag.io.fragIn.ready

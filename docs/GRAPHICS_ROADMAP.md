@@ -66,8 +66,9 @@ Current limitations that still drive the remaining roadmap:
    mip storage/addressing are not implemented.
 3. Rasterization and physical texture taps are serialized; wider issue/fetch
    is a performance iteration after functional M5 completion.
-4. Per-draw overlap/double buffering and completion that implies full L2 store
-   drain remain open before the host/display path is production-ready.
+4. Per-draw overlap/double buffering remains open before the host/display path
+   is production-ready; the core-backed path now gates the next draw until the
+   previous batched kernel output is drained into the OM.
 
 ---
 
@@ -506,7 +507,13 @@ Status (implementation):
 - The standalone `ShaderCore`/`RV32ShaderCore`/`ShaderFragStage` remain as the
   fixed-function stepping stones (default `fragCore = false`) and are to be
   removed once the core-backed path is the sole shading backend.
-- Remaining: per-draw pacing and double buffering.
+- **Per-draw pacing (2026-08-28).** `RenderPipeline(fragCore = true)` now
+  gates `draw.ready` on both raster-idle and `KernelFragStage.drained`. A
+  command-buffer record cannot overwrite the shader descriptor or kernarg
+  selection while the prior draw's batched kernel output is still reaching the
+  OM. Full overlap/double buffering is still a throughput optimization.
+- Remaining: explicit double buffering and completion contracts that include
+  the final shared-L2 store drain.
 
 Resolved — off-chip memory arbitration via `SharedL2Cache` (2026-08-26).
 `RenderCoreL2` (`src/main/scala/opengpu/graphics/RenderCoreL2.scala`) composes
