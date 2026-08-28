@@ -38,9 +38,9 @@ private object VectorDecodeTable {
   }
   object Unit extends DecodeField[VectorPattern, UInt] {
     override def name: String = "unit"
-    override def chiselType: UInt = UInt(3.W)
-    override def default: BitPat = BitPat(0.U(3.W))
-    override def genTable(pattern: VectorPattern): BitPat = BitPat(pattern.unit.U(3.W))
+    override def chiselType: UInt = UInt(4.W)
+    override def default: BitPat = BitPat(0.U(4.W))
+    override def genTable(pattern: VectorPattern): BitPat = BitPat(pattern.unit.U(4.W))
   }
   object ReadsVs1 extends VectorBoolField("readsVs1") {
     override protected def value(pattern: VectorPattern): Boolean = pattern.readsVs1
@@ -244,9 +244,18 @@ private object VectorDecodeTable {
     VectorPattern("vsetvl",   "1000000??????????111?????1010111", 6, configure = true)
   )
 
+  // vtex.sample vd, vs1, vs2: lane-local Q16.16 coordinates to packed
+  // RGBA8888. custom-1 opcode, funct6=000001, funct3=000; bit 25 retains
+  // RVV's vm meaning so masked sampling has ordinary vector semantics.
+  private val texturePatterns = Seq(
+    VectorPattern("vtex_sample",
+      "000001???????????000?????0101011", 8,
+      readsVs1 = true, readsVs2 = true, writesVd = true)
+  )
+
   val patterns: Seq[VectorPattern] =
     memoryPatterns ++ configPatterns ++ arithmeticPatterns ++
-      unary0Patterns ++ unary1Patterns
+      unary0Patterns ++ unary1Patterns ++ texturePatterns
   val fields: Seq[DecodeField[VectorPattern, _ <: Data]] = Seq(
     Legal,
     Unit,
@@ -271,7 +280,7 @@ class VectorDecoder extends Module {
 
   val opcode = io.instruction(6, 0)
   val recognized = opcode === "b1010111".U || opcode === "b0000111".U ||
-    opcode === "b0100111".U
+    opcode === "b0100111".U || opcode === "b0101011".U
   val result = VectorDecodeTable.table.decode(io.instruction)
   val (decodedUnit, _) = VectorUnit.safe(result(VectorDecodeTable.Unit))
 

@@ -40,9 +40,9 @@ object TexWrap {
   *   - wrapMode   : TexWrap.repeat or TexWrap.clamp, applied to both axes.
   *
   * Texel word layout matches the pipeline's packed-colour convention:
-  * bits[31:24] alpha, [23:16] red, [15:8] green, [7:0] blue (in little-endian
-  * memory that is the standard B,G,R,A RGBA8888 byte order).  Alpha currently
-  * passes through as opaque 0xff; alpha blending stays with the OM hook.
+  * bits[31:24] red, [23:16] green, [15:8] blue, [7:0] alpha (little-endian
+  * bytes A,B,G,R). Alpha currently passes through as opaque 0xff; alpha
+  * blending stays with the OM hook.
   *
   * Sampling maths (all integer, no hidden rounding):
   *   biased = (u * width) - 0.5      -- texel-space coordinate with 8

@@ -125,6 +125,8 @@ static void gpu_fill_command(struct gpu_device *g)
 {
     struct gpu_draw_record *r = g->cmd_buf;
 
+    BUILD_BUG_ON(sizeof(*r) != GPU_DRAW_WORDS * sizeof(u32));
+
     memset(g->cmd_buf, 0, sizeof(*r));
     memset(g->depth_buf, 0xff, g->stride * g->height);
 
@@ -157,7 +159,7 @@ static void gpu_self_test(struct gpu_device *g)
     }
 
     pixel = ((u32 *)g->color_buf)[1 * (g->stride / 4) + 1];
-    rgb = pixel & 0x00ffffffu;
+    rgb = (pixel >> 8) & 0x00ffffffu;
     if (rgb == 0x00ff0000u)
         dev_info(g->dev, "OPENGPU DRIVER PASS: draw submitted and read back\n");
     else

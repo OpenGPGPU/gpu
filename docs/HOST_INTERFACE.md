@@ -76,6 +76,10 @@ single source of truth exported to C in `driver/gpu_abi.h`.
 | 0x28 | DEPTH_FUNC | RW | 0 LESS, 1 LEQUAL, 2 GREATER, 3 ALWAYS |
 | 0x2C | DEPTH_WRITE_ENABLE | RW | nonzero enables depth write |
 | 0x30 | CULL_MODE | RW | 0 none, 1 cull back, 2 cull front |
+| 0x34 | TEX_BASE | RW | texture texel (0,0) physical byte address |
+| 0x38 | TEX_WIDTH | RW | texture width in texels |
+| 0x3C | TEX_HEIGHT | RW | texture height in texels |
+| 0x40 | TEX_CONFIG | RW | bit0 CLAMP (else REPEAT), bit8 texture enable |
 
 At START the engine snapshots the configuration so the host can program the
 next frame while the current one is in flight (a minimal double-buffered
@@ -87,17 +91,18 @@ All buffers live in host physical memory. The host publishes their addresses in
 the registers above, so the ABI is a driver-side concern only (see
 `driver/gpu_abi.h`).
 
-### 3.1 Draw record (`CommandBufferStage`, 26 words)
+### 3.1 Draw record (`CommandBufferStage`, 32 words)
 
-One record per draw call. The 26-word layout is fixed by the RTL:
+One record per draw call. The 32-word layout is fixed by the RTL:
 
 | word(s) | field |
 |---|---|
 | 0–11 | v0/v1/v2 clip-space (x,y,z,w), Q16.16 |
-| 12–20 | v0/v1/v2 colour (r,g,b) 8-bit |
+| 12–20 | v0/v1/v2 colour (r,g,b), one 32-bit word per component (low 8 bits used) |
 | 21–23 | v0/v1/v2 depth (signed 32-bit fixed-point) |
 | 24 | shader entry PC (kernel address) |
 | 25 | kernarg buffer address |
+| 26–31 | v0/v1/v2 texture `(u,v)`, unsigned Q16.16 |
 
 ### 3.2 Kernarg SoA ABI (core-backed fragment shading)
 
@@ -112,12 +117,13 @@ one unit-stride vector load. With `stride = 4 * warps * lanes`:
 | `[2*stride, 3*stride)` | depth (i32) |
 | `[3*stride, 4*stride)` | packed colour inputs (u32) |
 | `[4*stride, 5*stride)` | colour outputs (u32) |
+| `[5*stride, 6*stride)` | reserved |
 | `[6*stride, ...)` | per-draw uniforms |
 
 ### 3.3 Colour / depth buffers
 
-Colour is a8r8g8b8 (`0xAARRGGBB` in a little-endian word). Depth is a 24-bit
-fixed-point value in a 32-bit word. The framebuffer is addressed
+Colour is r8g8b8a8 (`0xRRGGBBAA`; little-endian bytes `[AA BB GG RR]`). Depth
+is a 24-bit fixed-point value in a 32-bit word. The framebuffer is addressed
 `base + (y*stride + x)*4` on integer pixel coordinates.
 
 ## 4. Device-tree binding

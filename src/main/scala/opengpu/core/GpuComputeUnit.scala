@@ -3,7 +3,7 @@ package opengpu.core
 import chisel3._
 import chisel3.util._
 import opengpu.config.GpuConfig
-import opengpu.core.backend.{FpuFlags}
+import opengpu.core.backend.{FpuFlags, VectorCommitRequest, VectorTextureRequest}
 import opengpu.core.backend.issue.{ScalarIssuedInstruction, VectorIssuedInstruction}
 import opengpu.core.backend.register.{FpuRegisterWrite, ScalarRegisterWrite, VectorRegisterWrite}
 import opengpu.core.execute.control.{SimtBranchRequest, SimtPath}
@@ -57,6 +57,10 @@ class GpuComputeUnit(
     /** tex.sample execute-side handoff + writeback (graphics TexSampleUnit). */
     val texSample = Decoupled(new ScalarIssuedInstruction(config))
     val texWriteback = Flipped(Decoupled(new ScalarCommitRequest(config)))
+    /** Per-lane vtex.sample execute-side handoff + vector writeback. */
+    val vectorTexSample = Decoupled(new VectorTextureRequest(config))
+    val vectorTexWriteback =
+      Flipped(Decoupled(new VectorCommitRequest(config)))
   })
 
   private val controller = Module(new SingleCuKernelController(config))
@@ -78,6 +82,8 @@ class GpuComputeUnit(
   system.io.in <> core.io.system
   io.texSample <> system.io.texSample
   core.io.texCommit <> io.texWriteback
+  io.vectorTexSample <> core.io.vectorTexSample
+  core.io.vectorTexCommit <> io.vectorTexWriteback
   core.io.restore <> system.io.restore
   barrier.io.arrive <> system.io.barrier
   barrier.io.residentWarps := controller.io.residentWarps

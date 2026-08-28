@@ -7,13 +7,14 @@ import chisel3.util._
   *
   * Reads `count` sequential draw-call records from software-allocated host
   * memory starting at `base` and emits each as a SceneTriangle on `draw`.
-  * A record is a fixed 26-word layout (little-endian word index):
+  * A record is a fixed 32-word layout (little-endian word index):
   *
   *   [0..11]  v0/v1/v2 clip-space (x,y,z,w) as Q16.16   (12 words)
   *   [12..20] v0/v1/v2 colour (r,g,b) as 8-bit          (9 words)
   *   [21..23] v0/v1/v2 depth as signed 32-bit           (3 words)
   *   [24]     shader entry PC (the draw's shader descriptor)
   *   [25]     kernarg buffer address
+  *   [26..31] v0/v1/v2 texture u,v as unsigned Q16.16
   *
   * This is the hardware side of "the driver writes a command list, the GPU
   * executes it", the prerequisite for a host-driven (M6) Linux device.  The

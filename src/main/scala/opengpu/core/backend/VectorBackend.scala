@@ -38,7 +38,7 @@ import opengpu.core.vector.{
   VectorFlagsWrite
 }
 
-private class VectorCommitRequest(config: GpuConfig) extends Bundle {
+class VectorCommitRequest(config: GpuConfig) extends Bundle {
   val writeback = new VectorRegisterWrite(config)
   val saturated = Bool()
   val writesVd = Bool()
@@ -46,6 +46,11 @@ private class VectorCommitRequest(config: GpuConfig) extends Bundle {
   val writesFlags = Bool()
   val pc = UInt(config.xLen.W)
   val warpActiveMask = UInt(config.lanes.W)
+}
+
+class VectorTextureRequest(config: GpuConfig) extends Bundle {
+  val issued = new VectorIssuedInstruction(config)
+  val executionMask = UInt(config.lanes.W)
 }
 
 /** Connected RVV backend with per-warp configuration and writeback. */
@@ -74,6 +79,8 @@ class VectorBackend(
     val committedVectorWriteback = Valid(new VectorRegisterWrite(config))
     val committedVectorFlags = Valid(new FpuFlags(config))
     val unimplemented = Decoupled(new VectorIssuedInstruction(config))
+    val texSample = Decoupled(new VectorTextureRequest(config))
+    val texCommit = Flipped(Decoupled(new VectorCommitRequest(config)))
     val rawHazard = Output(Bool())
     val wawHazard = Output(Bool())
   })
@@ -92,7 +99,7 @@ class VectorBackend(
   private val configuration = Module(new VectorConfigurationUnit(config))
   private val memory = Module(new VectorMemoryUnit(config))
   private val writebackArbiter =
-    Module(new RRArbiter(new VectorCommitRequest(config), 10))
+    Module(new RRArbiter(new VectorCommitRequest(config), 11))
   private val completionQueue =
     Module(new Queue(new SimtPath(config), 1, pipe = false, flow = false))
   private val inflight =
@@ -119,16 +126,18 @@ class VectorBackend(
   io.memoryRequest <> memory.io.memoryRequest
   memory.io.memoryResponse <> io.memoryResponse
 
-  configuration.io.queryWarpId :=
-    Mux(
-      dispatch.io.multiply.valid,
-      dispatch.io.multiply.bits.decode.warpId,
-      Mux(
-        dispatch.io.alu.valid,
-        dispatch.io.alu.bits.decode.warpId,
-        dispatch.io.fpu.bits.decode.warpId
-      )
+  configuration.io.queryWarpId := MuxCase(
+    dispatch.io.fpu.bits.decode.warpId,
+    Seq(
+      dispatch.io.texture.valid -> dispatch.io.texture.bits.decode.warpId,
+      dispatch.io.memory.valid -> dispatch.io.memory.bits.decode.warpId,
+      dispatch.io.configuration.valid ->
+        dispatch.io.configuration.bits.decode.warpId,
+      dispatch.io.multiply.valid -> dispatch.io.multiply.bits.decode.warpId,
+      dispatch.io.divide.valid -> dispatch.io.divide.bits.decode.warpId,
+      dispatch.io.alu.valid -> dispatch.io.alu.bits.decode.warpId
     )
+  )
   private val vectorState = configuration.io.state
   io.frm := configuration.io.frmByWarp
   private val allLanes = Fill(config.lanes, 1.U)
@@ -139,6 +148,17 @@ class VectorBackend(
     allLanes,
     ((1.U(config.lanes.W) << boundedVl) - 1.U)(config.lanes - 1, 0)
   )
+  private val textureMask =
+    dispatch.io.texture.bits.decode.activeMask & vlMask &
+      Mux(
+        dispatch.io.texture.bits.decode.decoded.vm,
+        allLanes,
+        dispatch.io.texture.bits.predicateMask
+      )
+  io.texSample.valid := dispatch.io.texture.valid
+  dispatch.io.texture.ready := io.texSample.ready
+  io.texSample.bits.issued := dispatch.io.texture.bits
+  io.texSample.bits.executionMask := textureMask
 
   integerAlu.io.in.valid := dispatch.io.alu.valid
   dispatch.io.alu.ready := integerAlu.io.in.ready
@@ -721,6 +741,8 @@ class VectorBackend(
   writebackArbiter.io.in(9).bits.warpActiveMask :=
     estimateAlu.io.out.bits.warpActiveMask
 
+  writebackArbiter.io.in(10) <> io.texCommit
+
   private val initializeWarpValid =
     io.initialize.bits.warpId < config.warps.U
   private val initializeWarpIdle =
@@ -795,22 +817,15 @@ class VectorBackend(
   private val startingVector =
     dispatch.io.alu.fire || dispatch.io.multiply.fire ||
       dispatch.io.divide.fire || dispatch.io.fpu.fire ||
-      dispatch.io.memory.fire
-  private val startingWarp = Mux(
-    dispatch.io.memory.fire,
-    dispatch.io.memory.bits.decode.warpId,
-    Mux(
-      dispatch.io.fpu.fire,
-      dispatch.io.fpu.bits.decode.warpId,
-      Mux(
-        dispatch.io.divide.fire,
-        dispatch.io.divide.bits.decode.warpId,
-        Mux(
-          dispatch.io.multiply.fire,
-          dispatch.io.multiply.bits.decode.warpId,
-          dispatch.io.alu.bits.decode.warpId
-        )
-      )
+      dispatch.io.memory.fire || dispatch.io.texture.fire
+  private val startingWarp = MuxCase(
+    dispatch.io.alu.bits.decode.warpId,
+    Seq(
+      dispatch.io.texture.fire -> dispatch.io.texture.bits.decode.warpId,
+      dispatch.io.memory.fire -> dispatch.io.memory.bits.decode.warpId,
+      dispatch.io.fpu.fire -> dispatch.io.fpu.bits.decode.warpId,
+      dispatch.io.divide.fire -> dispatch.io.divide.bits.decode.warpId,
+      dispatch.io.multiply.fire -> dispatch.io.multiply.bits.decode.warpId
     )
   )
   for (warp <- 0 until config.warps) {

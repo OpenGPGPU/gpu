@@ -15,6 +15,7 @@ class VectorExecutionDispatch(config: GpuConfig = GpuConfig()) extends Module {
     val fpu = Decoupled(new VectorIssuedInstruction(config))
     val configuration = Decoupled(new VectorIssuedInstruction(config))
     val memory = Decoupled(new VectorIssuedInstruction(config))
+    val texture = Decoupled(new VectorIssuedInstruction(config))
     val unimplemented = Decoupled(new VectorIssuedInstruction(config))
   })
 
@@ -25,9 +26,10 @@ class VectorExecutionDispatch(config: GpuConfig = GpuConfig()) extends Module {
   private val toFpu = unit === VectorUnit.floatingPoint
   private val toConfiguration = unit === VectorUnit.configuration
   private val toMemory = unit === VectorUnit.loadStore
+  private val toTexture = unit === VectorUnit.texture
   private val toUnimplemented =
     !toAlu && !toMultiply && !toDivide && !toFpu &&
-      !toConfiguration && !toMemory
+      !toConfiguration && !toMemory && !toTexture
 
   io.alu.valid := io.in.valid && toAlu
   io.multiply.valid := io.in.valid && toMultiply
@@ -35,6 +37,7 @@ class VectorExecutionDispatch(config: GpuConfig = GpuConfig()) extends Module {
   io.fpu.valid := io.in.valid && toFpu
   io.configuration.valid := io.in.valid && toConfiguration
   io.memory.valid := io.in.valid && toMemory
+  io.texture.valid := io.in.valid && toTexture
   io.unimplemented.valid := io.in.valid && toUnimplemented
   io.alu.bits := io.in.bits
   io.multiply.bits := io.in.bits
@@ -42,6 +45,7 @@ class VectorExecutionDispatch(config: GpuConfig = GpuConfig()) extends Module {
   io.fpu.bits := io.in.bits
   io.configuration.bits := io.in.bits
   io.memory.bits := io.in.bits
+  io.texture.bits := io.in.bits
   io.unimplemented.bits := io.in.bits
 
   io.in.ready := Mux(
@@ -59,7 +63,11 @@ class VectorExecutionDispatch(config: GpuConfig = GpuConfig()) extends Module {
           Mux(
             toConfiguration,
             io.configuration.ready,
-            Mux(toMemory, io.memory.ready, io.unimplemented.ready)
+            Mux(
+              toMemory,
+              io.memory.ready,
+              Mux(toTexture, io.texture.ready, io.unimplemented.ready)
+            )
           )
         )
       )

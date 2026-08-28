@@ -6,6 +6,7 @@ import opengpu.config.GpuConfig
 import opengpu.core.GpuComputeUnit
 import opengpu.core.execute.control.SimtBranchRequest
 import opengpu.core.backend.issue.ScalarIssuedInstruction
+import opengpu.core.backend.{VectorCommitRequest, VectorTextureRequest}
 import opengpu.core.backend.writeback.ScalarCommitRequest
 import opengpu.core.memory.{
   CacheLineInvalidate,
@@ -59,6 +60,9 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
     /** tex.sample sideband (issued instruction out, commit request in). */
     val texSample = Decoupled(new ScalarIssuedInstruction(config))
     val texWriteback = Flipped(Decoupled(new ScalarCommitRequest(config)))
+    val vectorTexSample = Decoupled(new VectorTextureRequest(config))
+    val vectorTexWriteback =
+      Flipped(Decoupled(new VectorCommitRequest(config)))
   })
 
   private val emit = Module(new KernelEmit(config))
@@ -90,6 +94,8 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   cu.io.globalAtomicResponse <> io.globalAtomicResponse
   io.texSample <> cu.io.texSample
   cu.io.texWriteback <> io.texWriteback
+  io.vectorTexSample <> cu.io.vectorTexSample
+  cu.io.vectorTexWriteback <> io.vectorTexWriteback
 
   cu.io.invalidateInstructionCache := false.B
   cu.io.instructionSatp := 0.U

@@ -41,35 +41,33 @@ here is the same **unified-shader + separated-fixed-function** model:
 Numbering note: M2 (barycentric coordinate generation) was implemented
 together with M3a and is recorded above for completeness.
 
-**Status (2026-08-24):** M1 through M4 are complete and verified — the fixed
+**Status (2026-08-28):** M1 through M4 are complete and verified — the fixed
 function geometry front-end (MVP transform, near-plane clip, perspective
 divide/viewport), the rasterizer (top-left fill rule, culling), the
 interpolators (screen-space and perspective-correct colour + depth), the
 output merger (depth test / write to software colour+depth buffers), the
 command-buffer parser, and the composite `RenderPipeline`/`RenderCore` that
-renders a command-driven scene into an exported PPM image. M5 shading is in
-progress: `ShaderCore` (lock-step SIMT, uniform bank), `ShaderFragStage`
-(fragment -> SIMT shade), and `RV32ShaderCore` (real RV32IM instruction
-execution) validate the shading model. The production direction is
-**commercial-GPU-aligned unified shading**: reuse `GpuComputeUnit`'s SIMT
-kernel launch/completion (see the resolved decision above) so a shader is a
-kernel on the core, superseding the standalone shader cores. 44 graphics
-tests pass.
+renders a command-driven scene into an exported PPM image. M5 now has the
+production core-backed fragment path, batched per-lane RVV shading, the
+fixed-function texture sampler, and scalar plus per-lane texture instructions.
+Shaders run as kernels on `GpuComputeUnit`; the standalone shader cores remain
+only as reference/compatibility paths.
 
 Compute core already present: RV32 SIMT lanes + FPU (FMA/div/sqrt/est), RVV
 ALU, register files, L1/L2 (SharedL2Slice), memory hierarchy with a standardized
 `Decoupled` memory interface (`memoryRequest`/`memoryResponse`).
 
-Known limitations of the committed hardware, each addressed by a milestone
-below:
+Current limitations that still drive the remaining roadmap:
 
-1. **No fill rule** — coverage is `all ≥ 0 || all ≤ 0` inclusive, so shared
-   edges are drawn twice. → M3b.
-2. **No perspective correction** — interpolation is screen-space linear, wrong
-   after a projective transform. → decision below, hardware in M3c/M4.
-3. **No depth buffering** — fragments are blind writes. → M3c.
-4. **Serial single-pixel rasterizer** — full edge re-evaluation per cycle,
-   one pixel per cycle. Acceptable now; performance iteration → M4b.
+1. The core-backed kernarg staging does not yet publish perspective-corrected
+   per-fragment UVs automatically; shaders can use `vtex.sample` once UV arrays
+   are supplied in kernarg memory.
+2. Fragment `discard`, 2×2-quad neighbor operations, derivatives, mip LOD and
+   mip storage/addressing are not implemented.
+3. Rasterization and physical texture taps are serialized; wider issue/fetch
+   is a performance iteration after functional M5 completion.
+4. Per-draw overlap/double buffering and completion that implies full L2 store
+   drain remain open before the host/display path is production-ready.
 
 ---
 
@@ -395,8 +393,15 @@ Status (implementation, 2026-08-27) — M5b texture unit:
   dispatch to `TexSampleUnit`, reuses `TextureUnit` and the kernel fragment
   stage's shared word-memory port, then returns packed RGBA8888 through the
   ordinary scalar commit/writeback path.  `KernelFragStageSpec` executes a
-  real shader binary and checks the sampled colour end to end.  LOD/mips and
-  quad derivatives remain follow-up work.
+  real shader binary and checks the sampled colour end to end.
+- **Per-lane `vtex.sample` path wired (2026-08-28).**  A custom-1 vector
+  instruction reads Q16.16 UVs from `vs1`/`vs2`, observes ordinary RVV
+  `vl`/`vm`/v0 masking, serializes active lanes through the shared physical
+  sampler, preserves inactive `vd` lanes, and returns packed RGBA8888 through
+  vector commit/writeback.  Unit verification covers masking and result
+  backpressure; the kernel regression loads four distinct UV pairs, samples
+  four texels, and writes all lane results with one vector store.  Automatic
+  perspective-UV staging, LOD/mips and quad derivatives remain follow-up work.
 
 Risks: still the largest milestone, but the ISA/toolchain deletion removes
 the worst of it. Split as: (a) dispatch + uniform bank + trivial color
@@ -487,7 +492,8 @@ Status (implementation):
   with `stride = 4 * warps * lanes`:
   `[0*stride, 1*stride)` per-fragment x (i32), `[1*stride, 2*stride)` y,
   `[2*stride, 3*stride)` depth, `[3*stride, 4*stride)` packed-colour inputs,
-  `[4*stride, 5*stride)` colour outputs, `[6*stride, ...)` per-draw uniforms.
+  `[4*stride, 5*stride)` colour outputs, `[5*stride, 6*stride)` reserved,
+  `[6*stride, ...)` per-draw uniforms.
   `flush` is
   pulsed by the pipeline when the rasterizer goes idle (draw boundary) so a
   batch never mixes draws; `drained` reports an empty in-flight batch.
@@ -654,19 +660,19 @@ standard AXI4 slave: `s_axi_aw*/w*/b*` (burst-capable, word-at-a-time) and
 This is the top ARTI (the RTL-to-QEMU integration tool) auto-bridges: it infers
 AXI4 from the standard signal names and generates the embedded QEMU device
 model + device-tree node.  Verified in `GpuHostAxiSpec` (single-beat and INCR
--burst register R/W, SLVERR on unaligned/out-of-map reads, and a full draw
--submitted purely over the bus until the interrupt fires); 50 graphics tests
--green.  `EmitGpuHostAxi` (`gpu/elaboration`) emits `GpuHostAxi.sv` for ARTI.
--The shared ABI is exported to `driver/gpu_abi.h` (register map, the 26-word
--draw record, the SoA kernarg layout).  `driver/gpu_drv.c` is a platform driver
--binding to `riscv-simt,gpu`: it maps the `ctrl` resource, allocates the
--software command/colour/depth buffers, submits a self-test draw, waits on the
--completion IRQ (with a STATUS poll fallback), exposes `/dev/gpu0`, and prints
--`GPU DRIVER PASS` for the ARTI harness.  `driver/gpu.dtsi` and
--`driver/gpu_integration.yaml` give the device-tree node and the ARTI profile.
--See `docs/HOST_INTERFACE.md` for the full interface/driver design.  The
--remaining M6 software (QEMU host model booting the real kernel, full Linux
--module load, DRM handoff) is exercised by ARTI's harness rather than this repo.
+burst register R/W, SLVERR on unaligned/out-of-map reads, and a full draw
+submitted purely over the bus until the interrupt fires). `EmitGpuHostAxi`
+(`gpu/elaboration`) emits `GpuHostAxi.sv` for ARTI. The shared ABI is exported
+to `driver/gpu_abi.h` (register map, the 32-word draw record, texture state and
+the SoA kernarg layout). `driver/gpu_drv.c` is a platform driver binding to
+`riscv-simt,gpu`: it maps the `ctrl` resource, allocates the software
+command/colour/depth buffers, submits a self-test draw, waits on the completion
+IRQ (with a STATUS poll fallback), exposes `/dev/gpu0`, and prints `GPU DRIVER
+PASS` for the ARTI harness. `driver/gpu.dtsi` and
+`driver/gpu_integration.yaml` give the device-tree node and ARTI profile. See
+`docs/HOST_INTERFACE.md` for the full interface/driver design. The remaining
+M6 software (QEMU host model booting the real kernel, full Linux module load,
+DRM handoff) is exercised by ARTI's harness rather than this repo.
 
 
 ---

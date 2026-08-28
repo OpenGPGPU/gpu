@@ -63,14 +63,13 @@
 #define GPU_CULL_BACK          1u
 #define GPU_CULL_FRONT         2u
 
-/* ---- Pixel format: packed a8r8g8b8 (host byte order is little-endian,
- *      so a word 0xAARRGGBB maps to memory [BB GG RR AA]).  In the host's
- *      native view a pixel read back from the colour buffer is ARGB. ------- */
-#define GPU_PIXEL_ARGB(a, r, g, b) \
-    ((((u32)(a)) << 24) | (((u32)(r)) << 16) | (((u32)(g)) << 8) | ((u32)(b)))
+/* ---- Pixel format: packed r8g8b8a8 (word 0xRRGGBBAA; little-endian bytes
+ *      [AA BB GG RR]), matching RenderPipeline and TextureUnit. ------------ */
+#define GPU_PIXEL_RGBA(r, g, b, a) \
+    ((((u32)(r)) << 24) | (((u32)(g)) << 16) | (((u32)(b)) << 8) | ((u32)(a)))
 
 /* ---------------------------------------------------------------------------
- * Draw-call record (CommandBufferStage), 26 32-bit words, little-endian.
+ * Draw-call record (CommandBufferStage), 32 32-bit words, little-endian.
  *                                                                   word idx
  *   v0/v1/v2 clip-space (x,y,z,w) as Q16.16                           [0..11]
  *   v0/v1/v2 colour (r,g,b) as 8-bit                                   [12..20]
@@ -83,21 +82,26 @@
  * `fragCore = false`; the shader descriptor is used only on the core-backed
  * path, where it selects a compiled RV32 kernel launched on the SIMT lanes.
  * ------------------------------------------------------------------------ */
+#define GPU_DRAW_WORDS 32u
 struct gpu_draw_record {
     /* clip-space, Q16.16 */
     s32 v0[4];
     s32 v1[4];
     s32 v2[4];
-    /* colour, 8-bit, one per vertex */
-    u8  c0[3];
-    u8  c1[3];
-    u8  c2[3];
+    /* colour components occupy one 32-bit command word each */
+    u32 c0[3];
+    u32 c1[3];
+    u32 c2[3];
     /* depth, signed 32-bit */
     s32 d0;
     s32 d1;
     s32 d2;
     u32 shader_pc;
     u32 kernarg;
+    /* unsigned Q16.16 texture coordinates */
+    u32 uv0[2];
+    u32 uv1[2];
+    u32 uv2[2];
 };
 
 /* ---------------------------------------------------------------------------
@@ -111,6 +115,7 @@ struct gpu_draw_record {
  *   [2*stride, 3*stride)   depth (i32)
  *   [3*stride, 4*stride)   packed colour inputs (u32)
  *   [4*stride, 5*stride)   colour outputs (u32)
+ *   [5*stride, 6*stride)   reserved
  *   [6*stride, ...)        per-draw uniforms
  * ------------------------------------------------------------------------ */
 #define GPU_KERNARG_STRIDE(w, l)  (4u * (w) * (l))

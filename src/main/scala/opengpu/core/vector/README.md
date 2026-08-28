@@ -57,3 +57,9 @@ Booth multiply, FP conversion, and round-robin vector writeback. It applies
 the destination register, updates `vxsat`, serializes `vset*` behind older
 operations from the same warp, and exposes launch-time VGPR initialization
 plus scalar RF bridge ports.
+
+Texture sampling is routed as a separate elastic vector path. `vtex.sample`
+uses the warp active mask, `vl`, `vm`, and v0 predicate to select lanes; the
+sampler serializes those lane requests and commits one vector destination while
+preserving inactive lanes. This keeps sampler latency independent from the
+integer/FP writeback arbiters while retaining in-order vector issue semantics.

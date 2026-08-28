@@ -4,7 +4,7 @@ import chisel3._
 import chisel3.util._
 import opengpu.config.GpuConfig
 import opengpu.core.backend.ScalarBackend
-import opengpu.core.backend.VectorBackend
+import opengpu.core.backend.{VectorBackend, VectorCommitRequest, VectorTextureRequest}
 import opengpu.core.backend.{FpuBackend, FpuFlags}
 import opengpu.core.backend.issue.{FpuIssuedInstruction, ScalarIssuedInstruction, VectorIssuedInstruction}
 import opengpu.core.backend.register.{FpuRegisterWrite, ScalarRegisterWrite}
@@ -81,6 +81,9 @@ class GpuCore(
     val committedWriteback = Valid(new ScalarRegisterWrite(config))
     /** tex.sample commit sideband (see WarpSystemControl / TexSampleUnit). */
     val texCommit = Flipped(Decoupled(new ScalarCommitRequest(config)))
+    /** vtex.sample execute-side handoff and vector commit sideband. */
+    val vectorTexSample = Decoupled(new VectorTextureRequest(config))
+    val vectorTexCommit = Flipped(Decoupled(new VectorCommitRequest(config)))
     val active = Output(UInt(config.warps.W))
     val blocked = Output(UInt(config.warps.W))
     val sharedMemoryIdle = Output(Bool())
@@ -192,6 +195,8 @@ class GpuCore(
   scalarFpuRead.io.write.bits := scalar.io.appliedWriteback.bits
   frontend.io.scalarRedirect <> completionArbiter.io.out
   vector.io.in <> frontend.io.vectorOut
+  io.vectorTexSample <> vector.io.texSample
+  vector.io.texCommit <> io.vectorTexCommit
   io.vector <> vector.io.unimplemented
   vector.io.initialize <> io.vectorInitialize
   io.committedVectorWriteback := vector.io.committedVectorWriteback

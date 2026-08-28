@@ -95,6 +95,16 @@ class ExtendedDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.vector.valid.expect(true.B)
       dut.io.decoded.vector.unit.expect(VectorUnit.floatingPoint)
       dut.io.decoded.vector.readsVs2.expect(true.B)
+
+      // vtex.sample v3, v1, v2 (unmasked custom-1 texture instruction)
+      dut.io.instruction.poke("h062081ab".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.executionType.expect(ExecutionType.vector)
+      dut.io.decoded.vector.unit.expect(VectorUnit.texture)
+      dut.io.decoded.vector.readsVs1.expect(true.B)
+      dut.io.decoded.vector.readsVs2.expect(true.B)
+      dut.io.decoded.vector.writesVd.expect(true.B)
+      dut.io.decoded.vector.vm.expect(true.B)
     }
   }
 

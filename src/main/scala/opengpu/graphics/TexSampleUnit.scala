@@ -3,6 +3,7 @@ package opengpu.graphics
 import chisel3._
 import chisel3.util._
 import opengpu.config.GpuConfig
+import opengpu.core.backend.{VectorCommitRequest, VectorTextureRequest}
 import opengpu.core.backend.issue.ScalarIssuedInstruction
 import opengpu.core.backend.writeback.ScalarCommitRequest
 
@@ -16,10 +17,9 @@ import opengpu.core.backend.writeback.ScalarCommitRequest
   * scalar commit path (writeRd, rd from the instruction, nextPc = pc + 4),
   * so the scoreboard's rd reservation is released by the ordinary commit.
   *
-  * Execution is warp-uniform: the scalar register values define the sample
-  * position, and every lane of the warp's `rd` receives the same texel word.
-  * Per-lane texture coordinates are a follow-up (vector flavour of the same
-  * instruction serialised across the active mask).
+  * The scalar instruction is warp-uniform. `vtex.sample` supplies one Q16.16
+  * coordinate pair per vector lane; this unit serializes the active lanes
+  * through the one physical sampler and preserves inactive destination lanes.
   */
 class TexSampleUnit(
   config: GpuConfig = GpuConfig(),
@@ -28,6 +28,8 @@ class TexSampleUnit(
   val io = IO(new Bundle {
     val in = Flipped(Decoupled(new ScalarIssuedInstruction(config)))
     val commit = Decoupled(new ScalarCommitRequest(config))
+    val vectorIn = Flipped(Decoupled(new VectorTextureRequest(config)))
+    val vectorCommit = Decoupled(new VectorCommitRequest(config))
     val texBase = Input(UInt(32.W))
     val texWidth = Input(UInt(14.W))
     val texHeight = Input(UInt(14.W))
@@ -55,20 +57,40 @@ class TexSampleUnit(
   private val pcReg = RegInit(0.U(config.xLen.W))
   private val activeMaskReg = RegInit(0.U(config.lanes.W))
   private val dataReg = RegInit(0.U(32.W))
+  private val vectorModeReg = RegInit(false.B)
+  private val executionMaskReg = RegInit(0.U(config.lanes.W))
+  private val vectorDataReg =
+    Reg(Vec(config.lanes, UInt(config.xLen.W)))
+  private val uVectorReg =
+    Reg(Vec(config.lanes, UInt(config.xLen.W)))
+  private val vVectorReg =
+    Reg(Vec(config.lanes, UInt(config.xLen.W)))
+  private val laneWidth = math.max(1, log2Ceil(config.lanes))
+  private val laneReg = RegInit(0.U(laneWidth.W))
   // Latch the coordinates at accept: the upstream issued-instruction bits are
   // only stable through the handshake cycle (same race class as M4b/M5b).
   private val uReg = RegInit(0.U(32.W))
   private val vReg = RegInit(0.U(32.W))
 
-  // The in-flight instruction occupies the sampler for its whole latency, so
-  // acceptance holds until the transaction fully completes.
-  io.in.ready := state === sIdle
-  sampler.io.sample.valid := state === sSample
-  sampler.io.sample.bits.u := uReg
-  sampler.io.sample.bits.v := vReg
-  sampler.io.result.ready := state === sSample
+  // Alternate priority after every accepted instruction so independent scalar
+  // and vector warps cannot starve one another at the shared physical sampler.
+  private val preferVector = RegInit(true.B)
+  private val selectVector =
+    io.vectorIn.valid && (!io.in.valid || preferVector)
+  io.vectorIn.ready := state === sIdle && selectVector
+  io.in.ready := state === sIdle && !selectVector
 
-  io.commit.valid := state === sCommit
+  private val vectorLaneActive = executionMaskReg(laneReg)
+  sampler.io.sample.valid :=
+    state === sSample && (!vectorModeReg || vectorLaneActive)
+  sampler.io.sample.bits.u :=
+    Mux(vectorModeReg, uVectorReg(laneReg), uReg)
+  sampler.io.sample.bits.v :=
+    Mux(vectorModeReg, vVectorReg(laneReg), vReg)
+  sampler.io.result.ready :=
+    state === sSample && (!vectorModeReg || vectorLaneActive)
+
+  io.commit.valid := state === sCommit && !vectorModeReg
   io.commit.bits.warpId := warpIdReg
   io.commit.bits.nextPc := pcReg + 4.U
   io.commit.bits.activeMask := activeMaskReg
@@ -76,26 +98,74 @@ class TexSampleUnit(
   io.commit.bits.rd := rdReg
   io.commit.bits.data := dataReg
 
+  io.vectorCommit.valid := state === sCommit && vectorModeReg
+  io.vectorCommit.bits.writeback.warpId := warpIdReg
+  io.vectorCommit.bits.writeback.vd := rdReg
+  io.vectorCommit.bits.writeback.data := vectorDataReg
+  io.vectorCommit.bits.saturated := false.B
+  io.vectorCommit.bits.writesVd := true.B
+  io.vectorCommit.bits.flags := 0.U
+  io.vectorCommit.bits.writesFlags := false.B
+  io.vectorCommit.bits.pc := pcReg
+  io.vectorCommit.bits.warpActiveMask := activeMaskReg
+
   switch(state) {
     is(sIdle) {
-      when(io.in.fire) {
+      when(io.vectorIn.fire) {
+        vectorModeReg := true.B
+        warpIdReg := io.vectorIn.bits.issued.decode.warpId
+        rdReg := io.vectorIn.bits.issued.decode.instruction(11, 7)
+        pcReg := io.vectorIn.bits.issued.decode.pc
+        activeMaskReg := io.vectorIn.bits.issued.decode.activeMask
+        executionMaskReg := io.vectorIn.bits.executionMask
+        vectorDataReg := io.vectorIn.bits.issued.oldVdData
+        uVectorReg := io.vectorIn.bits.issued.vs1Data
+        vVectorReg := io.vectorIn.bits.issued.vs2Data
+        laneReg := 0.U
+        preferVector := false.B
+        state := sSample
+      }.elsewhen(io.in.fire) {
+        vectorModeReg := false.B
         warpIdReg := io.in.bits.decode.warpId
         rdReg := io.in.bits.decode.instruction(11, 7)
         pcReg := io.in.bits.decode.pc
         activeMaskReg := io.in.bits.decode.activeMask
         uReg := io.in.bits.rs1Data
         vReg := io.in.bits.rs2Data
+        preferVector := true.B
         state := sSample
       }
     }
     is(sSample) {
-      when(sampler.io.result.fire) {
-        dataReg := sampler.io.result.bits
-        state := sCommit
+      when(vectorModeReg) {
+        when(vectorLaneActive) {
+          when(sampler.io.result.fire) {
+            vectorDataReg(laneReg) := sampler.io.result.bits
+            when(laneReg === (config.lanes - 1).U) {
+              state := sCommit
+            }.otherwise {
+              laneReg := laneReg + 1.U
+            }
+          }
+        }.otherwise {
+          when(laneReg === (config.lanes - 1).U) {
+            state := sCommit
+          }.otherwise {
+            laneReg := laneReg + 1.U
+          }
+        }
+      }.otherwise {
+        when(sampler.io.result.fire) {
+          dataReg := sampler.io.result.bits
+          state := sCommit
+        }
       }
     }
     is(sCommit) {
-      when(io.commit.fire) { state := sIdle }
+      when((vectorModeReg && io.vectorCommit.fire) ||
+        (!vectorModeReg && io.commit.fire)) {
+        state := sIdle
+      }
     }
   }
 }

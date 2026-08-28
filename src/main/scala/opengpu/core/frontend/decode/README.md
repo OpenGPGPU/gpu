@@ -28,3 +28,10 @@ The scalar table also carries the OpenGPU controls needed by later issue
 stages: RV32M multiply/divide selection, CSR/system/fence classification, and
 the custom vector-branch/join/cease warp controls. These controls are decoded
 but do not imply that their execution units have already been implemented.
+
+The graphics sampler instructions use two explicit custom encodings:
+`tex.sample rd, rs1, rs2` (custom-0, opcode `0x0b`) samples one coordinate
+per warp, while `vtex.sample vd, vs1, vs2` (custom-1, opcode `0x2b`) samples
+Q16.16 coordinates independently for each active vector lane. Both forms are
+legal only in their documented `funct7`/`funct3` rows and are covered by
+directed decoder tests.

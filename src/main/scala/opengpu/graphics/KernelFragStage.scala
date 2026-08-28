@@ -34,6 +34,7 @@ import opengpu.core.memory.{
   *   [2*stride, 3*stride)  per-fragment depth (u32 bits)
   *   [3*stride, 4*stride)  per-fragment packed-colour inputs (RGBA8888)
   *   [4*stride, 5*stride)  per-fragment packed-colour outputs
+  *   [5*stride, 6*stride)  reserved (zero-filled for ABI forward compatibility)
   *   [6*stride, ...)       per-draw uniforms
   * The layout is structure-of-arrays so a lane-aware shader (fragment i = lane
   * i) can fetch each attribute with one unit-stride vector load at
@@ -99,6 +100,8 @@ class KernelFragStage(
   texUnit.io.wrapClamp := io.texWrapClamp
   kernel.io.texSample <> texUnit.io.in
   texUnit.io.commit <> kernel.io.texWriteback
+  kernel.io.vectorTexSample <> texUnit.io.vectorIn
+  texUnit.io.vectorCommit <> kernel.io.vectorTexWriteback
   texBridge.io.in <> texUnit.io.mem.req
   texUnit.io.mem.resp <> texBridge.io.out
 

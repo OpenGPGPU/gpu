@@ -57,6 +57,11 @@ class KernelFragStageSpec extends AnyFlatSpec {
   private def texsample(rd: Int, rs1: Int, rs2: Int): BigInt =
     (BigInt(1) << 25) | (BigInt(rs2 & 0x1f) << 20) |
       (BigInt(rs1 & 0x1f) << 15) | (BigInt(rd & 0x1f) << 7) | 0x0b
+  /** opengpu.vtex.sample vd, vs1, vs2 (custom-1, funct6=1, vm=1). */
+  private def vtexsample(vd: Int, vs1: Int, vs2: Int): BigInt =
+    (BigInt(1) << 26) | (BigInt(1) << 25) |
+      (BigInt(vs2 & 0x1f) << 20) | (BigInt(vs1 & 0x1f) << 15) |
+      (BigInt(vd & 0x1f) << 7) | 0x2b
 
   private def slli(rd: Int, rs1: Int, shamt: Int): BigInt =
     ((BigInt(shamt & 0x1f)) << 20) | ((BigInt(rs1 & 0x1f)) << 15) |
@@ -136,6 +141,10 @@ class KernelFragStageSpec extends AnyFlatSpec {
       g += 1
       hit = pred()
     }
+    // Do not leak the final response-valid pulse to a caller that continues
+    // stepping after the predicate becomes true.
+    dut.io.memResp.valid.poke(false.B)
+    dut.io.wordMemResp.valid.poke(false.B)
     hit
   }
 
@@ -549,6 +558,84 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.out.bits.color.r.expect(0xff.U)
       dut.io.out.bits.color.g.expect(0xff.U)
       dut.io.out.bits.color.b.expect(0x00.U)
+    }
+  }
+
+  it should "sample distinct texture coordinates per vector lane" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelFragStage(config)) { dut =>
+      val mem = new MemModel
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.shaderPc.poke(0x1000.U)
+      dut.io.kernargBase.poke(0x8000.U)
+      dut.io.texBase.poke(0x2000.U)
+      dut.io.texWidth.poke(2.U)
+      dut.io.texHeight.poke(2.U)
+      dut.io.texWrapClamp.poke(false.B)
+
+      // Each lane loads its own u/v from the uniform tail, samples into v3,
+      // and stores the four packed results to the ordinary output array.
+      mem.putWord(0x1000L, 0, vsetivli(4))
+      mem.putWord(0x1000L, 1, addi(5, 1, 192))
+      mem.putWord(0x1000L, 2, vle32(5, 1))
+      mem.putWord(0x1000L, 3, addi(5, 1, 208))
+      mem.putWord(0x1000L, 4, vle32(5, 2))
+      mem.putWord(0x1000L, 5, vtexsample(3, 1, 2))
+      mem.putWord(0x1000L, 6, addi(5, 1, 128))
+      mem.putWord(0x1000L, 7, vse32(5, 3))
+      mem.putWord(0x1000L, 8, cease)
+
+      // Texel-centre coordinates for black, red, green and yellow.
+      val u = Seq(0x4000, 0xc000, 0x4000, 0xc000)
+      val v = Seq(0x4000, 0x4000, 0xc000, 0xc000)
+      for (lane <- 0 until 4) {
+        mem.putWord(0x80c0L, lane, u(lane))
+        mem.putWord(0x80c0L, 4 + lane, v(lane))
+      }
+      mem.putWord(0x2000L, 0, 0x000000ff)
+      mem.putWord(0x2000L, 1, 0xff0000ff)
+      mem.putWord(0x2000L, 2, 0x00ff00ff)
+      mem.putWord(0x2000L, 3, 0xffff00ff)
+
+      for (lane <- 0 until 4) {
+        dut.io.fragIn.bits.x.poke(lane.S)
+        dut.io.fragIn.bits.y.poke((8 + lane).S)
+        dut.io.fragIn.bits.depth.poke(0x20.S)
+        dut.io.fragIn.bits.color.r.poke(0.U)
+        dut.io.fragIn.bits.color.g.poke(0.U)
+        dut.io.fragIn.bits.color.b.poke(0.U)
+        dut.io.fragIn.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.fragIn.valid.poke(false.B)
+      }
+      dut.io.flush.poke(true.B); dut.clock.step()
+      dut.io.flush.poke(false.B)
+
+      val expected = Seq(
+        (0x00, 0x00, 0x00),
+        (0xff, 0x00, 0x00),
+        (0x00, 0xff, 0x00),
+        (0xff, 0xff, 0x00)
+      )
+      val emitted = scala.collection.mutable.ArrayBuffer.empty[(Long, Long, Long)]
+      val done = pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean,
+        guard = 6000)
+      assert(done, "per-lane texture kernel did not complete")
+      var guard = 0
+      while (emitted.size < 4 && guard < 16) {
+        if (dut.io.out.valid.peek().litToBoolean) {
+          emitted += ((dut.io.out.bits.color.r.peek().litValue.toLong,
+            dut.io.out.bits.color.g.peek().litValue.toLong,
+            dut.io.out.bits.color.b.peek().litValue.toLong))
+          dut.io.out.ready.poke(true.B)
+          dut.clock.step()
+          dut.io.out.ready.poke(false.B)
+        }
+        guard += 1
+      }
+      assert(emitted == expected,
+        s"per-lane texture result mismatch: expected=$expected got=$emitted")
     }
   }
 }
