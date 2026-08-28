@@ -186,3 +186,12 @@ DRAM by the platform — it is **not** something ARTI's MMIO bridge drives. In
 the embedded-QEMU model the framebuffer the driver allocates is the host's own
 RAM, so the renderer and the host CPU observe the same pixels with
 driver-driven coherence (cache-clean before submission, fence on completion).
+
+### Embedded full-system status
+
+The AArch64 Linux boot path now runs with QEMU, the generated `GpuHostAxi`
+model, and the GPU host driver loaded from an initramfs. The AXI control path
+and device identification are functional. Draw submission still requires a
+guest-memory callback bridge for the command-buffer, framebuffer, texture, and
+kernel-memory client ports; without that master-port bridge the GPU remains
+busy after `START` even though Linux and the driver have booted successfully.
