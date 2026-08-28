@@ -28,6 +28,8 @@ private class ScalarBackendHarness(config: GpuConfig) extends Module {
   io.committedWriteback := backend.io.committedWriteback
   backend.io.memory.ready := false.B
   backend.io.system.ready := false.B
+  backend.io.texCommit.valid := false.B
+  backend.io.texCommit.bits := 0.U.asTypeOf(backend.io.texCommit.bits)
   backend.io.trap.ready := false.B
   backend.io.cacheRequest.ready := false.B
   backend.io.cacheResponse.valid := false.B

@@ -8,6 +8,7 @@ import opengpu.core.backend.VectorBackend
 import opengpu.core.backend.{FpuBackend, FpuFlags}
 import opengpu.core.backend.issue.{FpuIssuedInstruction, ScalarIssuedInstruction, VectorIssuedInstruction}
 import opengpu.core.backend.register.{FpuRegisterWrite, ScalarRegisterWrite}
+import opengpu.core.backend.writeback.ScalarCommitRequest
 import opengpu.core.backend.scoreboard.RegisterReservation
 import opengpu.core.execute.control.{SimtBranchRequest, SimtPath}
 import opengpu.core.frontend._
@@ -78,6 +79,8 @@ class GpuCore(
     val restore = Flipped(Decoupled(UInt(config.warpIdWidth.W)))
     val finish = Flipped(Valid(UInt(config.warpIdWidth.W)))
     val committedWriteback = Valid(new ScalarRegisterWrite(config))
+    /** tex.sample commit sideband (see WarpSystemControl / TexSampleUnit). */
+    val texCommit = Flipped(Decoupled(new ScalarCommitRequest(config)))
     val active = Output(UInt(config.warps.W))
     val blocked = Output(UInt(config.warps.W))
     val sharedMemoryIdle = Output(Bool())
@@ -107,6 +110,7 @@ class GpuCore(
   io.fetchRequest <> frontend.io.fetchRequest
   frontend.io.fetchResponse <> io.fetchResponse
   scalar.io.in <> frontend.io.scalarOut
+  scalar.io.texCommit <> io.texCommit
   scalar.io.initialize <> io.scalarInitialize
   private val completionArbiter = Module(new RRArbiter(
     new SimtPath(config), if (enableFpuBackend && config.enableFpu) 4 else 3))

@@ -71,6 +71,12 @@ class DecoderSpec extends AnyFlatSpec {
       dut.io.decoded.system.expect(true.B)
       dut.io.decoded.barrier.expect(true.B)
 
+      dut.io.instruction.poke("h0220828b".U) // opengpu.texsample x5, x1, x2
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.system.expect(true.B)
+      dut.io.decoded.texSample.expect(true.B)
+      dut.io.decoded.writeRd.expect(true.B)
+
       dut.io.instruction.poke("h0020a1af".U) // amoadd.w x3, x2, (x1)
       dut.io.decoded.legal.expect(true.B)
       dut.io.decoded.atomic.expect(true.B)

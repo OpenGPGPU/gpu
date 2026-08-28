@@ -57,6 +57,9 @@ class ScalarBackend(
 
     val memory = Decoupled(new ScalarIssuedInstruction(config))
     val system = Decoupled(new ScalarIssuedInstruction(config))
+    /** External sampler result committed through the pipeline's own commit
+      * path (the unit builds the full ScalarCommitRequest, incl. nextPc). */
+    val texCommit = Flipped(Decoupled(new ScalarCommitRequest(config)))
     val trap = Decoupled(new ScalarIssuedInstruction(config))
 
     val rawHazard = Output(Bool())
@@ -76,7 +79,7 @@ class ScalarBackend(
   private val divideAdapter = Module(new IntegerCommitAdapter(config))
   private val branchAdapter = Module(new BranchCommitAdapter(config))
   private val commitArbiter =
-    Module(new RRArbiter(new ScalarCommitRequest(config), 6))
+    Module(new RRArbiter(new ScalarCommitRequest(config), 7))
   private val commit = Module(new ScalarCommitStage(config))
 
   private val externalBusy =
@@ -129,6 +132,7 @@ class ScalarBackend(
   commitArbiter.io.in(3) <> branchAdapter.io.out
   commitArbiter.io.in(4) <> memoryUnit.io.commit
   commitArbiter.io.in(5) <> atomic.io.out
+  commitArbiter.io.in(6) <> io.texCommit
   commit.io.in <> commitArbiter.io.out
 
   io.redirect <> commit.io.redirect

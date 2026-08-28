@@ -192,11 +192,13 @@ class TextureUnit(
     acc(23, 16)
   }
 
+  // Output uses the pipeline's packed-colour convention (r<<24 | g<<16 |
+  // b<<8 | opaque alpha).
   private val blended = Cat(
-    0xff.U(8.W),
-    blend(w => w(23, 16)), // red
-    blend(w => w(15, 8)), // green
-    blend(w => w(7, 0)) // blue
+    blend(w => w(31, 24)), // red
+    blend(w => w(23, 16)), // green
+    blend(w => w(15, 8)), // blue
+    0xff.U(8.W)
   )
 
   io.result.valid := state === sDone

@@ -57,6 +57,7 @@ class DecodeSignals extends Bundle {
   val system = Bool()
   val fence = Bool()
   val barrier = Bool()
+  val texSample = Bool()
   val vectorBranch = Bool()
   val join = Bool()
   val cease = Bool()
@@ -91,6 +92,7 @@ private case class Rv32Pattern(
   system: Boolean = false,
   fence: Boolean = false,
   barrier: Boolean = false,
+  texSample: Boolean = false,
   vectorBranch: Boolean = false,
   join: Boolean = false,
   cease: Boolean = false
@@ -176,6 +178,9 @@ private object Rv32Decode {
   }
   object Barrier extends BoolField("barrier") {
     override protected def value(pattern: Rv32Pattern): Boolean = pattern.barrier
+  }
+  object TexSample extends BoolField("texSample") {
+    override protected def value(pattern: Rv32Pattern): Boolean = pattern.texSample
   }
   object VectorBranch extends BoolField("vectorBranch") {
     override protected def value(pattern: Rv32Pattern): Boolean = pattern.vectorBranch
@@ -369,6 +374,12 @@ private object Rv32Decode {
     // GPU workgroup barrier, encoded in the RISC-V custom-0 opcode space.
     Rv32Pattern("opengpu.barrier", "00000000000000000000000000001011",
       system = true, barrier = true),
+    // tex.sample rd, rs1, rs2: sample the bound texture at (u=rs1, v=rs2)
+    // (Q16.16) and write the packed RGBA8888 texel word to rd.  Scalar
+    // (warp-uniform) execution; custom-0 opcode, funct7=0000001 funct3=000.
+    Rv32Pattern("opengpu.texsample", "0000001??????????000?????0001011",
+      system = true, texSample = true, writeRd = true,
+      useRs1 = true, useRs2 = true),
 
     vectorBranch("vbeq",  "000", BranchOp.eq.litValue.toInt),
     vectorBranch("vbne",  "001", BranchOp.ne.litValue.toInt),
@@ -403,6 +414,7 @@ private object Rv32Decode {
     System,
     Fence,
     Barrier,
+    TexSample,
     VectorBranch,
     Join,
     Cease
@@ -461,6 +473,7 @@ class RiscVDecoder extends Module {
   io.decoded.system := decoded(Rv32Decode.System)
   io.decoded.fence := decoded(Rv32Decode.Fence)
   io.decoded.barrier := decoded(Rv32Decode.Barrier)
+  io.decoded.texSample := decoded(Rv32Decode.TexSample)
   io.decoded.vectorBranch := decoded(Rv32Decode.VectorBranch)
   io.decoded.join := decoded(Rv32Decode.Join)
   io.decoded.cease := decoded(Rv32Decode.Cease)

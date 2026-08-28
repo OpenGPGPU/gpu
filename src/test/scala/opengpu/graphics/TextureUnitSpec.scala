@@ -36,6 +36,10 @@ class TextureUnitSpec extends AnyFlatSpec {
   /** Q16.16 helper. */
   private def q(v: Double): Long = math.round(v * 65536.0)
 
+  /** Texel word in the pipeline's packed-colour order (r,g,b, opaque alpha). */
+  private def texel(r: Int, g: Int, b: Int): Int =
+    (r << 24) | (g << 16) | (b << 8) | 0xff
+
   /** Integer-exact software mirror of the hardware sampling path. */
   private def refSample(
     mem: TexMem,
@@ -74,8 +78,9 @@ class TextureUnitSpec extends AnyFlatSpec {
         sel(t11) * w11
       (acc >> 16) & 0xff
     }
-    (0xff << 24) | (chan(w => (w >> 16) & 0xff) << 16) |
-      (chan(w => (w >> 8) & 0xff) << 8) | chan(w => w & 0xff)
+    (chan(w => (w >> 24) & 0xff) << 24) |
+      (chan(w => (w >> 16) & 0xff) << 16) |
+      (chan(w => (w >> 8) & 0xff) << 8) | 0xff
   }
 
   /** Attach config pins once; request/response/memory lines are driven by
@@ -162,13 +167,14 @@ class TextureUnitSpec extends AnyFlatSpec {
     val mem = new TexMem(0x4000L, width = 2, height = 2)
     simulate(new TextureUnit()) { dut =>
       attach(dut, mem, wrapClamp = false)
-      mem.put(0, 0, 0xff000000 | (0 << 16)) // black
-      mem.put(1, 0, 0xff000000 | (255 << 16)) // red
-      mem.put(0, 1, 0xff000000 | (0 << 16) | (255 << 8)) // green
-      mem.put(1, 1, 0xff000000 | (255 << 16) | (255 << 8)) // yellow
+      mem.put(0, 0, texel(0, 0, 0)) // black
+      mem.put(1, 0, texel(255, 0, 0)) // red
+      mem.put(0, 1, texel(0, 255, 0)) // green
+      mem.put(1, 1, texel(255, 255, 0)) // yellow
 
       val got = runSample(dut, mem, q(0.5), q(0.5))
-      val r = ((got >> 16) & 0xff); val g = ((got >> 8) & 0xff); val b = got & 0xff
+      val r = ((got >> 24) & 0xff); val g = ((got >> 16) & 0xff)
+      val b = ((got >> 8) & 0xff)
       assert(r == 127 && g == 127 && b == 0,
         s"centre blend expected ~(127,127,0), got ($r,$g,$b)")
       val expectQuarter =
@@ -184,7 +190,7 @@ class TextureUnitSpec extends AnyFlatSpec {
     simulate(new TextureUnit()) { dut =>
       attach(dut, mem, wrapClamp = true)
       for (y <- 0 until 4; x <- 0 until 4)
-        mem.put(x, y, 0xff000000 | (x * 40 << 16) | (y * 40 << 8))
+        mem.put(x, y, texel(x * 40, y * 40, 0))
 
       val far = runSample(dut, mem, q(1.75), q(1.75))
       val expect = refSample(mem, clampMode = true, q(1.75), q(1.75))
@@ -200,7 +206,7 @@ class TextureUnitSpec extends AnyFlatSpec {
     simulate(new TextureUnit()) { dut =>
       attach(dut, mem, wrapClamp = false)
       for (y <- 0 until 4; x <- 0 until 4)
-        mem.put(x, y, 0xff000000 | (x * 60 << 16) | ((y * 60 + 10) << 8) | 5)
+        mem.put(x, y, texel(x * 60, y * 60 + 10, 5))
 
       val got = runSample(dut, mem, q(1.02), q(0.5))
       val expect = refSample(mem, clampMode = false, q(1.02), q(0.5))
@@ -214,7 +220,7 @@ class TextureUnitSpec extends AnyFlatSpec {
     simulate(new TextureUnit()) { dut =>
       attach(dut, mem, wrapClamp = false)
       for (y <- 0 until 8; x <- 0 until 8)
-        mem.put(x, y, 0xff000000 | (x * 13 << 16) | (y * 17 << 8) | (x ^ y))
+        mem.put(x, y, texel(x * 13, y * 17, (x ^ y) & 0xff))
       for (y <- 0 until 8; x <- 0 until 8) {
         val got = runSample(dut, mem,
           ((2 * x + 1) * 65536L / 16), ((2 * y + 1) * 65536L / 16))
@@ -231,9 +237,8 @@ class TextureUnitSpec extends AnyFlatSpec {
     simulate(new TextureUnit()) { dut =>
       attach(dut, mem, wrapClamp = false)
       for (y <- 0 until 16; x <- 0 until 16)
-        mem.put(x, y,
-          0xff000000 | (((x * 211 + y * 37) & 0xff) << 16) |
-            (((x * 7 + y * 149) & 0xff) << 8) | ((x * y) & 0xff))
+        mem.put(x, y, texel((x * 211 + y * 37) & 0xff,
+          (x * 7 + y * 149) & 0xff, (x * y) & 0xff))
 
       var seed = 0xf00dcafeL
       def rnd(n: Int): Int = {

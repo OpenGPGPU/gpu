@@ -53,6 +53,11 @@ class KernelFragStageSpec extends AnyFlatSpec {
   private def add(rd: Int, rs1: Int, rs2: Int): BigInt =
     ((BigInt(rs2 & 0x1f)) << 20) | ((BigInt(rs1 & 0x1f)) << 15) |
       ((BigInt(rd & 0x1f)) << 7) | 0x33
+  /** opengpu.texsample rd, rs1, rs2 (custom-0, funct7=1, funct3=0). */
+  private def texsample(rd: Int, rs1: Int, rs2: Int): BigInt =
+    (BigInt(1) << 25) | (BigInt(rs2 & 0x1f) << 20) |
+      (BigInt(rs1 & 0x1f) << 15) | (BigInt(rd & 0x1f) << 7) | 0x0b
+
   private def slli(rd: Int, rs1: Int, shamt: Int): BigInt =
     ((BigInt(shamt & 0x1f)) << 20) | ((BigInt(rs1 & 0x1f)) << 15) |
       (BigInt(1) << 12) | ((BigInt(rd & 0x1f)) << 7) | 0x13
@@ -78,6 +83,8 @@ class KernelFragStageSpec extends AnyFlatSpec {
   /** Services KernelFragStage's two memory ports against `mem` until `pred`
     * becomes true or a guard timeout expires.  Returns the final predicate.
     */
+  private val LineMask = (BigInt(1) << 512) - 1
+
   private def pump(
     dut: KernelFragStage,
     mem: MemModel,
@@ -92,13 +99,13 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.memResp.valid.poke(kResp)
       if (kResp) {
         dut.io.memResp.bits.transactionId.poke(kId.U)
-        dut.io.memResp.bits.readData.poke(kData.U)
+        dut.io.memResp.bits.readData.poke((kData & LineMask).U)
         dut.io.memResp.bits.fault.poke(false.B)
       }
       dut.io.wordMemResp.valid.poke(wResp)
       if (wResp) {
         dut.io.wordMemResp.bits.transactionId.poke(wId.U)
-        dut.io.wordMemResp.bits.readData.poke(wData.U)
+        dut.io.wordMemResp.bits.readData.poke((wData & LineMask).U)
         dut.io.wordMemResp.bits.fault.poke(false.B)
       }
       val kFired = dut.io.memReq.valid.peek().litToBoolean &&
@@ -482,6 +489,66 @@ class KernelFragStageSpec extends AnyFlatSpec {
         assert(got == expected,
           s"per-lane shade mismatch at fragment $i: expected $expected got $got")
       }
+    }
+  }
+
+  it should "sample a texture through the tex.sample instruction" in {
+    // Kernel-side texture path: decode (system path) -> TexSampleUnit ->
+    // TextureUnit fetches over the shared word bridge -> scalar commit
+    // writeback of the packed texel word.
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelFragStage(config)) { dut =>
+      val mem = new MemModel
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.shaderPc.poke(0x1000.U)
+      dut.io.kernargBase.poke(0x8000.U)
+      dut.io.texBase.poke(0x2000.U)
+      dut.io.texWidth.poke(2.U)
+      dut.io.texHeight.poke(2.U)
+      dut.io.texWrapClamp.poke(false.B)
+
+      // Program: u = uniform(192), v = uniform(196); sample; output[0] = rd.
+      mem.putWord(0x1000L, 0, lw(10, 1, 192))
+      mem.putWord(0x1000L, 1, lw(11, 1, 196))
+      mem.putWord(0x1000L, 2, texsample(12, 10, 11))
+      mem.putWord(0x1000L, 3, sw(12, 1, 128))
+      mem.putWord(0x1000L, 4, cease)
+
+      // Uniforms: u = v = 0.75 (Q16.16) -- the centre of texel (1,1),
+      // so the sample must return the pure yellow texel word.
+      mem.putWord(0x80c0L, 0, 0xc000)
+      mem.putWord(0x80c0L, 1, 0xc000)
+
+      // 2x2 gradient: black / red / green / yellow.  Texel words use the
+      // pipeline's packed-colour byte order (colour channels in the top
+      // three bytes) so the kernel's raw sw round-trips r directly.
+      // Pipeline colour packing: r<<24 | g<<16 | b<<8 | alpha.
+      mem.putWord(0x2000L, 0, 0x000000ff) // black
+      mem.putWord(0x2000L, 1, 0xff0000ff) // red
+      mem.putWord(0x2000L, 2, 0x00ff00ff) // green
+      mem.putWord(0x2000L, 3, 0xffff00ff) // yellow
+
+      dut.io.fragIn.bits.x.poke(3.S)
+      dut.io.fragIn.bits.y.poke(4.S)
+      dut.io.fragIn.bits.depth.poke(0x20.S)
+      dut.io.fragIn.bits.color.r.poke(0xab.U)
+      dut.io.fragIn.bits.color.g.poke(0xcd.U)
+      dut.io.fragIn.bits.color.b.poke(0xef.U)
+      dut.io.fragIn.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.fragIn.valid.poke(false.B)
+
+      dut.io.flush.poke(true.B)
+      dut.clock.step()
+      dut.io.flush.poke(false.B)
+
+      val done = pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean,
+        guard = 2000)
+      assert(done, "textured fragment did not finish within a bounded time")
+      dut.io.out.bits.color.r.expect(0xff.U)
+      dut.io.out.bits.color.g.expect(0xff.U)
+      dut.io.out.bits.color.b.expect(0x00.U)
     }
   }
 }

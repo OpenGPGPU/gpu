@@ -13,6 +13,7 @@ import opengpu.core.memory._
 import opengpu.core.system.{WarpSystemControl, WorkgroupBarrierController}
 import opengpu.core.trap.CoreTrapEvent
 import opengpu.dispatch.{KernelCompletion, KernelLaunch, SingleCuKernelController}
+import opengpu.core.backend.writeback.ScalarCommitRequest
 
 /** One usable compute unit: kernel dispatch, context initialization, core
   * execution, and instruction-driven warp/kernel completion.
@@ -53,6 +54,9 @@ class GpuComputeUnit(
     val l1InvalidateDone = Decoupled(new CacheLineInvalidate(config))
     val globalAtomicRequest = Decoupled(new SharedAtomicRequest(config))
     val globalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(config)))
+    /** tex.sample execute-side handoff + writeback (graphics TexSampleUnit). */
+    val texSample = Decoupled(new ScalarIssuedInstruction(config))
+    val texWriteback = Flipped(Decoupled(new ScalarCommitRequest(config)))
   })
 
   private val controller = Module(new SingleCuKernelController(config))
@@ -72,6 +76,8 @@ class GpuComputeUnit(
   core.io.launch <> controller.io.launch
 
   system.io.in <> core.io.system
+  io.texSample <> system.io.texSample
+  core.io.texCommit <> io.texWriteback
   core.io.restore <> system.io.restore
   barrier.io.arrive <> system.io.barrier
   barrier.io.residentWarps := controller.io.residentWarps

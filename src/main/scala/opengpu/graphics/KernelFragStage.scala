@@ -67,6 +67,11 @@ class KernelFragStage(
     val out = Decoupled(new RasterFragment(gfxConfig))
     val shaderPc = Input(UInt(32.W))
     val kernargBase = Input(UInt(32.W))
+    /** Texture sampling config for the tex.sample instruction. */
+    val texBase = Input(UInt(32.W))
+    val texWidth = Input(UInt(14.W))
+    val texHeight = Input(UInt(14.W))
+    val texWrapClamp = Input(Bool())
     val flush = Input(Bool())
     val drained = Output(Bool())
     val memReq = Decoupled(new ComputeMemoryRequest(config))
@@ -85,6 +90,18 @@ class KernelFragStage(
 
   private val kernel = Module(new KernelShaderStage(config))
   private val bridge = Module(new OmWordToLinePort(config))
+  private val texBridge = Module(new OmWordToLinePort(config))
+  private val texUnit = Module(new TexSampleUnit(config, gfxConfig))
+
+  texUnit.io.texBase := io.texBase
+  texUnit.io.texWidth := io.texWidth
+  texUnit.io.texHeight := io.texHeight
+  texUnit.io.wrapClamp := io.texWrapClamp
+  kernel.io.texSample <> texUnit.io.in
+  texUnit.io.commit <> kernel.io.texWriteback
+  texBridge.io.in <> texUnit.io.mem.req
+  texUnit.io.mem.resp <> texBridge.io.out
+
 
   kernel.io.launch.kernelPc := 0.U
   kernel.io.launch.kernargAddress := 0.U
@@ -108,8 +125,6 @@ class KernelFragStage(
   bridge.io.in.valid := wordValid
   bridge.io.in.bits := wordBits
   bridge.io.out.ready := true.B
-  io.wordMemReq <> bridge.io.memoryRequest
-  bridge.io.memoryResponse <> io.wordMemResp
 
   private val sAccum :: sWrite :: sLaunch :: sRun :: sRead :: sEmit :: Nil =
     Enum(6)
@@ -261,4 +276,21 @@ class KernelFragStage(
       }
     }
   }
+  // The staging FSM (kernarg write/read phases) and the sampler never have
+  // requests in flight at the same time (staging completes before the kernel
+  // launches; sampling happens while the kernel runs), so a phase-selected
+  // mux over the single line-memory port is race-free.
+  private val stagingActive = state === sWrite || state === sRead
+  io.wordMemReq.valid := Mux(stagingActive, bridge.io.memoryRequest.valid,
+    texBridge.io.memoryRequest.valid)
+  io.wordMemReq.bits := Mux(stagingActive, bridge.io.memoryRequest.bits,
+    texBridge.io.memoryRequest.bits)
+  bridge.io.memoryRequest.ready := io.wordMemReq.ready && stagingActive
+  texBridge.io.memoryRequest.ready := io.wordMemReq.ready && !stagingActive
+  io.wordMemResp.ready := Mux(stagingActive, bridge.io.memoryResponse.ready,
+    texBridge.io.memoryResponse.ready)
+  bridge.io.memoryResponse.valid := io.wordMemResp.valid && stagingActive
+  bridge.io.memoryResponse.bits := io.wordMemResp.bits
+  texBridge.io.memoryResponse.valid := io.wordMemResp.valid && !stagingActive
+  texBridge.io.memoryResponse.bits := io.wordMemResp.bits
 }

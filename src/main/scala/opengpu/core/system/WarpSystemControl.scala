@@ -19,6 +19,10 @@ class WarpSystemControl(config: GpuConfig = GpuConfig()) extends Module {
     val restore = Decoupled(UInt(config.warpIdWidth.W))
     val resume = Decoupled(new SimtPath(config))
     val barrier = Decoupled(new SimtPath(config))
+    /** tex.sample: full issued instruction (rs1Data=u, rs2Data=v, decode.rd).
+      * Executed externally; its result returns directly to the scalar
+      * backend's commit path. */
+    val texSample = Decoupled(new ScalarIssuedInstruction(config))
     val unsupported = Decoupled(new ScalarIssuedInstruction(config))
   })
 
@@ -27,6 +31,7 @@ class WarpSystemControl(config: GpuConfig = GpuConfig()) extends Module {
   private val join = decoded.join
   private val fence = decoded.fence
   private val barrier = decoded.barrier
+  private val texSample = decoded.texSample
 
   // `valid` must not depend on `ready`: finish feeds scheduler state and can
   // otherwise close a combinational loop through the completion arbiter.
@@ -46,7 +51,10 @@ class WarpSystemControl(config: GpuConfig = GpuConfig()) extends Module {
   io.barrier.bits.pc := io.in.bits.decode.pc + 4.U
   io.barrier.bits.activeMask := io.in.bits.decode.activeMask
 
-  private val known = cease || join || fence || barrier
+  io.texSample.valid := io.in.valid && texSample
+  io.texSample.bits := io.in.bits
+
+  private val known = cease || join || fence || barrier || texSample
   io.unsupported.valid := io.in.valid && !known
   io.unsupported.bits := io.in.bits
 
@@ -56,7 +64,8 @@ class WarpSystemControl(config: GpuConfig = GpuConfig()) extends Module {
       cease -> true.B,
       join -> io.restore.ready,
       fence -> io.resume.ready,
-      barrier -> io.barrier.ready
+      barrier -> io.barrier.ready,
+      texSample -> io.texSample.ready
     )
   )
 }

@@ -85,4 +85,36 @@ class WarpSystemControlSpec extends AnyFlatSpec {
       dut.io.in.ready.expect(true.B)
     }
   }
+
+  it should "handoff tex.sample with its operands under backpressure" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new WarpSystemControl(config)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.poke(0.U.asTypeOf(dut.io.in.bits))
+      dut.io.in.bits.decode.pc.poke(0x300.U)
+      dut.io.in.bits.decode.warpId.poke(1.U)
+      dut.io.in.bits.decode.activeMask.poke(0x9.U)
+      dut.io.in.bits.decode.decoded.texSample.poke(true.B)
+      dut.io.in.bits.rs1Data.poke(0x4000.U)
+      dut.io.in.bits.rs2Data.poke(0xc000.U)
+      dut.io.restore.ready.poke(false.B)
+      dut.io.resume.ready.poke(false.B)
+      dut.io.barrier.ready.poke(false.B)
+      dut.io.unsupported.ready.poke(false.B)
+      dut.io.texSample.ready.poke(false.B)
+
+      dut.io.texSample.valid.expect(true.B)
+      dut.io.texSample.bits.decode.pc.expect(0x300.U)
+      dut.io.texSample.bits.decode.activeMask.expect(0x9.U)
+      dut.io.texSample.bits.rs1Data.expect(0x4000.U)
+      dut.io.texSample.bits.rs2Data.expect(0xc000.U)
+      dut.io.unsupported.valid.expect(false.B)
+      dut.io.in.ready.expect(false.B)
+      dut.clock.step(2)
+
+      dut.io.texSample.ready.poke(true.B)
+      dut.io.in.ready.expect(true.B)
+    }
+  }
 }

@@ -151,6 +151,10 @@ class RenderPipeline(
     shader.io.pixel.ready := kernelFrag.io.fragIn.ready
     kernelFrag.io.shaderPc := io.draw.bits.shaderPc
     kernelFrag.io.kernargBase := io.draw.bits.shaderKernarg
+    kernelFrag.io.texBase := io.texBase
+    kernelFrag.io.texWidth := io.texWidth
+    kernelFrag.io.texHeight := io.texHeight
+    kernelFrag.io.texWrapClamp := io.texWrapClamp
     // The batch must be flushed exactly at the draw boundary: once the
     // rasterizer has gone idle (all pixels of the current draw emitted), any
     // accumulated-but-unlaunched fragments are launched as one kernel.  The

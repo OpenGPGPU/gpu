@@ -143,6 +143,14 @@ class GpuSystem(
   private val computeUnits = Seq.fill(numComputeUnits) {
     Module(new GpuComputeUnit(config, useBlackBoxes, enableFpuBackend))
   }
+  // The generic compute system has no graphics sampler. Keep the optional
+  // texture-instruction sideband quiescent; graphics top levels connect it to
+  // TexSampleUnit instead.
+  computeUnits.foreach { cu =>
+    cu.io.texSample.ready := false.B
+    cu.io.texWriteback.valid := false.B
+    cu.io.texWriteback.bits := 0.U.asTypeOf(cu.io.texWriteback.bits)
+  }
   private val copyEngine = Module(new CopyEngine(
     config, descriptorIdWidth = commandIdWidth, lineBytes = 64,
     maxOutstanding = copyTransactions,

@@ -52,6 +52,9 @@ class KernelSharedCompute(config: GpuConfig) extends Module {
   cu.io.vector.ready := false.B
   cu.io.memory.ready := false.B
   cu.io.unsupportedSystem.ready := false.B
+  cu.io.texSample.ready := false.B
+  cu.io.texWriteback.valid := false.B
+  cu.io.texWriteback.bits := 0.U.asTypeOf(cu.io.texWriteback.bits)
   cu.io.trap.ready := false.B
   cu.io.simtBranch.valid := false.B
   cu.io.simtBranch.bits := 0.U.asTypeOf(cu.io.simtBranch.bits)

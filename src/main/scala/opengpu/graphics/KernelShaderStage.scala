@@ -5,6 +5,8 @@ import chisel3.util._
 import opengpu.config.GpuConfig
 import opengpu.core.GpuComputeUnit
 import opengpu.core.execute.control.SimtBranchRequest
+import opengpu.core.backend.issue.ScalarIssuedInstruction
+import opengpu.core.backend.writeback.ScalarCommitRequest
 import opengpu.core.memory.{
   CacheLineInvalidate,
   ComputeMemoryRequest,
@@ -54,6 +56,9 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
     val l1InvalidateDone = Decoupled(new CacheLineInvalidate(config))
     val globalAtomicRequest = Decoupled(new SharedAtomicRequest(config))
     val globalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(config)))
+    /** tex.sample sideband (issued instruction out, commit request in). */
+    val texSample = Decoupled(new ScalarIssuedInstruction(config))
+    val texWriteback = Flipped(Decoupled(new ScalarCommitRequest(config)))
   })
 
   private val emit = Module(new KernelEmit(config))
@@ -83,6 +88,8 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   io.l1InvalidateDone <> cu.io.l1InvalidateDone
   io.globalAtomicRequest <> cu.io.globalAtomicRequest
   cu.io.globalAtomicResponse <> io.globalAtomicResponse
+  io.texSample <> cu.io.texSample
+  cu.io.texWriteback <> io.texWriteback
 
   cu.io.invalidateInstructionCache := false.B
   cu.io.instructionSatp := 0.U

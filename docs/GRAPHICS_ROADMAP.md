@@ -390,10 +390,13 @@ Status (implementation, 2026-08-27) — M5b texture unit:
   (solid half-strength red texture, MODULATE against interpolated (255,0,0))
   and asserts (127,0,0) at an interior pixel plus the depth word, all traffic
   through the single shared L2.  opengpu.graphics.* is 57/57 green.
-- Still open for M5b: a `tex.sample` custom instruction so the core-kernel
-  path (fragCore = true) reaches the same sampler (the fixed-function path
-  demonstrates the datapath; the instruction is a decoder/issue slice on top
-  of it); then LOD/mips and quad derivatives ride on top of this block.
+- **Kernel `tex.sample` path wired (2026-08-28).**  The custom-0 scalar
+  instruction carries Q16.16 `(u, v)` operands from decode through system
+  dispatch to `TexSampleUnit`, reuses `TextureUnit` and the kernel fragment
+  stage's shared word-memory port, then returns packed RGBA8888 through the
+  ordinary scalar commit/writeback path.  `KernelFragStageSpec` executes a
+  real shader binary and checks the sampled colour end to end.  LOD/mips and
+  quad derivatives remain follow-up work.
 
 Risks: still the largest milestone, but the ISA/toolchain deletion removes
 the worst of it. Split as: (a) dispatch + uniform bank + trivial color
