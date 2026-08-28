@@ -9,7 +9,7 @@ class CommandBufferStageSpec extends AnyFlatSpec {
 
   private def q(v: Double): Int = (v * (1 << 16)).toInt
 
-  // Encode a SceneTriangle plus shader descriptor into a 26-word record.
+  // Encode a SceneTriangle plus shader descriptor into a 32-word record.
   private def encode(
     tri: Seq[((Int, Int, Int, Int), (Int, Int, Int), Int)],
     shaderPc: Int,
@@ -22,6 +22,8 @@ class CommandBufferStageSpec extends AnyFlatSpec {
     for (i <- 0 until 3) { w += tri(i)._2._1; w += tri(i)._2._2; w += tri(i)._2._3 }
     for (i <- 0 until 3) { w += tri(i)._3 }
     w += shaderPc; w += shaderKernarg
+    // uv0..uv2 as unsigned Q16.16 (unused by these tests)
+    for (_ <- 0 until 6) { w += 0 }
     w.result()
   }
 

@@ -97,6 +97,10 @@ class GpuHostAxi(
     val kernelGlobalAtomicRequest = Decoupled(new SharedAtomicRequest(gpuConfig))
     val kernelGlobalAtomicResponse =
       Flipped(Decoupled(new SharedAtomicResponse(gpuConfig)))
+    val texMem = new Bundle {
+      val req = Decoupled(new OmMemoryRequest)
+      val resp = Flipped(Decoupled(new OmMemoryResponse))
+    }
   })
 
   withClockAndReset(clock, !io.s_axi_aresetn) {
@@ -115,6 +119,7 @@ class GpuHostAxi(
     io.kernelL1InvalidateDone <> host.io.kernelL1InvalidateDone
     io.kernelGlobalAtomicRequest <> host.io.kernelGlobalAtomicRequest
     host.io.kernelGlobalAtomicResponse <> io.kernelGlobalAtomicResponse
+    host.io.texMem <> io.texMem
 
     val reg = host.io.reg
     reg.resp.ready := true.B

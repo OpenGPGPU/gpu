@@ -56,12 +56,18 @@ class FragmentInterpolator(config: GraphicsConfig) extends Module {
   io.depth := interpS(io.d0, io.d1, io.d2)
 }
 
-/** A shaded fragment: screen position, interpolated colour, and depth. */
+/** A shaded fragment: screen position, interpolated colour, depth, and the
+  * raw barycentric edge values of its source pixel (consumers that need a
+  * second interpolation pass -- e.g. texture coordinates -- reuse them
+  * instead of re-deriving; texture-disabled consumers ignore them). */
 class RasterFragment(config: GraphicsConfig) extends Bundle {
   val x = SInt(config.coordWidth.W)
   val y = SInt(config.coordWidth.W)
   val color = new Varyings
   val depth = SInt(32.W)
+  val e0 = SInt(config.edgeWidth.W)
+  val e1 = SInt(config.edgeWidth.W)
+  val e2 = SInt(config.edgeWidth.W)
 }
 
 /** Shades a rasterized triangle into fixed-point screen fragments.
@@ -102,6 +108,9 @@ class RasterShader(config: GraphicsConfig) extends Module {
   io.pixel.bits.y := raster.io.pixel.bits.y
   io.pixel.bits.color := interp.io.color
   io.pixel.bits.depth := interp.io.depth
+  io.pixel.bits.e0 := raster.io.pixel.bits.e0
+  io.pixel.bits.e1 := raster.io.pixel.bits.e1
+  io.pixel.bits.e2 := raster.io.pixel.bits.e2
   raster.io.pixel.ready := io.pixel.ready
   io.done := raster.io.draw.ready
 }

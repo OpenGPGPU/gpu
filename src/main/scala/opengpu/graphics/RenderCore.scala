@@ -58,10 +58,21 @@ class RenderCore(
     val colorBase = Input(UInt(32.W))
     val depthBase = Input(UInt(32.W))
     val stride = Input(UInt(32.W))
+    /** Texture sampling (forwarded to the fixed-function fragment stage). */
+    val texEnable = Input(Bool())
+    val texBase = Input(UInt(32.W))
+    val texWidth = Input(UInt(14.W))
+    val texHeight = Input(UInt(14.W))
+    val texWrapClamp = Input(Bool())
     val depthTestEnable = Input(Bool())
     val depthFunc = Input(UInt(3.W))
     val depthWriteEnable = Input(Bool())
     val cullMode = Input(UInt(2.W))
+    /** Sampler word port (separate client in the fabric arbitration). */
+    val texMem = new Bundle {
+      val req = Decoupled(new OmMemoryRequest)
+      val resp = Flipped(Decoupled(new OmMemoryResponse))
+    }
     val done = Output(Bool())
   })
 
@@ -83,8 +94,14 @@ class RenderCore(
   rp.io.depthFunc := io.depthFunc
   rp.io.depthWriteEnable := io.depthWriteEnable
   rp.io.cullMode := io.cullMode
+  rp.io.texEnable := io.texEnable
+  rp.io.texBase := io.texBase
+  rp.io.texWidth := io.texWidth
+  rp.io.texHeight := io.texHeight
+  rp.io.texWrapClamp := io.texWrapClamp
   rp.io.mem.req <> io.fbMem.req
   rp.io.mem.resp <> io.fbMem.resp
+  rp.io.texMem <> io.texMem
 
   io.kernelMemReq <> rp.io.kernelMemReq
   rp.io.kernelMemResp <> io.kernelMemResp

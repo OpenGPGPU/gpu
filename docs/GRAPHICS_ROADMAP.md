@@ -374,10 +374,26 @@ Status (implementation, 2026-08-27) — M5b texture unit:
   exact texel values at all 64 texel centres, a 20-sample randomized sweep,
   plus a stalled-consumer / follow-up-sample regression guarding the state
   leak class.  opengpu.graphics.* is now 56/56 green.
-- Remaining to finish M5b wiring: expose the sampler between interpolator
-  output and OM (fixed-function path) or as the backend for a `tex.sample`
-  custom instruction on the core-kernel path; then LOD/mips and quad
-  derivatives ride on top of this block.
+- **Wired into the fixed-function pipeline (2026-08-28).**  `RenderPipeline`
+  (fragCore = false) now interpolates perspective-correct UVs per fragment and
+  samples through `TexturedFragStage` (`TexUVInterpolator` + `TextureUnit`),
+  MODULATE-ing the interpolated colour with the fetched texel before the
+  OutputMerger; position/depth pass through and the bypass (texEnable = 0)
+  keeps disabled draws sampler-free.  Supporting plumbing: the draw record
+  grew to 32 words ([26..31] = per-vertex u,v, unsigned Q16.16), `RasterFragment`
+  carries the rasterizer edge values so the stage reuses them without a second
+  derivation, `RenderHost` gains TEX_BASE/WIDTH/HEIGHT/CONFIG registers
+  (snapshotted at START like the rest) and `RenderCoreL2` arbitrates a fifth
+  word client (texture bridge, txn range [4n,5n), its own requester slot for
+  coherence).  End-to-end proof: `RenderCoreL2Spec` "render a texture-modulated
+  draw through the shared L2" drives a register-programmed textured draw
+  (solid half-strength red texture, MODULATE against interpolated (255,0,0))
+  and asserts (127,0,0) at an interior pixel plus the depth word, all traffic
+  through the single shared L2.  opengpu.graphics.* is 57/57 green.
+- Still open for M5b: a `tex.sample` custom instruction so the core-kernel
+  path (fragCore = true) reaches the same sampler (the fixed-function path
+  demonstrates the datapath; the instruction is a decoder/issue slice on top
+  of it); then LOD/mips and quad derivatives ride on top of this block.
 
 Risks: still the largest milestone, but the ISA/toolchain deletion removes
 the worst of it. Split as: (a) dispatch + uniform bank + trivial color

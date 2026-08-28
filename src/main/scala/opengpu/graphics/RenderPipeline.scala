@@ -22,6 +22,8 @@ class SceneTriangle(config: GraphicsConfig) extends Bundle {
   val clip = Vec(3, new ClipVertex)
   val color = Vec(3, new Varyings)
   val depth = Vec(3, SInt(32.W))
+  /** Per-vertex texture coordinates (unsigned Q16.16; see TexUV). */
+  val uv = Vec(3, new TexUV)
   val shaderPc = UInt(32.W)
   val shaderKernarg = UInt(32.W)
 }
@@ -73,12 +75,24 @@ class RenderPipeline(
     val depthFunc = Input(UInt(3.W))
     val depthWriteEnable = Input(Bool())
     val cullMode = Input(UInt(2.W))
+    /** Texture sampling (fixed-function path; ignored with fragCore). */
+    val texEnable = Input(Bool())
+    val texBase = Input(UInt(32.W))
+    val texWidth = Input(UInt(14.W))
+    val texHeight = Input(UInt(14.W))
+    val texWrapClamp = Input(Bool())
+    val texMem = new Bundle {
+      val req = Decoupled(new OmMemoryRequest)
+      val resp = Flipped(Decoupled(new OmMemoryResponse))
+    }
     val done = Output(Bool())
   })
 
   private val geo = Module(new GeometryStage(config))
   private val shader = Module(new RasterShader(config))
   private val om = Module(new OutputMerger(config))
+  private val textured =
+    Module(new TexturedFragStage(config))
 
   // Geometry: clip-space -> fixed-point screen-space vertices.
   geo.io.clip := io.draw.bits.clip
@@ -98,6 +112,27 @@ class RenderPipeline(
   shader.io.depths := io.draw.bits.depth
   shader.io.cullMode := io.cullMode
   io.draw.ready := shader.io.draw.ready
+
+  // Texture sampling configuration + word port (sampler owns its fetches).
+  textured.io.e0 := shader.io.pixel.bits.e0
+  textured.io.e1 := shader.io.pixel.bits.e1
+  textured.io.e2 := shader.io.pixel.bits.e2
+  textured.io.invW0 := geo.io.out(0).invW
+  textured.io.invW1 := geo.io.out(1).invW
+  textured.io.invW2 := geo.io.out(2).invW
+  textured.io.uv0 := io.draw.bits.uv(0)
+  textured.io.uv1 := io.draw.bits.uv(1)
+  textured.io.uv2 := io.draw.bits.uv(2)
+  textured.io.texBase := io.texBase
+  textured.io.texWidth := io.texWidth
+  textured.io.texHeight := io.texHeight
+  textured.io.wrapClamp := io.texWrapClamp
+  io.texMem <> textured.io.mem
+
+  // Whole-bundle payload + consumer ready live outside the fragCore branches
+  // so both elaborations fully initialize the stage.
+  textured.io.fragIn.bits := shader.io.pixel.bits
+  textured.io.out.ready := om.io.fragIn.ready
 
   // Output-merge registers + memory port.
   om.io.colorBase := io.colorBase
@@ -138,6 +173,7 @@ class RenderPipeline(
     kernelFrag.io.memResp <> io.kernelMemResp
     io.kernelWordMemReq <> kernelFrag.io.wordMemReq
     kernelFrag.io.wordMemResp <> io.kernelWordMemResp
+    textured.io.fragIn.valid := false.B // texture path only on fixed-func branch
     kernelFrag.io.l1Invalidate <> io.kernelL1Invalidate
     io.kernelL1InvalidateDone <> kernelFrag.io.l1InvalidateDone
     io.kernelGlobalAtomicRequest <> kernelFrag.io.globalAtomicRequest
@@ -148,16 +184,28 @@ class RenderPipeline(
     // is never mistaken for an idle pipeline during a draw boundary.
     io.done := shader.io.done && kernelFrag.io.drained && om.io.fragIn.ready
   } else {
-    om.io.fragIn.valid := shader.io.pixel.valid
-    om.io.fragIn.bits.x := shader.io.pixel.bits.x(15, 0).asUInt
-    om.io.fragIn.bits.y := shader.io.pixel.bits.y(15, 0).asUInt
-    om.io.fragIn.bits.color := Cat(
-      shader.io.pixel.bits.color.r,
-      shader.io.pixel.bits.color.g,
-      shader.io.pixel.bits.color.b,
-      0xff.U(8.W))
-    om.io.fragIn.bits.depth := shader.io.pixel.bits.depth(29, 0).asUInt
-    shader.io.pixel.ready := om.io.fragIn.ready
+    // Fragment stream: sampled-and-modulated when texturing is enabled, else
+    // straight from the interpolator.  The bypass path keeps disabled draws
+    // free of sampler latency and frees its memory port entirely.
+    def packColor(r: UInt, g: UInt, b: UInt): UInt = Cat(r, g, b, 0xff.U(8.W))
+
+    textured.io.fragIn.valid := io.texEnable && shader.io.pixel.valid
+
+    om.io.fragIn.valid := Mux(io.texEnable, textured.io.out.valid,
+      shader.io.pixel.valid)
+    om.io.fragIn.bits.x := Mux(io.texEnable,
+      textured.io.out.bits.x, shader.io.pixel.bits.x)(15, 0).asUInt
+    om.io.fragIn.bits.y := Mux(io.texEnable,
+      textured.io.out.bits.y, shader.io.pixel.bits.y)(15, 0).asUInt
+    om.io.fragIn.bits.color := Mux(io.texEnable,
+      packColor(textured.io.out.bits.color.r, textured.io.out.bits.color.g,
+        textured.io.out.bits.color.b),
+      Cat(shader.io.pixel.bits.color.r, shader.io.pixel.bits.color.g,
+        shader.io.pixel.bits.color.b, 0xff.U(8.W)))
+    om.io.fragIn.bits.depth := Mux(io.texEnable,
+      textured.io.out.bits.depth, shader.io.pixel.bits.depth)(29, 0).asUInt
+    shader.io.pixel.ready := Mux(io.texEnable, textured.io.fragIn.ready,
+      om.io.fragIn.ready)
 
     io.kernelMemReq.valid := false.B
     io.kernelMemReq.bits := 0.U.asTypeOf(io.kernelMemReq.bits)

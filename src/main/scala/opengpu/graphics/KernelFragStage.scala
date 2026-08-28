@@ -120,6 +120,9 @@ class KernelFragStage(
   private val fragDepth = Reg(Vec(batchCap, SInt(32.W)))
   private val packedColor = Reg(Vec(batchCap, UInt(32.W)))
   private val outWords = Reg(Vec(batchCap, UInt(32.W)))
+  private val fragE0 = Reg(Vec(batchCap, SInt(64.W)))
+  private val fragE1 = Reg(Vec(batchCap, SInt(64.W)))
+  private val fragE2 = Reg(Vec(batchCap, SInt(64.W)))
   private val count = RegInit(0.U(countWidth.W))
   private val index = RegInit(0.U(countWidth.W))
   // Vec indexing only ever touches [0, batchCap); narrowing avoids an over-wide
@@ -143,6 +146,9 @@ class KernelFragStage(
   io.out.bits.x := fragX(indexIdx)
   io.out.bits.y := fragY(indexIdx)
   io.out.bits.depth := fragDepth(indexIdx)
+  io.out.bits.e0 := fragE0(indexIdx)
+  io.out.bits.e1 := fragE1(indexIdx)
+  io.out.bits.e2 := fragE2(indexIdx)
   io.out.bits.color.r := outWords(indexIdx)(31, 24)
   io.out.bits.color.g := outWords(indexIdx)(23, 16)
   io.out.bits.color.b := outWords(indexIdx)(15, 8)
@@ -175,6 +181,9 @@ class KernelFragStage(
           io.fragIn.bits.color.g,
           io.fragIn.bits.color.b,
           0xff.U(8.W))
+        fragE0(countIdx) := io.fragIn.bits.e0
+        fragE1(countIdx) := io.fragIn.bits.e1
+        fragE2(countIdx) := io.fragIn.bits.e2
         when(count === 0.U) {
           curShaderPc := io.shaderPc
           curKernarg := io.kernargBase

@@ -21,7 +21,7 @@ import chisel3.util._
   * and point at it kernarg buffer.
   */
 class CommandBufferStage(config: GraphicsConfig) extends Module {
-  private val wordsPerRecord = 26
+  private val wordsPerRecord = 32
 
   val io = IO(new Bundle {
     val base = Input(UInt(32.W))
@@ -36,7 +36,7 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
   })
 
   private val record = RegInit(0.U(16.W))
-  private val word = RegInit(0.U(log2Ceil(wordsPerRecord).W)) // 0..25
+  private val word = RegInit(0.U(log2Ceil(wordsPerRecord).W)) // 0..31
   private val waiting = RegInit(false.B) // a read is in flight
   private val words = Reg(Vec(wordsPerRecord, UInt(32.W)))
   private val running = RegInit(false.B)
@@ -76,6 +76,12 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
   io.draw.bits.depth(0) := words(21).asSInt
   io.draw.bits.depth(1) := words(22).asSInt
   io.draw.bits.depth(2) := words(23).asSInt
+  io.draw.bits.uv(0).u := words(26)
+  io.draw.bits.uv(0).v := words(27)
+  io.draw.bits.uv(1).u := words(28)
+  io.draw.bits.uv(1).v := words(29)
+  io.draw.bits.uv(2).u := words(30)
+  io.draw.bits.uv(2).v := words(31)
   io.draw.bits.shaderPc := words(24)
   io.draw.bits.shaderKernarg := words(25)
 

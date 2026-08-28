@@ -36,6 +36,8 @@ class RenderCoreL2Spec extends AnyFlatSpec {
     }
     for (i <- 0 until 3) { w += tri(i)._3 }
     w += shaderPc; w += kernarg
+    // uv0..uv2 as unsigned Q16.16 (unused by these tests)
+    for (_ <- 0 until 6) { w += 0 }
     w.result()
   }
 
@@ -208,6 +210,120 @@ class RenderCoreL2Spec extends AnyFlatSpec {
       // the per-fragment output colour in the kernarg output region.
       assert(m.word(kernarg + 128 + 2 * 4) == 0xff0000ffL,
         s"kernarg output word should be the shaded colour")
+    }
+  }
+
+  it should "render a texture-modulated draw through the shared L2" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    val cfg = GpuConfig(lanes = 4, warps = 2)
+    val stride = 16 * 4
+    val colorBase = 0x8000
+    val depthBase = 0x9000
+    val cmdBase = 0x4000
+    val texBase = 0xA000
+
+    def tri(x: Int, y: Int, d: Int, u: Int, v: Int) =
+      ((x, y, 0, q(1.0)), (255, 0, 0), d, u, v)
+    val record = Seq(
+      tri(q(-1.0), q(-1.0), 0x10, 0, 0),
+      tri(q(1.0), q(-1.0), 0x10, q(1.0), 0),
+      tri(q(-1.0), q(1.0), 0x10, 0, q(1.0))
+    )
+
+    val m = new MemModel
+    // 32-word record: verts, colours, depth, descriptor, uv pairs.
+    val w = Seq.newBuilder[Int]
+    for (i <- 0 until 3) {
+      w += record(i)._1._1; w += record(i)._1._2; w += record(i)._1._3; w += record(i)._1._4
+    }
+    for (i <- 0 until 3) {
+      w += record(i)._2._1; w += record(i)._2._2; w += record(i)._2._3
+    }
+    for (i <- 0 until 3) { w += record(i)._3 }
+    w += 0; w += 0 // descriptor
+    for (i <- 0 until 3) { w += record(i)._4; w += record(i)._5 }
+    w.result().zipWithIndex.foreach { case (word, i) =>
+      m.wwrite(cmdBase + i * 4, word)
+    }
+    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0xffffffff)
+    // Solid half-strength red texture: every modulated fragment halves R.
+    for (y <- 0 until 16; x <- 0 until 16)
+      m.wwrite(texBase + (y * 16 + x) * 4, 0xff800000)
+
+    simulate(new RenderCoreL2(gfx, cfg, fragCore = false)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.cmdBase.poke(cmdBase.U)
+      dut.io.cmdCount.poke(1.U)
+      dut.io.colorBase.poke(colorBase.U)
+      dut.io.depthBase.poke(depthBase.U)
+      dut.io.stride.poke(stride.U)
+      dut.io.depthTestEnable.poke(true.B)
+      dut.io.depthFunc.poke(0.U)
+      dut.io.depthWriteEnable.poke(true.B)
+      dut.io.cullMode.poke(0.U)
+      dut.io.texEnable.poke(true.B)
+      dut.io.texBase.poke(texBase.U)
+      dut.io.texWidth.poke(16.U)
+      dut.io.texHeight.poke(16.U)
+      dut.io.texWrapClamp.poke(false.B)
+      dut.io.memoryResponse.valid.poke(false.B)
+      dut.io.memoryResponse.bits.fault.poke(false.B)
+      dut.io.memoryResponse.bits.transactionId.poke(0.U)
+      dut.io.memoryResponse.bits.readData.poke(0.U)
+      dut.io.memoryRequest.ready.poke(true.B)
+      dut.io.clearPerformanceCounters.poke(false.B)
+
+      dut.io.start.poke(true.B)
+      dut.clock.step()
+      dut.io.start.poke(false.B)
+
+      val respQ = mutable.Queue.empty[(BigInt, BigInt)]
+      var guard = 0
+      var doneSeen = false
+      var quiet = 0
+      while ((!doneSeen || quiet < 64) && guard < 400000) {
+        dut.io.memoryRequest.ready.poke(true.B)
+        val hadPending = respQ.nonEmpty
+        if (dut.io.memoryRequest.valid.peek().litToBoolean &&
+            dut.io.memoryRequest.ready.peek().litToBoolean) {
+          val a = dut.io.memoryRequest.bits.address.peek().litValue.toLong
+          val id = dut.io.memoryRequest.bits.transactionId.peek().litValue
+          val isWrite = dut.io.memoryRequest.bits.isWrite.peek().litToBoolean
+          val data =
+            if (isWrite) {
+              m.lineWrite(a, dut.io.memoryRequest.bits.writeData.peek().litValue,
+                dut.io.memoryRequest.bits.byteMask.peek().litValue)
+              BigInt(0)
+            } else m.lineRead(a)
+          respQ.enqueue((id, data))
+        }
+        if (hadPending) {
+          val (id, data) = respQ.head
+          dut.io.memoryResponse.valid.poke(true.B)
+          dut.io.memoryResponse.bits.transactionId.poke(id.U)
+          dut.io.memoryResponse.bits.readData.poke(data.U)
+          dut.io.memoryResponse.bits.fault.poke(false.B)
+          if (dut.io.memoryResponse.ready.peek().litToBoolean) respQ.dequeue()
+        } else dut.io.memoryResponse.valid.poke(false.B)
+        if (dut.io.done.peek().litToBoolean) doneSeen = true
+        val busy = dut.io.memoryRequest.valid.peek().litToBoolean || respQ.nonEmpty
+        quiet = if (busy || !doneSeen) 0 else quiet + 1
+        dut.clock.step()
+        guard += 1
+      }
+      assert(doneSeen, "textured renderer did not drain")
+      assert(guard < 400000, "L2 off-chip port did not quiesce")
+
+      def rgb(x: Int, y: Int): (Int, Int, Int) = {
+        val c = m.word(colorBase + (y * 16 + x) * 4).toInt
+        (((c >> 24) & 0xff), ((c >> 16) & 0xff), ((c >> 8) & 0xff))
+      }
+      // Interior pixel: interpolated red (255,0,0) MODULATE half-red texel
+      // (r=0x80) -> (127,0,0); green/blue stay zero.
+      assert(rgb(5, 5) == (127, 0, 0),
+        s"modulated (5,5) expected (127,0,0), got ${rgb(5, 5)}")
+      assert(m.word(depthBase + (5 * 16 + 5) * 4) == 0x10,
+        "depth still written through the L2")
     }
   }
 }

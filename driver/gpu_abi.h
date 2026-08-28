@@ -29,6 +29,14 @@
 #define GPU_REG_DEPTH_FUNC    0x028
 #define GPU_REG_DEPTH_WRITE   0x02c
 #define GPU_REG_CULL_MODE     0x030
+#define GPU_REG_TEX_BASE      0x034
+#define GPU_REG_TEX_WIDTH     0x038
+#define GPU_REG_TEX_HEIGHT    0x03c
+#define GPU_REG_TEX_CONFIG    0x040
+
+/* TEX_CONFIG bits: bit0 wrap==CLAMP (else REPEAT), bit8 sampling enable. */
+#define GPU_TEX_WRAP_CLAMP    (1u << 0)
+#define GPU_TEX_ENABLE        (1u << 8)
 
 #define GPU_ID                ((GPU_DEVICE_ID << 16) | GPU_VERSION)
 #define GPU_DEVICE_ID          0x4755u   /* 'GU' */
@@ -69,6 +77,7 @@
  *   v0/v1/v2 depth as signed 32-bit (fixed-point, compared as-is)      [21..23]
  *   shader entry PC (shader descriptor)                                [24]
  *   kernarg buffer address                                             [25]
+ *   per-vertex texture coords u,v (unsigned Q16.16, u0v0u1v1u2v2)      [26..31]
  *
  * The colour/depth registers are the fixed-function interpolation inputs on
  * `fragCore = false`; the shader descriptor is used only on the core-backed

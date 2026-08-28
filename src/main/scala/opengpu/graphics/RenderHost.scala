@@ -20,6 +20,8 @@ import opengpu.core.memory.{
   * the current one is still in flight (a minimal double-buffered submission).
   */
 object RenderHostRegs {
+  /** First invalid offset -- the inclusive end of the register file. */
+  val END               = 0x44
   val ID                = 0x00
   val CONTROL           = 0x04
   val STATUS            = 0x08
@@ -33,6 +35,11 @@ object RenderHostRegs {
   val DEPTH_FUNC        = 0x28
   val DEPTH_WRITE_ENABLE= 0x2C
   val CULL_MODE         = 0x30
+  val TEX_BASE          = 0x34
+  val TEX_WIDTH         = 0x38
+  val TEX_HEIGHT        = 0x3C
+  /** bit0: wrap==CLAMP (else REPEAT); bit8: texture sampling enable. */
+  val TEX_CONFIG        = 0x40
 }
 
 /** A host memory-mapped register access (read or write of one 32-bit word). */
@@ -108,6 +115,10 @@ class RenderHost(
     val kernelGlobalAtomicRequest = Decoupled(new SharedAtomicRequest(gpuConfig))
     val kernelGlobalAtomicResponse =
       Flipped(Decoupled(new SharedAtomicResponse(gpuConfig)))
+    val texMem = new Bundle {
+      val req = Decoupled(new OmMemoryRequest)
+      val resp = Flipped(Decoupled(new OmMemoryResponse))
+    }
   })
 
   private val core = Module(new RenderCore(config, gpuConfig, fragCore))
@@ -124,6 +135,10 @@ class RenderHost(
   private val depthFuncReg = RegInit(0.U(32.W))
   private val depthWriteEnableReg = RegInit(0.U(32.W))
   private val cullModeReg = RegInit(0.U(32.W))
+  private val texBaseReg = RegInit(0.U(32.W))
+  private val texWidthReg = RegInit(0.U(32.W))
+  private val texHeightReg = RegInit(0.U(32.W))
+  private val texConfigReg = RegInit(0.U(32.W))
 
   private val activeCmdBase = RegInit(0.U(32.W))
   private val activeCmdCount = RegInit(0.U(32.W))
@@ -134,6 +149,10 @@ class RenderHost(
   private val activeDepthFunc = RegInit(0.U(32.W))
   private val activeDepthWriteEnable = RegInit(0.U(32.W))
   private val activeCullMode = RegInit(0.U(32.W))
+  private val activeTexBase = RegInit(0.U(32.W))
+  private val activeTexWidth = RegInit(0.U(32.W))
+  private val activeTexHeight = RegInit(0.U(32.W))
+  private val activeTexConfig = RegInit(0.U(32.W))
 
   private val busy = RegInit(false.B)
   private val done = RegInit(false.B)
@@ -167,7 +186,11 @@ class RenderHost(
       RenderHostRegs.DEPTH_TEST_ENABLE.U -> depthTestEnableReg,
       RenderHostRegs.DEPTH_FUNC.U -> depthFuncReg,
       RenderHostRegs.DEPTH_WRITE_ENABLE.U -> depthWriteEnableReg,
-      RenderHostRegs.CULL_MODE.U -> cullModeReg
+      RenderHostRegs.CULL_MODE.U -> cullModeReg,
+      RenderHostRegs.TEX_BASE.U -> texBaseReg,
+      RenderHostRegs.TEX_WIDTH.U -> texWidthReg,
+      RenderHostRegs.TEX_HEIGHT.U -> texHeightReg,
+      RenderHostRegs.TEX_CONFIG.U -> texConfigReg
     ))
 
   // Merge a byte-masked write into a 32-bit register (partial-word writes with
@@ -211,6 +234,18 @@ class RenderHost(
       is(RenderHostRegs.CULL_MODE.U) {
         cullModeReg := merge(cullModeReg, io.reg.req.bits.data, io.reg.req.bits.strb)
       }
+      is(RenderHostRegs.TEX_BASE.U) {
+        texBaseReg := merge(texBaseReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.TEX_WIDTH.U) {
+        texWidthReg := merge(texWidthReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.TEX_HEIGHT.U) {
+        texHeightReg := merge(texHeightReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.TEX_CONFIG.U) {
+        texConfigReg := merge(texConfigReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
       is(RenderHostRegs.STATUS.U) {
         when(io.reg.req.bits.data(1)) { done := false.B }
         when(io.reg.req.bits.data(2)) { error := false.B }
@@ -241,6 +276,10 @@ class RenderHost(
       activeDepthFunc := depthFuncReg
       activeDepthWriteEnable := depthWriteEnableReg
       activeCullMode := cullModeReg
+      activeTexBase := texBaseReg
+      activeTexWidth := texWidthReg
+      activeTexHeight := texHeightReg
+      activeTexConfig := texConfigReg
     }
   }
 
@@ -265,6 +304,11 @@ class RenderHost(
   core.io.depthFunc := activeDepthFunc(2, 0)
   core.io.depthWriteEnable := activeDepthWriteEnable(0)
   core.io.cullMode := activeCullMode(1, 0)
+  core.io.texEnable := activeTexConfig(8)
+  core.io.texBase := activeTexBase
+  core.io.texWidth := activeTexWidth(13, 0)
+  core.io.texHeight := activeTexHeight(13, 0)
+  core.io.texWrapClamp := activeTexConfig(0)
   core.io.start := launch
 
   core.io.cbMem.req <> io.cbMem.req
@@ -279,6 +323,7 @@ class RenderHost(
   io.kernelL1InvalidateDone <> core.io.kernelL1InvalidateDone
   io.kernelGlobalAtomicRequest <> core.io.kernelGlobalAtomicRequest
   core.io.kernelGlobalAtomicResponse <> io.kernelGlobalAtomicResponse
+  core.io.texMem <> io.texMem
 
   io.irq := irqEnable && irqPending
 

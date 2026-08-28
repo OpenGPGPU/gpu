@@ -31,6 +31,7 @@ class RenderHostSpec extends AnyFlatSpec {
     for (i <- 0 until 3) { w += tri(i)._2._1; w += tri(i)._2._2; w += tri(i)._2._3 }
     for (i <- 0 until 3) { w += tri(i)._3 }
     w += 0; w += 0 // shader descriptor (unused on the fixed-function path)
+    for (_ <- 0 until 6) { w += 0 } // uv0..uv2
     w.result()
   }
 

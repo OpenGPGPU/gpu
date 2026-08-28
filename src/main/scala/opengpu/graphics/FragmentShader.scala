@@ -32,6 +32,9 @@ class FragmentShader(config: GraphicsConfig) extends Module {
     Mux(v < 0.S, 0.U, Mux(v > 255.S, 255.U, v.asUInt(7, 0)))
   }
 
+  io.out.bits.e0 := io.fragIn.bits.e0
+  io.out.bits.e1 := io.fragIn.bits.e1
+  io.out.bits.e2 := io.fragIn.bits.e2
   io.out.bits.color.r := shade(io.fragIn.bits.color.r, io.uniformTint(0), io.uniformBias(0))
   io.out.bits.color.g := shade(io.fragIn.bits.color.g, io.uniformTint(1), io.uniformBias(1))
   io.out.bits.color.b := shade(io.fragIn.bits.color.b, io.uniformTint(2), io.uniformBias(2))

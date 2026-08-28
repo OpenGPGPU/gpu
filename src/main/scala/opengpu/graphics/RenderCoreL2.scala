@@ -50,7 +50,7 @@ class RenderCoreL2(
 ) extends Module {
   require(lineBytes == 64, "current cache hierarchy uses 64-byte lines")
   private val perClientOutstanding = 4
-  private val numClients = 4
+  private val numClients = 5
   private val totalOutstanding = perClientOutstanding * numClients
   private val txnWidth = math.max(1, log2Ceil(totalOutstanding))
   // Each of the four line clients occupies its own L2 requester slot
@@ -72,6 +72,12 @@ class RenderCoreL2(
     val depthFunc = Input(UInt(3.W))
     val depthWriteEnable = Input(Bool())
     val cullMode = Input(UInt(2.W))
+    /** Texture sampling config forwarded to the core's fragment stage. */
+    val texEnable = Input(Bool())
+    val texBase = Input(UInt(32.W))
+    val texWidth = Input(UInt(14.W))
+    val texHeight = Input(UInt(14.W))
+    val texWrapClamp = Input(Bool())
     val done = Output(Bool())
     val memoryRequest = Decoupled(
       new ComputeMemoryRequest(gpuConfig, lineBytes, totalOutstanding))
@@ -98,17 +104,26 @@ class RenderCoreL2(
   core.io.depthFunc := io.depthFunc
   core.io.depthWriteEnable := io.depthWriteEnable
   core.io.cullMode := io.cullMode
+  core.io.texEnable := io.texEnable
+  core.io.texBase := io.texBase
+  core.io.texWidth := io.texWidth
+  core.io.texHeight := io.texHeight
+  core.io.texWrapClamp := io.texWrapClamp
   io.done := core.io.done
 
-  // The L2's two word-level clients (command buffer, framebuffer).
+  // Word-level clients (command buffer, framebuffer, texture) behind bridges.
   private val cbBridge = Module(new OmWordToLinePort(
     gpuConfig, lineBytes, perClientOutstanding))
   private val fbBridge = Module(new OmWordToLinePort(
+    gpuConfig, lineBytes, perClientOutstanding))
+  private val texBridge = Module(new OmWordToLinePort(
     gpuConfig, lineBytes, perClientOutstanding))
   cbBridge.io.in <> core.io.cbMem.req
   core.io.cbMem.resp <> cbBridge.io.out
   fbBridge.io.in <> core.io.fbMem.req
   core.io.fbMem.resp <> fbBridge.io.out
+  texBridge.io.in <> core.io.texMem.req
+  core.io.texMem.resp <> texBridge.io.out
 
   private val l2RequestArbiter = Module(new RRArbiter(
     new ComputeMemoryRequest(gpuConfig, lineBytes, totalOutstanding),
@@ -136,6 +151,7 @@ class RenderCoreL2(
   tieRequest(1, cbBridge.io.memoryRequest, perClientOutstanding)
   tieRequest(2, fbBridge.io.memoryRequest, 2 * perClientOutstanding)
   tieRequest(3, core.io.kernelWordMemReq, 3 * perClientOutstanding)
+  tieRequest(4, texBridge.io.memoryRequest, 4 * perClientOutstanding)
 
   l2.io.request <> l2RequestArbiter.io.out
 
@@ -163,6 +179,7 @@ class RenderCoreL2(
   tieResponse(cbBridge.io.memoryResponse, perClientOutstanding)
   tieResponse(fbBridge.io.memoryResponse, 2 * perClientOutstanding)
   tieResponse(core.io.kernelWordMemResp, 3 * perClientOutstanding)
+  tieResponse(texBridge.io.memoryResponse, 4 * perClientOutstanding)
   when(l2.io.response.valid) {
     assert(PopCount(VecInit(respFor)) === 1.U,
       "L2 response must belong to exactly one graphics client")
@@ -172,7 +189,8 @@ class RenderCoreL2(
       case 0 => core.io.kernelMemResp.ready
       case 1 => cbBridge.io.memoryResponse.ready
       case 2 => fbBridge.io.memoryResponse.ready
-      case _ => core.io.kernelWordMemResp.ready
+      case 3 => core.io.kernelWordMemResp.ready
+      case _ => texBridge.io.memoryResponse.ready
     })
   })
 
