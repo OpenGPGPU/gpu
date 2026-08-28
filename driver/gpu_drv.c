@@ -62,7 +62,7 @@ struct gpu_device {
     u32 stride;
 };
 
-static inline u32 gpu_read(struct gpu_device *g, u32 off)
+static inline u32 gpu_reg_read(struct gpu_device *g, u32 off)
 {
     return ioread32(g->ctrl + off);
 }
@@ -71,6 +71,8 @@ static inline void gpu_write(struct gpu_device *g, u32 off, u32 v)
 {
     iowrite32(v, g->ctrl + off);
 }
+
+static const struct file_operations gpu_fops;
 
 static irqreturn_t gpu_irq(int irq, void *data)
 {
@@ -96,14 +98,14 @@ static int gpu_start_and_wait(struct gpu_device *g)
     {
         unsigned long p = jiffies + msecs_to_jiffies(100);
         while (time_before(jiffies, p)) {
-            if (gpu_read(g, GPU_REG_STATUS) & GPU_STATUS_DONE)
+            if (gpu_reg_read(g, GPU_REG_STATUS) & GPU_STATUS_DONE)
                 break;
             cond_resched();
         }
     }
 done:
     gpu_write(g, GPU_REG_IRQ, 0);
-    return gpu_read(g, GPU_REG_STATUS) & GPU_STATUS_DONE ? 0 : -ETIMEDOUT;
+    return gpu_reg_read(g, GPU_REG_STATUS) & GPU_STATUS_DONE ? 0 : -ETIMEDOUT;
 }
 
 static void gpu_program_config(struct gpu_device *g)
@@ -199,7 +201,7 @@ static int gpu_probe(struct platform_device *pdev)
     if (IS_ERR(g->ctrl))
         return PTR_ERR(g->ctrl);
 
-    id = gpu_read(g, GPU_REG_ID);
+    id = gpu_reg_read(g, GPU_REG_ID);
     if ((id >> 16) != GPU_DEVICE_ID)
         return dev_err_probe(&pdev->dev, -ENODEV, "bad device id 0x%08x\n", id);
     dev_info(&pdev->dev, "GPU ABI device=0x%08x version=0x%04x\n", id,
