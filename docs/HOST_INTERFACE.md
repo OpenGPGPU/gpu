@@ -166,15 +166,25 @@ at the same shared framebuffer the renderer writes, mirroring ARTI's
 
 ## 6. ARTI integration flow
 
-1. Emit the RTL: `sbt "runMain opengpu.elaboration.EmitGpuHostAxi"` produces
-   `GpuHostAxi.sv`.
-2. Point `driver/gpu_integration.yaml` at it: ARTI infers AXI4 from the
-   `s_axi_*` names, generates the embedded QEMU model `arti-rtl.c`, and the DT
-   node.
-3. Build the driver module: `driver/Makefile` produces `gpu_drv.ko`.
-4. Run the harness: `run_linux_test.sh` with `INTEGRATION_CONFIG=` pointing at
-   `driver/gpu_integration.yaml`; the guest `insmod`s the module, which
-   submits a draw over the bus and prints `OPENGPU DRIVER PASS`.
+`scripts/run_arti_gpu.sh` is the project-level entry point. It emits
+`GpuHostAxi.sv`, incrementally prepares ARTI's embedded QEMU/Linux environment,
+builds `gpu_drv.ko` against that exact kernel, and boots the end-to-end draw
+test:
+
+```bash
+./scripts/run_arti_gpu.sh
+```
+
+ARTI defaults to the sibling repository `../arti`; override `ARTI_DIR` when it
+lives elsewhere. To keep the rendered self-test visible in a macOS window:
+
+```bash
+QEMU_DISPLAY=cocoa HOLD_AFTER_TEST=30 ./scripts/run_arti_gpu.sh
+```
+
+The underlying integration profile remains `driver/gpu_integration.yaml`.
+ARTI infers AXI4 from the `s_axi_*` names, generates the embedded QEMU model
+and DT node, loads the module in the guest, and expects `OPENGPU DRIVER PASS`.
 
 ### Caveat: the memory (master) port
 
