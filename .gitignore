@@ -23,3 +23,12 @@ timing/lib/
 
 # Reproducible RTL emission and local ChipAgent/OpenROAD run products.
 /generated/
+
+# Out-of-tree Linux module build products.
+driver/*.o
+driver/*.ko
+driver/*.mod
+driver/*.mod.c
+driver/.*.cmd
+driver/Module.symvers
+driver/modules.order

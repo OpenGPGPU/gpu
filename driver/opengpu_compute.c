@@ -1,11 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Bring-up render/compute client and its temporary misc-device ABI. */
+#include <linux/dma-resv.h>
 #include <linux/fs.h>
 #include <linux/module.h>
+#include <linux/overflow.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 
+#include <drm/drm_device.h>
+#include <drm/drm_file.h>
+#include <drm/drm_gem.h>
+#include <drm/drm_gem_dma_helper.h>
+
 #include "opengpu_device.h"
+#include "opengpu_drm.h"
 
 static const struct file_operations opengpu_compute_fops;
 
@@ -49,6 +57,103 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
 
     opengpu_fill_test_command(gpu);
     return opengpu_hw_submit(gpu, &job);
+}
+
+static int opengpu_compute_wait_last(struct opengpu_compute *compute)
+{
+    long timeout;
+    int ret;
+
+    if (!compute->last_fence)
+        return 0;
+    timeout = dma_fence_wait_timeout(compute->last_fence, true,
+                                     msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS +
+                                                      100));
+    if (timeout <= 0)
+        ret = timeout < 0 ? timeout : -ETIMEDOUT;
+    else {
+        ret = dma_fence_get_status(compute->last_fence);
+        if (ret > 0)
+            ret = 0;
+    }
+    dma_fence_put(compute->last_fence);
+    compute->last_fence = NULL;
+    return ret;
+}
+
+int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
+                              struct drm_file *file)
+{
+    struct drm_opengpu_submit *args = data;
+    struct opengpu_device *gpu = dev_get_drvdata(drm->dev);
+    struct opengpu_compute *compute = &gpu->compute;
+    struct drm_gem_object *object;
+    struct drm_gem_dma_object *dma_object;
+    struct dma_fence *fence;
+    struct opengpu_job job;
+    size_t required;
+    int ret;
+
+    if ((args->flags & ~OPENGPU_SUBMIT_TEST_FENCE_DELAY) || args->pad ||
+        !args->color_handle ||
+        args->stride < gpu->width * 4 || (args->stride & 3) ||
+        check_mul_overflow((size_t)args->stride, (size_t)gpu->height,
+                           &required))
+        return -EINVAL;
+
+    object = drm_gem_object_lookup(file, args->color_handle);
+    if (!object)
+        return -ENOENT;
+    if (required > object->size) {
+        ret = -EINVAL;
+        goto out_object;
+    }
+    dma_object = to_drm_gem_dma_obj(object);
+
+    ret = dma_resv_lock_interruptible(object->resv, NULL);
+    if (ret)
+        goto out_object;
+    ret = dma_resv_reserve_fences(object->resv, 1);
+    if (ret)
+        goto out_resv;
+
+    ret = mutex_lock_interruptible(&compute->lock);
+    if (ret)
+        goto out_resv;
+    ret = opengpu_compute_wait_last(compute);
+    if (ret)
+        goto out_compute;
+
+    opengpu_fill_test_command(gpu);
+    job = (struct opengpu_job) {
+        .cmd = compute->cmd.dma,
+        .cmd_count = 1,
+        .color = dma_object->dma_addr,
+        .depth = compute->depth.dma,
+        .stride = args->stride,
+        .depth_test = true,
+        .depth_func = GPU_DEPTH_FUNC_LESS,
+        .depth_write = true,
+        .cull_mode = GPU_CULL_NONE,
+        .completion_delay_ms =
+            args->flags & OPENGPU_SUBMIT_TEST_FENCE_DELAY ? 50 : 0,
+    };
+    ret = opengpu_hw_submit_async(gpu, &job, &fence);
+    if (ret)
+        goto out_compute;
+
+    compute->last_fence = fence;
+    dma_resv_add_fence(object->resv, fence, DMA_RESV_USAGE_WRITE);
+    dev_info(gpu->dev, "render fence %llu attached to GEM handle %u\n",
+             fence->seqno, args->color_handle);
+
+out_compute:
+    mutex_unlock(&compute->lock);
+out_resv:
+    dma_resv_unlock(object->resv);
+out_object:
+    drm_gem_object_put(object);
+    return ret;
 }
 
 static int opengpu_self_test(struct opengpu_device *gpu)
@@ -179,6 +284,9 @@ err_cmd:
 void opengpu_compute_fini(struct opengpu_device *gpu)
 {
     misc_deregister(&gpu->compute.misc);
+    mutex_lock(&gpu->compute.lock);
+    opengpu_compute_wait_last(&gpu->compute);
+    mutex_unlock(&gpu->compute.lock);
     opengpu_buffer_free(gpu, &gpu->compute.depth);
     opengpu_buffer_free(gpu, &gpu->compute.color);
     opengpu_buffer_free(gpu, &gpu->compute.cmd);

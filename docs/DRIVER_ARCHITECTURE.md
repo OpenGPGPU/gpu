@@ -67,6 +67,13 @@ queue serialization and completion fences. The existing misc device is a
 bring-up ABI and remains isolated here; it can later become a DRM render node
 without changing platform or MMIO code.
 
+The first DRM render ioctl accepts a GEM color-buffer handle and stride for a
+driver-owned test draw. Hardware completion is represented by a standard
+`dma_fence` signaled from the completion IRQ (or timeout worker). The execution
+client publishes that fence into the target GEM object's `dma_resv` with write
+usage. This ioctl remains a bring-up ABI until command validation and per-file
+contexts replace the fixed command payload.
+
 Graphics draws and general-compute kernels may use different job payloads, but
 share queue, memory and fence machinery. Display is not an execution job.
 
@@ -83,6 +90,11 @@ The DRM atomic commit programs only the dedicated `SCANOUT_*` control bank.
 ARTI/QEMU consumes that control state and reads the selected guest-memory GEM
 buffer for presentation. On a physical SoC the same register contract is
 consumed by an external display subsystem or SoC display IP.
+
+The simple display pipe uses `drm_gem_plane_helper_prepare_fb()` to extract the
+target GEM reservation fence. DRM atomic helpers wait for render completion
+before the pipe updates `SCANOUT_BASE`, so display never observes a partially
+rendered buffer. There is no display-to-execution callback.
 
 Nova currently provides the cleaner reference for DRM device/file/GEM
 ownership, while AMDGPU provides the reference for keeping display state out of
@@ -113,6 +125,7 @@ No block frees another block's objects.
 4. Add a guest userspace test for GEM dumb-buffer allocation/mmap, atomic
    modeset and framebuffer page flip. **Complete (2026-08-29).**
 5. Synchronize scanout flips to render-completion fences.
+   **Complete (2026-08-29).**
 6. Add optional virtual-vblank events when applications require paced flips.
 
 ## RTL boundary

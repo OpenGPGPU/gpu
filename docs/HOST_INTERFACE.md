@@ -166,6 +166,11 @@ character device first, DRM display client next, per the roadmap):
   on `gpu_irq` (with a `STATUS.DONE` polling fallback).
 - **readback**: `/dev/opengpu0` exposes the framebuffer; `GPU_IOCTL_SUBMIT` re-runs
   a draw from userspace.
+- **DRM render submission**: `DRM_IOCTL_OPENGPU_SUBMIT` accepts a GEM DMA color
+  handle and stride for the current fixed test draw. Completion IRQs signal a
+  `dma_fence` published as a write fence in that GEM object's reservation.
+- **implicit display synchronization**: the KMS plane extracts the reservation
+  fence and DRM atomic helpers wait before programming the scanout bank.
 
 `opengpu_drv.c` owns platform lifetime, `opengpu_hw.c` owns MMIO/IRQ/job launch,
 `opengpu_memory.c` owns shared buffers, and `opengpu_compute.c` owns the current
@@ -175,7 +180,9 @@ display and execution separation used by the DRM phase.
 The DRM/KMS client registers a virtual connector, CRTC/primary plane and fixed
 16x16 mode. It provides GEM DMA dumb buffers and atomic commits in native
 `RGBA8888`, then programs the dedicated display register bank; it does not take
-ownership of the execution client's bring-up buffers.
+ownership of the execution client's bring-up buffers. The DRM driver also
+exposes a render node for render-allowed ioctls; KMS remains on the primary
+node.
 
 ## 6. ARTI integration flow
 

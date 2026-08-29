@@ -12,11 +12,15 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
+
+#include "opengpu_drm.h"
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define TEST_WIDTH 16
 #define TEST_HEIGHT 16
+#define MIN_FENCE_WAIT_MS 30
 
 struct kms_ids {
     uint32_t connector;
@@ -205,6 +209,17 @@ static int create_fb(int fd, uint32_t color, struct dumb_fb *fb)
     return 0;
 }
 
+static int submit_render(int fd, const struct dumb_fb *fb)
+{
+    struct drm_opengpu_submit submit = {
+        .color_handle = fb->handle,
+        .stride = fb->pitch,
+        .flags = OPENGPU_SUBMIT_TEST_FENCE_DELAY,
+    };
+
+    return ioctl(fd, DRM_IOCTL_OPENGPU_SUBMIT, &submit);
+}
+
 static int atomic_modeset(int fd, const struct kms_ids *ids,
                           uint32_t fb_id)
 {
@@ -296,10 +311,20 @@ static int atomic_page_flip(int fd, const struct kms_ids *ids, uint32_t fb_id)
     return ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &atomic);
 }
 
+static uint64_t monotonic_ms(void)
+{
+    struct timespec time;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &time) < 0)
+        return 0;
+    return (uint64_t)time.tv_sec * 1000 + time.tv_nsec / 1000000;
+}
+
 int main(void)
 {
     struct kms_ids ids = { 0 };
     struct dumb_fb first = { 0 }, second = { 0 };
+    uint64_t start;
     int fd;
 
     fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
@@ -319,10 +344,24 @@ int main(void)
     CHECK(find_kms_objects(fd, &ids), "resource discovery");
     CHECK(create_fb(fd, 0xff0000ffu, &first), "first dumb buffer");
     CHECK(create_fb(fd, 0x00ff00ffu, &second), "second dumb buffer");
+    CHECK(submit_render(fd, &first), "render first buffer");
+    start = monotonic_ms();
     CHECK(atomic_modeset(fd, &ids, first.fb_id), "atomic modeset");
+    if (monotonic_ms() - start < MIN_FENCE_WAIT_MS) {
+        errno = ETIME;
+        perror("OPENGPU USERSPACE DRM FAIL modeset skipped fence");
+        return 1;
+    }
+    CHECK(submit_render(fd, &second), "render second buffer");
+    start = monotonic_ms();
     CHECK(atomic_page_flip(fd, &ids, second.fb_id), "atomic page flip");
+    if (monotonic_ms() - start < MIN_FENCE_WAIT_MS) {
+        errno = ETIME;
+        perror("OPENGPU USERSPACE DRM FAIL page flip skipped fence");
+        return 1;
+    }
 #undef CHECK
 
-    printf("OPENGPU USERSPACE DRM PASS: dumb-buffer atomic modeset + page flip\n");
+    printf("OPENGPU USERSPACE DRM PASS: fenced render + waited atomic flip\n");
     return 0;
 }

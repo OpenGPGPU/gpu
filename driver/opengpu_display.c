@@ -11,13 +11,16 @@
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
+#include <drm/drm_ioctl.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 
 #include "opengpu_device.h"
+#include "opengpu_drm.h"
 
 struct opengpu_drm {
     struct drm_device drm;
@@ -100,11 +103,26 @@ static void opengpu_pipe_disable(struct drm_simple_display_pipe *pipe)
     opengpu_hw_display_commit(kms->gpu, &disabled);
 }
 
+static int opengpu_pipe_prepare_fb(struct drm_simple_display_pipe *pipe,
+                                   struct drm_plane_state *plane_state)
+{
+    struct opengpu_drm *kms = pipe_to_opengpu_drm(pipe);
+    int ret;
+
+    ret = drm_gem_plane_helper_prepare_fb(&pipe->plane, plane_state);
+    if (!ret && plane_state->fence)
+        dev_info(kms->gpu->dev,
+                 "OPENGPU FENCE PASS: scanout waiting on render fence %llu\n",
+                 plane_state->fence->seqno);
+    return ret;
+}
+
 static const struct drm_simple_display_pipe_funcs opengpu_pipe_funcs = {
     .mode_valid = opengpu_pipe_mode_valid,
     .enable = opengpu_pipe_enable,
     .update = opengpu_pipe_update,
     .disable = opengpu_pipe_disable,
+    .prepare_fb = opengpu_pipe_prepare_fb,
 };
 
 static enum drm_connector_status
@@ -160,13 +178,21 @@ static const struct drm_mode_config_funcs opengpu_mode_config_funcs = {
 
 DEFINE_DRM_GEM_DMA_FOPS(opengpu_drm_fops);
 
+static const struct drm_ioctl_desc opengpu_drm_ioctls[] = {
+    DRM_IOCTL_DEF_DRV(OPENGPU_SUBMIT, opengpu_compute_drm_ioctl,
+                      DRM_RENDER_ALLOW),
+};
+
 static const struct drm_driver opengpu_drm_driver = {
-    .driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
+    .driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC |
+                       DRIVER_RENDER,
     .name = "opengpu",
     .desc = "RISC-V SIMT OpenGPU",
     .major = 1,
     .minor = 0,
     .fops = &opengpu_drm_fops,
+    .ioctls = opengpu_drm_ioctls,
+    .num_ioctls = ARRAY_SIZE(opengpu_drm_ioctls),
     DRM_GEM_DMA_DRIVER_OPS,
 };
 

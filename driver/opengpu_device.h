@@ -2,19 +2,22 @@
 #ifndef OPENGPU_DEVICE_H
 #define OPENGPU_DEVICE_H
 
-#include <linux/atomic.h>
 #include <linux/device.h>
+#include <linux/dma-fence.h>
 #include <linux/dma-mapping.h>
 #include <linux/ioport.h>
 #include <linux/ioctl.h>
 #include <linux/miscdevice.h>
 #include <linux/mutex.h>
+#include <linux/spinlock.h>
 #include <linux/types.h>
-#include <linux/wait.h>
+#include <linux/workqueue.h>
 
 #include "gpu_abi.h"
 
 struct platform_device;
+struct drm_device;
+struct drm_file;
 struct opengpu_drm;
 
 #define OPENGPU_NAME            "riscv-simt-opengpu"
@@ -35,8 +38,13 @@ struct opengpu_hw {
     resource_size_t regs_phys;
     resource_size_t regs_size;
     int irq;
-    wait_queue_head_t irq_wait;
-    atomic_t irq_count;
+    struct mutex submit_lock;
+    spinlock_t fence_lock;
+    struct dma_fence *active_fence;
+    struct delayed_work timeout_work;
+    u32 active_completion_delay_ms;
+    u64 fence_context;
+    u64 fence_seqno;
 };
 
 /* Bring-up execution client. This becomes the render/compute client as queue
@@ -47,6 +55,7 @@ struct opengpu_compute {
     struct opengpu_buffer cmd;
     struct opengpu_buffer color;
     struct opengpu_buffer depth;
+    struct dma_fence *last_fence;
 };
 
 struct opengpu_display {
@@ -80,6 +89,7 @@ struct opengpu_job {
     u32 depth_func;
     bool depth_write;
     u32 cull_mode;
+    u32 completion_delay_ms;
 };
 
 struct opengpu_scanout {
@@ -93,8 +103,12 @@ struct opengpu_scanout {
 
 int opengpu_hw_init(struct opengpu_device *gpu,
                     struct platform_device *pdev);
+void opengpu_hw_fini(struct opengpu_device *gpu);
 int opengpu_hw_submit(struct opengpu_device *gpu,
                       const struct opengpu_job *job);
+int opengpu_hw_submit_async(struct opengpu_device *gpu,
+                            const struct opengpu_job *job,
+                            struct dma_fence **fence);
 int opengpu_hw_display_commit(struct opengpu_device *gpu,
                               const struct opengpu_scanout *scanout);
 
@@ -105,6 +119,8 @@ void opengpu_buffer_free(struct opengpu_device *gpu,
 
 int opengpu_compute_init(struct opengpu_device *gpu);
 void opengpu_compute_fini(struct opengpu_device *gpu);
+int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
+                              struct drm_file *file);
 
 int opengpu_display_init(struct opengpu_device *gpu,
                          const struct opengpu_buffer *boot_fb);

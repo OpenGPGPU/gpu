@@ -722,9 +722,16 @@ Status (virtual display and DRM handoff, 2026-08-29):
   creates and mmaps two GEM dumb buffers, performs an atomic modeset and flips
   to the second framebuffer. The one-click flow now requires
   `OPENGPU USERSPACE DRM PASS`, so DRM registration alone no longer passes M7.
-- Next: represent render completion as a DMA fence and synchronize scanout
-  flips to it; add virtual-vblank events only when paced userspace flips need
-  them.
+- **Render/scanout synchronization complete.** The DRM render ioctl targets a
+  GEM DMA handle, returns asynchronously, and publishes the completion IRQ as
+  a write `dma_fence` in the GEM reservation object. The simple KMS plane
+  extracts that fence during framebuffer preparation, and the atomic helper
+  waits before updating the scanout registers. The guest test deterministically
+  covers this for both initial modeset and the second-buffer page flip, and
+  fails if either atomic ioctl returns before the delayed verification fence.
+- Next: add virtual-vblank events only when paced userspace flips need them,
+  then replace the fixed test-draw ioctl with validated command submission and
+  per-file render contexts.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

@@ -61,6 +61,7 @@ static void opengpu_remove(struct platform_device *pdev)
 
     opengpu_display_fini(gpu);
     opengpu_compute_fini(gpu);
+    opengpu_hw_fini(gpu);
 }
 
 static const struct of_device_id opengpu_of_match[] = {

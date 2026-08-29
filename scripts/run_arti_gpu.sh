@@ -128,7 +128,7 @@ fi
 
 GUEST_DRM_TEST="$DRIVER_OUTPUT/opengpu_drm_test"
 "$CROSS_GCC" -static -O2 -Wall -Wextra -Werror \
-    -I"$LINUX_HEADERS/include" \
+    -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" \
     -o "$GUEST_DRM_TEST" "$GPU_DIR/driver/tests/opengpu_drm_test.c"
 
 # ARTI's generic runner deliberately owns initramfs construction. Use a
