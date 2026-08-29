@@ -80,6 +80,13 @@ single source of truth exported to C in `driver/gpu_abi.h`.
 | 0x38 | TEX_WIDTH | RW | texture width in texels |
 | 0x3C | TEX_HEIGHT | RW | texture height in texels |
 | 0x40 | TEX_CONFIG | RW | bit0 CLAMP (else REPEAT), bit8 texture enable |
+| 0x44 | SCANOUT_BASE | RW | display framebuffer physical byte address |
+| 0x48 | SCANOUT_STRIDE | RW | display pitch in bytes |
+| 0x4C | SCANOUT_WIDTH | RW | active width in pixels |
+| 0x50 | SCANOUT_HEIGHT | RW | active height in pixels |
+| 0x54 | SCANOUT_FORMAT | RW | 0 packed RGBA8888 |
+| 0x58 | SCANOUT_CONTROL | RW | bit0 ENABLE |
+| 0x5C | SCANOUT_STATUS | RO | bit0 ACTIVE |
 
 At START the engine snapshots the configuration so the host can program the
 next frame while the current one is in flight (a minimal double-buffered
@@ -208,11 +215,12 @@ device identification, guest-memory bridge, draw completion, and framebuffer
 readback are functional. The end-to-end harness reports `OPENGPU DRIVER PASS`
 after submitting a triangle and verifying the rendered red pixel.
 
-With `display.source: guest-memory`, ARTI also watches `COLOR_BASE` (0x18) and
-`STRIDE` (0x20), reads the driver-allocated framebuffer through QEMU's guest
-address space, converts the renderer's packed RGBA8888 words to the QEMU
-surface, and refreshes the graphics console. The integration profile enables a
-16x16 scanout matching the current driver self-test. Run it on macOS with:
+With `display.source: guest-memory`, ARTI watches the display-domain
+`SCANOUT_BASE` (0x44) and `SCANOUT_STRIDE` (0x48), reads the selected framebuffer
+through QEMU's guest address space, converts packed RGBA8888 words to the QEMU
+surface, and refreshes the graphics console. Render-target programming remains
+independent in `COLOR_BASE`/`STRIDE`. The integration profile enables a 16x16
+scanout matching the current driver self-test. Run it on macOS with:
 
 ```bash
 INTEGRATION_CONFIG=/Users/duckdonald/workspace/gpu/driver/gpu_integration.yaml \

@@ -48,10 +48,20 @@ struct opengpu_compute {
     struct opengpu_buffer depth;
 };
 
+struct opengpu_display {
+    dma_addr_t scanout;
+    u32 stride;
+    u32 width;
+    u32 height;
+    u32 format;
+    bool enabled;
+};
+
 struct opengpu_device {
     struct device *dev;
     struct opengpu_hw hw;
     struct opengpu_compute compute;
+    struct opengpu_display display;
     u32 width;
     u32 height;
     u32 stride;
@@ -70,10 +80,21 @@ struct opengpu_job {
     u32 cull_mode;
 };
 
+struct opengpu_scanout {
+    dma_addr_t base;
+    u32 stride;
+    u32 width;
+    u32 height;
+    u32 format;
+    bool enable;
+};
+
 int opengpu_hw_init(struct opengpu_device *gpu,
                     struct platform_device *pdev);
 int opengpu_hw_submit(struct opengpu_device *gpu,
                       const struct opengpu_job *job);
+int opengpu_hw_display_commit(struct opengpu_device *gpu,
+                              const struct opengpu_scanout *scanout);
 
 int opengpu_buffer_alloc(struct opengpu_device *gpu,
                          struct opengpu_buffer *buffer, size_t size);
@@ -82,5 +103,9 @@ void opengpu_buffer_free(struct opengpu_device *gpu,
 
 int opengpu_compute_init(struct opengpu_device *gpu);
 void opengpu_compute_fini(struct opengpu_device *gpu);
+
+int opengpu_display_init(struct opengpu_device *gpu,
+                         const struct opengpu_buffer *boot_fb);
+void opengpu_display_fini(struct opengpu_device *gpu);
 
 #endif /* OPENGPU_DEVICE_H */

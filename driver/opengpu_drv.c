@@ -40,6 +40,15 @@ static int opengpu_probe(struct platform_device *pdev)
         return dev_err_probe(gpu->dev, ret,
                              "cannot initialize execution client\n");
 
+    /* Temporary bring-up handoff: display receives a shared buffer explicitly
+     * from core. DRM/GEM replaces this with framebuffer-object ownership. */
+    ret = opengpu_display_init(gpu, &gpu->compute.color);
+    if (ret) {
+        opengpu_compute_fini(gpu);
+        return dev_err_probe(gpu->dev, ret,
+                             "cannot initialize display client\n");
+    }
+
     dev_info(gpu->dev, "GPU probe: ctrl=%pa+%pa stride=%u mode=%ux%u\n",
              &gpu->hw.regs_phys, &gpu->hw.regs_size, gpu->stride,
              gpu->width, gpu->height);
@@ -50,6 +59,7 @@ static void opengpu_remove(struct platform_device *pdev)
 {
     struct opengpu_device *gpu = platform_get_drvdata(pdev);
 
+    opengpu_display_fini(gpu);
     opengpu_compute_fini(gpu);
 }
 

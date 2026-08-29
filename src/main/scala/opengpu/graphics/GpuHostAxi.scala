@@ -150,7 +150,7 @@ class GpuHostAxi(
       Mux(burstReg === 0.U, addrReg + (beat << sizeReg), addrReg)
     val lastBeat = beat === lenReg
     val beatOk =
-      (addrReg & 0x3.U) === 0.U && addrReg <= RenderHostRegs.CULL_MODE.U
+      (beatAddr & 0x3.U) === 0.U && beatAddr < RenderHostRegs.END.U
 
     val writeBeat = writeActive && !bPending
     val wBeatFire = writeBeat && io.s_axi_wvalid && io.s_axi_wready

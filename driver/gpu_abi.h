@@ -34,6 +34,19 @@
 #define GPU_REG_TEX_HEIGHT    0x03c
 #define GPU_REG_TEX_CONFIG    0x040
 
+/* Display scanout domain, independent of execution COLOR_BASE/STRIDE. */
+#define GPU_REG_SCANOUT_BASE    0x044
+#define GPU_REG_SCANOUT_STRIDE  0x048
+#define GPU_REG_SCANOUT_WIDTH   0x04c
+#define GPU_REG_SCANOUT_HEIGHT  0x050
+#define GPU_REG_SCANOUT_FORMAT  0x054
+#define GPU_REG_SCANOUT_CONTROL 0x058
+#define GPU_REG_SCANOUT_STATUS  0x05c
+
+#define GPU_SCANOUT_FORMAT_RGBA8888 0u
+#define GPU_SCANOUT_ENABLE          (1u << 0)
+#define GPU_SCANOUT_ACTIVE          (1u << 0)
+
 /* TEX_CONFIG bits: bit0 wrap==CLAMP (else REPEAT), bit8 sampling enable. */
 #define GPU_TEX_WRAP_CLAMP    (1u << 0)
 #define GPU_TEX_ENABLE        (1u << 8)

@@ -49,10 +49,9 @@ The register ABI is divided into domains:
 - execution: command queues, render/compute targets, texture and kernel state;
 - display: scanout base, pitch, size, format, enable and flip status.
 
-The current ARTI prototype watches execution `COLOR_BASE`/`STRIDE` for scanout.
-That is a temporary compatibility path. DRM/KMS will use a dedicated display
-register bank so rendering to an off-screen target cannot accidentally change
-the visible framebuffer.
+ARTI watches the dedicated `SCANOUT_BASE`/`SCANOUT_STRIDE` display registers;
+execution continues to own `COLOR_BASE`/`STRIDE`. Rendering to an off-screen
+target therefore cannot accidentally change the visible framebuffer.
 
 ### Memory layer
 
@@ -73,9 +72,10 @@ share queue, memory and fence machinery. Display is not an execution job.
 
 ### Display client
 
-`opengpu_display.c` will own DRM mode configuration, connector/CRTC/plane
-objects, scanout validation, atomic commits, vblank and page flips. It consumes
-GEM framebuffer objects and only calls the display-facing hardware API.
+`opengpu_display.c` owns display state and the display-facing hardware API. Its
+bring-up path performs an explicit scanout-buffer handoff; it will grow DRM mode
+configuration, connector/CRTC/plane objects, GEM framebuffer validation,
+atomic commits, vblank and page flips without entering execution internals.
 
 Nova currently provides the cleaner reference for DRM device/file/GEM
 ownership, while AMDGPU provides the reference for keeping display state out of
@@ -96,10 +96,11 @@ No block frees another block's objects.
 
 ## Display implementation phases
 
-1. Refactor the existing bring-up driver into core, hardware, and execution
-   modules without changing its userspace ABI or ARTI PASS marker.
+1. Refactor the existing bring-up driver into core, hardware, memory, execution,
+   and display modules without changing its userspace ABI or ARTI PASS marker.
+   **Complete (2026-08-29).**
 2. Add dedicated scanout registers to RTL/ABI and point ARTI guest scanout at
-   those registers.
+   those registers. **Complete (2026-08-29).**
 3. Add DRM device registration, GEM DMA dumb buffers and a fixed KMS mode.
 4. Add atomic page flips synchronized to render-completion fences.
 5. Add modes, vblank timing and hardware scanout DMA when moving beyond QEMU.

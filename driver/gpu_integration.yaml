@@ -45,6 +45,6 @@ display:
   width: 16
   height: 16
   format: a8r8g8b8
-  address_register: 0x18
-  stride_register: 0x20
+  address_register: 0x44
+  stride_register: 0x48
   framebuffer_size: 0x400

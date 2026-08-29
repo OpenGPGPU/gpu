@@ -20,8 +20,8 @@ import opengpu.core.memory.{
   * the current one is still in flight (a minimal double-buffered submission).
   */
 object RenderHostRegs {
-  /** First invalid offset -- the inclusive end of the register file. */
-  val END               = 0x44
+  /** First invalid byte offset (exclusive end of the register file). */
+  val END               = 0x60
   val ID                = 0x00
   val CONTROL           = 0x04
   val STATUS            = 0x08
@@ -40,6 +40,17 @@ object RenderHostRegs {
   val TEX_HEIGHT        = 0x3C
   /** bit0: wrap==CLAMP (else REPEAT); bit8: texture sampling enable. */
   val TEX_CONFIG        = 0x40
+  /** Display registers are independent of the execution COLOR_BASE/STRIDE. */
+  val SCANOUT_BASE      = 0x44
+  val SCANOUT_STRIDE    = 0x48
+  val SCANOUT_WIDTH     = 0x4C
+  val SCANOUT_HEIGHT    = 0x50
+  /** 0: packed RGBA8888 (0xRRGGBBAA). */
+  val SCANOUT_FORMAT    = 0x54
+  /** bit0: scanout enable. */
+  val SCANOUT_CONTROL   = 0x58
+  /** bit0: active (enable && non-zero base/stride/size). */
+  val SCANOUT_STATUS    = 0x5C
 }
 
 /** A host memory-mapped register access (read or write of one 32-bit word). */
@@ -79,7 +90,8 @@ class RenderHostRegResponse extends Bundle {
   *
   * Register map (see `RenderHostRegs`): 0x00 ID (ro), 0x04 CONTROL (w1p;
   * bit0 START), 0x08 STATUS (ro + w1c; bit0 BUSY, bit1 DONE, bit2 ERROR),
-  * 0x0C IRQ (bit0 ENABLE, bit1 PENDING w1c), config regs 0x10..0x30 (rw).
+  * 0x0C IRQ (bit0 ENABLE, bit1 PENDING w1c), execution config 0x10..0x40,
+  * and the independent display scanout bank 0x44..0x5c.
   */
 class RenderHost(
   config: GraphicsConfig = GraphicsConfig(),
@@ -139,6 +151,12 @@ class RenderHost(
   private val texWidthReg = RegInit(0.U(32.W))
   private val texHeightReg = RegInit(0.U(32.W))
   private val texConfigReg = RegInit(0.U(32.W))
+  private val scanoutBaseReg = RegInit(0.U(32.W))
+  private val scanoutStrideReg = RegInit(0.U(32.W))
+  private val scanoutWidthReg = RegInit(0.U(32.W))
+  private val scanoutHeightReg = RegInit(0.U(32.W))
+  private val scanoutFormatReg = RegInit(0.U(32.W))
+  private val scanoutControlReg = RegInit(0.U(32.W))
 
   private val activeCmdBase = RegInit(0.U(32.W))
   private val activeCmdCount = RegInit(0.U(32.W))
@@ -172,6 +190,10 @@ class RenderHost(
   private val statusBits =
     Cat(0.U(29.W), error, done, busy)
   private val irqBits = Cat(0.U(30.W), irqPending, irqEnable)
+  private val scanoutActive = scanoutControlReg(0) &&
+    scanoutBaseReg.orR && scanoutStrideReg.orR &&
+    scanoutWidthReg.orR && scanoutHeightReg.orR
+  private val scanoutStatusBits = Cat(0.U(31.W), scanoutActive)
 
   private def readReg: UInt =
     MuxLookup(rAddr, 0.U(32.W))(Seq(
@@ -190,7 +212,14 @@ class RenderHost(
       RenderHostRegs.TEX_BASE.U -> texBaseReg,
       RenderHostRegs.TEX_WIDTH.U -> texWidthReg,
       RenderHostRegs.TEX_HEIGHT.U -> texHeightReg,
-      RenderHostRegs.TEX_CONFIG.U -> texConfigReg
+      RenderHostRegs.TEX_CONFIG.U -> texConfigReg,
+      RenderHostRegs.SCANOUT_BASE.U -> scanoutBaseReg,
+      RenderHostRegs.SCANOUT_STRIDE.U -> scanoutStrideReg,
+      RenderHostRegs.SCANOUT_WIDTH.U -> scanoutWidthReg,
+      RenderHostRegs.SCANOUT_HEIGHT.U -> scanoutHeightReg,
+      RenderHostRegs.SCANOUT_FORMAT.U -> scanoutFormatReg,
+      RenderHostRegs.SCANOUT_CONTROL.U -> scanoutControlReg,
+      RenderHostRegs.SCANOUT_STATUS.U -> scanoutStatusBits
     ))
 
   // Merge a byte-masked write into a 32-bit register (partial-word writes with
@@ -245,6 +274,25 @@ class RenderHost(
       }
       is(RenderHostRegs.TEX_CONFIG.U) {
         texConfigReg := merge(texConfigReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.SCANOUT_BASE.U) {
+        scanoutBaseReg := merge(scanoutBaseReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.SCANOUT_STRIDE.U) {
+        scanoutStrideReg := merge(scanoutStrideReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.SCANOUT_WIDTH.U) {
+        scanoutWidthReg := merge(scanoutWidthReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.SCANOUT_HEIGHT.U) {
+        scanoutHeightReg := merge(scanoutHeightReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.SCANOUT_FORMAT.U) {
+        scanoutFormatReg := merge(scanoutFormatReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.SCANOUT_CONTROL.U) {
+        scanoutControlReg := merge(
+          scanoutControlReg, io.reg.req.bits.data, io.reg.req.bits.strb)
       }
       is(RenderHostRegs.STATUS.U) {
         when(io.reg.req.bits.data(1)) { done := false.B }
@@ -332,6 +380,6 @@ class RenderHost(
   io.reg.resp.valid := io.reg.req.valid && !io.reg.req.bits.isWrite
   io.reg.resp.bits.data := readReg
   private val aligned = (rAddr & 0x3.U) === 0.U
-  private val mapped = rAddr <= RenderHostRegs.CULL_MODE.U
+  private val mapped = rAddr < RenderHostRegs.END.U
   io.reg.resp.bits.ok := aligned && mapped
 }

@@ -121,3 +121,29 @@ int opengpu_hw_submit(struct opengpu_device *gpu,
     opengpu_reg_write(gpu, GPU_REG_CONTROL, GPU_CTRL_START);
     return opengpu_hw_wait(gpu);
 }
+
+int opengpu_hw_display_commit(struct opengpu_device *gpu,
+                              const struct opengpu_scanout *scanout)
+{
+    if (scanout->enable &&
+        (!scanout->base || upper_32_bits(scanout->base) ||
+         !scanout->stride || !scanout->width || !scanout->height))
+        return -EINVAL;
+
+    /* Disable first and publish BASE last. ARTI uses the BASE write as the
+     * point at which a new guest-memory scanout becomes visible. */
+    opengpu_reg_write(gpu, GPU_REG_SCANOUT_CONTROL, 0);
+    opengpu_reg_write(gpu, GPU_REG_SCANOUT_STRIDE, scanout->stride);
+    opengpu_reg_write(gpu, GPU_REG_SCANOUT_WIDTH, scanout->width);
+    opengpu_reg_write(gpu, GPU_REG_SCANOUT_HEIGHT, scanout->height);
+    opengpu_reg_write(gpu, GPU_REG_SCANOUT_FORMAT, scanout->format);
+    opengpu_reg_write(gpu, GPU_REG_SCANOUT_BASE,
+                      scanout->enable ? lower_32_bits(scanout->base) : 0);
+    if (scanout->enable)
+        opengpu_reg_write(gpu, GPU_REG_SCANOUT_CONTROL,
+                          GPU_SCANOUT_ENABLE);
+    if (!!(opengpu_reg_read(gpu, GPU_REG_SCANOUT_STATUS) &
+           GPU_SCANOUT_ACTIVE) != scanout->enable)
+        return -EIO;
+    return 0;
+}

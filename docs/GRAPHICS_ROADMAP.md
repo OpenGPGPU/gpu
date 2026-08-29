@@ -672,7 +672,7 @@ submitted purely over the bus until the interrupt fires). `EmitGpuHostAxi`
 (`gpu/elaboration`) emits `GpuHostAxi.sv` for ARTI. The shared ABI is exported
 to `driver/gpu_abi.h` (register map, the 32-word draw record, texture state and
 the SoA kernarg layout). The layered driver under `driver/` binds to
-`riscv-simt,gpu`: its platform, hardware, memory, and execution modules map the
+`riscv-simt,opengpu`: its platform, hardware, memory, and execution modules map the
 `ctrl` resource, allocate software command/colour/depth buffers, submit a
 self-test draw, wait on the completion IRQ (with a STATUS poll fallback),
 expose `/dev/opengpu0`, and print `OPENGPU DRIVER PASS` for the ARTI harness.
@@ -718,9 +718,9 @@ Status (phase 1 virtual display, 2026-08-28):
 Driver architecture for phase 2 is specified in
 `docs/DRIVER_ARCHITECTURE.md`. It follows Nova's device/file/GEM ownership
 boundaries and AMDGPU's hardware-IP/display/execution separation at a scale
-appropriate to this GPU. The existing `COLOR_BASE` scanout hook remains a
-bring-up compatibility path; production KMS uses a dedicated display register
-bank so display and render/compute state have independent ownership.
+appropriate to this GPU. The dedicated `SCANOUT_*` register bank is now
+separate from execution `COLOR_BASE`/`STRIDE`, and ARTI follows the display
+registers, so display and render/compute state have independent ownership.
 
 ---
 
