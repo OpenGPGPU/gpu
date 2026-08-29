@@ -711,14 +711,20 @@ Status (virtual display and DRM handoff, 2026-08-29):
   memory, converts packed RGBA8888 pixels to the QEMU display surface, and
   refreshes through `GraphicHwOps`. The GPU integration profile uses the 16x16
   self-test target; both the headless regression path and the macOS Cocoa
-  display backend complete with `OPENGPU DRIVER PASS`.
+  display backend complete with the driver render self-test.
 - **DRM/KMS phase complete.** The layered Linux driver registers a DRM device,
   fixed 16x16 virtual connector and simple display pipe, exposes GEM DMA dumb
-  buffers, accepts atomic commits in native `ABGR8888`, and programs the
+  buffers, accepts atomic commits in native `RGBA8888`, and programs the
   dedicated scanout bank. The render self-test must pass before the DRM success
   marker is emitted.
-- Next: add a guest userspace test that creates/maps a dumb buffer and performs
-  an atomic modeset/page flip, then add render-completion fence synchronization.
+- **Userspace KMS verification complete.** The no-libdrm AArch64 guest test
+  opens `/dev/dri/card0`, discovers the virtual connector/CRTC/primary plane,
+  creates and mmaps two GEM dumb buffers, performs an atomic modeset and flips
+  to the second framebuffer. The one-click flow now requires
+  `OPENGPU USERSPACE DRM PASS`, so DRM registration alone no longer passes M7.
+- Next: represent render completion as a DMA fence and synchronize scanout
+  flips to it; add virtual-vblank events only when paced userspace flips need
+  them.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

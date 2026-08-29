@@ -33,8 +33,8 @@ integration:
   driver_ko: gpu_drv.ko
   driver_deps: ""
   driver_manifest: ""
-  # Printed only after the render self-test and DRM device registration pass.
-  driver_marker: "OPENGPU DRM PASS"
+  # Printed by the guest after dumb-buffer modeset and page flip both pass.
+  driver_marker: "OPENGPU USERSPACE DRM PASS"
   skip_generic_test: true
 
 advanced:

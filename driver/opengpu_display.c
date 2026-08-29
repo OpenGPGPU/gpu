@@ -32,8 +32,8 @@ struct opengpu_drm {
     container_of(display_pipe, struct opengpu_drm, pipe)
 
 static const u32 opengpu_formats[] = {
-    /* Little-endian bytes [A B G R], matching renderer word 0xRRGGBBAA. */
-    DRM_FORMAT_ABGR8888,
+    /* DRM [31:0] R:G:B:A, matching renderer word 0xRRGGBBAA. */
+    DRM_FORMAT_RGBA8888,
 };
 
 static int opengpu_kms_commit(struct opengpu_drm *kms,
@@ -42,7 +42,7 @@ static int opengpu_kms_commit(struct opengpu_drm *kms,
     struct drm_framebuffer *fb = plane_state->fb;
     struct opengpu_scanout scanout;
 
-    if (!fb || fb->format->format != DRM_FORMAT_ABGR8888)
+    if (!fb || fb->format->format != DRM_FORMAT_RGBA8888)
         return -EINVAL;
 
     scanout = (struct opengpu_scanout) {
@@ -211,7 +211,7 @@ static int opengpu_kms_init(struct opengpu_device *gpu)
         return ret;
 
     gpu->display.kms = kms;
-    dev_info(gpu->dev, "OPENGPU DRM PASS: card registered, format=ABGR8888\n");
+    dev_info(gpu->dev, "OPENGPU DRM PASS: card registered, format=RGBA8888\n");
     return 0;
 }
 

@@ -76,7 +76,7 @@ share queue, memory and fence machinery. Display is not an execution job.
 bring-up path performs an explicit scanout-buffer handoff, then registers a DRM
 device with a virtual connector, a simple display pipe, atomic modesetting and
 GEM DMA framebuffer objects. The fixed mode is currently 16x16 and the native
-DRM format is `ABGR8888`; its little-endian byte layout matches the renderer's
+DRM format is `RGBA8888`; its 32-bit channel layout matches the renderer's
 `0xRRGGBBAA` words without a conversion pass.
 
 The DRM atomic commit programs only the dedicated `SCANOUT_*` control bank.
@@ -110,8 +110,10 @@ No block frees another block's objects.
    those registers. **Complete (2026-08-29).**
 3. Add DRM device registration, GEM DMA dumb buffers and a fixed KMS mode.
    **Complete (2026-08-29).**
-4. Add atomic page flips synchronized to render-completion fences.
-5. Add userspace modeset/page-flip coverage and optional virtual-vblank events.
+4. Add a guest userspace test for GEM dumb-buffer allocation/mmap, atomic
+   modeset and framebuffer page flip. **Complete (2026-08-29).**
+5. Synchronize scanout flips to render-completion fences.
+6. Add optional virtual-vblank events when applications require paced flips.
 
 ## RTL boundary
 

@@ -159,7 +159,7 @@ character device first, DRM display client next, per the roadmap):
 - **probe**: map the `ctrl` resource, verify the device ID, allocate the
   command/colour/depth buffers with `dma_alloc_coherent`, request the
   completion IRQ, programme the register file, run a self-test draw and print
-  `OPENGPU DRIVER PASS` (the ARTI harness success marker).
+  `OPENGPU DRIVER PASS`.
 - **submission**: the driver writes the draw record and depth clear into the
   shared buffers, writes the register file (CMD_BASE, COLOR_BASE, DEPTH_BASE,
   STRIDE, depth/cull state), enables the IRQ, writes `CONTROL.START`, and waits
@@ -172,16 +172,17 @@ character device first, DRM display client next, per the roadmap):
 execution userspace ABI. See `DRIVER_ARCHITECTURE.md` for the Nova/AMDGPU-based
 display and execution separation used by the DRM phase.
 
-The DRM/KMS client is the next M7 phase. It consumes shared GEM DMA framebuffer
-objects and programs a dedicated display register bank; it does not take
+The DRM/KMS client registers a virtual connector, CRTC/primary plane and fixed
+16x16 mode. It provides GEM DMA dumb buffers and atomic commits in native
+`RGBA8888`, then programs the dedicated display register bank; it does not take
 ownership of the execution client's bring-up buffers.
 
 ## 6. ARTI integration flow
 
 `scripts/run_arti_gpu.sh` is the project-level entry point. It emits
 `GpuHostAxi.sv`, incrementally prepares ARTI's embedded QEMU/Linux environment,
-builds `gpu_drv.ko` against that exact kernel, and boots the end-to-end draw
-test:
+builds `gpu_drv.ko` and a static no-libdrm KMS test against that exact kernel,
+then boots the end-to-end draw/display test:
 
 ```bash
 ./scripts/run_arti_gpu.sh
@@ -196,7 +197,9 @@ QEMU_DISPLAY=cocoa HOLD_AFTER_TEST=30 ./scripts/run_arti_gpu.sh
 
 The underlying integration profile remains `driver/gpu_integration.yaml`.
 ARTI infers AXI4 from the `s_axi_*` names, generates the embedded QEMU model
-and DT node, loads the module in the guest, and expects `OPENGPU DRIVER PASS`.
+and DT node, then loads the DRM stack and module in the guest. The guest test
+must create/map two dumb buffers, perform an atomic modeset and page flip, and
+print `OPENGPU USERSPACE DRM PASS`.
 
 ### Caveat: the memory (master) port
 
@@ -211,9 +214,10 @@ those client ports to its coherent L2 / DRAM hierarchy instead.
 
 The AArch64 Linux boot path now runs with QEMU, the generated `GpuHostAxi`
 model, and the GPU host driver loaded from an initramfs. The AXI control path,
-device identification, guest-memory bridge, draw completion, and framebuffer
-readback are functional. The end-to-end harness reports `OPENGPU DRIVER PASS`
-after submitting a triangle and verifying the rendered red pixel.
+device identification, guest-memory bridge, draw completion, framebuffer
+readback, DRM registration, GEM DMA mmap and atomic scanout commits are
+functional. The render self-test still verifies a red triangle; final success
+now requires a userspace modeset and page flip through `/dev/dri/card0`.
 
 With `display.source: guest-memory`, ARTI watches the display-domain
 `SCANOUT_BASE` (0x44) and `SCANOUT_STRIDE` (0x48), reads the selected framebuffer
