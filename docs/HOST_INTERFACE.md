@@ -171,6 +171,9 @@ character device first, DRM display client next, per the roadmap):
   `dma_fence` published as a write fence in that GEM object's reservation.
 - **implicit display synchronization**: the KMS plane extracts the reservation
   fence and DRM atomic helpers wait before programming the scanout bank.
+- **flip pacing**: a 60 Hz software vblank source delivers
+  `DRM_EVENT_FLIP_COMPLETE` for nonblocking atomic flips after their render
+  fence completes and the new scanout has been committed.
 
 `opengpu_drv.c` owns platform lifetime, `opengpu_hw.c` owns MMIO/IRQ/job launch,
 `opengpu_memory.c` owns shared buffers, and `opengpu_compute.c` owns the current
@@ -205,8 +208,9 @@ QEMU_DISPLAY=cocoa HOLD_AFTER_TEST=30 ./scripts/run_arti_gpu.sh
 The underlying integration profile remains `driver/gpu_integration.yaml`.
 ARTI infers AXI4 from the `s_axi_*` names, generates the embedded QEMU model
 and DT node, then loads the DRM stack and module in the guest. The guest test
-must create/map two dumb buffers, perform an atomic modeset and page flip, and
-print `OPENGPU USERSPACE DRM PASS`.
+must create/map two dumb buffers, perform an atomic modeset and page flip,
+receive a matching vblank-paced flip event, and print
+`OPENGPU USERSPACE DRM PASS`.
 
 ### Caveat: the memory (master) port
 
@@ -224,7 +228,8 @@ model, and the GPU host driver loaded from an initramfs. The AXI control path,
 device identification, guest-memory bridge, draw completion, framebuffer
 readback, DRM registration, GEM DMA mmap and atomic scanout commits are
 functional. The render self-test still verifies a red triangle; final success
-now requires a userspace modeset and page flip through `/dev/dri/card0`.
+now requires a userspace modeset and a nonblocking page flip with a valid
+`DRM_EVENT_FLIP_COMPLETE` through `/dev/dri/card0`.
 
 With `display.source: guest-memory`, ARTI watches the display-domain
 `SCANOUT_BASE` (0x44) and `SCANOUT_STRIDE` (0x48), reads the selected framebuffer

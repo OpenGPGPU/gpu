@@ -94,7 +94,12 @@ consumed by an external display subsystem or SoC display IP.
 The simple display pipe uses `drm_gem_plane_helper_prepare_fb()` to extract the
 target GEM reservation fence. DRM atomic helpers wait for render completion
 before the pipe updates `SCANOUT_BASE`, so display never observes a partially
-rendered buffer. There is no display-to-execution callback.
+rendered buffer. There is no display-to-execution callback. A Linux hrtimer
+provides the virtual CRTC's 60 Hz vblank source; nonblocking atomic page flips
+arm `DRM_EVENT_FLIP_COMPLETE` only after the new scanout address is committed,
+so userspace pacing observes both render-fence completion and the following
+refresh boundary. This is simulation/driver timing and does not add a timing
+generator to the GPU RTL.
 
 Nova currently provides the cleaner reference for DRM device/file/GEM
 ownership, while AMDGPU provides the reference for keeping display state out of
@@ -127,6 +132,10 @@ No block frees another block's objects.
 5. Synchronize scanout flips to render-completion fences.
    **Complete (2026-08-29).**
 6. Add optional virtual-vblank events when applications require paced flips.
+   **Complete (2026-08-29).**
+
+The next execution milestone is to replace the fixed test-draw render ioctl
+with validated command submission and per-file render contexts.
 
 ## RTL boundary
 

@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,7 @@
 #define TEST_WIDTH 16
 #define TEST_HEIGHT 16
 #define MIN_FENCE_WAIT_MS 30
+#define FLIP_EVENT_COOKIE UINT64_C(0x4f50454e475055)
 
 struct kms_ids {
     uint32_t connector;
@@ -291,24 +293,58 @@ static int atomic_modeset(int fd, const struct kms_ids *ids,
 
 static int atomic_page_flip(int fd, const struct kms_ids *ids, uint32_t fb_id)
 {
-    uint32_t object = ids->plane;
-    uint32_t count = 1;
-    uint32_t property = find_property(fd, ids->plane, DRM_MODE_OBJECT_PLANE,
-                                      "FB_ID");
-    uint64_t value = fb_id;
+    uint32_t objects[] = { ids->crtc, ids->plane };
+    uint32_t counts[] = { 1, 1 };
+    uint32_t properties[] = {
+        find_property(fd, ids->crtc, DRM_MODE_OBJECT_CRTC, "ACTIVE"),
+        find_property(fd, ids->plane, DRM_MODE_OBJECT_PLANE, "FB_ID"),
+    };
+    uint64_t values[] = { 1, fb_id };
     struct drm_mode_atomic atomic = {
-        .count_objs = 1,
-        .objs_ptr = (uintptr_t)&object,
-        .count_props_ptr = (uintptr_t)&count,
-        .props_ptr = (uintptr_t)&property,
-        .prop_values_ptr = (uintptr_t)&value,
+        .flags = DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT,
+        .count_objs = ARRAY_SIZE(objects),
+        .objs_ptr = (uintptr_t)objects,
+        .count_props_ptr = (uintptr_t)counts,
+        .props_ptr = (uintptr_t)properties,
+        .prop_values_ptr = (uintptr_t)values,
+        .user_data = FLIP_EVENT_COOKIE,
     };
 
-    if (!property) {
+    if (!properties[0] || !properties[1]) {
         errno = ENOENT;
         return -1;
     }
     return ioctl(fd, DRM_IOCTL_MODE_ATOMIC, &atomic);
+}
+
+static int wait_flip_event(int fd, struct drm_event_vblank *event)
+{
+    struct pollfd pollfd = {
+        .fd = fd,
+        .events = POLLIN,
+    };
+    ssize_t length;
+    int ret;
+
+    ret = poll(&pollfd, 1, 1000);
+    if (ret <= 0) {
+        if (!ret)
+            errno = ETIME;
+        return -1;
+    }
+    length = read(fd, event, sizeof(*event));
+    if (length != sizeof(*event)) {
+        if (length >= 0)
+            errno = EPROTO;
+        return -1;
+    }
+    if (event->base.type != DRM_EVENT_FLIP_COMPLETE ||
+        event->base.length != sizeof(*event) ||
+        event->user_data != FLIP_EVENT_COOKIE) {
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
 }
 
 static uint64_t monotonic_ms(void)
@@ -324,6 +360,7 @@ int main(void)
 {
     struct kms_ids ids = { 0 };
     struct dumb_fb first = { 0 }, second = { 0 };
+    struct drm_event_vblank event = { 0 };
     uint64_t start;
     int fd;
 
@@ -355,13 +392,15 @@ int main(void)
     CHECK(submit_render(fd, &second), "render second buffer");
     start = monotonic_ms();
     CHECK(atomic_page_flip(fd, &ids, second.fb_id), "atomic page flip");
+    CHECK(wait_flip_event(fd, &event), "wait flip event");
     if (monotonic_ms() - start < MIN_FENCE_WAIT_MS) {
         errno = ETIME;
-        perror("OPENGPU USERSPACE DRM FAIL page flip skipped fence");
+        perror("OPENGPU USERSPACE DRM FAIL flip event skipped fence");
         return 1;
     }
 #undef CHECK
 
-    printf("OPENGPU USERSPACE DRM PASS: fenced render + waited atomic flip\n");
+    printf("OPENGPU USERSPACE DRM PASS: fenced render + vblank flip event "
+           "sequence=%u\n", event.sequence);
     return 0;
 }

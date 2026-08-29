@@ -3,6 +3,7 @@
 #include <linux/module.h>
 #include <linux/overflow.h>
 
+#include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_device.h>
@@ -16,8 +17,11 @@
 #include <drm/drm_ioctl.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_modes.h>
+#include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
+#include <drm/drm_vblank.h>
+#include <drm/drm_vblank_helper.h>
 
 #include "opengpu_device.h"
 #include "opengpu_drm.h"
@@ -80,6 +84,7 @@ static void opengpu_pipe_enable(struct drm_simple_display_pipe *pipe,
 
     if (ret)
         dev_err(kms->gpu->dev, "DRM scanout enable failed: %d\n", ret);
+    drm_crtc_vblank_on(&pipe->crtc);
 }
 
 static void opengpu_pipe_update(struct drm_simple_display_pipe *pipe,
@@ -100,7 +105,18 @@ static void opengpu_pipe_disable(struct drm_simple_display_pipe *pipe)
     struct opengpu_drm *kms = pipe_to_opengpu_drm(pipe);
     const struct opengpu_scanout disabled = { };
 
+    drm_crtc_vblank_off(&pipe->crtc);
     opengpu_hw_display_commit(kms->gpu, &disabled);
+}
+
+static int opengpu_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
+{
+    return drm_crtc_vblank_helper_enable_vblank_timer(&pipe->crtc);
+}
+
+static void opengpu_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
+{
+    drm_crtc_vblank_helper_disable_vblank_timer(&pipe->crtc);
 }
 
 static int opengpu_pipe_prepare_fb(struct drm_simple_display_pipe *pipe,
@@ -123,6 +139,8 @@ static const struct drm_simple_display_pipe_funcs opengpu_pipe_funcs = {
     .update = opengpu_pipe_update,
     .disable = opengpu_pipe_disable,
     .prepare_fb = opengpu_pipe_prepare_fb,
+    .enable_vblank = opengpu_pipe_enable_vblank,
+    .disable_vblank = opengpu_pipe_disable_vblank,
 };
 
 static enum drm_connector_status
@@ -140,9 +158,6 @@ static int opengpu_connector_get_modes(struct drm_connector *connector)
     if (!mode)
         return 0;
 
-    mode->clock = max_t(u32, 1,
-                        DIV_ROUND_UP(kms->gpu->width * kms->gpu->height * 60,
-                                     1000));
     mode->hdisplay = kms->gpu->width;
     mode->hsync_start = mode->hdisplay + 1;
     mode->hsync_end = mode->hsync_start + 1;
@@ -151,6 +166,9 @@ static int opengpu_connector_get_modes(struct drm_connector *connector)
     mode->vsync_start = mode->vdisplay + 1;
     mode->vsync_end = mode->vsync_start + 1;
     mode->vtotal = mode->vsync_end + 2;
+    mode->clock = max_t(u32, 1,
+                        DIV_ROUND_UP(mode->htotal * mode->vtotal * 60,
+                                     1000));
     mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
     drm_mode_set_name(mode);
     drm_mode_probed_add(connector, mode);
@@ -174,6 +192,34 @@ static const struct drm_mode_config_funcs opengpu_mode_config_funcs = {
     .fb_create = drm_gem_fb_create,
     .atomic_check = drm_atomic_helper_check,
     .atomic_commit = drm_atomic_helper_commit,
+};
+
+/*
+ * drm_simple_display_pipe has no atomic_flush callback.  Arm pending page
+ * flip events explicitly after the new scanout address has been committed;
+ * the generic vblank timer will deliver them on the next refresh boundary.
+ */
+static void opengpu_atomic_commit_tail(struct drm_atomic_commit *state)
+{
+    struct drm_crtc_state *new_crtc_state;
+    struct drm_crtc *crtc;
+    unsigned int i;
+
+    drm_atomic_helper_commit_modeset_disables(state->dev, state);
+    drm_atomic_helper_commit_planes(state->dev, state, 0);
+    drm_atomic_helper_commit_modeset_enables(state->dev, state);
+
+    for_each_new_crtc_in_state(state, crtc, new_crtc_state, i)
+        drm_crtc_vblank_atomic_flush(crtc, state);
+
+    drm_atomic_helper_fake_vblank(state);
+    drm_atomic_helper_commit_hw_done(state);
+    drm_atomic_helper_wait_for_vblanks(state->dev, state);
+    drm_atomic_helper_cleanup_planes(state->dev, state);
+}
+
+static const struct drm_mode_config_helper_funcs opengpu_mode_config_helpers = {
+    .atomic_commit_tail = opengpu_atomic_commit_tail,
 };
 
 DEFINE_DRM_GEM_DMA_FOPS(opengpu_drm_fops);
@@ -215,6 +261,7 @@ static int opengpu_kms_init(struct opengpu_device *gpu)
     kms->drm.mode_config.min_height = gpu->height;
     kms->drm.mode_config.max_height = gpu->height;
     kms->drm.mode_config.funcs = &opengpu_mode_config_funcs;
+    kms->drm.mode_config.helper_private = &opengpu_mode_config_helpers;
 
     drm_connector_helper_add(&kms->connector, &opengpu_connector_helpers);
     ret = drm_connector_init(&kms->drm, &kms->connector,
@@ -228,6 +275,10 @@ static int opengpu_kms_init(struct opengpu_device *gpu)
                                        opengpu_formats,
                                        ARRAY_SIZE(opengpu_formats),
                                        NULL, &kms->connector);
+    if (ret)
+        return ret;
+
+    ret = drm_vblank_init(&kms->drm, 1);
     if (ret)
         return ret;
 

@@ -727,10 +727,15 @@ Status (virtual display and DRM handoff, 2026-08-29):
   a write `dma_fence` in the GEM reservation object. The simple KMS plane
   extracts that fence during framebuffer preparation, and the atomic helper
   waits before updating the scanout registers. The guest test deterministically
-  covers this for both initial modeset and the second-buffer page flip, and
-  fails if either atomic ioctl returns before the delayed verification fence.
-- Next: add virtual-vblank events only when paced userspace flips need them,
-  then replace the fixed test-draw ioctl with validated command submission and
+  covers this for both initial modeset and the second-buffer page flip. The
+  blocking modeset must wait for its delayed verification fence.
+- **Virtual-vblank pacing complete.** A generic Linux hrtimer supplies a 60 Hz
+  virtual CRTC vblank without extending the RTL display boundary. The second
+  flip is submitted asynchronously with `DRM_MODE_PAGE_FLIP_EVENT`; the guest
+  test validates its cookie and requires the resulting
+  `DRM_EVENT_FLIP_COMPLETE` to arrive only after the delayed render fence and a
+  refresh boundary.
+- Next: replace the fixed test-draw ioctl with validated command submission and
   per-file render contexts.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
