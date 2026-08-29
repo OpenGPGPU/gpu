@@ -73,9 +73,16 @@ share queue, memory and fence machinery. Display is not an execution job.
 ### Display client
 
 `opengpu_display.c` owns display state and the display-facing hardware API. Its
-bring-up path performs an explicit scanout-buffer handoff; it will grow DRM mode
-configuration, connector/CRTC/plane objects, GEM framebuffer validation,
-atomic commits, vblank and page flips without entering execution internals.
+bring-up path performs an explicit scanout-buffer handoff, then registers a DRM
+device with a virtual connector, a simple display pipe, atomic modesetting and
+GEM DMA framebuffer objects. The fixed mode is currently 16x16 and the native
+DRM format is `ABGR8888`; its little-endian byte layout matches the renderer's
+`0xRRGGBBAA` words without a conversion pass.
+
+The DRM atomic commit programs only the dedicated `SCANOUT_*` control bank.
+ARTI/QEMU consumes that control state and reads the selected guest-memory GEM
+buffer for presentation. On a physical SoC the same register contract is
+consumed by an external display subsystem or SoC display IP.
 
 Nova currently provides the cleaner reference for DRM device/file/GEM
 ownership, while AMDGPU provides the reference for keeping display state out of
@@ -102,8 +109,22 @@ No block frees another block's objects.
 2. Add dedicated scanout registers to RTL/ABI and point ARTI guest scanout at
    those registers. **Complete (2026-08-29).**
 3. Add DRM device registration, GEM DMA dumb buffers and a fixed KMS mode.
+   **Complete (2026-08-29).**
 4. Add atomic page flips synchronized to render-completion fences.
-5. Add modes, vblank timing and hardware scanout DMA when moving beyond QEMU.
+5. Add userspace modeset/page-flip coverage and optional virtual-vblank events.
+
+## RTL boundary
+
+OpenGPU RTL ends at rendering plus the display-control register interface. It
+owns render-target production and publishes scanout base, pitch, dimensions,
+format, enable and status. It does not fetch a continuous pixel stream or
+generate an electrical display signal.
+
+Consequently, scanout DMA, video timing, hotplug/EDID and HDMI/DP/eDP PHY are
+not OpenGPU RTL milestones. In simulation they belong to ARTI/QEMU; in silicon
+they belong to a separate SoC display controller or licensed board-specific IP.
+This keeps the render GPU reusable across headless compute, virtual display and
+different physical display subsystems.
 
 ## Non-goals
 
@@ -111,3 +132,4 @@ No block frees another block's objects.
   dozens of IP blocks before the hardware needs them.
 - Coupling the display lifetime to the bring-up self-test framebuffer.
 - Exposing raw register writes as a stable userspace ABI.
+- Implementing scanout DMA, video timing or a video PHY inside the GPU RTL.

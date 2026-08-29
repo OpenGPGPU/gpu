@@ -33,7 +33,8 @@ integration:
   driver_ko: gpu_drv.ko
   driver_deps: ""
   driver_manifest: ""
-  driver_marker: "OPENGPU DRIVER PASS"
+  # Printed only after the render self-test and DRM device registration pass.
+  driver_marker: "OPENGPU DRM PASS"
   skip_generic_test: true
 
 advanced:

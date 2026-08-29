@@ -51,25 +51,30 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
     return opengpu_hw_submit(gpu, &job);
 }
 
-static void opengpu_self_test(struct opengpu_device *gpu)
+static int opengpu_self_test(struct opengpu_device *gpu)
 {
     u32 pixel;
     u32 rgb;
+    int ret;
 
-    if (opengpu_submit_test(gpu)) {
+    ret = opengpu_submit_test(gpu);
+    if (ret) {
         dev_err(gpu->dev, "OPENGPU DRIVER FAIL: draw did not complete\n");
-        return;
+        return ret;
     }
 
     pixel = ((u32 *)gpu->compute.color.cpu)[gpu->stride / 4 + 1];
     rgb = (pixel >> 8) & 0x00ffffffu;
-    if (rgb == 0x00ff0000u)
+    if (rgb == 0x00ff0000u) {
         dev_info(gpu->dev,
                  "OPENGPU DRIVER PASS: draw submitted and read back\n");
-    else
-        dev_err(gpu->dev,
-                "OPENGPU DRIVER FAIL: expected red (0xff0000) got 0x%06x\n",
-                rgb);
+        return 0;
+    }
+
+    dev_err(gpu->dev,
+            "OPENGPU DRIVER FAIL: expected red (0xff0000) got 0x%06x\n",
+            rgb);
+    return -EIO;
 }
 
 static ssize_t opengpu_compute_read(struct file *file, char __user *buf,
@@ -147,7 +152,9 @@ int opengpu_compute_init(struct opengpu_device *gpu)
     if (ret)
         goto err_color;
 
-    opengpu_self_test(gpu);
+    ret = opengpu_self_test(gpu);
+    if (ret)
+        goto err_depth;
     compute->misc = (struct miscdevice) {
         .minor = MISC_DYNAMIC_MINOR,
         .name = OPENGPU_COMPUTE_NAME,

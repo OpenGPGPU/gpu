@@ -15,6 +15,7 @@
 #include "gpu_abi.h"
 
 struct platform_device;
+struct opengpu_drm;
 
 #define OPENGPU_NAME            "riscv-simt-opengpu"
 #define OPENGPU_COMPUTE_NAME    "opengpu0"
@@ -49,6 +50,7 @@ struct opengpu_compute {
 };
 
 struct opengpu_display {
+    struct opengpu_drm *kms;
     dma_addr_t scanout;
     u32 stride;
     u32 width;

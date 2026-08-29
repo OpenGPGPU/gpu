@@ -690,30 +690,37 @@ framebuffer readback (`OPENGPU DRIVER PASS`). DRM handoff belongs to M7.
 
 ---
 
-### M7 — Display output (image device)
-Hardware:
-- Display controller: video timing generator + **scanout DMA** that reads
-  the framebuffer from memory (with pixel-format conversion) and drives
-  the output.
-- Video PHY (TMDS/HDMI/DP encoder) — RTL or licensed IP; compliance is a
-  hard constraint and may force a dev-board-specific choice.
+### M7 — Display-control handoff (image device)
+GPU RTL boundary:
+- Dedicated `SCANOUT_*` registers publish framebuffer address, pitch, size,
+  format, enable and status independently of the render target registers.
+- Scanout DMA, video timing, hotplug/EDID and HDMI/DP/eDP PHY are deliberately
+  outside the GPU RTL. ARTI/QEMU provides the simulated display consumer; a
+  physical SoC supplies a separate display controller or licensed display IP.
 
 Software:
-- Linux DRM/KMS (or fbdev first) exposing `/dev/fb0`.
+- Linux DRM/KMS exposing a DRM card, GEM DMA buffers, a virtual connector and
+  atomic scanout commits.
 
 Verification:
 - QEMU virtual display; draw a framebuffer and confirm output.
 
-Status (phase 1 virtual display, 2026-08-28):
-- **Complete.** ARTI's `guest-memory` display source watches `COLOR_BASE` and
-  `STRIDE`, scans the driver-allocated render target from QEMU guest physical
+Status (virtual display and DRM handoff, 2026-08-29):
+- **Complete.** ARTI's `guest-memory` display source watches `SCANOUT_BASE` and
+  `SCANOUT_STRIDE`, scans the driver-selected framebuffer from QEMU guest physical
   memory, converts packed RGBA8888 pixels to the QEMU display surface, and
   refreshes through `GraphicHwOps`. The GPU integration profile uses the 16x16
   self-test target; both the headless regression path and the macOS Cocoa
   display backend complete with `OPENGPU DRIVER PASS`.
-- The next display phase is a Linux DRM/KMS driver exposing a real scanout
-  framebuffer and modesetting API. Hardware scanout DMA, timing generation,
-  and the board-specific video PHY remain separate RTL milestones.
+- **DRM/KMS phase complete.** The layered Linux driver registers a DRM device,
+  fixed 16x16 virtual connector and simple display pipe, exposes GEM DMA dumb
+  buffers, accepts atomic commits in native `ABGR8888`, and programs the
+  dedicated scanout bank. The render self-test must pass before the DRM success
+  marker is emitted.
+- Next: add a guest userspace test that creates/maps a dumb buffer and performs
+  an atomic modeset/page flip, then add render-completion fence synchronization.
+- Hardware scanout DMA, timing generation and board PHY work are explicitly
+  outside this repository's GPU RTL boundary.
 
 Driver architecture for phase 2 is specified in
 `docs/DRIVER_ARCHITECTURE.md`. It follows Nova's device/file/GEM ownership
