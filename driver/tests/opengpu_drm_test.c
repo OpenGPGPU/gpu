@@ -39,6 +39,12 @@ struct dumb_fb {
     void *map;
 };
 
+struct command_buffer {
+    uint32_t handle;
+    uint64_t size;
+    struct drm_opengpu_draw *map;
+};
+
 static int set_client_cap(int fd, uint64_t capability)
 {
     struct drm_set_client_cap cap = {
@@ -211,15 +217,92 @@ static int create_fb(int fd, uint32_t color, struct dumb_fb *fb)
     return 0;
 }
 
-static int submit_render(int fd, const struct dumb_fb *fb)
+static int create_command_buffer(int fd, struct command_buffer *commands)
+{
+    struct drm_mode_create_dumb create = {
+        .width = sizeof(struct drm_opengpu_draw) / 4,
+        .height = 1,
+        .bpp = 32,
+    };
+    struct drm_mode_map_dumb map = { 0 };
+    struct drm_opengpu_draw *draw;
+
+    if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0)
+        return -1;
+    commands->handle = create.handle;
+    commands->size = create.size;
+    map.handle = commands->handle;
+    if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0)
+        return -1;
+    commands->map = mmap(NULL, commands->size, PROT_READ | PROT_WRITE,
+                         MAP_SHARED, fd, map.offset);
+    if (commands->map == MAP_FAILED)
+        return -1;
+
+    draw = commands->map;
+    memset(draw, 0, sizeof(*draw));
+    draw->v0[0] = -0x10000; draw->v0[1] = -0x10000;
+    draw->v0[3] = 0x10000;
+    draw->v1[0] =  0x10000; draw->v1[1] = -0x10000;
+    draw->v1[3] = 0x10000;
+    draw->v2[0] = -0x10000; draw->v2[1] =  0x10000;
+    draw->v2[3] = 0x10000;
+    draw->c0[0] = 255;
+    draw->c1[0] = 255;
+    draw->c2[0] = 255;
+    draw->d0 = 0x10;
+    draw->d1 = 0x10;
+    draw->d2 = 0x10;
+    return 0;
+}
+
+static int create_context(int fd, uint32_t *context_id)
+{
+    struct drm_opengpu_context context = { 0 };
+
+    if (ioctl(fd, DRM_IOCTL_OPENGPU_CONTEXT_CREATE, &context) < 0)
+        return -1;
+    *context_id = context.id;
+    return context.id ? 0 : -1;
+}
+
+static int destroy_context(int fd, uint32_t context_id)
+{
+    struct drm_opengpu_context context = { .id = context_id };
+
+    return ioctl(fd, DRM_IOCTL_OPENGPU_CONTEXT_DESTROY, &context);
+}
+
+static int submit_render(int fd, uint32_t context_id,
+                         const struct command_buffer *commands,
+                         const struct dumb_fb *fb)
 {
     struct drm_opengpu_submit submit = {
+        .context_id = context_id,
+        .command_handle = commands->handle,
         .color_handle = fb->handle,
         .stride = fb->pitch,
+        .command_count = 1,
         .flags = OPENGPU_SUBMIT_TEST_FENCE_DELAY,
     };
 
     return ioctl(fd, DRM_IOCTL_OPENGPU_SUBMIT, &submit);
+}
+
+static int reject_unsafe_command(int fd, uint32_t context_id,
+                                 struct command_buffer *commands,
+                                 const struct dumb_fb *fb)
+{
+    int ret;
+
+    commands->map->shader_pc = 4;
+    errno = 0;
+    ret = submit_render(fd, context_id, commands, fb);
+    commands->map->shader_pc = 0;
+    if (ret == -1 && errno == EINVAL)
+        return 0;
+    errno = EPROTO;
+    return -1;
 }
 
 static int atomic_modeset(int fd, const struct kms_ids *ids,
@@ -360,8 +443,10 @@ int main(void)
 {
     struct kms_ids ids = { 0 };
     struct dumb_fb first = { 0 }, second = { 0 };
+    struct command_buffer commands = { 0 };
     struct drm_event_vblank event = { 0 };
     uint64_t start;
+    uint32_t context_id;
     int fd;
 
     fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
@@ -381,7 +466,12 @@ int main(void)
     CHECK(find_kms_objects(fd, &ids), "resource discovery");
     CHECK(create_fb(fd, 0xff0000ffu, &first), "first dumb buffer");
     CHECK(create_fb(fd, 0x00ff00ffu, &second), "second dumb buffer");
-    CHECK(submit_render(fd, &first), "render first buffer");
+    CHECK(create_command_buffer(fd, &commands), "command buffer");
+    CHECK(create_context(fd, &context_id), "create render context");
+    CHECK(reject_unsafe_command(fd, context_id, &commands, &first),
+          "reject unsafe command");
+    CHECK(submit_render(fd, context_id, &commands, &first),
+          "render first buffer");
     start = monotonic_ms();
     CHECK(atomic_modeset(fd, &ids, first.fb_id), "atomic modeset");
     if (monotonic_ms() - start < MIN_FENCE_WAIT_MS) {
@@ -389,7 +479,8 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL modeset skipped fence");
         return 1;
     }
-    CHECK(submit_render(fd, &second), "render second buffer");
+    CHECK(submit_render(fd, context_id, &commands, &second),
+          "render second buffer");
     start = monotonic_ms();
     CHECK(atomic_page_flip(fd, &ids, second.fb_id), "atomic page flip");
     CHECK(wait_flip_event(fd, &event), "wait flip event");
@@ -398,9 +489,17 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL flip event skipped fence");
         return 1;
     }
+    CHECK(destroy_context(fd, context_id), "destroy render context");
+    errno = 0;
+    if (submit_render(fd, context_id, &commands, &second) != -1 ||
+        errno != ENOENT) {
+        errno = EPROTO;
+        perror("OPENGPU USERSPACE DRM FAIL destroyed context accepted");
+        return 1;
+    }
 #undef CHECK
 
-    printf("OPENGPU USERSPACE DRM PASS: fenced render + vblank flip event "
-           "sequence=%u\n", event.sequence);
+    printf("OPENGPU USERSPACE DRM PASS: validated context render + vblank "
+           "flip event sequence=%u\n", event.sequence);
     return 0;
 }

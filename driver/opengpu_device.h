@@ -121,6 +121,13 @@ int opengpu_compute_init(struct opengpu_device *gpu);
 void opengpu_compute_fini(struct opengpu_device *gpu);
 int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
                               struct drm_file *file);
+int opengpu_compute_drm_open(struct drm_device *drm, struct drm_file *file);
+void opengpu_compute_drm_postclose(struct drm_device *drm,
+                                   struct drm_file *file);
+int opengpu_compute_context_create_ioctl(struct drm_device *drm, void *data,
+                                         struct drm_file *file);
+int opengpu_compute_context_destroy_ioctl(struct drm_device *drm, void *data,
+                                          struct drm_file *file);
 
 int opengpu_display_init(struct opengpu_device *gpu,
                          const struct opengpu_buffer *boot_fb);

@@ -735,8 +735,14 @@ Status (virtual display and DRM handoff, 2026-08-29):
   test validates its cookie and requires the resulting
   `DRM_EVENT_FLIP_COMPLETE` to arrive only after the delayed render fence and a
   refresh boundary.
-- Next: replace the fixed test-draw ioctl with validated command submission and
-  per-file render contexts.
+- **Validated contexts complete.** Every DRM file owns explicit render-context
+  IDs with private DMA command/depth storage and fence lifetime. Submit copies
+  command GEM records into kernel staging before validation, limits batch size,
+  checks target bounds and fixed-function fields, and rejects raw shader or
+  kernarg addresses. The guest test covers a valid render, unsafe-command
+  rejection, context destruction and stale-ID rejection.
+- Next: add a GEM resource-binding table for shader, kernarg and texture
+  buffers, then queued scheduling and explicit sync objects.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

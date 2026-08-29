@@ -227,6 +227,12 @@ DEFINE_DRM_GEM_DMA_FOPS(opengpu_drm_fops);
 static const struct drm_ioctl_desc opengpu_drm_ioctls[] = {
     DRM_IOCTL_DEF_DRV(OPENGPU_SUBMIT, opengpu_compute_drm_ioctl,
                       DRM_RENDER_ALLOW),
+    DRM_IOCTL_DEF_DRV(OPENGPU_CONTEXT_CREATE,
+                      opengpu_compute_context_create_ioctl,
+                      DRM_RENDER_ALLOW),
+    DRM_IOCTL_DEF_DRV(OPENGPU_CONTEXT_DESTROY,
+                      opengpu_compute_context_destroy_ioctl,
+                      DRM_RENDER_ALLOW),
 };
 
 static const struct drm_driver opengpu_drm_driver = {
@@ -237,6 +243,8 @@ static const struct drm_driver opengpu_drm_driver = {
     .major = 1,
     .minor = 0,
     .fops = &opengpu_drm_fops,
+    .open = opengpu_compute_drm_open,
+    .postclose = opengpu_compute_drm_postclose,
     .ioctls = opengpu_drm_ioctls,
     .num_ioctls = ARRAY_SIZE(opengpu_drm_ioctls),
     DRM_GEM_DMA_DRIVER_OPS,

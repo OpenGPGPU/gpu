@@ -67,12 +67,18 @@ queue serialization and completion fences. The existing misc device is a
 bring-up ABI and remains isolated here; it can later become a DRM render node
 without changing platform or MMIO code.
 
-The first DRM render ioctl accepts a GEM color-buffer handle and stride for a
-driver-owned test draw. Hardware completion is represented by a standard
-`dma_fence` signaled from the completion IRQ (or timeout worker). The execution
-client publishes that fence into the target GEM object's `dma_resv` with write
-usage. This ioctl remains a bring-up ABI until command validation and per-file
-contexts replace the fixed command payload.
+Each DRM file owns an IDR of explicit render contexts. A context owns private
+DMA command staging and depth storage plus its latest completion fence;
+destroy/close waits before releasing those resources. `DRM_IOCTL_OPENGPU_SUBMIT`
+references a command GEM and color GEM, copies up to 64 draw records into the
+context staging buffer, validates every record, and only then submits the
+kernel-owned snapshot. This avoids a validate/execute race with writable GEM
+mappings. Until GEM resource bindings land, nonzero shader and kernarg
+addresses are rejected rather than accepted as raw device addresses.
+
+Hardware completion is represented by a standard `dma_fence` signaled from the
+completion IRQ (or timeout worker). The execution client publishes that fence
+into the target color GEM object's `dma_resv` with write usage.
 
 Graphics draws and general-compute kernels may use different job payloads, but
 share queue, memory and fence machinery. Display is not an execution job.
@@ -134,8 +140,10 @@ No block frees another block's objects.
 6. Add optional virtual-vblank events when applications require paced flips.
    **Complete (2026-08-29).**
 
-The next execution milestone is to replace the fixed test-draw render ioctl
-with validated command submission and per-file render contexts.
+Validated command submission and per-file render contexts are complete
+(2026-08-29). The next execution milestone is a GEM resource-binding table for
+shader, kernarg and texture buffers, followed by queued scheduling and explicit
+sync objects.
 
 ## RTL boundary
 

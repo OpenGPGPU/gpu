@@ -166,9 +166,14 @@ character device first, DRM display client next, per the roadmap):
   on `gpu_irq` (with a `STATUS.DONE` polling fallback).
 - **readback**: `/dev/opengpu0` exposes the framebuffer; `GPU_IOCTL_SUBMIT` re-runs
   a draw from userspace.
-- **DRM render submission**: `DRM_IOCTL_OPENGPU_SUBMIT` accepts a GEM DMA color
-  handle and stride for the current fixed test draw. Completion IRQs signal a
-  `dma_fence` published as a write fence in that GEM object's reservation.
+- **DRM render contexts**: context create/destroy ioctls give each DRM file
+  private command staging, depth storage and fence lifetime.
+- **validated DRM submission**: `DRM_IOCTL_OPENGPU_SUBMIT` references command
+  and color GEM handles, copies at most 64 draw records into immutable
+  kernel-owned DMA staging, and validates their fixed-function fields before
+  launch. Raw shader/kernarg addresses are rejected until GEM resource
+  bindings exist. Completion IRQs signal a `dma_fence` published as a write
+  fence in the color GEM object's reservation.
 - **implicit display synchronization**: the KMS plane extracts the reservation
   fence and DRM atomic helpers wait before programming the scanout bank.
 - **flip pacing**: a 60 Hz software vblank source delivers
@@ -208,8 +213,10 @@ QEMU_DISPLAY=cocoa HOLD_AFTER_TEST=30 ./scripts/run_arti_gpu.sh
 The underlying integration profile remains `driver/gpu_integration.yaml`.
 ARTI infers AXI4 from the `s_axi_*` names, generates the embedded QEMU model
 and DT node, then loads the DRM stack and module in the guest. The guest test
-must create/map two dumb buffers, perform an atomic modeset and page flip,
-receive a matching vblank-paced flip event, and print
+must create a render context and command GEM, prove an unsafe command is
+rejected, render into two dumb buffers, perform an atomic modeset and page flip,
+receive a matching vblank-paced flip event, prove destroyed contexts cannot be
+reused, and print
 `OPENGPU USERSPACE DRM PASS`.
 
 ### Caveat: the memory (master) port
