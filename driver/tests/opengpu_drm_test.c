@@ -45,6 +45,12 @@ struct command_buffer {
     struct drm_opengpu_draw *map;
 };
 
+struct resource_buffer {
+    uint32_t handle;
+    uint64_t size;
+    void *map;
+};
+
 static int set_client_cap(int fd, uint64_t capability)
 {
     struct drm_set_client_cap cap = {
@@ -247,12 +253,36 @@ static int create_command_buffer(int fd, struct command_buffer *commands)
     draw->v1[3] = 0x10000;
     draw->v2[0] = -0x10000; draw->v2[1] =  0x10000;
     draw->v2[3] = 0x10000;
-    draw->c0[0] = 255;
-    draw->c1[0] = 255;
-    draw->c2[0] = 255;
+    draw->c0[0] = 255; draw->c0[1] = 255; draw->c0[2] = 255;
+    draw->c1[0] = 255; draw->c1[1] = 255; draw->c1[2] = 255;
+    draw->c2[0] = 255; draw->c2[1] = 255; draw->c2[2] = 255;
     draw->d0 = 0x10;
     draw->d1 = 0x10;
     draw->d2 = 0x10;
+    return 0;
+}
+
+static int create_texture_buffer(int fd, struct resource_buffer *texture)
+{
+    struct drm_mode_create_dumb create = {
+        .width = 1,
+        .height = 1,
+        .bpp = 32,
+    };
+    struct drm_mode_map_dumb map = { 0 };
+
+    if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0)
+        return -1;
+    texture->handle = create.handle;
+    texture->size = create.size;
+    map.handle = texture->handle;
+    if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0)
+        return -1;
+    texture->map = mmap(NULL, texture->size, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, fd, map.offset);
+    if (texture->map == MAP_FAILED)
+        return -1;
+    *(uint32_t *)texture->map = 0xff0000ffu;
     return 0;
 }
 
@@ -273,9 +303,36 @@ static int destroy_context(int fd, uint32_t context_id)
     return ioctl(fd, DRM_IOCTL_OPENGPU_CONTEXT_DESTROY, &context);
 }
 
+static int bind_texture(int fd, uint32_t context_id, uint32_t slot,
+                        const struct resource_buffer *texture)
+{
+    struct drm_opengpu_resource resource = {
+        .context_id = context_id,
+        .slot = slot,
+        .handle = texture->handle,
+        .type = OPENGPU_RESOURCE_TEXTURE,
+        .size = 4,
+        .width = 1,
+        .height = 1,
+        .flags = OPENGPU_RESOURCE_TEXTURE_CLAMP,
+    };
+
+    return ioctl(fd, DRM_IOCTL_OPENGPU_RESOURCE_BIND, &resource);
+}
+
+static int unbind_resource(int fd, uint32_t context_id, uint32_t slot)
+{
+    struct drm_opengpu_resource resource = {
+        .context_id = context_id,
+        .slot = slot,
+    };
+
+    return ioctl(fd, DRM_IOCTL_OPENGPU_RESOURCE_UNBIND, &resource);
+}
+
 static int submit_render(int fd, uint32_t context_id,
                          const struct command_buffer *commands,
-                         const struct dumb_fb *fb)
+                         const struct dumb_fb *fb, uint32_t texture_slot)
 {
     struct drm_opengpu_submit submit = {
         .context_id = context_id,
@@ -284,6 +341,7 @@ static int submit_render(int fd, uint32_t context_id,
         .stride = fb->pitch,
         .command_count = 1,
         .flags = OPENGPU_SUBMIT_TEST_FENCE_DELAY,
+        .texture_slot = texture_slot,
     };
 
     return ioctl(fd, DRM_IOCTL_OPENGPU_SUBMIT, &submit);
@@ -297,7 +355,7 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
 
     commands->map->shader_pc = 4;
     errno = 0;
-    ret = submit_render(fd, context_id, commands, fb);
+    ret = submit_render(fd, context_id, commands, fb, 1);
     commands->map->shader_pc = 0;
     if (ret == -1 && errno == EINVAL)
         return 0;
@@ -444,6 +502,7 @@ int main(void)
     struct kms_ids ids = { 0 };
     struct dumb_fb first = { 0 }, second = { 0 };
     struct command_buffer commands = { 0 };
+    struct resource_buffer texture = { 0 };
     struct drm_event_vblank event = { 0 };
     uint64_t start;
     uint32_t context_id;
@@ -464,13 +523,15 @@ int main(void)
           "universal planes");
     CHECK(set_client_cap(fd, DRM_CLIENT_CAP_ATOMIC), "atomic capability");
     CHECK(find_kms_objects(fd, &ids), "resource discovery");
-    CHECK(create_fb(fd, 0xff0000ffu, &first), "first dumb buffer");
-    CHECK(create_fb(fd, 0x00ff00ffu, &second), "second dumb buffer");
+    CHECK(create_fb(fd, 0x000000ffu, &first), "first dumb buffer");
+    CHECK(create_fb(fd, 0x000000ffu, &second), "second dumb buffer");
     CHECK(create_command_buffer(fd, &commands), "command buffer");
+    CHECK(create_texture_buffer(fd, &texture), "texture buffer");
     CHECK(create_context(fd, &context_id), "create render context");
+    CHECK(bind_texture(fd, context_id, 1, &texture), "bind texture");
     CHECK(reject_unsafe_command(fd, context_id, &commands, &first),
           "reject unsafe command");
-    CHECK(submit_render(fd, context_id, &commands, &first),
+    CHECK(submit_render(fd, context_id, &commands, &first, 1),
           "render first buffer");
     start = monotonic_ms();
     CHECK(atomic_modeset(fd, &ids, first.fb_id), "atomic modeset");
@@ -479,7 +540,13 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL modeset skipped fence");
         return 1;
     }
-    CHECK(submit_render(fd, context_id, &commands, &second),
+    if (*(uint32_t *)((uint8_t *)first.map + first.pitch + 4) !=
+        0xfe0000ffu) {
+        errno = EIO;
+        perror("OPENGPU USERSPACE DRM FAIL texture result");
+        return 1;
+    }
+    CHECK(submit_render(fd, context_id, &commands, &second, 1),
           "render second buffer");
     start = monotonic_ms();
     CHECK(atomic_page_flip(fd, &ids, second.fb_id), "atomic page flip");
@@ -489,9 +556,17 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL flip event skipped fence");
         return 1;
     }
+    CHECK(unbind_resource(fd, context_id, 1), "unbind texture");
+    errno = 0;
+    if (submit_render(fd, context_id, &commands, &second, 1) != -1 ||
+        errno != EINVAL) {
+        errno = EPROTO;
+        perror("OPENGPU USERSPACE DRM FAIL unbound texture accepted");
+        return 1;
+    }
     CHECK(destroy_context(fd, context_id), "destroy render context");
     errno = 0;
-    if (submit_render(fd, context_id, &commands, &second) != -1 ||
+    if (submit_render(fd, context_id, &commands, &second, 0) != -1 ||
         errno != ENOENT) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL destroyed context accepted");
@@ -499,7 +574,7 @@ int main(void)
     }
 #undef CHECK
 
-    printf("OPENGPU USERSPACE DRM PASS: validated context render + vblank "
-           "flip event sequence=%u\n", event.sequence);
+    printf("OPENGPU USERSPACE DRM PASS: bound texture render + validated "
+           "context + vblank flip event sequence=%u\n", event.sequence);
     return 0;
 }

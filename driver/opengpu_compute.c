@@ -9,6 +9,7 @@
 #include <linux/uaccess.h>
 
 #include <drm/drm_device.h>
+#include <drm/drm_exec.h>
 #include <drm/drm_file.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_gem_dma_helper.h>
@@ -23,6 +24,17 @@ struct opengpu_render_context {
     struct opengpu_buffer commands;
     struct opengpu_buffer depth;
     struct dma_fence *last_fence;
+    struct opengpu_resource_binding *bindings[OPENGPU_MAX_RESOURCE_SLOTS];
+};
+
+struct opengpu_resource_binding {
+    struct drm_gem_object *object;
+    dma_addr_t dma;
+    u64 size;
+    u32 type;
+    u32 width;
+    u32 height;
+    u32 flags;
 };
 
 struct opengpu_file {
@@ -106,13 +118,41 @@ static void opengpu_context_free(struct opengpu_file *render_file,
                                  struct opengpu_render_context *context)
 {
     struct opengpu_device *gpu = render_file->gpu;
+    u32 i;
 
     mutex_lock(&gpu->compute.lock);
     opengpu_wait_fence(&context->last_fence, false);
     mutex_unlock(&gpu->compute.lock);
+    for (i = 0; i < ARRAY_SIZE(context->bindings); i++) {
+        if (!context->bindings[i])
+            continue;
+        drm_gem_object_put(context->bindings[i]->object);
+        kfree(context->bindings[i]);
+    }
     opengpu_buffer_free(gpu, &context->depth);
     opengpu_buffer_free(gpu, &context->commands);
     kfree(context);
+}
+
+static struct opengpu_render_context *
+opengpu_context_lookup(struct opengpu_file *render_file, u32 id)
+{
+    if (!id)
+        return NULL;
+    return idr_find(&render_file->contexts, id);
+}
+
+static int opengpu_context_quiesce(struct opengpu_file *render_file,
+                                   struct opengpu_render_context *context)
+{
+    int ret;
+
+    ret = mutex_lock_interruptible(&render_file->gpu->compute.lock);
+    if (ret)
+        return ret;
+    ret = opengpu_wait_fence(&context->last_fence, true);
+    mutex_unlock(&render_file->gpu->compute.lock);
+    return ret;
 }
 
 int opengpu_compute_drm_open(struct drm_device *drm, struct drm_file *file)
@@ -208,19 +248,197 @@ int opengpu_compute_context_destroy_ioctl(struct drm_device *drm, void *data,
     return 0;
 }
 
+static bool opengpu_is_power_of_two(u32 value)
+{
+    return value && !(value & (value - 1));
+}
+
+int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
+                                        struct drm_file *file)
+{
+    struct drm_opengpu_resource *args = data;
+    struct opengpu_file *render_file = file->driver_priv;
+    struct opengpu_render_context *context;
+    struct opengpu_resource_binding *binding, *old;
+    struct drm_gem_dma_object *dma_object;
+    struct drm_gem_object *object;
+    u64 end, dma_end, texture_bytes;
+    int ret;
+
+    if (!args->context_id || !args->slot ||
+        args->slot > OPENGPU_MAX_RESOURCE_SLOTS || !args->handle ||
+        args->type < OPENGPU_RESOURCE_SHADER ||
+        args->type > OPENGPU_RESOURCE_TEXTURE || !args->size ||
+        (args->offset & 3) || args->pad ||
+        check_add_overflow(args->offset, args->size, &end))
+        return -EINVAL;
+    if (args->type == OPENGPU_RESOURCE_TEXTURE) {
+        if (!args->width || !args->height ||
+            args->width > 0x3fff || args->height > 0x3fff ||
+            (args->flags & ~OPENGPU_RESOURCE_TEXTURE_CLAMP) ||
+            (!(args->flags & OPENGPU_RESOURCE_TEXTURE_CLAMP) &&
+             (!opengpu_is_power_of_two(args->width) ||
+              !opengpu_is_power_of_two(args->height))) ||
+            check_mul_overflow((u64)args->width, (u64)args->height,
+                               &texture_bytes) ||
+            check_mul_overflow(texture_bytes, 4ull, &texture_bytes) ||
+            texture_bytes > args->size)
+            return -EINVAL;
+    } else if (args->width || args->height || args->flags) {
+        return -EINVAL;
+    }
+
+    object = drm_gem_object_lookup(file, args->handle);
+    if (!object)
+        return -ENOENT;
+    if (end > object->size) {
+        ret = -EINVAL;
+        goto out_object;
+    }
+    dma_object = to_drm_gem_dma_obj(object);
+    if (check_add_overflow((u64)dma_object->dma_addr, args->offset, &end) ||
+        check_add_overflow(end, args->size - 1, &dma_end) ||
+        upper_32_bits(dma_end)) {
+        ret = -ERANGE;
+        goto out_object;
+    }
+    binding = kzalloc(sizeof(*binding), GFP_KERNEL);
+    if (!binding) {
+        ret = -ENOMEM;
+        goto out_object;
+    }
+    binding->object = object;
+    binding->dma = end;
+    binding->size = args->size;
+    binding->type = args->type;
+    binding->width = args->width;
+    binding->height = args->height;
+    binding->flags = args->flags;
+
+    mutex_lock(&render_file->lock);
+    context = opengpu_context_lookup(render_file, args->context_id);
+    if (!context) {
+        ret = -ENOENT;
+        goto out_file;
+    }
+    ret = opengpu_context_quiesce(render_file, context);
+    if (ret)
+        goto out_file;
+    old = context->bindings[args->slot - 1];
+    context->bindings[args->slot - 1] = binding;
+    mutex_unlock(&render_file->lock);
+    if (old) {
+        drm_gem_object_put(old->object);
+        kfree(old);
+    }
+    return 0;
+
+out_file:
+    mutex_unlock(&render_file->lock);
+    kfree(binding);
+out_object:
+    drm_gem_object_put(object);
+    return ret;
+}
+
+int opengpu_compute_resource_unbind_ioctl(struct drm_device *drm, void *data,
+                                          struct drm_file *file)
+{
+    struct drm_opengpu_resource *args = data;
+    struct opengpu_file *render_file = file->driver_priv;
+    struct opengpu_render_context *context;
+    struct opengpu_resource_binding *binding;
+    int ret;
+
+    if (!args->context_id || !args->slot ||
+        args->slot > OPENGPU_MAX_RESOURCE_SLOTS || args->handle ||
+        args->type || args->offset || args->size || args->width ||
+        args->height || args->flags || args->pad)
+        return -EINVAL;
+    mutex_lock(&render_file->lock);
+    context = opengpu_context_lookup(render_file, args->context_id);
+    if (!context) {
+        ret = -ENOENT;
+        goto out_file;
+    }
+    binding = context->bindings[args->slot - 1];
+    if (!binding) {
+        ret = -ENOENT;
+        goto out_file;
+    }
+    ret = opengpu_context_quiesce(render_file, context);
+    if (ret)
+        goto out_file;
+    context->bindings[args->slot - 1] = NULL;
+    mutex_unlock(&render_file->lock);
+    drm_gem_object_put(binding->object);
+    kfree(binding);
+    return 0;
+
+out_file:
+    mutex_unlock(&render_file->lock);
+    return ret;
+}
+
+#define OPENGPU_KERNARG_MIN_SIZE 192u
+
+static struct opengpu_resource_binding *
+opengpu_binding_lookup(struct opengpu_render_context *context, u32 slot,
+                       u32 type)
+{
+    struct opengpu_resource_binding *binding;
+
+    if (!slot || slot > OPENGPU_MAX_RESOURCE_SLOTS)
+        return NULL;
+    binding = context->bindings[slot - 1];
+    return binding && binding->type == type ? binding : NULL;
+}
+
+static int opengpu_resolve_bindings(
+    struct opengpu_render_context *context,
+    const struct drm_opengpu_submit *args,
+    struct opengpu_resource_binding **shader,
+    struct opengpu_resource_binding **kernarg,
+    struct opengpu_resource_binding **texture)
+{
+    if (!!args->shader_slot != !!args->kernarg_slot)
+        return -EINVAL;
+    /* The current emitted top is fixed-function.  More importantly, enabling
+     * core-backed programs also requires instruction/control-flow validation;
+     * a GEM range alone cannot sandbox arbitrary shader loads and stores. */
+    if (args->shader_slot)
+        return -EOPNOTSUPP;
+    *shader = args->shader_slot ?
+        opengpu_binding_lookup(context, args->shader_slot,
+                               OPENGPU_RESOURCE_SHADER) : NULL;
+    *kernarg = args->kernarg_slot ?
+        opengpu_binding_lookup(context, args->kernarg_slot,
+                               OPENGPU_RESOURCE_KERNARG) : NULL;
+    *texture = args->texture_slot ?
+        opengpu_binding_lookup(context, args->texture_slot,
+                               OPENGPU_RESOURCE_TEXTURE) : NULL;
+    if ((args->shader_slot && (!*shader || !*kernarg)) ||
+        (args->texture_slot && !*texture) ||
+        (*shader && *texture))
+        return -EINVAL;
+    return 0;
+}
+
 static int opengpu_validate_commands(struct opengpu_render_context *context,
-                                     u32 count)
+                                     const struct drm_opengpu_submit *args,
+                                     struct opengpu_resource_binding *shader,
+                                     struct opengpu_resource_binding *kernarg)
 {
     struct gpu_draw_record *records = context->commands.cpu;
+    u64 address;
     u32 i, j;
 
     BUILD_BUG_ON(sizeof(struct drm_opengpu_draw) !=
                  sizeof(struct gpu_draw_record));
-    for (i = 0; i < count; i++) {
+    for (i = 0; i < args->command_count; i++) {
         struct gpu_draw_record *record = &records[i];
 
-        if (record->shader_pc || record->kernarg ||
-            record->v0[3] <= 0 || record->v1[3] <= 0 ||
+        if (record->v0[3] <= 0 || record->v1[3] <= 0 ||
             record->v2[3] <= 0)
             return -EINVAL;
         for (j = 0; j < ARRAY_SIZE(record->c0); j++) {
@@ -228,8 +446,61 @@ static int opengpu_validate_commands(struct opengpu_render_context *context,
                 record->c2[j] > 255)
                 return -EINVAL;
         }
+        if (!shader) {
+            if (record->shader_pc || record->kernarg)
+                return -EINVAL;
+            continue;
+        }
+        if (check_add_overflow((u64)record->shader_pc, 4ull, &address) ||
+            address > shader->size ||
+            check_add_overflow((u64)record->kernarg,
+                               (u64)OPENGPU_KERNARG_MIN_SIZE, &address) ||
+            address > kernarg->size)
+            return -EINVAL;
+        record->shader_pc += lower_32_bits(shader->dma);
+        record->kernarg += lower_32_bits(kernarg->dma);
     }
     return 0;
+}
+
+static int opengpu_prepare_submit_objects(
+    struct drm_exec *exec, struct drm_gem_object *command,
+    struct drm_gem_object *color,
+    struct opengpu_resource_binding *shader,
+    struct opengpu_resource_binding *kernarg,
+    struct opengpu_resource_binding *texture)
+{
+    int ret;
+
+    drm_exec_until_all_locked(exec) {
+        ret = drm_exec_lock_obj(exec, command);
+        if (!ret)
+            ret = drm_exec_prepare_obj(exec, color, 1);
+        if (!ret && shader)
+            ret = drm_exec_prepare_obj(exec, shader->object, 1);
+        if (!ret && kernarg)
+            ret = drm_exec_prepare_obj(exec, kernarg->object, 1);
+        if (!ret && texture)
+            ret = drm_exec_prepare_obj(exec, texture->object, 1);
+        drm_exec_retry_on_contention(exec);
+        if (ret)
+            return ret;
+    }
+    return 0;
+}
+
+static int opengpu_wait_reservation(struct drm_gem_object *object,
+                                    enum dma_resv_usage usage)
+{
+    long wait;
+
+    if (!object)
+        return 0;
+    wait = dma_resv_wait_timeout(object->resv, usage, true,
+                                 MAX_SCHEDULE_TIMEOUT);
+    if (wait < 0)
+        return wait;
+    return wait ? 0 : -ETIMEDOUT;
 }
 
 int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
@@ -244,19 +515,23 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     struct drm_gem_object *color_object;
     struct drm_gem_dma_object *command_dma;
     struct drm_gem_dma_object *color_dma;
+    struct opengpu_resource_binding *shader, *kernarg, *texture;
+    struct drm_exec exec;
     struct dma_fence *fence;
     struct opengpu_job job;
     u64 command_end;
     size_t command_bytes;
     size_t color_required;
-    long wait;
     int ret;
 
     if ((args->flags & ~OPENGPU_SUBMIT_TEST_FENCE_DELAY) ||
         !args->context_id || !args->command_handle || !args->color_handle ||
         args->command_handle == args->color_handle ||
         !args->command_count || args->command_count > OPENGPU_MAX_COMMANDS ||
-        (args->command_offset & 3) ||
+        (args->command_offset & 3) || args->pad ||
+        args->shader_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
+        args->kernarg_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
+        args->texture_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
         args->stride != gpu->stride ||
         check_mul_overflow((size_t)args->stride, (size_t)gpu->height,
                            &color_required) ||
@@ -286,37 +561,59 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         goto out_color_object;
     }
 
-    wait = dma_resv_wait_timeout(command_object->resv,
-                                 DMA_RESV_USAGE_WRITE, true,
-                                 MAX_SCHEDULE_TIMEOUT);
-    if (wait <= 0) {
-        ret = wait < 0 ? wait : -ETIMEDOUT;
-        goto out_color_object;
-    }
-
     mutex_lock(&render_file->lock);
     context = idr_find(&render_file->contexts, args->context_id);
     if (!context) {
         ret = -ENOENT;
         goto out_file;
     }
+    ret = opengpu_resolve_bindings(context, args, &shader, &kernarg,
+                                   &texture);
+    if (ret)
+        goto out_file;
+    if (command_object == color_object ||
+        (shader && (shader->object == command_object ||
+                    shader->object == color_object)) ||
+        (kernarg && (kernarg->object == command_object ||
+                     kernarg->object == color_object ||
+                     (shader && kernarg->object == shader->object))) ||
+        (texture && (texture->object == command_object ||
+                     texture->object == color_object))) {
+        ret = -EINVAL;
+        goto out_file;
+    }
+
+    drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
+                         DRM_EXEC_IGNORE_DUPLICATES, 0);
+    ret = opengpu_prepare_submit_objects(&exec, command_object, color_object,
+                                         shader, kernarg, texture);
+    if (ret)
+        goto out_exec;
+    ret = opengpu_wait_reservation(command_object, DMA_RESV_USAGE_WRITE);
+    if (!ret)
+        ret = opengpu_wait_reservation(color_object, DMA_RESV_USAGE_READ);
+    if (!ret && shader)
+        ret = opengpu_wait_reservation(shader->object,
+                                       DMA_RESV_USAGE_WRITE);
+    if (!ret && kernarg)
+        ret = opengpu_wait_reservation(kernarg->object,
+                                       DMA_RESV_USAGE_READ);
+    if (!ret && texture)
+        ret = opengpu_wait_reservation(texture->object,
+                                       DMA_RESV_USAGE_WRITE);
+    if (ret)
+        goto out_exec;
+
     memcpy(context->commands.cpu,
            (u8 *)command_dma->vaddr + args->command_offset,
            command_bytes);
-    ret = opengpu_validate_commands(context, args->command_count);
+    ret = opengpu_validate_commands(context, args, shader, kernarg);
     if (ret)
-        goto out_file;
-
-    ret = dma_resv_lock_interruptible(color_object->resv, NULL);
-    if (ret)
-        goto out_file;
-    ret = dma_resv_reserve_fences(color_object->resv, 1);
-    if (ret)
-        goto out_resv;
+        goto out_exec;
 
     ret = mutex_lock_interruptible(&compute->lock);
     if (ret)
-        goto out_resv;
+        goto out_exec;
     ret = opengpu_compute_wait_last(compute);
     if (ret)
         goto out_compute;
@@ -332,6 +629,12 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         .depth_func = GPU_DEPTH_FUNC_LESS,
         .depth_write = true,
         .cull_mode = GPU_CULL_NONE,
+        .texture = texture ? texture->dma : 0,
+        .texture_width = texture ? texture->width : 0,
+        .texture_height = texture ? texture->height : 0,
+        .texture_config = texture ? GPU_TEX_ENABLE |
+            (texture->flags & OPENGPU_RESOURCE_TEXTURE_CLAMP ?
+             GPU_TEX_WRAP_CLAMP : 0) : 0,
         .completion_delay_ms =
             args->flags & OPENGPU_SUBMIT_TEST_FENCE_DELAY ? 50 : 0,
     };
@@ -343,6 +646,15 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     dma_fence_put(context->last_fence);
     context->last_fence = dma_fence_get(fence);
     dma_resv_add_fence(color_object->resv, fence, DMA_RESV_USAGE_WRITE);
+    if (shader)
+        dma_resv_add_fence(shader->object->resv, fence,
+                           DMA_RESV_USAGE_READ);
+    if (kernarg)
+        dma_resv_add_fence(kernarg->object->resv, fence,
+                           DMA_RESV_USAGE_WRITE);
+    if (texture)
+        dma_resv_add_fence(texture->object->resv, fence,
+                           DMA_RESV_USAGE_READ);
     dev_info(gpu->dev,
              "context %u submitted %u draw(s), fence %llu on GEM handle %u\n",
              context->id, args->command_count, fence->seqno,
@@ -350,8 +662,8 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
 
 out_compute:
     mutex_unlock(&compute->lock);
-out_resv:
-    dma_resv_unlock(color_object->resv);
+out_exec:
+    drm_exec_fini(&exec);
 out_file:
     mutex_unlock(&render_file->lock);
 out_color_object:

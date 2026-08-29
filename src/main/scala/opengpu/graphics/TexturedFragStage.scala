@@ -143,9 +143,9 @@ class TexturedFragStage(
   io.out.bits.e0 := heldE(0)
   io.out.bits.e1 := heldE(1)
   io.out.bits.e2 := heldE(2)
-  io.out.bits.color.r := modulate(heldColor(0), texelWord(23, 16))
-  io.out.bits.color.g := modulate(heldColor(1), texelWord(15, 8))
-  io.out.bits.color.b := modulate(heldColor(2), texelWord(7, 0))
+  io.out.bits.color.r := modulate(heldColor(0), texelWord(31, 24))
+  io.out.bits.color.g := modulate(heldColor(1), texelWord(23, 16))
+  io.out.bits.color.b := modulate(heldColor(2), texelWord(15, 8))
 
   // Payload latch happens on the accept edge; the sampler completes several
   // cycles later, so its result is observed on its own when -- independent of

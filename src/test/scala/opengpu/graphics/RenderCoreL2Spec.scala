@@ -246,9 +246,10 @@ class RenderCoreL2Spec extends AnyFlatSpec {
       m.wwrite(cmdBase + i * 4, word)
     }
     for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0xffffffff)
-    // Solid half-strength red texture: every modulated fragment halves R.
+    // Solid half-strength red texture in the renderer's 0xRRGGBBAA layout:
+    // every modulated fragment halves R.
     for (y <- 0 until 16; x <- 0 until 16)
-      m.wwrite(texBase + (y * 16 + x) * 4, 0xff800000)
+      m.wwrite(texBase + (y * 16 + x) * 4, 0x800000ff)
 
     simulate(new RenderCoreL2(gfx, cfg, fragCore = false)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)

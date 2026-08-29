@@ -73,8 +73,18 @@ destroy/close waits before releasing those resources. `DRM_IOCTL_OPENGPU_SUBMIT`
 references a command GEM and color GEM, copies up to 64 draw records into the
 context staging buffer, validates every record, and only then submits the
 kernel-owned snapshot. This avoids a validate/execute race with writable GEM
-mappings. Until GEM resource bindings land, nonzero shader and kernarg
-addresses are rejected rather than accepted as raw device addresses.
+mappings.
+
+Each context also owns a 16-slot GEM resource-binding table. Bindings retain
+the GEM object and expose only a validated subrange; submit selects slots, not
+DMA addresses. `drm_exec` locks command, target and resource objects as one
+transaction. Texture/shader reads receive read fences, while color/kernarg
+writes receive write fences. The current fixed-function `GpuHostAxi` uses the
+texture binding to program `TEX_*`, and the guest test verifies a sampled pixel
+through the real RTL memory port. Shader/kernarg slots define binding-relative
+offsets, but core-backed submission remains rejected until the device exposes a
+capability bit and the driver validates shader instructions/control flow; GEM
+bounds alone cannot sandbox arbitrary shader loads and stores.
 
 Hardware completion is represented by a standard `dma_fence` signaled from the
 completion IRQ (or timeout worker). The execution client publishes that fence
@@ -140,10 +150,10 @@ No block frees another block's objects.
 6. Add optional virtual-vblank events when applications require paced flips.
    **Complete (2026-08-29).**
 
-Validated command submission and per-file render contexts are complete
-(2026-08-29). The next execution milestone is a GEM resource-binding table for
-shader, kernarg and texture buffers, followed by queued scheduling and explicit
-sync objects.
+Validated command submission, per-file render contexts and the GEM resource
+binding table are complete (2026-08-29). The next execution milestone is queued
+scheduling and explicit sync objects. Core-backed shader enablement separately
+requires a hardware capability bit and instruction/control-flow validation.
 
 ## RTL boundary
 

@@ -169,7 +169,7 @@ int opengpu_hw_submit_async(struct opengpu_device *gpu,
     if (!out_fence)
         return -EINVAL;
     if (upper_32_bits(job->cmd) || upper_32_bits(job->color) ||
-        upper_32_bits(job->depth))
+        upper_32_bits(job->depth) || upper_32_bits(job->texture))
         return -ERANGE;
 
     fence = kzalloc(sizeof(*fence), GFP_KERNEL);
@@ -202,6 +202,10 @@ int opengpu_hw_submit_async(struct opengpu_device *gpu,
     opengpu_reg_write(gpu, GPU_REG_DEPTH_FUNC, job->depth_func);
     opengpu_reg_write(gpu, GPU_REG_DEPTH_WRITE, job->depth_write);
     opengpu_reg_write(gpu, GPU_REG_CULL_MODE, job->cull_mode);
+    opengpu_reg_write(gpu, GPU_REG_TEX_BASE, lower_32_bits(job->texture));
+    opengpu_reg_write(gpu, GPU_REG_TEX_WIDTH, job->texture_width);
+    opengpu_reg_write(gpu, GPU_REG_TEX_HEIGHT, job->texture_height);
+    opengpu_reg_write(gpu, GPU_REG_TEX_CONFIG, job->texture_config);
 
     opengpu_reg_write(gpu, GPU_REG_IRQ, GPU_IRQ_ENABLE);
     schedule_delayed_work(&gpu->hw.timeout_work,

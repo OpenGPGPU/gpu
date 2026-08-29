@@ -171,9 +171,14 @@ character device first, DRM display client next, per the roadmap):
 - **validated DRM submission**: `DRM_IOCTL_OPENGPU_SUBMIT` references command
   and color GEM handles, copies at most 64 draw records into immutable
   kernel-owned DMA staging, and validates their fixed-function fields before
-  launch. Raw shader/kernarg addresses are rejected until GEM resource
-  bindings exist. Completion IRQs signal a `dma_fence` published as a write
-  fence in the color GEM object's reservation.
+  launch. Completion IRQs signal a `dma_fence` published as a write fence in
+  the color GEM object's reservation.
+- **GEM resource bindings**: each context has 16 typed shader, kernarg or
+  texture slots retaining validated GEM subranges. Submit uses `drm_exec` to
+  lock all referenced objects, waits their implicit dependencies, and publishes
+  read/write fences by access direction. The current fixed-function RTL fully
+  exercises texture bindings; core-backed shader submission remains disabled
+  until capability discovery and program validation are available.
 - **implicit display synchronization**: the KMS plane extracts the reservation
   fence and DRM atomic helpers wait before programming the scanout bank.
 - **flip pacing**: a 60 Hz software vblank source delivers
@@ -213,10 +218,11 @@ QEMU_DISPLAY=cocoa HOLD_AFTER_TEST=30 ./scripts/run_arti_gpu.sh
 The underlying integration profile remains `driver/gpu_integration.yaml`.
 ARTI infers AXI4 from the `s_axi_*` names, generates the embedded QEMU model
 and DT node, then loads the DRM stack and module in the guest. The guest test
-must create a render context and command GEM, prove an unsafe command is
-rejected, render into two dumb buffers, perform an atomic modeset and page flip,
-receive a matching vblank-paced flip event, prove destroyed contexts cannot be
-reused, and print
+must create a render context and command GEM, bind a texture GEM, prove an
+unsafe command is rejected, verify the exact texture-modulated RTL pixel,
+render into two dumb buffers, perform an atomic modeset and page flip, receive a
+matching vblank-paced flip event, prove unbound resources and destroyed
+contexts cannot be reused, and print
 `OPENGPU USERSPACE DRM PASS`.
 
 ### Caveat: the memory (master) port

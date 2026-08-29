@@ -741,8 +741,18 @@ Status (virtual display and DRM handoff, 2026-08-29):
   checks target bounds and fixed-function fields, and rejects raw shader or
   kernarg addresses. The guest test covers a valid render, unsafe-command
   rejection, context destruction and stale-ID rejection.
-- Next: add a GEM resource-binding table for shader, kernarg and texture
-  buffers, then queued scheduling and explicit sync objects.
+- **GEM resource binding complete.** Contexts expose 16 typed slots retaining
+  validated GEM subranges. `drm_exec` locks every command/target/resource BO,
+  applies access-direction implicit synchronization and publishes the render
+  fence to each BO. The guest binds a 1x1 texture, verifies the exact
+  texture-modulated pixel through RTL, then covers unbind and stale-slot
+  rejection. Shader/kernarg offsets are never accepted as raw addresses;
+  core-backed execution stays gated until capability and program validation
+  exist.
+- The full-system texture test also exposed and fixed an RTL channel-order bug:
+  `TexturedFragStage` now consumes the established `0xRRGGBBAA` layout.
+- Next: add queued scheduling and explicit sync objects; add a fragment-core
+  capability/validator before enabling bound shader programs.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

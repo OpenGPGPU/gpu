@@ -22,7 +22,9 @@ struct opengpu_drm;
 
 #define OPENGPU_NAME            "riscv-simt-opengpu"
 #define OPENGPU_COMPUTE_NAME    "opengpu0"
-#define OPENGPU_DRAW_WAIT_MS    200
+/* Embedded RTL simulation executes every memory handshake cycle-by-cycle;
+ * textured batches are intentionally given a bounded but generous watchdog. */
+#define OPENGPU_DRAW_WAIT_MS    5000
 #define OPENGPU_IOCTL_SUBMIT    _IO('G', 0x01)
 
 struct opengpu_buffer {
@@ -89,6 +91,10 @@ struct opengpu_job {
     u32 depth_func;
     bool depth_write;
     u32 cull_mode;
+    dma_addr_t texture;
+    u32 texture_width;
+    u32 texture_height;
+    u32 texture_config;
     u32 completion_delay_ms;
 };
 
@@ -127,6 +133,10 @@ void opengpu_compute_drm_postclose(struct drm_device *drm,
 int opengpu_compute_context_create_ioctl(struct drm_device *drm, void *data,
                                          struct drm_file *file);
 int opengpu_compute_context_destroy_ioctl(struct drm_device *drm, void *data,
+                                          struct drm_file *file);
+int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
+                                        struct drm_file *file);
+int opengpu_compute_resource_unbind_ioctl(struct drm_device *drm, void *data,
                                           struct drm_file *file);
 
 int opengpu_display_init(struct opengpu_device *gpu,
