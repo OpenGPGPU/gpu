@@ -761,9 +761,23 @@ Status (virtual display and DRM handoff, 2026-08-29):
   test queues two textured draws, chains the first output syncobj into the
   second input, observes both jobs pending, waits both outputs, and verifies KMS
   fence waits and page-flip vblank. DRM interface version is now 1.2.
-- Next: add a fragment-core capability and shader instruction/control-flow
-  validator before enabling bound shader programs. Hardware-side per-draw
-  overlap/double buffering remains the separate M5 throughput milestone.
+- **Fragment-core capability and shader sandbox complete (2026-08-30).** The
+  read-only `CAPABILITIES` register reports fragment-core presence and batch
+  capacity; the emitted fixed-function top reports zero, while a 4-lane ×
+  2-warp fragment-core build reports `0x801`. The driver refuses shader slots
+  on incapable hardware. On capable hardware it snapshots a bounded,
+  cache-line-aligned shader binding into private per-job DMA, then validates the
+  exact executed bytes. Profile v1 permits terminating linear RV32I/M, preserves
+  x1 as the kernarg base, bounds loads to kernarg and stores to the colour-output
+  slice, and rejects branch/jump/atomic/vector/custom instructions. A shared
+  native test covers valid pass-through code, write escape, x1 corruption,
+  out-of-range read, control flow and missing termination; RTL tests cover both
+  capability values, and the ARTI guest covers the fixed-top `EOPNOTSUPP` gate.
+- Next: add a fragment-core-aware bring-up self-test and an alternate emitted
+  top/full-system guest path that executes the validated scalar shader. Then
+  extend the validator with proven vector-memory and structured-control-flow
+  profiles. Hardware-side per-draw overlap/double buffering remains the
+  separate M5 throughput milestone.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

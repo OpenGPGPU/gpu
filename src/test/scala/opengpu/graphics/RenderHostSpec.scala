@@ -64,10 +64,14 @@ class RenderHostSpec extends AnyFlatSpec {
   }
 
   it should "expose the device ID and a program-able register file" in {
-    simulate(new RenderHost(deviceId = 0x4755, version = 0x0001)) { dut =>
+    simulate(new RenderHost(
+      gpuConfig = GpuConfig(lanes = 4, warps = 2), fragCore = true,
+      deviceId = 0x4755, version = 0x0001)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       assert(regRead(dut, RenderHostRegs.ID) == 0x47550001L,
         "device ID register must report device<<16 | version")
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x801L,
+        "fragment-core builds must advertise support and batch capacity")
 
       // An unmapped address yields ok=false.
       dut.io.reg.req.valid.poke(true.B)

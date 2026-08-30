@@ -77,13 +77,17 @@ entity before releasing bindings.
 Each context also owns a 16-slot GEM resource-binding table. Bindings retain
 the GEM object and expose only a validated subrange; submit selects slots, not
 DMA addresses. `drm_exec` locks command, target and resource objects as one
-transaction. Texture/shader reads receive read fences, while color/kernarg
-writes receive write fences. The current fixed-function `GpuHostAxi` uses the
+transaction. Texture reads receive read fences, while color/kernarg writes
+receive write fences. The current fixed-function `GpuHostAxi` uses the
 texture binding to program `TEX_*`, and the guest test verifies a sampled pixel
-through the real RTL memory port. Shader/kernarg slots define binding-relative
-offsets, but core-backed submission remains rejected until the device exposes a
-capability bit and the driver validates shader instructions/control flow; GEM
-bounds alone cannot sandbox arbitrary shader loads and stores.
+through the real RTL memory port. A read-only capability register advertises
+fragment-core presence and batch capacity. Without it shader submissions return
+`EOPNOTSUPP`. With it, the driver snapshots a bounded, cache-line-aligned shader
+binding into per-job DMA and validates the snapshot before relocation, removing
+the writable-GEM validate/execute race. Sandbox profile v1 accepts terminating,
+linear RV32I/M with an immutable x1 kernarg base; loads stay inside kernarg and
+stores stay inside its colour-output slice. More complex control flow, vector
+memory, atomics and custom instructions require future validator profiles.
 
 The shared DRM GPU scheduler has one hardware credit and a fair runqueue across
 context entities. It resolves GEM reservation and input-syncobj dependencies

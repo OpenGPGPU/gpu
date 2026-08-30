@@ -87,6 +87,7 @@ single source of truth exported to C in `driver/gpu_abi.h`.
 | 0x54 | SCANOUT_FORMAT | RW | 0 packed RGBA8888 |
 | 0x58 | SCANOUT_CONTROL | RW | bit0 ENABLE |
 | 0x5C | SCANOUT_STATUS | RO | bit0 ACTIVE |
+| 0x60 | CAPABILITIES | RO | bit0 fragment-core; bits 15:8 fragment batch capacity |
 
 At START the engine snapshots the configuration so the host can program the
 next frame while the current one is in flight (a minimal double-buffered
@@ -177,9 +178,16 @@ character device first, DRM display client next, per the roadmap):
   texture slots retaining validated GEM subranges. Submit uses `drm_exec` to
   lock all referenced objects and publishes read/write fences by access
   direction. The scheduler waits their implicit dependencies asynchronously.
-  The current fixed-function RTL fully
-  exercises texture bindings; core-backed shader submission remains disabled
-  until capability discovery and program validation are available.
+  The current fixed-function RTL fully exercises texture bindings.
+- **fragment shader safety boundary**: `CAPABILITIES` distinguishes the current
+  fixed-function top (zero) from a fragment-core build (bit0 plus batch capacity
+  in bits 15:8). Shader submission is rejected with `EOPNOTSUPP` unless bit0 is
+  present. On a capable build the driver waits for prior shader writers, copies
+  the complete 64-byte-aligned binding into per-job DMA, validates that immutable
+  snapshot, and relocates only validated entry offsets. Sandbox profile v1 is
+  linear RV32I/M ending in `CEASE`: x1 cannot be overwritten, loads are bounded
+  to kernarg, and stores are bounded to the batch colour-output slice. Branches,
+  jumps, atomics, vector memory and custom instructions remain gated.
 - **queued execution and explicit synchronization**: each context maps to a DRM
   scheduler entity on a one-credit hardware queue. Submit accepts optional
   binary `in_syncobj`/`out_syncobj` handles; input and GEM dependencies are

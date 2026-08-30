@@ -21,7 +21,7 @@ import opengpu.core.memory.{
   */
 object RenderHostRegs {
   /** First invalid byte offset (exclusive end of the register file). */
-  val END               = 0x60
+  val END               = 0x64
   val ID                = 0x00
   val CONTROL           = 0x04
   val STATUS            = 0x08
@@ -51,6 +51,8 @@ object RenderHostRegs {
   val SCANOUT_CONTROL   = 0x58
   /** bit0: active (enable && non-zero base/stride/size). */
   val SCANOUT_STATUS    = 0x5C
+  /** bit0: fragments execute on the shared SIMT core. */
+  val CAPABILITIES      = 0x60
 }
 
 /** A host memory-mapped register access (read or write of one 32-bit word). */
@@ -91,7 +93,8 @@ class RenderHostRegResponse extends Bundle {
   * Register map (see `RenderHostRegs`): 0x00 ID (ro), 0x04 CONTROL (w1p;
   * bit0 START), 0x08 STATUS (ro + w1c; bit0 BUSY, bit1 DONE, bit2 ERROR),
   * 0x0C IRQ (bit0 ENABLE, bit1 PENDING w1c), execution config 0x10..0x40,
-  * and the independent display scanout bank 0x44..0x5c.
+  * the independent display scanout bank 0x44..0x5c, and read-only
+  * CAPABILITIES at 0x60.
   */
 class RenderHost(
   config: GraphicsConfig = GraphicsConfig(),
@@ -194,6 +197,8 @@ class RenderHost(
     scanoutBaseReg.orR && scanoutStrideReg.orR &&
     scanoutWidthReg.orR && scanoutHeightReg.orR
   private val scanoutStatusBits = Cat(0.U(31.W), scanoutActive)
+  private val capabilityBits =
+    (if (fragCore) 1 | (gpuConfig.warps * gpuConfig.lanes << 8) else 0).U(32.W)
 
   private def readReg: UInt =
     MuxLookup(rAddr, 0.U(32.W))(Seq(
@@ -219,7 +224,8 @@ class RenderHost(
       RenderHostRegs.SCANOUT_HEIGHT.U -> scanoutHeightReg,
       RenderHostRegs.SCANOUT_FORMAT.U -> scanoutFormatReg,
       RenderHostRegs.SCANOUT_CONTROL.U -> scanoutControlReg,
-      RenderHostRegs.SCANOUT_STATUS.U -> scanoutStatusBits
+      RenderHostRegs.SCANOUT_STATUS.U -> scanoutStatusBits,
+      RenderHostRegs.CAPABILITIES.U -> capabilityBits
     ))
 
   // Merge a byte-masked write into a 32-bit register (partial-word writes with

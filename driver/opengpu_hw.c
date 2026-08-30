@@ -142,8 +142,10 @@ int opengpu_hw_init(struct opengpu_device *gpu, struct platform_device *pdev)
     if ((id >> 16) != GPU_DEVICE_ID)
         return dev_err_probe(gpu->dev, -ENODEV,
                              "bad device id 0x%08x\n", id);
-    dev_info(gpu->dev, "GPU ABI device=0x%08x version=0x%04x\n",
-             id, id & 0xffff);
+    gpu->hw.capabilities = opengpu_reg_read(gpu, GPU_REG_CAPABILITIES);
+    dev_info(gpu->dev,
+             "GPU ABI device=0x%08x version=0x%04x capabilities=0x%08x\n",
+             id, id & 0xffff, gpu->hw.capabilities);
 
     gpu->hw.irq = platform_get_irq_optional(pdev, 0);
     if (gpu->hw.irq == -EPROBE_DEFER)

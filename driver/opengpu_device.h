@@ -49,6 +49,7 @@ struct opengpu_hw {
     u32 active_completion_delay_ms;
     u64 fence_context;
     u64 fence_seqno;
+    u32 capabilities;
 };
 
 /* Bring-up execution client. This becomes the render/compute client as queue

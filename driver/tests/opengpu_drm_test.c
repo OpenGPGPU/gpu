@@ -286,6 +286,28 @@ static int create_texture_buffer(int fd, struct resource_buffer *texture)
     return 0;
 }
 
+static int create_resource_buffer(int fd, uint32_t bytes,
+                                  struct resource_buffer *buffer)
+{
+    struct drm_mode_create_dumb create = {
+        .width = (bytes + 3) / 4,
+        .height = 1,
+        .bpp = 32,
+    };
+    struct drm_mode_map_dumb map = { 0 };
+
+    if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0)
+        return -1;
+    buffer->handle = create.handle;
+    buffer->size = create.size;
+    map.handle = buffer->handle;
+    if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0)
+        return -1;
+    buffer->map = mmap(NULL, buffer->size, PROT_READ | PROT_WRITE,
+                       MAP_SHARED, fd, map.offset);
+    return buffer->map == MAP_FAILED ? -1 : 0;
+}
+
 static int create_context(int fd, uint32_t *context_id)
 {
     struct drm_opengpu_context context = { 0 };
@@ -315,6 +337,21 @@ static int bind_texture(int fd, uint32_t context_id, uint32_t slot,
         .width = 1,
         .height = 1,
         .flags = OPENGPU_RESOURCE_TEXTURE_CLAMP,
+    };
+
+    return ioctl(fd, DRM_IOCTL_OPENGPU_RESOURCE_BIND, &resource);
+}
+
+static int bind_resource(int fd, uint32_t context_id, uint32_t slot,
+                         const struct resource_buffer *buffer, uint32_t type,
+                         uint64_t size)
+{
+    struct drm_opengpu_resource resource = {
+        .context_id = context_id,
+        .slot = slot,
+        .handle = buffer->handle,
+        .type = type,
+        .size = size,
     };
 
     return ioctl(fd, DRM_IOCTL_OPENGPU_RESOURCE_BIND, &resource);
@@ -361,6 +398,28 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
     ret = submit_render(fd, context_id, commands, fb, 1, 0, 0);
     commands->map->shader_pc = 0;
     if (ret == -1 && errno == EINVAL)
+        return 0;
+    errno = EPROTO;
+    return -1;
+}
+
+static int reject_unsupported_shader(int fd, uint32_t context_id,
+                                     const struct command_buffer *commands,
+                                     const struct dumb_fb *fb)
+{
+    struct drm_opengpu_submit submit = {
+        .context_id = context_id,
+        .command_handle = commands->handle,
+        .color_handle = fb->handle,
+        .stride = fb->pitch,
+        .command_count = 1,
+        .shader_slot = 2,
+        .kernarg_slot = 3,
+    };
+
+    errno = 0;
+    if (ioctl(fd, DRM_IOCTL_OPENGPU_SUBMIT, &submit) == -1 &&
+        errno == EOPNOTSUPP)
         return 0;
     errno = EPROTO;
     return -1;
@@ -541,6 +600,7 @@ int main(void)
     struct dumb_fb first = { 0 }, second = { 0 };
     struct command_buffer commands = { 0 };
     struct resource_buffer texture = { 0 };
+    struct resource_buffer shader = { 0 }, kernarg = { 0 };
     struct drm_event_vblank event = { 0 };
     uint32_t syncobjs[3] = { 0 };
     uint32_t output_syncobjs[2];
@@ -567,8 +627,19 @@ int main(void)
     CHECK(create_fb(fd, 0x000000ffu, &second), "second dumb buffer");
     CHECK(create_command_buffer(fd, &commands), "command buffer");
     CHECK(create_texture_buffer(fd, &texture), "texture buffer");
+    CHECK(create_resource_buffer(fd, 64, &shader), "shader buffer");
+    CHECK(create_resource_buffer(fd, 192, &kernarg), "kernarg buffer");
+    ((uint32_t *)shader.map)[0] = 0x0600a503u; /* lw x10,96(x1) */
+    ((uint32_t *)shader.map)[1] = 0x08a0a023u; /* sw x10,128(x1) */
+    ((uint32_t *)shader.map)[2] = 0x30500073u; /* cease */
     CHECK(create_context(fd, &context_id), "create render context");
     CHECK(bind_texture(fd, context_id, 1, &texture), "bind texture");
+    CHECK(bind_resource(fd, context_id, 2, &shader,
+                        OPENGPU_RESOURCE_SHADER, 64), "bind shader");
+    CHECK(bind_resource(fd, context_id, 3, &kernarg,
+                        OPENGPU_RESOURCE_KERNARG, 192), "bind kernarg");
+    CHECK(reject_unsupported_shader(fd, context_id, &commands, &first),
+          "gate fragment shader capability");
     CHECK(create_syncobj(fd, &syncobjs[1]), "create first output syncobj");
     CHECK(create_syncobj(fd, &syncobjs[2]), "create second output syncobj");
     CHECK(reject_unsafe_command(fd, context_id, &commands, &first),
@@ -631,7 +702,8 @@ int main(void)
 #undef CHECK
 
     printf("OPENGPU USERSPACE DRM PASS: queued texture render + explicit "
-           "syncobj + validated context + vblank flip event sequence=%u\n",
+           "syncobj + shader capability gate + validated context + "
+           "vblank flip event sequence=%u\n",
            event.sequence);
     return 0;
 }

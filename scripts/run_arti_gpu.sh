@@ -103,6 +103,14 @@ DRIVER_MANIFEST="$DRIVER_OUTPUT/gpu_drv.deps"
 
 echo "=== 4/4 Build the guest DRM test and boot Linux ==="
 [ -d "$LINUX_SRC" ] || fail "Linux source not found at $LINUX_SRC"
+HOST_CC="${HOST_CC:-cc}"
+command -v "$HOST_CC" >/dev/null 2>&1 || \
+    fail "host C compiler is required for the shader validator test"
+VALIDATOR_TEST="$DRIVER_OUTPUT/opengpu_shader_validator_test"
+"$HOST_CC" -std=c11 -O2 -Wall -Wextra -Werror -I"$GPU_DIR/driver" \
+    -o "$VALIDATOR_TEST" \
+    "$GPU_DIR/driver/tests/opengpu_shader_validator_test.c"
+"$VALIDATOR_TEST"
 if [ ! -f "$LINUX_HEADERS/include/drm/drm.h" ]; then
     PATH="/opt/homebrew/bin:$PATH" gmake -s -C "$LINUX_SRC" ARCH=arm64 \
         INSTALL_HDR_PATH="$LINUX_HEADERS" headers_install

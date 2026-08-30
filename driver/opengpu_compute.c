@@ -18,6 +18,7 @@
 
 #include "opengpu_device.h"
 #include "opengpu_drm.h"
+#include "opengpu_shader_validator.h"
 
 static const struct file_operations opengpu_compute_fops;
 
@@ -31,6 +32,7 @@ struct opengpu_render_context {
 struct opengpu_resource_binding {
     struct drm_gem_object *object;
     dma_addr_t dma;
+    u64 offset;
     u64 size;
     u32 type;
     u32 width;
@@ -43,8 +45,9 @@ struct opengpu_sched_job {
     struct opengpu_device *gpu;
     struct opengpu_job hw;
     struct opengpu_buffer commands;
+    struct opengpu_buffer shader;
     struct opengpu_buffer depth;
-    struct drm_gem_object *objects[4];
+    struct drm_gem_object *objects[3];
     u32 object_count;
 };
 
@@ -268,6 +271,10 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
         (args->offset & 3) || args->pad ||
         check_add_overflow(args->offset, args->size, &end))
         return -EINVAL;
+    if (args->type == OPENGPU_RESOURCE_SHADER &&
+        ((args->offset & 63) || (args->size & 63) ||
+         args->size > OPENGPU_SHADER_MAX_INSTRUCTIONS * sizeof(u32)))
+        return -EINVAL;
     if (args->type == OPENGPU_RESOURCE_TEXTURE) {
         if (!args->width || !args->height ||
             args->width > 0x3fff || args->height > 0x3fff ||
@@ -305,6 +312,7 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
     }
     binding->object = object;
     binding->dma = end;
+    binding->offset = args->offset;
     binding->size = args->size;
     binding->type = args->type;
     binding->width = args->width;
@@ -376,8 +384,6 @@ out_file:
     return ret;
 }
 
-#define OPENGPU_KERNARG_MIN_SIZE 192u
-
 static struct opengpu_resource_binding *
 opengpu_binding_lookup(struct opengpu_render_context *context, u32 slot,
                        u32 type)
@@ -391,6 +397,7 @@ opengpu_binding_lookup(struct opengpu_render_context *context, u32 slot,
 }
 
 static int opengpu_resolve_bindings(
+    struct opengpu_device *gpu,
     struct opengpu_render_context *context,
     const struct drm_opengpu_submit *args,
     struct opengpu_resource_binding **shader,
@@ -399,10 +406,8 @@ static int opengpu_resolve_bindings(
 {
     if (!!args->shader_slot != !!args->kernarg_slot)
         return -EINVAL;
-    /* The current emitted top is fixed-function.  More importantly, enabling
-     * core-backed programs also requires instruction/control-flow validation;
-     * a GEM range alone cannot sandbox arbitrary shader loads and stores. */
-    if (args->shader_slot)
+    if (args->shader_slot &&
+        !(gpu->hw.capabilities & GPU_CAP_FRAGMENT_CORE))
         return -EOPNOTSUPP;
     *shader = args->shader_slot ?
         opengpu_binding_lookup(context, args->shader_slot,
@@ -420,13 +425,39 @@ static int opengpu_resolve_bindings(
     return 0;
 }
 
-static int opengpu_validate_commands(struct opengpu_buffer *commands,
+static u32 opengpu_fragment_batch_capacity(struct opengpu_device *gpu)
+{
+    return (gpu->hw.capabilities & GPU_CAP_FRAGMENT_BATCH_MASK) >>
+           GPU_CAP_FRAGMENT_BATCH_SHIFT;
+}
+
+static bool opengpu_validate_shader(
+    struct opengpu_device *gpu, struct opengpu_buffer *shader,
+    u64 kernarg_size, u32 entry)
+{
+    const u32 *program;
+    u64 available;
+    u32 words;
+
+    if ((entry & 3) || entry >= shader->size)
+        return false;
+    available = shader->size - entry;
+    words = min_t(u64, available / sizeof(u32),
+                  OPENGPU_SHADER_MAX_INSTRUCTIONS);
+    program = (const u32 *)((const u8 *)shader->cpu + entry);
+    return opengpu_shader_validate_words(
+        program, words, kernarg_size,
+        opengpu_fragment_batch_capacity(gpu));
+}
+
+static int opengpu_validate_commands(struct opengpu_device *gpu,
+                                     struct opengpu_buffer *commands,
                                      const struct drm_opengpu_submit *args,
-                                     struct opengpu_resource_binding *shader,
+                                     struct opengpu_buffer *shader,
                                      struct opengpu_resource_binding *kernarg)
 {
     struct gpu_draw_record *records = commands->cpu;
-    u64 address;
+    u64 address, kernarg_min;
     u32 i, j;
 
     BUILD_BUG_ON(sizeof(struct drm_opengpu_draw) !=
@@ -447,11 +478,16 @@ static int opengpu_validate_commands(struct opengpu_buffer *commands,
                 return -EINVAL;
             continue;
         }
-        if (check_add_overflow((u64)record->shader_pc, 4ull, &address) ||
+        kernarg_min = 6ull * 4ull * opengpu_fragment_batch_capacity(gpu);
+        if (!kernarg_min ||
+            check_add_overflow((u64)record->shader_pc, 4ull, &address) ||
             address > shader->size ||
             check_add_overflow((u64)record->kernarg,
-                               (u64)OPENGPU_KERNARG_MIN_SIZE, &address) ||
-            address > kernarg->size)
+                               kernarg_min, &address) ||
+            address > kernarg->size ||
+            !opengpu_validate_shader(gpu, shader,
+                                     kernarg->size - record->kernarg,
+                                     record->shader_pc))
             return -EINVAL;
         record->shader_pc += lower_32_bits(shader->dma);
         record->kernarg += lower_32_bits(kernarg->dma);
@@ -536,6 +572,7 @@ static void opengpu_sched_free_job(struct drm_sched_job *base)
     for (i = 0; i < job->object_count; i++)
         drm_gem_object_put(job->objects[i]);
     opengpu_buffer_free(job->gpu, &job->depth);
+    opengpu_buffer_free(job->gpu, &job->shader);
     opengpu_buffer_free(job->gpu, &job->commands);
     kfree(job);
 }
@@ -618,7 +655,7 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         ret = -ENOENT;
         goto out_file;
     }
-    ret = opengpu_resolve_bindings(context, args, &shader, &kernarg,
+    ret = opengpu_resolve_bindings(gpu, context, args, &shader, &kernarg,
                                    &texture);
     if (ret)
         goto out_file;
@@ -643,6 +680,9 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     /* Commands are snapshotted by the CPU, so a previous writer must finish
      * before validation. Device-side BO dependencies remain asynchronous. */
     ret = opengpu_wait_reservation(command_object, DMA_RESV_USAGE_WRITE);
+    if (!ret && shader)
+        ret = opengpu_wait_reservation(shader->object,
+                                       DMA_RESV_USAGE_WRITE);
     if (ret)
         goto out_exec;
 
@@ -655,6 +695,21 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     ret = opengpu_buffer_alloc(gpu, &sched_job->commands, command_bytes);
     if (ret)
         goto out_job;
+    if (shader) {
+        struct drm_gem_dma_object *shader_dma;
+
+        shader_dma = to_drm_gem_dma_obj(shader->object);
+        if (!shader_dma->vaddr) {
+            ret = -EINVAL;
+            goto out_job;
+        }
+        ret = opengpu_buffer_alloc(gpu, &sched_job->shader, shader->size);
+        if (ret)
+            goto out_job;
+        memcpy(sched_job->shader.cpu,
+               (const u8 *)shader_dma->vaddr + shader->offset,
+               shader->size);
+    }
     ret = opengpu_buffer_alloc(gpu, &sched_job->depth,
                                (size_t)gpu->stride * gpu->height);
     if (ret)
@@ -663,7 +718,8 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     memcpy(sched_job->commands.cpu,
            (u8 *)command_dma->vaddr + args->command_offset,
            command_bytes);
-    ret = opengpu_validate_commands(&sched_job->commands, args, shader,
+    ret = opengpu_validate_commands(gpu, &sched_job->commands, args,
+                                    shader ? &sched_job->shader : NULL,
                                     kernarg);
     if (ret)
         goto out_job;
@@ -700,10 +756,6 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
                                                    color_object->resv,
                                                    DMA_RESV_USAGE_READ);
-    if (!ret && shader)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   shader->object->resv,
-                                                   DMA_RESV_USAGE_WRITE);
     if (!ret && kernarg)
         ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
                                                    kernarg->object->resv,
@@ -717,10 +769,6 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
 
     drm_gem_object_get(color_object);
     sched_job->objects[sched_job->object_count++] = color_object;
-    if (shader) {
-        drm_gem_object_get(shader->object);
-        sched_job->objects[sched_job->object_count++] = shader->object;
-    }
     if (kernarg) {
         drm_gem_object_get(kernarg->object);
         sched_job->objects[sched_job->object_count++] = kernarg->object;
@@ -735,9 +783,6 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     dma_fence_put(context->last_fence);
     context->last_fence = dma_fence_get(fence);
     dma_resv_add_fence(color_object->resv, fence, DMA_RESV_USAGE_WRITE);
-    if (shader)
-        dma_resv_add_fence(shader->object->resv, fence,
-                           DMA_RESV_USAGE_READ);
     if (kernarg)
         dma_resv_add_fence(kernarg->object->resv, fence,
                            DMA_RESV_USAGE_WRITE);
@@ -762,6 +807,7 @@ out_job:
         drm_sched_job_cleanup(&sched_job->base);
     if (sched_job) {
         opengpu_buffer_free(gpu, &sched_job->depth);
+        opengpu_buffer_free(gpu, &sched_job->shader);
         opengpu_buffer_free(gpu, &sched_job->commands);
         kfree(sched_job);
     }
