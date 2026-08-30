@@ -186,10 +186,13 @@ character device first, DRM display client next, per the roadmap):
   select texture or shader/kernarg bindings. On a capable build the driver waits
   for prior shader writers, copies
   the complete 64-byte-aligned binding into per-job DMA, validates that immutable
-  snapshot, and relocates only validated entry offsets. Sandbox profile v1 is
-  linear RV32I/M ending in `CEASE`: x1 cannot be overwritten, loads are bounded
-  to kernarg, and stores are bounded to the batch colour-output slice. Branches,
-  jumps, atomics, vector memory and custom instructions remain gated.
+  snapshot, and relocates only validated entry offsets. Sandbox profile v2 is
+  linear RV32I/M+V ending in `CEASE`: x1 cannot be overwritten, scalar loads
+  are bounded to kernarg, and stores are bounded to the batch colour-output
+  slice. Its RVV subset is fixed e32/m1 configuration plus unmasked unit-stride
+  `vle32`/`vse32`; abstract address tracking proves `x1 + 4*x8 + constant`
+  accesses stay within the SoA arrays for every active lane. Branches, jumps,
+  atomics, masked/strided/gather memory and custom instructions remain gated.
 - **queued execution and explicit synchronization**: each context maps to a DRM
   scheduler entity on a one-credit hardware queue. Submit accepts optional
   binary `in_syncobj`/`out_syncobj` handles; input and GEM dependencies are
@@ -228,7 +231,7 @@ GPU_FRAG_CORE=1 ./scripts/run_arti_gpu.sh
 
 The first command emits and tests the fixed-function texture top. The second
 emits the 4-lane, 2-warp fragment-core top, runs the trusted shader/kernarg
-bring-up draw and executes the validated scalar shader from the DRM guest. Its
+bring-up draw and executes the validated per-lane RVV shader from the DRM guest. Its
 default boot timeout is 180 seconds; set `TIMEOUT` explicitly to override it.
 
 ARTI defaults to the sibling repository `../arti`; override `ARTI_DIR` when it
@@ -243,7 +246,8 @@ ARTI infers AXI4 from the `s_axi_*` names, generates the embedded QEMU model
 and DT node, then loads the DRM stack and module in the guest. The adaptive
 guest queries `CAPABILITIES`: the fixed top binds a texture and verifies the
 exact sampled RTL pixel, while the fragment-core top binds shader/kernarg GEMs,
-proves an unsafe shader is rejected and executes a valid pass-through shader.
+proves an unsafe vector store is rejected and executes a valid per-lane
+pass-through shader over all 120 covered triangle pixels.
 Both paths queue two draws with explicit syncobjs, render into two dumb buffers,
 perform an atomic modeset and page flip, receive a matching vblank-paced flip
 event, prove unbound resources and destroyed contexts cannot be reused, and print

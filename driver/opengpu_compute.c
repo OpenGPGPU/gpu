@@ -91,13 +91,14 @@ static void opengpu_fill_test_command(struct opengpu_device *gpu)
 static int opengpu_init_test_shader(struct opengpu_device *gpu)
 {
     u32 batch = opengpu_fragment_batch_capacity(gpu);
-    u32 stride, input_offset, output_offset;
+    u32 stride, input_offset, output_offset, vector_length;
     u32 *program;
     int ret;
 
     if (!batch)
         return -EINVAL;
     stride = 4 * batch;
+    vector_length = min(batch, 4u);
     input_offset = GPU_KERNARG_COLOR_OFF(stride);
     output_offset = GPU_KERNARG_OUT_OFF(stride);
     ret = opengpu_buffer_alloc(gpu, &gpu->compute.shader, 64);
@@ -112,12 +113,18 @@ static int opengpu_init_test_shader(struct opengpu_device *gpu)
 
     program = gpu->compute.shader.cpu;
     memset(program, 0, gpu->compute.shader.size);
-    program[0] = (input_offset & 0xfff) << 20 | 1u << 15 |
-                 2u << 12 | 10u << 7 | 0x03; /* lw x10,input(x1) */
-    program[1] = ((output_offset & 0xfe0) >> 5) << 25 | 10u << 20 |
-                 1u << 15 | 2u << 12 | (output_offset & 0x1f) << 7 |
-                 0x23; /* sw x10,output(x1) */
-    program[2] = OPENGPU_SHADER_CEASE;
+    /* Per-warp vector pass-through over the SoA kernarg arrays:
+     * x5 = x1 + 4*x8; vle32 colours; vse32 outputs. */
+    program[0] = 2u << 20 | 8u << 15 | 1u << 12 | 5u << 7 | 0x13;
+    program[1] = 5u << 20 | 1u << 15 | 5u << 7 | 0x33;
+    program[2] = 0xc1007057u | vector_length << 15;
+    program[3] = (input_offset & 0xfff) << 20 | 5u << 15 |
+                 6u << 7 | 0x13;
+    program[4] = 0x02006007u | 6u << 15 | 2u << 7;
+    program[5] = (output_offset & 0xfff) << 20 | 5u << 15 |
+                 6u << 7 | 0x13;
+    program[6] = 0x02006027u | 6u << 15 | 2u << 7;
+    program[7] = OPENGPU_SHADER_CEASE;
     return 0;
 }
 

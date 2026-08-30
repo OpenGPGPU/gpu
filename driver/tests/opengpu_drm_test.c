@@ -575,19 +575,34 @@ static uint64_t monotonic_ms(void)
     return (uint64_t)time.tv_sec * 1000 + time.tv_nsec / 1000000;
 }
 
-static bool framebuffer_contains(const struct dumb_fb *fb, uint32_t pixel)
+static uint32_t framebuffer_count(const struct dumb_fb *fb, uint32_t pixel)
 {
+    uint32_t count = 0;
     uint32_t x, y;
 
     for (y = 0; y < TEST_HEIGHT; y++) {
-        const uint32_t *row =
-            (const uint32_t *)((const uint8_t *)fb->map + y * fb->pitch);
+        const uint32_t *row = (const uint32_t *)
+            ((const uint8_t *)fb->map + y * fb->pitch);
 
         for (x = 0; x < TEST_WIDTH; x++)
-            if (row[x] == pixel)
-                return true;
+            count += row[x] == pixel;
     }
-    return false;
+    return count;
+}
+
+static void write_vector_shader(void *mapping)
+{
+    uint32_t *program = mapping;
+
+    /* x5=x1+4*x8; VL=4/e32; vector-copy colour input[96] to output[128]. */
+    program[0] = 0x00241293u; /* slli x5,x8,2 */
+    program[1] = 0x005082b3u; /* add x5,x1,x5 */
+    program[2] = 0xc1027057u; /* vsetivli x0,4,e32,m1,ta,ma */
+    program[3] = 0x06028313u; /* addi x6,x5,96 */
+    program[4] = 0x02036107u; /* vle32.v v2,(x6) */
+    program[5] = 0x08028313u; /* addi x6,x5,128 */
+    program[6] = 0x02036127u; /* vse32.v v2,(x6) */
+    program[7] = 0x30500073u; /* cease */
 }
 
 static int create_syncobj(int fd, uint32_t *handle)
@@ -674,9 +689,7 @@ int main(void)
     CHECK(create_texture_buffer(fd, &texture), "texture buffer");
     CHECK(create_resource_buffer(fd, 64, &shader), "shader buffer");
     CHECK(create_resource_buffer(fd, 192, &kernarg), "kernarg buffer");
-    ((uint32_t *)shader.map)[0] = 0x0600a503u; /* lw x10,96(x1) */
-    ((uint32_t *)shader.map)[1] = 0x08a0a023u; /* sw x10,128(x1) */
-    ((uint32_t *)shader.map)[2] = 0x30500073u; /* cease */
+    write_vector_shader(shader.map);
     CHECK(create_context(fd, &context_id), "create render context");
     CHECK(bind_texture(fd, context_id, 1, &texture), "bind texture");
     CHECK(bind_resource(fd, context_id, 2, &shader,
@@ -684,10 +697,10 @@ int main(void)
     CHECK(bind_resource(fd, context_id, 3, &kernarg,
                         OPENGPU_RESOURCE_KERNARG, 192), "bind kernarg");
     if (frag_core) {
-        ((uint32_t *)shader.map)[0] = 0x00a0a023u; /* sw x10,0(x1): escape */
+        ((uint32_t *)shader.map)[6] = 0x0200e127u; /* vse32.v v2,(x1) */
         CHECK(reject_shader_submit(fd, context_id, &commands, &first, EINVAL),
-              "reject unsafe fragment shader");
-        ((uint32_t *)shader.map)[0] = 0x0600a503u;
+              "reject unsafe vector fragment shader");
+        write_vector_shader(shader.map);
         texture_slot = 0;
         shader_slot = 2;
         kernarg_slot = 3;
@@ -728,7 +741,7 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL modeset skipped fence");
         return 1;
     }
-    if ((frag_core && !framebuffer_contains(&first, expected_pixel)) ||
+    if ((frag_core && framebuffer_count(&first, expected_pixel) != 120) ||
         (!frag_core &&
          *(uint32_t *)((uint8_t *)first.map + first.pitch + 4) !=
              expected_pixel)) {
@@ -740,7 +753,7 @@ int main(void)
     CHECK(wait_flip_event(fd, &event), "wait flip event");
     CHECK(wait_syncobjs(fd, output_syncobjs, ARRAY_SIZE(output_syncobjs)),
           "wait output syncobjs");
-    if ((frag_core && !framebuffer_contains(&second, expected_pixel)) ||
+    if ((frag_core && framebuffer_count(&second, expected_pixel) != 120) ||
         (!frag_core &&
          *(uint32_t *)((uint8_t *)second.map + second.pitch + 4) !=
              expected_pixel)) {

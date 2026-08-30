@@ -779,13 +779,21 @@ Status (virtual display and DRM handoff, 2026-08-29):
   self-test on capable hardware. DRM 1.3 exposes `CAPABILITIES` with `GET_PARAM`,
   allowing the adaptive guest to select texture or shader resources. The core
   path rejects an actually unsafe shader with `EINVAL`, executes the restored
-  scalar program from immutable per-job storage, queues two explicitly
+  validated program from immutable per-job storage, queues two explicitly
   synchronized draws, and completes KMS modeset/page flip/vblank. Both fixed
   and core-backed Linux boots pass end to end.
-- Next: extend the shader validator with proven vector-memory and structured
-  control-flow profiles, then use them for full per-lane framebuffer output.
-  Hardware-side per-draw overlap/double buffering remains the separate M5
-  throughput milestone.
+- **Validated per-lane RVV output complete (2026-08-30).** Sandbox profile v2
+  adds fixed e32/m1 `vsetivli` and unmasked unit-stride `vle32`/`vse32`.
+  Abstract interpretation recognizes the trusted warp address form `x1 +
+  4*x8 + constant`, proves vector loads remain inside kernarg and stores remain
+  inside the colour-output SoA slice, and rejects unconfigured VL, unknown
+  bases, input-array stores, boundary crossings and masked memory. Probe and
+  DRM guest now execute the same per-warp vector pass-through. The full-system
+  test requires exactly all 120 covered triangle pixels in both queued
+  framebuffers, while also proving an unsafe vector store returns `EINVAL`.
+- Next: add proven structured control flow and a broader allow-listed vector
+  arithmetic profile. Hardware-side per-draw overlap/double buffering remains
+  the separate M5 throughput milestone.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 
