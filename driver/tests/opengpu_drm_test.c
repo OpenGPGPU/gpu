@@ -594,15 +594,16 @@ static void write_vector_shader(void *mapping)
 {
     uint32_t *program = mapping;
 
-    /* x5=x1+4*x8; VL=4/e32; vector-copy colour input[96] to output[128]. */
+    /* x5=x1+4*x8; VL=4/e32; add one to each packed input colour. */
     program[0] = 0x00241293u; /* slli x5,x8,2 */
     program[1] = 0x005082b3u; /* add x5,x1,x5 */
     program[2] = 0xc1027057u; /* vsetivli x0,4,e32,m1,ta,ma */
     program[3] = 0x06028313u; /* addi x6,x5,96 */
     program[4] = 0x02036107u; /* vle32.v v2,(x6) */
-    program[5] = 0x08028313u; /* addi x6,x5,128 */
-    program[6] = 0x02036127u; /* vse32.v v2,(x6) */
-    program[7] = 0x30500073u; /* cease */
+    program[5] = 0x0220b157u; /* vadd.vi v2,v2,1 */
+    program[6] = 0x08028313u; /* addi x6,x5,128 */
+    program[7] = 0x02036127u; /* vse32.v v2,(x6) */
+    program[8] = 0x30500073u; /* cease */
 }
 
 static int create_syncobj(int fd, uint32_t *handle)
@@ -686,6 +687,15 @@ int main(void)
     CHECK(create_fb(fd, 0x000000ffu, &first), "first dumb buffer");
     CHECK(create_fb(fd, 0x000000ffu, &second), "second dumb buffer");
     CHECK(create_command_buffer(fd, &commands), "command buffer");
+    if (frag_core) {
+        uint32_t i;
+
+        for (i = 0; i < 3; i++) {
+            commands.map->c0[i] = (i + 1) * 0x10;
+            commands.map->c1[i] = (i + 1) * 0x10;
+            commands.map->c2[i] = (i + 1) * 0x10;
+        }
+    }
     CHECK(create_texture_buffer(fd, &texture), "texture buffer");
     CHECK(create_resource_buffer(fd, 64, &shader), "shader buffer");
     CHECK(create_resource_buffer(fd, 192, &kernarg), "kernarg buffer");
@@ -697,14 +707,14 @@ int main(void)
     CHECK(bind_resource(fd, context_id, 3, &kernarg,
                         OPENGPU_RESOURCE_KERNARG, 192), "bind kernarg");
     if (frag_core) {
-        ((uint32_t *)shader.map)[6] = 0x0200e127u; /* vse32.v v2,(x1) */
+        ((uint32_t *)shader.map)[7] = 0x0200e127u; /* vse32.v v2,(x1) */
         CHECK(reject_shader_submit(fd, context_id, &commands, &first, EINVAL),
               "reject unsafe vector fragment shader");
         write_vector_shader(shader.map);
         texture_slot = 0;
         shader_slot = 2;
         kernarg_slot = 3;
-        expected_pixel = 0xffffffffu;
+        expected_pixel = 0x102031ffu;
     } else {
         CHECK(reject_shader_submit(fd, context_id, &commands, &first,
                                    EOPNOTSUPP),
@@ -785,7 +795,8 @@ int main(void)
 #undef CHECK
 
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
-           "syncobj + shader validator/capability + validated context + "
+           "syncobj + vector ALU/defined-register sandbox + "
+           "validated context + "
            "vblank flip event sequence=%u\n",
            frag_core ? "core-backed" : "texture", event.sequence);
     return 0;

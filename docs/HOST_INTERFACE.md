@@ -186,13 +186,16 @@ character device first, DRM display client next, per the roadmap):
   select texture or shader/kernarg bindings. On a capable build the driver waits
   for prior shader writers, copies
   the complete 64-byte-aligned binding into per-job DMA, validates that immutable
-  snapshot, and relocates only validated entry offsets. Sandbox profile v2 is
+  snapshot, and relocates only validated entry offsets. Sandbox profile v3 is
   linear RV32I/M+V ending in `CEASE`: x1 cannot be overwritten, scalar loads
   are bounded to kernarg, and stores are bounded to the batch colour-output
-  slice. Its RVV subset is fixed e32/m1 configuration plus unmasked unit-stride
-  `vle32`/`vse32`; abstract address tracking proves `x1 + 4*x8 + constant`
-  accesses stay within the SoA arrays for every active lane. Branches, jumps,
-  atomics, masked/strided/gather memory and custom instructions remain gated.
+  slice. Its RVV subset is fixed e32/m1 configuration, unmasked unit-stride
+  `vle32`/`vse32`, and lane-local `vadd/vsub/vrsub/vand/vor/vxor` in vv/vi
+  forms. Abstract address tracking proves `x1 + 4*x8 + constant` accesses stay
+  within the SoA arrays for every active lane. Scalar and vector definedness
+  tracking prevents a shader from exporting stale registers left by another
+  task. Branches, jumps, atomics, masked/strided/gather memory and custom
+  instructions remain gated.
 - **queued execution and explicit synchronization**: each context maps to a DRM
   scheduler entity on a one-credit hardware queue. Submit accepts optional
   binary `in_syncobj`/`out_syncobj` handles; input and GEM dependencies are

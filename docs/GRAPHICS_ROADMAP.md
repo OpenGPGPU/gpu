@@ -788,12 +788,21 @@ Status (virtual display and DRM handoff, 2026-08-29):
   4*x8 + constant`, proves vector loads remain inside kernarg and stores remain
   inside the colour-output SoA slice, and rejects unconfigured VL, unknown
   bases, input-array stores, boundary crossings and masked memory. Probe and
-  DRM guest now execute the same per-warp vector pass-through. The full-system
+  DRM guest execute per-warp vector programs. The full-system
   test requires exactly all 120 covered triangle pixels in both queued
   framebuffers, while also proving an unsafe vector store returns `EINVAL`.
-- Next: add proven structured control flow and a broader allow-listed vector
-  arithmetic profile. Hardware-side per-draw overlap/double buffering remains
-  the separate M5 throughput milestone.
+- **Lane-local vector ALU sandbox complete (2026-08-30).** Profile v3 admits
+  unmasked `vadd/vsub/vrsub/vand/vor/vxor` in their implemented vv/vi forms.
+  Validator definedness tracks both SGPRs and VGPRs from the launch ABI through
+  loads and arithmetic, rejecting reads/stores of stale registers left by a
+  prior task. Native tests cover every admitted encoding plus undefined scalar
+  store, undefined vector ALU/store, missing configuration, masked arithmetic,
+  reserved operand forms and unsupported funct6. The ARTI guest runs
+  `vadd.vi` on `0x102030ff`, requires all 120 covered pixels to become
+  `0x102031ff` in both queued framebuffers, and retains the unsafe-store test.
+- Next: add proven structured control flow, starting with bounded forward
+  branches and validation of every reachable exit. Hardware-side per-draw
+  overlap/double buffering remains the separate M5 throughput milestone.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

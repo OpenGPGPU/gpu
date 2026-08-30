@@ -58,10 +58,34 @@ static inline bool opengpu_shader_vector_access_valid(
     return !store || (start >= output_start && end <= output_end);
 }
 
+static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
+{
+    opengpu_shader_u32 funct6 = insn >> 26;
+    opengpu_shader_u32 form = (insn >> 12) & 7;
+
+    if (!(insn & (1u << 25))) /* profile v3 is deliberately unmasked */
+        return false;
+    switch (funct6) {
+    case 0x00: /* vadd.vv/vi */
+    case 0x09: /* vand.vv/vi */
+    case 0x0a: /* vor.vv/vi */
+    case 0x0b: /* vxor.vv/vi */
+        return form == 0 || form == 3;
+    case 0x02: /* vsub.vv */
+        return form == 0;
+    case 0x03: /* vrsub.vi */
+        return form == 3;
+    default:
+        return false;
+    }
+}
+
 /* Fragment shader sandbox.  Control flow is linear and must terminate in
  * CEASE. x1 remains the immutable kernarg base. Scalar lw/sw retain the v1
- * bounds. The RVV profile admits only vsetivli e32,m1 plus unmasked,
- * unit-stride vle32/vse32. A small abstract interpreter recognizes x1 +
+ * bounds. The RVV profile admits vsetivli e32,m1, a lane-local integer ALU
+ * allow-list, and unmasked unit-stride vle32/vse32. Defined-register tracking
+ * prevents stale SGPR/VGPR data from being exported. A small abstract
+ * interpreter recognizes x1 +
  * 4*x8 + constant, where x8 is the trusted warp localLinearBase, and proves
  * every active vector lane remains in kernarg (loads) or the colour-output
  * slice (stores). Branches, jumps, atomics and custom instructions remain
@@ -72,6 +96,8 @@ static inline bool opengpu_shader_validate_words(
 {
     opengpu_shader_u64 stride, output_start, output_end;
     struct opengpu_shader_value values[32] = { 0 };
+    bool scalar_defined[32] = { 0 };
+    bool vector_defined[32] = { 0 };
     opengpu_shader_u32 vector_length = 0;
     opengpu_shader_u32 i;
 
@@ -84,6 +110,9 @@ static inline bool opengpu_shader_validate_words(
         return false;
     if (word_count > OPENGPU_SHADER_MAX_INSTRUCTIONS)
         word_count = OPENGPU_SHADER_MAX_INSTRUCTIONS;
+    for (i = 0; i <= 8; i++)
+        scalar_defined[i] = true;
+    vector_defined[1] = true; /* launch-time local IDs */
     values[1].kind = OPENGPU_SHADER_VALUE_KERNARG;
     values[8].kind = OPENGPU_SHADER_VALUE_LOCAL_INDEX;
 
@@ -104,7 +133,7 @@ static inline bool opengpu_shader_validate_words(
             return true;
         switch (opcode) {
         case 0x13: /* RV32I OP-IMM */
-            if (rd == 1)
+            if (rd == 1 || !scalar_defined[rs1])
                 return false;
             if (funct3 == 1 && funct7 != 0)
                 return false;
@@ -124,9 +153,15 @@ static inline bool opengpu_shader_validate_words(
                        ((insn >> 20) & 0x1f) == 2) {
                 values[rd].kind = OPENGPU_SHADER_VALUE_LOCAL_BYTES;
             }
+            if (rd == 0) {
+                values[0].kind = OPENGPU_SHADER_VALUE_UNKNOWN;
+                values[0].offset = 0;
+            }
+            scalar_defined[rd] = true;
             break;
         case 0x33: /* RV32I/M OP */
-            if (rd == 1 || (funct7 != 0 && funct7 != 1 && funct7 != 0x20) ||
+            if (rd == 1 || !scalar_defined[rs1] || !scalar_defined[rs2] ||
+                (funct7 != 0 && funct7 != 1 && funct7 != 0x20) ||
                 (funct7 == 0x20 && funct3 != 0 && funct3 != 5))
                 return false;
             values[rd].kind = OPENGPU_SHADER_VALUE_UNKNOWN;
@@ -139,6 +174,11 @@ static inline bool opengpu_shader_validate_words(
                 values[rd].kind = OPENGPU_SHADER_VALUE_KERNARG_LOCAL;
                 values[rd].offset = lhs.offset + rhs.offset;
             }
+            if (rd == 0) {
+                values[0].kind = OPENGPU_SHADER_VALUE_UNKNOWN;
+                values[0].offset = 0;
+            }
+            scalar_defined[rd] = true;
             break;
         case 0x17: /* AUIPC */
         case 0x37: /* LUI */
@@ -146,6 +186,7 @@ static inline bool opengpu_shader_validate_words(
                 return false;
             values[rd].kind = OPENGPU_SHADER_VALUE_UNKNOWN;
             values[rd].offset = 0;
+            scalar_defined[rd] = true;
             break;
         case 0x03: /* only lw imm(x1) inside kernarg */
             imm = (opengpu_shader_s32)insn >> 20;
@@ -156,25 +197,33 @@ static inline bool opengpu_shader_validate_words(
                 return false;
             values[rd].kind = OPENGPU_SHADER_VALUE_UNKNOWN;
             values[rd].offset = 0;
+            scalar_defined[rd] = true;
             break;
         case 0x23: /* only sw imm(x1) into output array */
             imm = (opengpu_shader_s32)(((insn >> 7) & 0x1f) |
                                        ((insn >> 25) << 5));
             if (imm & 0x800)
                 imm |= (opengpu_shader_s32)~0xfff;
-            if (funct3 != 2 || rs1 != 1 || imm < 0 ||
+            if (funct3 != 2 || rs1 != 1 || !scalar_defined[rs2] || imm < 0 ||
                 (opengpu_shader_u64)(opengpu_shader_u32)imm < output_start)
                 return false;
             end = (opengpu_shader_u64)(opengpu_shader_u32)imm + 4;
             if (end > output_end)
                 return false;
             break;
-        case 0x57: /* vsetivli x0, uimm, e32,m1,ta,ma */
-            if ((insn & 0xfff07fffu) != 0xc1007057u)
-                return false;
-            vector_length = rs1;
-            if (!vector_length || vector_length > batch_capacity)
-                return false;
+        case 0x57: /* vsetivli or allow-listed unmasked vector integer ALU */
+            if ((insn & 0xfff07fffu) == 0xc1007057u) {
+                vector_length = rs1;
+                if (!vector_length || vector_length > batch_capacity)
+                    return false;
+            } else {
+                if (!vector_length ||
+                    !opengpu_shader_vector_alu_valid(insn) ||
+                    !vector_defined[rs2] ||
+                    (funct3 == 0 && !vector_defined[rs1]))
+                    return false;
+                vector_defined[rd] = true;
+            }
             break;
         case 0x07: /* unmasked unit-stride vle32.v */
             if ((insn & 0xfff0707fu) != 0x02006007u ||
@@ -182,9 +231,11 @@ static inline bool opengpu_shader_validate_words(
                     &values[rs1], vector_length, false, kernarg_size,
                     batch_capacity))
                 return false;
+            vector_defined[rd] = true;
             break;
         case 0x27: /* unmasked unit-stride vse32.v */
             if ((insn & 0xfff0707fu) != 0x02006027u ||
+                !vector_defined[rd] ||
                 !opengpu_shader_vector_access_valid(
                     &values[rs1], vector_length, true, kernarg_size,
                     batch_capacity))

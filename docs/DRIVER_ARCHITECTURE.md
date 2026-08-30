@@ -84,14 +84,17 @@ through the real RTL memory port. A read-only capability register advertises
 fragment-core presence and batch capacity. Without it shader submissions return
 `EOPNOTSUPP`. With it, the driver snapshots a bounded, cache-line-aligned shader
 binding into per-job DMA and validates the snapshot before relocation, removing
-the writable-GEM validate/execute race. Sandbox profile v2 accepts terminating,
+the writable-GEM validate/execute race. Sandbox profile v3 accepts terminating,
 linear RV32I/M+V with an immutable x1 kernarg base. Scalar loads stay inside
 kernarg and stores stay inside its colour-output slice. The vector subset is
-fixed e32/m1 `vsetivli` plus unmasked unit-stride `vle32`/`vse32`; abstract
-interpretation tracks the trusted `x1 + 4*x8 + constant` per-warp address form
-and proves all active lanes remain in their SoA input/output arrays. More
-complex control flow, masked/strided/gather memory, atomics and custom
-instructions require future validator profiles.
+fixed e32/m1 `vsetivli`, unmasked unit-stride `vle32`/`vse32`, and lane-local
+`vadd/vsub/vrsub/vand/vor/vxor` vv/vi forms. Abstract interpretation tracks the
+trusted `x1 + 4*x8 + constant` per-warp address form and proves all active lanes
+remain in their SoA input/output arrays. Defined-register tracking requires
+every SGPR/VGPR source to come from the launch ABI, an admitted instruction or
+a validated load, preventing stale cross-task register disclosure. More complex
+control flow, masked/strided/gather memory, atomics and custom instructions
+require future validator profiles.
 `DRM_IOCTL_OPENGPU_GET_PARAM` reports the capability word to userspace. The
 trusted probe self-test follows the same split: fixed hardware uses the texture
 pipeline, while capable hardware allocates private shader/kernarg buffers and
@@ -169,9 +172,9 @@ Validated command submission, per-file render contexts, GEM resource bindings,
 queued DRM scheduling and explicit binary syncobjs are complete (2026-08-30).
 Capability discovery, immutable shader validation and core-backed shader
 execution through ARTI/QEMU/Linux are also complete (2026-08-30). Proven
-unit-stride vector memory and full per-lane framebuffer output are complete as
-well. The next execution milestone is structured control flow and a broader
-allow-listed vector arithmetic profile.
+unit-stride vector memory, lane-local integer arithmetic and full per-lane
+framebuffer output are complete as well. The next execution milestone is
+structured control flow with bounded forward branches.
 
 ## RTL boundary
 
