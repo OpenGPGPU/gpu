@@ -800,9 +800,20 @@ Status (virtual display and DRM handoff, 2026-08-29):
   reserved operand forms and unsupported funct6. The ARTI guest runs
   `vadd.vi` on `0x102030ff`, requires all 120 covered pixels to become
   `0x102031ff` in both queued framebuffers, and retains the unsafe-store test.
-- Next: add proven structured control flow, starting with bounded forward
-  branches and validation of every reachable exit. Hardware-side per-draw
-  overlap/double buffering remains the separate M5 throughput milestone.
+- **Structured forward branches complete (2026-08-30).** Profile v4 admits all
+  RV32 conditional branch comparisons when both scalar operands are defined,
+  the target is a strictly forward 4-byte-aligned instruction, and no more
+  than four branches are simultaneously unreconverged (keeping the kernel
+  validator stack below 2 KiB). At each target, dataflow merge intersects
+  SGPR/VGPR definedness and retains address provenance/VL only when identical
+  on every path. Backward edges, reserved funct3, missing definitions, path-
+  local definitions consumed after a join, excessive nesting and branches
+  bypassing the common final `CEASE` are rejected. The ARTI guest branches on
+  x8: warp zero preserves `0x102030ff`, warp one executes `vadd.vi` to produce
+  `0x102031ff`; each queued framebuffer must contain exactly 60 pixels of each.
+- Next: validate structured early-exit/discard and the existing core-backed
+  `vtex.sample` instruction. Hardware-side per-draw overlap/double buffering
+  remains the separate M5 throughput milestone.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

@@ -594,16 +594,17 @@ static void write_vector_shader(void *mapping)
 {
     uint32_t *program = mapping;
 
-    /* x5=x1+4*x8; VL=4/e32; add one to each packed input colour. */
+    /* Warp zero keeps the input; later warps add one to each packed colour. */
     program[0] = 0x00241293u; /* slli x5,x8,2 */
     program[1] = 0x005082b3u; /* add x5,x1,x5 */
     program[2] = 0xc1027057u; /* vsetivli x0,4,e32,m1,ta,ma */
     program[3] = 0x06028313u; /* addi x6,x5,96 */
     program[4] = 0x02036107u; /* vle32.v v2,(x6) */
-    program[5] = 0x0220b157u; /* vadd.vi v2,v2,1 */
-    program[6] = 0x08028313u; /* addi x6,x5,128 */
-    program[7] = 0x02036127u; /* vse32.v v2,(x6) */
-    program[8] = 0x30500073u; /* cease */
+    program[5] = 0x00040463u; /* beq x8,x0,+8 */
+    program[6] = 0x0220b157u; /* vadd.vi v2,v2,1 */
+    program[7] = 0x08028313u; /* addi x6,x5,128 */
+    program[8] = 0x02036127u; /* vse32.v v2,(x6) */
+    program[9] = 0x30500073u; /* cease */
 }
 
 static int create_syncobj(int fd, uint32_t *handle)
@@ -654,7 +655,7 @@ int main(void)
     uint64_t capabilities;
     uint32_t batch_capacity;
     uint32_t texture_slot, shader_slot, kernarg_slot;
-    uint32_t expected_pixel;
+    uint32_t expected_pixel, alternate_pixel = 0;
     bool frag_core;
     uint64_t start;
     uint32_t context_id;
@@ -707,7 +708,7 @@ int main(void)
     CHECK(bind_resource(fd, context_id, 3, &kernarg,
                         OPENGPU_RESOURCE_KERNARG, 192), "bind kernarg");
     if (frag_core) {
-        ((uint32_t *)shader.map)[7] = 0x0200e127u; /* vse32.v v2,(x1) */
+        ((uint32_t *)shader.map)[8] = 0x0200e127u; /* vse32.v v2,(x1) */
         CHECK(reject_shader_submit(fd, context_id, &commands, &first, EINVAL),
               "reject unsafe vector fragment shader");
         write_vector_shader(shader.map);
@@ -715,6 +716,7 @@ int main(void)
         shader_slot = 2;
         kernarg_slot = 3;
         expected_pixel = 0x102031ffu;
+        alternate_pixel = 0x102030ffu;
     } else {
         CHECK(reject_shader_submit(fd, context_id, &commands, &first,
                                    EOPNOTSUPP),
@@ -751,7 +753,9 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL modeset skipped fence");
         return 1;
     }
-    if ((frag_core && framebuffer_count(&first, expected_pixel) != 120) ||
+    if ((frag_core &&
+         (framebuffer_count(&first, expected_pixel) != 60 ||
+          framebuffer_count(&first, alternate_pixel) != 60)) ||
         (!frag_core &&
          *(uint32_t *)((uint8_t *)first.map + first.pitch + 4) !=
              expected_pixel)) {
@@ -763,7 +767,9 @@ int main(void)
     CHECK(wait_flip_event(fd, &event), "wait flip event");
     CHECK(wait_syncobjs(fd, output_syncobjs, ARRAY_SIZE(output_syncobjs)),
           "wait output syncobjs");
-    if ((frag_core && framebuffer_count(&second, expected_pixel) != 120) ||
+    if ((frag_core &&
+         (framebuffer_count(&second, expected_pixel) != 60 ||
+          framebuffer_count(&second, alternate_pixel) != 60)) ||
         (!frag_core &&
          *(uint32_t *)((uint8_t *)second.map + second.pitch + 4) !=
              expected_pixel)) {
@@ -795,7 +801,7 @@ int main(void)
 #undef CHECK
 
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
-           "syncobj + vector ALU/defined-register sandbox + "
+           "syncobj + forward-branch/vector sandbox + "
            "validated context + "
            "vblank flip event sequence=%u\n",
            frag_core ? "core-backed" : "texture", event.sequence);
