@@ -60,6 +60,8 @@ struct opengpu_compute {
     struct opengpu_buffer cmd;
     struct opengpu_buffer color;
     struct opengpu_buffer depth;
+    struct opengpu_buffer shader;
+    struct opengpu_buffer kernarg;
     struct drm_gpu_scheduler scheduler;
 };
 
@@ -136,6 +138,8 @@ void opengpu_compute_drm_postclose(struct drm_device *drm,
                                    struct drm_file *file);
 int opengpu_compute_context_create_ioctl(struct drm_device *drm, void *data,
                                          struct drm_file *file);
+int opengpu_compute_get_param_ioctl(struct drm_device *drm, void *data,
+                                    struct drm_file *file);
 int opengpu_compute_context_destroy_ioctl(struct drm_device *drm, void *data,
                                           struct drm_file *file);
 int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,

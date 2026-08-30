@@ -760,7 +760,7 @@ Status (virtual display and DRM handoff, 2026-08-29):
   published to reservations and an optional output syncobj. The full ARTI guest
   test queues two textured draws, chains the first output syncobj into the
   second input, observes both jobs pending, waits both outputs, and verifies KMS
-  fence waits and page-flip vblank. DRM interface version is now 1.2.
+  fence waits and page-flip vblank. DRM interface version is now 1.3.
 - **Fragment-core capability and shader sandbox complete (2026-08-30).** The
   read-only `CAPABILITIES` register reports fragment-core presence and batch
   capacity; the emitted fixed-function top reports zero, while a 4-lane ×
@@ -773,11 +773,19 @@ Status (virtual display and DRM handoff, 2026-08-29):
   native test covers valid pass-through code, write escape, x1 corruption,
   out-of-range read, control flow and missing termination; RTL tests cover both
   capability values, and the ARTI guest covers the fixed-top `EOPNOTSUPP` gate.
-- Next: add a fragment-core-aware bring-up self-test and an alternate emitted
-  top/full-system guest path that executes the validated scalar shader. Then
-  extend the validator with proven vector-memory and structured-control-flow
-  profiles. Hardware-side per-draw overlap/double buffering remains the
-  separate M5 throughput milestone.
+- **Core-backed full-system execution complete (2026-08-30).** The RTL emitter
+  accepts `--frag-core`, and `GPU_FRAG_CORE=1 ./scripts/run_arti_gpu.sh` builds
+  that exact top into QEMU. Probe uses a trusted pass-through shader/kernarg
+  self-test on capable hardware. DRM 1.3 exposes `CAPABILITIES` with `GET_PARAM`,
+  allowing the adaptive guest to select texture or shader resources. The core
+  path rejects an actually unsafe shader with `EINVAL`, executes the restored
+  scalar program from immutable per-job storage, queues two explicitly
+  synchronized draws, and completes KMS modeset/page flip/vblank. Both fixed
+  and core-backed Linux boots pass end to end.
+- Next: extend the shader validator with proven vector-memory and structured
+  control-flow profiles, then use them for full per-lane framebuffer output.
+  Hardware-side per-draw overlap/double buffering remains the separate M5
+  throughput milestone.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

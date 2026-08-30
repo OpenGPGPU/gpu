@@ -21,6 +21,7 @@
 #include "opengpu_shader_validator.h"
 
 static const struct file_operations opengpu_compute_fops;
+static u32 opengpu_fragment_batch_capacity(struct opengpu_device *gpu);
 
 struct opengpu_render_context {
     u32 id;
@@ -65,6 +66,8 @@ static void opengpu_fill_test_command(struct opengpu_device *gpu)
 
     memset(gpu->compute.cmd.cpu, 0, sizeof(*r));
     memset(gpu->compute.depth.cpu, 0xff, gpu->compute.depth.size);
+    if (gpu->compute.kernarg.cpu)
+        memset(gpu->compute.kernarg.cpu, 0, gpu->compute.kernarg.size);
 
     r->v0[0] = -0x10000; r->v0[1] = -0x10000;
     r->v0[2] = 0; r->v0[3] = 0x10000;
@@ -79,6 +82,43 @@ static void opengpu_fill_test_command(struct opengpu_device *gpu)
     r->d0 = 0x10;
     r->d1 = 0x10;
     r->d2 = 0x10;
+    if (gpu->hw.capabilities & GPU_CAP_FRAGMENT_CORE) {
+        r->shader_pc = lower_32_bits(gpu->compute.shader.dma);
+        r->kernarg = lower_32_bits(gpu->compute.kernarg.dma);
+    }
+}
+
+static int opengpu_init_test_shader(struct opengpu_device *gpu)
+{
+    u32 batch = opengpu_fragment_batch_capacity(gpu);
+    u32 stride, input_offset, output_offset;
+    u32 *program;
+    int ret;
+
+    if (!batch)
+        return -EINVAL;
+    stride = 4 * batch;
+    input_offset = GPU_KERNARG_COLOR_OFF(stride);
+    output_offset = GPU_KERNARG_OUT_OFF(stride);
+    ret = opengpu_buffer_alloc(gpu, &gpu->compute.shader, 64);
+    if (ret)
+        return ret;
+    ret = opengpu_buffer_alloc(gpu, &gpu->compute.kernarg,
+                               GPU_KERNARG_UNIFORM_OFF(stride));
+    if (ret) {
+        opengpu_buffer_free(gpu, &gpu->compute.shader);
+        return ret;
+    }
+
+    program = gpu->compute.shader.cpu;
+    memset(program, 0, gpu->compute.shader.size);
+    program[0] = (input_offset & 0xfff) << 20 | 1u << 15 |
+                 2u << 12 | 10u << 7 | 0x03; /* lw x10,input(x1) */
+    program[1] = ((output_offset & 0xfe0) >> 5) << 25 | 10u << 20 |
+                 1u << 15 | 2u << 12 | (output_offset & 0x1f) << 7 |
+                 0x23; /* sw x10,output(x1) */
+    program[2] = OPENGPU_SHADER_CEASE;
+    return 0;
 }
 
 static int opengpu_submit_test(struct opengpu_device *gpu)
@@ -167,6 +207,20 @@ int opengpu_compute_drm_open(struct drm_device *drm, struct drm_file *file)
     mutex_init(&render_file->lock);
     idr_init(&render_file->contexts);
     file->driver_priv = render_file;
+    return 0;
+}
+
+int opengpu_compute_get_param_ioctl(struct drm_device *drm, void *data,
+                                    struct drm_file *file)
+{
+    struct drm_opengpu_param *args = data;
+    struct opengpu_device *gpu = dev_get_drvdata(drm->dev);
+
+    if (args->pad)
+        return -EINVAL;
+    if (args->param != OPENGPU_PARAM_CAPABILITIES)
+        return -EINVAL;
+    args->value = gpu->hw.capabilities;
     return 0;
 }
 
@@ -408,6 +462,9 @@ static int opengpu_resolve_bindings(
         return -EINVAL;
     if (args->shader_slot &&
         !(gpu->hw.capabilities & GPU_CAP_FRAGMENT_CORE))
+        return -EOPNOTSUPP;
+    if (!args->shader_slot &&
+        (gpu->hw.capabilities & GPU_CAP_FRAGMENT_CORE))
         return -EOPNOTSUPP;
     *shader = args->shader_slot ?
         opengpu_binding_lookup(context, args->shader_slot,
@@ -826,8 +883,7 @@ out_command_object:
 
 static int opengpu_self_test(struct opengpu_device *gpu)
 {
-    u32 pixel;
-    u32 rgb;
+    u32 x, y, rgb = 0;
     int ret;
 
     ret = opengpu_submit_test(gpu);
@@ -836,12 +892,17 @@ static int opengpu_self_test(struct opengpu_device *gpu)
         return ret;
     }
 
-    pixel = ((u32 *)gpu->compute.color.cpu)[gpu->stride / 4 + 1];
-    rgb = (pixel >> 8) & 0x00ffffffu;
-    if (rgb == 0x00ff0000u) {
-        dev_info(gpu->dev,
-                 "OPENGPU DRIVER PASS: draw submitted and read back\n");
-        return 0;
+    for (y = 0; y < gpu->height; y++) {
+        u32 *row = gpu->compute.color.cpu + y * gpu->stride;
+
+        for (x = 0; x < gpu->width; x++) {
+            rgb = (row[x] >> 8) & 0x00ffffffu;
+            if (rgb == 0x00ff0000u) {
+                dev_info(gpu->dev,
+                         "OPENGPU DRIVER PASS: draw submitted and read back\n");
+                return 0;
+            }
+        }
     }
 
     dev_err(gpu->dev,
@@ -931,13 +992,18 @@ int opengpu_compute_init(struct opengpu_device *gpu)
                                (size_t)gpu->stride * gpu->height);
     if (ret)
         goto err_color;
+    if (gpu->hw.capabilities & GPU_CAP_FRAGMENT_CORE) {
+        ret = opengpu_init_test_shader(gpu);
+        if (ret)
+            goto err_depth;
+    }
 
     ret = opengpu_self_test(gpu);
     if (ret)
-        goto err_depth;
+        goto err_shader;
     ret = drm_sched_init(&compute->scheduler, &sched_args);
     if (ret)
-        goto err_depth;
+        goto err_shader;
     compute->misc = (struct miscdevice) {
         .minor = MISC_DYNAMIC_MINOR,
         .name = OPENGPU_COMPUTE_NAME,
@@ -952,6 +1018,9 @@ int opengpu_compute_init(struct opengpu_device *gpu)
 
 err_scheduler:
     drm_sched_fini(&compute->scheduler);
+err_shader:
+    opengpu_buffer_free(gpu, &compute->kernarg);
+    opengpu_buffer_free(gpu, &compute->shader);
 err_depth:
     opengpu_buffer_free(gpu, &compute->depth);
 err_color:
@@ -965,6 +1034,8 @@ void opengpu_compute_fini(struct opengpu_device *gpu)
 {
     misc_deregister(&gpu->compute.misc);
     drm_sched_fini(&gpu->compute.scheduler);
+    opengpu_buffer_free(gpu, &gpu->compute.kernarg);
+    opengpu_buffer_free(gpu, &gpu->compute.shader);
     opengpu_buffer_free(gpu, &gpu->compute.depth);
     opengpu_buffer_free(gpu, &gpu->compute.color);
     opengpu_buffer_free(gpu, &gpu->compute.cmd);

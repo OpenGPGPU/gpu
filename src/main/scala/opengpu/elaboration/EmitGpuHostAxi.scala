@@ -17,13 +17,14 @@ import opengpu.graphics.{GpuHostAxi, GraphicsConfig}
 object EmitGpuHostAxi {
   def main(args: Array[String]): Unit = {
     val targetDir = args.headOption.getOrElse("generated/host")
+    val fragCore = args.drop(1).contains("--frag-core")
     val stageArgs = Array("--target-dir", targetDir)
     val firtoolArgs = Array(
       "--lowering-options=disallowLocalVariables,disallowPackedArrays"
     )
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
     ChiselStage.emitSystemVerilogFile(
-      new GpuHostAxi(gfx, GpuConfig(lanes = 4, warps = 2), fragCore = false),
+      new GpuHostAxi(gfx, GpuConfig(lanes = 4, warps = 2), fragCore = fragCore),
       stageArgs,
       firtoolArgs
     )

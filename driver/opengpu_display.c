@@ -239,6 +239,8 @@ static const struct drm_ioctl_desc opengpu_drm_ioctls[] = {
     DRM_IOCTL_DEF_DRV(OPENGPU_RESOURCE_UNBIND,
                       opengpu_compute_resource_unbind_ioctl,
                       DRM_RENDER_ALLOW),
+    DRM_IOCTL_DEF_DRV(OPENGPU_GET_PARAM, opengpu_compute_get_param_ioctl,
+                      DRM_RENDER_ALLOW),
 };
 
 static const struct drm_driver opengpu_drm_driver = {
@@ -247,7 +249,7 @@ static const struct drm_driver opengpu_drm_driver = {
     .name = "opengpu",
     .desc = "RISC-V SIMT OpenGPU",
     .major = 1,
-    .minor = 2,
+    .minor = 3,
     .fops = &opengpu_drm_fops,
     .open = opengpu_compute_drm_open,
     .postclose = opengpu_compute_drm_postclose,

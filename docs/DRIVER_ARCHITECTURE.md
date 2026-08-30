@@ -88,6 +88,10 @@ the writable-GEM validate/execute race. Sandbox profile v1 accepts terminating,
 linear RV32I/M with an immutable x1 kernarg base; loads stay inside kernarg and
 stores stay inside its colour-output slice. More complex control flow, vector
 memory, atomics and custom instructions require future validator profiles.
+`DRM_IOCTL_OPENGPU_GET_PARAM` reports the capability word to userspace. The
+trusted probe self-test follows the same split: fixed hardware uses the texture
+pipeline, while capable hardware allocates private shader/kernarg buffers and
+executes a pass-through fragment program before DRM registration.
 
 The shared DRM GPU scheduler has one hardware credit and a fair runqueue across
 context entities. It resolves GEM reservation and input-syncobj dependencies
@@ -159,8 +163,10 @@ No block frees another block's objects.
 
 Validated command submission, per-file render contexts, GEM resource bindings,
 queued DRM scheduling and explicit binary syncobjs are complete (2026-08-30).
-Core-backed shader enablement separately requires a hardware capability bit and
-instruction/control-flow validation.
+Capability discovery, immutable shader validation and core-backed shader
+execution through ARTI/QEMU/Linux are also complete (2026-08-30). The next
+execution milestone is a richer, proven validator profile for vector memory and
+structured control flow.
 
 ## RTL boundary
 

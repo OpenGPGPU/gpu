@@ -13,6 +13,7 @@ LINUX_HEADERS="${LINUX_HEADERS:-/tmp/arti-linux-headers}"
 DRIVER_OUTPUT="${DRIVER_OUTPUT:-/tmp/opengpu-arti-driver}"
 QEMU_TOOLS="${QEMU_TOOLS:-/tmp/qemu-build-tools}"
 QEMU_DISPLAY="${QEMU_DISPLAY:-none}"
+GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}"
 
 if [ -z "${QEMU_SRC:-}" ]; then
     for qemu_candidate in /tmp/qemu-src /tmp/qemu-src/qemu-11.1.0; do
@@ -51,7 +52,15 @@ if [ ! -f "$QEMU_TOOLS/bin/ninja" ] && command -v ninja >/dev/null 2>&1; then
 fi
 
 echo "=== 1/4 Emit GpuHostAxi RTL ==="
-(cd "$GPU_DIR" && sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host")
+if [ "$GPU_FRAG_CORE" = "1" ]; then
+    (cd "$GPU_DIR" && \
+        sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host --frag-core")
+    TIMEOUT="${TIMEOUT:-180}"
+else
+    (cd "$GPU_DIR" && \
+        sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host")
+    TIMEOUT="${TIMEOUT:-60}"
+fi
 [ -f "$GPU_DIR/generated/host/GpuHostAxi.sv" ] || \
     fail "RTL emission did not produce generated/host/GpuHostAxi.sv"
 [ -f "$GPU_DIR/generated/host/filelist.f" ] || \
@@ -155,5 +164,5 @@ ln -s "$ARTI_DIR/examples/linux_arti_driver/driver_preflight.sh" \
 cp "$GPU_DIR/driver/tests/arti-linux-init.c" "$HARNESS_STAGE/arti-linux-init.c"
 
 export ARTI_DIR INTEGRATION_CONFIG LINUX_BUILD DRIVER_KO DRIVER_MANIFEST WORK
-export QEMU_DISPLAY HOLD_AFTER_TEST
+export QEMU_DISPLAY HOLD_AFTER_TEST TIMEOUT
 "$HARNESS_STAGE/run_linux_test.sh"

@@ -182,7 +182,9 @@ character device first, DRM display client next, per the roadmap):
 - **fragment shader safety boundary**: `CAPABILITIES` distinguishes the current
   fixed-function top (zero) from a fragment-core build (bit0 plus batch capacity
   in bits 15:8). Shader submission is rejected with `EOPNOTSUPP` unless bit0 is
-  present. On a capable build the driver waits for prior shader writers, copies
+  present; `DRM_IOCTL_OPENGPU_GET_PARAM` exposes the same value so userspace can
+  select texture or shader/kernarg bindings. On a capable build the driver waits
+  for prior shader writers, copies
   the complete 64-byte-aligned binding into per-job DMA, validates that immutable
   snapshot, and relocates only validated entry offsets. Sandbox profile v1 is
   linear RV32I/M ending in `CEASE`: x1 cannot be overwritten, loads are bounded
@@ -193,7 +195,7 @@ character device first, DRM display client next, per the roadmap):
   binary `in_syncobj`/`out_syncobj` handles; input and GEM dependencies are
   resolved before launch, while the scheduler finished fence is installed in
   the output syncobj and every written/read reservation object. This is DRM
-  interface version 1.2.
+  interface version 1.3.
 - **implicit display synchronization**: the KMS plane extracts the reservation
   fence and DRM atomic helpers wait before programming the scanout bank.
 - **flip pacing**: a 60 Hz software vblank source delivers
@@ -221,7 +223,13 @@ then boots the end-to-end draw/display test:
 
 ```bash
 ./scripts/run_arti_gpu.sh
+GPU_FRAG_CORE=1 ./scripts/run_arti_gpu.sh
 ```
+
+The first command emits and tests the fixed-function texture top. The second
+emits the 4-lane, 2-warp fragment-core top, runs the trusted shader/kernarg
+bring-up draw and executes the validated scalar shader from the DRM guest. Its
+default boot timeout is 180 seconds; set `TIMEOUT` explicitly to override it.
 
 ARTI defaults to the sibling repository `../arti`; override `ARTI_DIR` when it
 lives elsewhere. To keep the rendered self-test visible in a macOS window:
@@ -232,12 +240,13 @@ QEMU_DISPLAY=cocoa HOLD_AFTER_TEST=30 ./scripts/run_arti_gpu.sh
 
 The underlying integration profile remains `driver/gpu_integration.yaml`.
 ARTI infers AXI4 from the `s_axi_*` names, generates the embedded QEMU model
-and DT node, then loads the DRM stack and module in the guest. The guest test
-must create a render context and command GEM, bind a texture GEM, prove an
-unsafe command is rejected, verify the exact texture-modulated RTL pixel,
-render into two dumb buffers, perform an atomic modeset and page flip, receive a
-matching vblank-paced flip event, prove unbound resources and destroyed
-contexts cannot be reused, and print
+and DT node, then loads the DRM stack and module in the guest. The adaptive
+guest queries `CAPABILITIES`: the fixed top binds a texture and verifies the
+exact sampled RTL pixel, while the fragment-core top binds shader/kernarg GEMs,
+proves an unsafe shader is rejected and executes a valid pass-through shader.
+Both paths queue two draws with explicit syncobjs, render into two dumb buffers,
+perform an atomic modeset and page flip, receive a matching vblank-paced flip
+event, prove unbound resources and destroyed contexts cannot be reused, and print
 `OPENGPU USERSPACE DRM PASS`.
 
 ### Caveat: the memory (master) port
@@ -255,9 +264,10 @@ The AArch64 Linux boot path now runs with QEMU, the generated `GpuHostAxi`
 model, and the GPU host driver loaded from an initramfs. The AXI control path,
 device identification, guest-memory bridge, draw completion, framebuffer
 readback, DRM registration, GEM DMA mmap and atomic scanout commits are
-functional. The render self-test still verifies a red triangle; final success
-now requires a userspace modeset and a nonblocking page flip with a valid
-`DRM_EVENT_FLIP_COMPLETE` through `/dev/dri/card0`.
+functional. The trusted bring-up self-test chooses a fixed-function draw or a
+shader/kernarg draw from `CAPABILITIES`; both emitted tops then pass userspace
+modeset and a nonblocking page flip with a valid `DRM_EVENT_FLIP_COMPLETE`
+through `/dev/dri/card0`.
 
 With `display.source: guest-memory`, ARTI watches the display-domain
 `SCANOUT_BASE` (0x44) and `SCANOUT_STRIDE` (0x48), reads the selected framebuffer

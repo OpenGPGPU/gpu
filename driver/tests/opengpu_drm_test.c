@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +60,18 @@ static int set_client_cap(int fd, uint64_t capability)
     };
 
     return ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, &cap);
+}
+
+static int get_capabilities(int fd, uint64_t *capabilities)
+{
+    struct drm_opengpu_param param = {
+        .param = OPENGPU_PARAM_CAPABILITIES,
+    };
+
+    if (ioctl(fd, DRM_IOCTL_OPENGPU_GET_PARAM, &param) < 0)
+        return -1;
+    *capabilities = param.value;
+    return 0;
 }
 
 static uint32_t find_property(int fd, uint32_t object_id,
@@ -370,6 +383,7 @@ static int unbind_resource(int fd, uint32_t context_id, uint32_t slot)
 static int submit_render(int fd, uint32_t context_id,
                          const struct command_buffer *commands,
                          const struct dumb_fb *fb, uint32_t texture_slot,
+                         uint32_t shader_slot, uint32_t kernarg_slot,
                          uint32_t in_syncobj, uint32_t out_syncobj)
 {
     struct drm_opengpu_submit submit = {
@@ -380,6 +394,8 @@ static int submit_render(int fd, uint32_t context_id,
         .command_count = 1,
         .flags = OPENGPU_SUBMIT_TEST_FENCE_DELAY,
         .texture_slot = texture_slot,
+        .shader_slot = shader_slot,
+        .kernarg_slot = kernarg_slot,
         .in_syncobj = in_syncobj,
         .out_syncobj = out_syncobj,
     };
@@ -395,7 +411,7 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
 
     commands->map->shader_pc = 4;
     errno = 0;
-    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0);
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
     commands->map->shader_pc = 0;
     if (ret == -1 && errno == EINVAL)
         return 0;
@@ -403,9 +419,9 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
     return -1;
 }
 
-static int reject_unsupported_shader(int fd, uint32_t context_id,
-                                     const struct command_buffer *commands,
-                                     const struct dumb_fb *fb)
+static int reject_shader_submit(int fd, uint32_t context_id,
+                                const struct command_buffer *commands,
+                                const struct dumb_fb *fb, int expected_errno)
 {
     struct drm_opengpu_submit submit = {
         .context_id = context_id,
@@ -419,7 +435,7 @@ static int reject_unsupported_shader(int fd, uint32_t context_id,
 
     errno = 0;
     if (ioctl(fd, DRM_IOCTL_OPENGPU_SUBMIT, &submit) == -1 &&
-        errno == EOPNOTSUPP)
+        errno == expected_errno)
         return 0;
     errno = EPROTO;
     return -1;
@@ -559,6 +575,21 @@ static uint64_t monotonic_ms(void)
     return (uint64_t)time.tv_sec * 1000 + time.tv_nsec / 1000000;
 }
 
+static bool framebuffer_contains(const struct dumb_fb *fb, uint32_t pixel)
+{
+    uint32_t x, y;
+
+    for (y = 0; y < TEST_HEIGHT; y++) {
+        const uint32_t *row =
+            (const uint32_t *)((const uint8_t *)fb->map + y * fb->pitch);
+
+        for (x = 0; x < TEST_WIDTH; x++)
+            if (row[x] == pixel)
+                return true;
+    }
+    return false;
+}
+
 static int create_syncobj(int fd, uint32_t *handle)
 {
     struct drm_syncobj_create create = { 0 };
@@ -604,6 +635,11 @@ int main(void)
     struct drm_event_vblank event = { 0 };
     uint32_t syncobjs[3] = { 0 };
     uint32_t output_syncobjs[2];
+    uint64_t capabilities;
+    uint32_t batch_capacity;
+    uint32_t texture_slot, shader_slot, kernarg_slot;
+    uint32_t expected_pixel;
+    bool frag_core;
     uint64_t start;
     uint32_t context_id;
     int fd;
@@ -622,6 +658,15 @@ int main(void)
     CHECK(set_client_cap(fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES),
           "universal planes");
     CHECK(set_client_cap(fd, DRM_CLIENT_CAP_ATOMIC), "atomic capability");
+    CHECK(get_capabilities(fd, &capabilities), "query GPU capabilities");
+    frag_core = capabilities & OPENGPU_CAP_FRAGMENT_CORE;
+    batch_capacity = (capabilities & OPENGPU_CAP_FRAGMENT_BATCH_MASK) >>
+                     OPENGPU_CAP_FRAGMENT_BATCH_SHIFT;
+    if (frag_core && batch_capacity != 8) {
+        errno = EPROTO;
+        perror("OPENGPU USERSPACE DRM FAIL fragment batch capacity");
+        return 1;
+    }
     CHECK(find_kms_objects(fd, &ids), "resource discovery");
     CHECK(create_fb(fd, 0x000000ffu, &first), "first dumb buffer");
     CHECK(create_fb(fd, 0x000000ffu, &second), "second dumb buffer");
@@ -638,17 +683,33 @@ int main(void)
                         OPENGPU_RESOURCE_SHADER, 64), "bind shader");
     CHECK(bind_resource(fd, context_id, 3, &kernarg,
                         OPENGPU_RESOURCE_KERNARG, 192), "bind kernarg");
-    CHECK(reject_unsupported_shader(fd, context_id, &commands, &first),
-          "gate fragment shader capability");
+    if (frag_core) {
+        ((uint32_t *)shader.map)[0] = 0x00a0a023u; /* sw x10,0(x1): escape */
+        CHECK(reject_shader_submit(fd, context_id, &commands, &first, EINVAL),
+              "reject unsafe fragment shader");
+        ((uint32_t *)shader.map)[0] = 0x0600a503u;
+        texture_slot = 0;
+        shader_slot = 2;
+        kernarg_slot = 3;
+        expected_pixel = 0xffffffffu;
+    } else {
+        CHECK(reject_shader_submit(fd, context_id, &commands, &first,
+                                   EOPNOTSUPP),
+              "gate fragment shader capability");
+        CHECK(reject_unsafe_command(fd, context_id, &commands, &first),
+              "reject unsafe command");
+        texture_slot = 1;
+        shader_slot = 0;
+        kernarg_slot = 0;
+        expected_pixel = 0xfe0000ffu;
+    }
     CHECK(create_syncobj(fd, &syncobjs[1]), "create first output syncobj");
     CHECK(create_syncobj(fd, &syncobjs[2]), "create second output syncobj");
-    CHECK(reject_unsafe_command(fd, context_id, &commands, &first),
-          "reject unsafe command");
-    CHECK(submit_render(fd, context_id, &commands, &first, 1,
-                        0, syncobjs[1]),
+    CHECK(submit_render(fd, context_id, &commands, &first, texture_slot,
+                        shader_slot, kernarg_slot, 0, syncobjs[1]),
           "queue first buffer");
-    CHECK(submit_render(fd, context_id, &commands, &second, 1,
-                        syncobjs[1], syncobjs[2]),
+    CHECK(submit_render(fd, context_id, &commands, &second, texture_slot,
+                        shader_slot, kernarg_slot, syncobjs[1], syncobjs[2]),
           "queue second buffer");
     output_syncobjs[0] = syncobjs[1];
     output_syncobjs[1] = syncobjs[2];
@@ -667,8 +728,10 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL modeset skipped fence");
         return 1;
     }
-    if (*(uint32_t *)((uint8_t *)first.map + first.pitch + 4) !=
-        0xfe0000ffu) {
+    if ((frag_core && !framebuffer_contains(&first, expected_pixel)) ||
+        (!frag_core &&
+         *(uint32_t *)((uint8_t *)first.map + first.pitch + 4) !=
+             expected_pixel)) {
         errno = EIO;
         perror("OPENGPU USERSPACE DRM FAIL texture result");
         return 1;
@@ -677,15 +740,21 @@ int main(void)
     CHECK(wait_flip_event(fd, &event), "wait flip event");
     CHECK(wait_syncobjs(fd, output_syncobjs, ARRAY_SIZE(output_syncobjs)),
           "wait output syncobjs");
-    if (*(uint32_t *)((uint8_t *)second.map + second.pitch + 4) !=
-        0xfe0000ffu) {
+    if ((frag_core && !framebuffer_contains(&second, expected_pixel)) ||
+        (!frag_core &&
+         *(uint32_t *)((uint8_t *)second.map + second.pitch + 4) !=
+             expected_pixel)) {
         errno = EIO;
         perror("OPENGPU USERSPACE DRM FAIL queued texture result");
         return 1;
     }
-    CHECK(unbind_resource(fd, context_id, 1), "unbind texture");
+    if (frag_core)
+        CHECK(unbind_resource(fd, context_id, 2), "unbind shader");
+    else
+        CHECK(unbind_resource(fd, context_id, 1), "unbind texture");
     errno = 0;
-    if (submit_render(fd, context_id, &commands, &second, 1, 0, 0) != -1 ||
+    if (submit_render(fd, context_id, &commands, &second, texture_slot,
+                      shader_slot, kernarg_slot, 0, 0) != -1 ||
         errno != EINVAL) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL unbound texture accepted");
@@ -693,7 +762,8 @@ int main(void)
     }
     CHECK(destroy_context(fd, context_id), "destroy render context");
     errno = 0;
-    if (submit_render(fd, context_id, &commands, &second, 0, 0, 0) != -1 ||
+    if (submit_render(fd, context_id, &commands, &second, texture_slot,
+                      shader_slot, kernarg_slot, 0, 0) != -1 ||
         errno != ENOENT) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL destroyed context accepted");
@@ -701,9 +771,9 @@ int main(void)
     }
 #undef CHECK
 
-    printf("OPENGPU USERSPACE DRM PASS: queued texture render + explicit "
-           "syncobj + shader capability gate + validated context + "
+    printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
+           "syncobj + shader validator/capability + validated context + "
            "vblank flip event sequence=%u\n",
-           event.sequence);
+           frag_core ? "core-backed" : "texture", event.sequence);
     return 0;
 }

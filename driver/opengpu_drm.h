@@ -29,6 +29,18 @@ struct drm_opengpu_context {
     __u32 flags;
 };
 
+struct drm_opengpu_param {
+    __u32 param;
+    __u32 pad;
+    __u64 value;
+};
+
+#define OPENGPU_PARAM_CAPABILITIES 0u
+#define OPENGPU_CAP_FRAGMENT_CORE (1u << 0)
+#define OPENGPU_CAP_FRAGMENT_BATCH_SHIFT 8u
+#define OPENGPU_CAP_FRAGMENT_BATCH_MASK \
+    (0xffu << OPENGPU_CAP_FRAGMENT_BATCH_SHIFT)
+
 enum drm_opengpu_resource_type {
     OPENGPU_RESOURCE_SHADER = 1,
     OPENGPU_RESOURCE_KERNARG = 2,
@@ -78,6 +90,7 @@ struct drm_opengpu_submit {
 #define DRM_OPENGPU_CONTEXT_DESTROY 0x02
 #define DRM_OPENGPU_RESOURCE_BIND 0x03
 #define DRM_OPENGPU_RESOURCE_UNBIND 0x04
+#define DRM_OPENGPU_GET_PARAM 0x05
 #define DRM_IOCTL_OPENGPU_SUBMIT \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_SUBMIT, \
              struct drm_opengpu_submit)
@@ -93,5 +106,8 @@ struct drm_opengpu_submit {
 #define DRM_IOCTL_OPENGPU_RESOURCE_UNBIND \
     DRM_IOW(DRM_COMMAND_BASE + DRM_OPENGPU_RESOURCE_UNBIND, \
             struct drm_opengpu_resource)
+#define DRM_IOCTL_OPENGPU_GET_PARAM \
+    DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_GET_PARAM, \
+             struct drm_opengpu_param)
 
 #endif /* OPENGPU_DRM_H */
