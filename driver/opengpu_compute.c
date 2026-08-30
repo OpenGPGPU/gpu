@@ -13,6 +13,8 @@
 #include <drm/drm_file.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_syncobj.h>
+#include <drm/gpu_scheduler.h>
 
 #include "opengpu_device.h"
 #include "opengpu_drm.h"
@@ -21,8 +23,7 @@ static const struct file_operations opengpu_compute_fops;
 
 struct opengpu_render_context {
     u32 id;
-    struct opengpu_buffer commands;
-    struct opengpu_buffer depth;
+    struct drm_sched_entity entity;
     struct dma_fence *last_fence;
     struct opengpu_resource_binding *bindings[OPENGPU_MAX_RESOURCE_SLOTS];
 };
@@ -35,6 +36,16 @@ struct opengpu_resource_binding {
     u32 width;
     u32 height;
     u32 flags;
+};
+
+struct opengpu_sched_job {
+    struct drm_sched_job base;
+    struct opengpu_device *gpu;
+    struct opengpu_job hw;
+    struct opengpu_buffer commands;
+    struct opengpu_buffer depth;
+    struct drm_gem_object *objects[4];
+    u32 object_count;
 };
 
 struct opengpu_file {
@@ -87,11 +98,6 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
 
 static int opengpu_wait_fence(struct dma_fence **fence, bool interruptible);
 
-static int opengpu_compute_wait_last(struct opengpu_compute *compute)
-{
-    return opengpu_wait_fence(&compute->last_fence, true);
-}
-
 static int opengpu_wait_fence(struct dma_fence **fence, bool interruptible)
 {
     long timeout;
@@ -117,20 +123,16 @@ static int opengpu_wait_fence(struct dma_fence **fence, bool interruptible)
 static void opengpu_context_free(struct opengpu_file *render_file,
                                  struct opengpu_render_context *context)
 {
-    struct opengpu_device *gpu = render_file->gpu;
     u32 i;
 
-    mutex_lock(&gpu->compute.lock);
+    drm_sched_entity_destroy(&context->entity);
     opengpu_wait_fence(&context->last_fence, false);
-    mutex_unlock(&gpu->compute.lock);
     for (i = 0; i < ARRAY_SIZE(context->bindings); i++) {
         if (!context->bindings[i])
             continue;
         drm_gem_object_put(context->bindings[i]->object);
         kfree(context->bindings[i]);
     }
-    opengpu_buffer_free(gpu, &context->depth);
-    opengpu_buffer_free(gpu, &context->commands);
     kfree(context);
 }
 
@@ -147,11 +149,7 @@ static int opengpu_context_quiesce(struct opengpu_file *render_file,
 {
     int ret;
 
-    ret = mutex_lock_interruptible(&render_file->gpu->compute.lock);
-    if (ret)
-        return ret;
     ret = opengpu_wait_fence(&context->last_fence, true);
-    mutex_unlock(&render_file->gpu->compute.lock);
     return ret;
 }
 
@@ -201,15 +199,15 @@ int opengpu_compute_context_create_ioctl(struct drm_device *drm, void *data,
     context = kzalloc(sizeof(*context), GFP_KERNEL);
     if (!context)
         return -ENOMEM;
-    ret = opengpu_buffer_alloc(gpu, &context->commands,
-                               OPENGPU_MAX_COMMANDS *
-                               sizeof(struct gpu_draw_record));
+    {
+        struct drm_gpu_scheduler *scheduler = &gpu->compute.scheduler;
+
+        ret = drm_sched_entity_init(&context->entity,
+                                    DRM_SCHED_PRIORITY_NORMAL,
+                                    &scheduler, 1, NULL);
+    }
     if (ret)
         goto err_context;
-    ret = opengpu_buffer_alloc(gpu, &context->depth,
-                               (size_t)gpu->stride * gpu->height);
-    if (ret)
-        goto err_commands;
 
     mutex_lock(&render_file->lock);
     ret = idr_alloc(&render_file->contexts, context, 1, 0, GFP_KERNEL);
@@ -222,9 +220,7 @@ int opengpu_compute_context_create_ioctl(struct drm_device *drm, void *data,
     if (!ret)
         return 0;
 
-    opengpu_buffer_free(gpu, &context->depth);
-err_commands:
-    opengpu_buffer_free(gpu, &context->commands);
+    drm_sched_entity_destroy(&context->entity);
 err_context:
     kfree(context);
     return ret;
@@ -424,12 +420,12 @@ static int opengpu_resolve_bindings(
     return 0;
 }
 
-static int opengpu_validate_commands(struct opengpu_render_context *context,
+static int opengpu_validate_commands(struct opengpu_buffer *commands,
                                      const struct drm_opengpu_submit *args,
                                      struct opengpu_resource_binding *shader,
                                      struct opengpu_resource_binding *kernarg)
 {
-    struct gpu_draw_record *records = context->commands.cpu;
+    struct gpu_draw_record *records = commands->cpu;
     u64 address;
     u32 i, j;
 
@@ -503,12 +499,58 @@ static int opengpu_wait_reservation(struct drm_gem_object *object,
     return wait ? 0 : -ETIMEDOUT;
 }
 
+static struct opengpu_sched_job *
+opengpu_sched_job_from_base(struct drm_sched_job *base)
+{
+    return container_of(base, struct opengpu_sched_job, base);
+}
+
+static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
+{
+    struct opengpu_sched_job *job = opengpu_sched_job_from_base(base);
+    struct dma_fence *fence;
+    int ret;
+
+    ret = opengpu_hw_submit_async(job->gpu, &job->hw, &fence);
+    if (ret)
+        return ERR_PTR(ret);
+    return fence;
+}
+
+static enum drm_gpu_sched_stat
+opengpu_sched_timedout_job(struct drm_sched_job *base)
+{
+    struct opengpu_sched_job *job = opengpu_sched_job_from_base(base);
+
+    dev_err(job->gpu->dev, "render scheduler timeout\n");
+    opengpu_hw_abort(job->gpu, -ETIMEDOUT);
+    return DRM_GPU_SCHED_STAT_RESET;
+}
+
+static void opengpu_sched_free_job(struct drm_sched_job *base)
+{
+    struct opengpu_sched_job *job = opengpu_sched_job_from_base(base);
+    u32 i;
+
+    drm_sched_job_cleanup(base);
+    for (i = 0; i < job->object_count; i++)
+        drm_gem_object_put(job->objects[i]);
+    opengpu_buffer_free(job->gpu, &job->depth);
+    opengpu_buffer_free(job->gpu, &job->commands);
+    kfree(job);
+}
+
+static const struct drm_sched_backend_ops opengpu_sched_ops = {
+    .run_job = opengpu_sched_run_job,
+    .timedout_job = opengpu_sched_timedout_job,
+    .free_job = opengpu_sched_free_job,
+};
+
 int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
                               struct drm_file *file)
 {
     struct drm_opengpu_submit *args = data;
     struct opengpu_device *gpu = dev_get_drvdata(drm->dev);
-    struct opengpu_compute *compute = &gpu->compute;
     struct opengpu_file *render_file = file->driver_priv;
     struct opengpu_render_context *context;
     struct drm_gem_object *command_object;
@@ -516,12 +558,14 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     struct drm_gem_dma_object *command_dma;
     struct drm_gem_dma_object *color_dma;
     struct opengpu_resource_binding *shader, *kernarg, *texture;
+    struct opengpu_sched_job *sched_job = NULL;
+    struct drm_syncobj *out_sync = NULL;
     struct drm_exec exec;
-    struct dma_fence *fence;
-    struct opengpu_job job;
+    struct dma_fence *fence = NULL;
     u64 command_end;
     size_t command_bytes;
     size_t color_required;
+    bool sched_initialized = false;
     int ret;
 
     if ((args->flags & ~OPENGPU_SUBMIT_TEST_FENCE_DELAY) ||
@@ -560,6 +604,13 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         ret = -EINVAL;
         goto out_color_object;
     }
+    if (args->out_syncobj) {
+        out_sync = drm_syncobj_find(file, args->out_syncobj);
+        if (!out_sync) {
+            ret = -ENOENT;
+            goto out_color_object;
+        }
+    }
 
     mutex_lock(&render_file->lock);
     context = idr_find(&render_file->contexts, args->context_id);
@@ -589,41 +640,39 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
                                          shader, kernarg, texture);
     if (ret)
         goto out_exec;
+    /* Commands are snapshotted by the CPU, so a previous writer must finish
+     * before validation. Device-side BO dependencies remain asynchronous. */
     ret = opengpu_wait_reservation(command_object, DMA_RESV_USAGE_WRITE);
-    if (!ret)
-        ret = opengpu_wait_reservation(color_object, DMA_RESV_USAGE_READ);
-    if (!ret && shader)
-        ret = opengpu_wait_reservation(shader->object,
-                                       DMA_RESV_USAGE_WRITE);
-    if (!ret && kernarg)
-        ret = opengpu_wait_reservation(kernarg->object,
-                                       DMA_RESV_USAGE_READ);
-    if (!ret && texture)
-        ret = opengpu_wait_reservation(texture->object,
-                                       DMA_RESV_USAGE_WRITE);
     if (ret)
         goto out_exec;
 
-    memcpy(context->commands.cpu,
+    sched_job = kzalloc(sizeof(*sched_job), GFP_KERNEL);
+    if (!sched_job) {
+        ret = -ENOMEM;
+        goto out_exec;
+    }
+    sched_job->gpu = gpu;
+    ret = opengpu_buffer_alloc(gpu, &sched_job->commands, command_bytes);
+    if (ret)
+        goto out_job;
+    ret = opengpu_buffer_alloc(gpu, &sched_job->depth,
+                               (size_t)gpu->stride * gpu->height);
+    if (ret)
+        goto out_job;
+
+    memcpy(sched_job->commands.cpu,
            (u8 *)command_dma->vaddr + args->command_offset,
            command_bytes);
-    ret = opengpu_validate_commands(context, args, shader, kernarg);
+    ret = opengpu_validate_commands(&sched_job->commands, args, shader,
+                                    kernarg);
     if (ret)
-        goto out_exec;
-
-    ret = mutex_lock_interruptible(&compute->lock);
-    if (ret)
-        goto out_exec;
-    ret = opengpu_compute_wait_last(compute);
-    if (ret)
-        goto out_compute;
-
-    memset(context->depth.cpu, 0xff, context->depth.size);
-    job = (struct opengpu_job) {
-        .cmd = context->commands.dma,
+        goto out_job;
+    memset(sched_job->depth.cpu, 0xff, sched_job->depth.size);
+    sched_job->hw = (struct opengpu_job) {
+        .cmd = sched_job->commands.dma,
         .cmd_count = args->command_count,
         .color = color_dma->dma_addr,
-        .depth = context->depth.dma,
+        .depth = sched_job->depth.dma,
         .stride = args->stride,
         .depth_test = true,
         .depth_func = GPU_DEPTH_FUNC_LESS,
@@ -638,11 +687,51 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         .completion_delay_ms =
             args->flags & OPENGPU_SUBMIT_TEST_FENCE_DELAY ? 50 : 0,
     };
-    ret = opengpu_hw_submit_async(gpu, &job, &fence);
-    if (ret)
-        goto out_compute;
 
-    compute->last_fence = fence;
+    ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
+                             render_file, file->client_id);
+    if (ret)
+        goto out_job;
+    sched_initialized = true;
+    if (args->in_syncobj)
+        ret = drm_sched_job_add_syncobj_dependency(&sched_job->base, file,
+                                                    args->in_syncobj, 0);
+    if (!ret)
+        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
+                                                   color_object->resv,
+                                                   DMA_RESV_USAGE_READ);
+    if (!ret && shader)
+        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
+                                                   shader->object->resv,
+                                                   DMA_RESV_USAGE_WRITE);
+    if (!ret && kernarg)
+        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
+                                                   kernarg->object->resv,
+                                                   DMA_RESV_USAGE_READ);
+    if (!ret && texture)
+        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
+                                                   texture->object->resv,
+                                                   DMA_RESV_USAGE_WRITE);
+    if (ret)
+        goto out_job;
+
+    drm_gem_object_get(color_object);
+    sched_job->objects[sched_job->object_count++] = color_object;
+    if (shader) {
+        drm_gem_object_get(shader->object);
+        sched_job->objects[sched_job->object_count++] = shader->object;
+    }
+    if (kernarg) {
+        drm_gem_object_get(kernarg->object);
+        sched_job->objects[sched_job->object_count++] = kernarg->object;
+    }
+    if (texture) {
+        drm_gem_object_get(texture->object);
+        sched_job->objects[sched_job->object_count++] = texture->object;
+    }
+
+    drm_sched_job_arm(&sched_job->base);
+    fence = dma_fence_get(&sched_job->base.s_fence->finished);
     dma_fence_put(context->last_fence);
     context->last_fence = dma_fence_get(fence);
     dma_resv_add_fence(color_object->resv, fence, DMA_RESV_USAGE_WRITE);
@@ -655,17 +744,33 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     if (texture)
         dma_resv_add_fence(texture->object->resv, fence,
                            DMA_RESV_USAGE_READ);
+    if (out_sync)
+        drm_syncobj_replace_fence(out_sync, fence);
+    drm_sched_entity_push_job(&sched_job->base);
+    sched_job = NULL;
     dev_info(gpu->dev,
-             "context %u submitted %u draw(s), fence %llu on GEM handle %u\n",
+             "context %u queued %u draw(s), fence %llu on GEM handle %u\n",
              context->id, args->command_count, fence->seqno,
              args->color_handle);
+    dma_fence_put(fence);
+    fence = NULL;
+    ret = 0;
+    goto out_exec;
 
-out_compute:
-    mutex_unlock(&compute->lock);
+out_job:
+    if (sched_initialized)
+        drm_sched_job_cleanup(&sched_job->base);
+    if (sched_job) {
+        opengpu_buffer_free(gpu, &sched_job->depth);
+        opengpu_buffer_free(gpu, &sched_job->commands);
+        kfree(sched_job);
+    }
 out_exec:
     drm_exec_fini(&exec);
 out_file:
     mutex_unlock(&render_file->lock);
+    if (out_sync)
+        drm_syncobj_put(out_sync);
 out_color_object:
     drm_gem_object_put(color_object);
 out_command_object:
@@ -755,6 +860,15 @@ static const struct file_operations opengpu_compute_fops = {
 int opengpu_compute_init(struct opengpu_device *gpu)
 {
     struct opengpu_compute *compute = &gpu->compute;
+    const struct drm_sched_init_args sched_args = {
+        .ops = &opengpu_sched_ops,
+        .num_rqs = DRM_SCHED_PRIORITY_COUNT,
+        .credit_limit = 1,
+        .hang_limit = 0,
+        .timeout = msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS + 250),
+        .name = "opengpu-render",
+        .dev = gpu->dev,
+    };
     int ret;
 
     mutex_init(&compute->lock);
@@ -775,6 +889,9 @@ int opengpu_compute_init(struct opengpu_device *gpu)
     ret = opengpu_self_test(gpu);
     if (ret)
         goto err_depth;
+    ret = drm_sched_init(&compute->scheduler, &sched_args);
+    if (ret)
+        goto err_depth;
     compute->misc = (struct miscdevice) {
         .minor = MISC_DYNAMIC_MINOR,
         .name = OPENGPU_COMPUTE_NAME,
@@ -784,9 +901,11 @@ int opengpu_compute_init(struct opengpu_device *gpu)
     };
     ret = misc_register(&compute->misc);
     if (ret)
-        goto err_depth;
+        goto err_scheduler;
     return 0;
 
+err_scheduler:
+    drm_sched_fini(&compute->scheduler);
 err_depth:
     opengpu_buffer_free(gpu, &compute->depth);
 err_color:
@@ -799,9 +918,7 @@ err_cmd:
 void opengpu_compute_fini(struct opengpu_device *gpu)
 {
     misc_deregister(&gpu->compute.misc);
-    mutex_lock(&gpu->compute.lock);
-    opengpu_compute_wait_last(&gpu->compute);
-    mutex_unlock(&gpu->compute.lock);
+    drm_sched_fini(&gpu->compute.scheduler);
     opengpu_buffer_free(gpu, &gpu->compute.depth);
     opengpu_buffer_free(gpu, &gpu->compute.color);
     opengpu_buffer_free(gpu, &gpu->compute.cmd);

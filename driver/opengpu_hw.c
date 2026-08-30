@@ -66,6 +66,13 @@ static void opengpu_hw_complete(struct opengpu_device *gpu, int error)
         dma_fence_put(fence);
 }
 
+void opengpu_hw_abort(struct opengpu_device *gpu, int error)
+{
+    cancel_delayed_work_sync(&gpu->hw.timeout_work);
+    opengpu_reg_write(gpu, GPU_REG_IRQ, 0);
+    opengpu_hw_complete(gpu, error ?: -ECANCELED);
+}
+
 static void opengpu_timeout_work(struct work_struct *work)
 {
     struct opengpu_hw *hw;
@@ -153,9 +160,7 @@ int opengpu_hw_init(struct opengpu_device *gpu, struct platform_device *pdev)
 
 void opengpu_hw_fini(struct opengpu_device *gpu)
 {
-    cancel_delayed_work_sync(&gpu->hw.timeout_work);
-    opengpu_reg_write(gpu, GPU_REG_IRQ, 0);
-    opengpu_hw_complete(gpu, -ECANCELED);
+    opengpu_hw_abort(gpu, -ECANCELED);
 }
 
 int opengpu_hw_submit_async(struct opengpu_device *gpu,

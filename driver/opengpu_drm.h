@@ -4,7 +4,7 @@
 
 #include <drm/drm.h>
 
-/* Userspace draw record copied into per-context kernel DMA storage after
+/* Userspace draw record copied into per-job kernel DMA storage after
  * validation. shader_pc/kernarg are binding-relative offsets, never raw
  * device addresses; core-backed submission remains capability-gated. */
 struct drm_opengpu_draw {
@@ -62,6 +62,8 @@ struct drm_opengpu_submit {
     __u32 shader_slot;
     __u32 kernarg_slot;
     __u32 texture_slot;
+    __u32 in_syncobj;
+    __u32 out_syncobj;
     __u32 pad;
 };
 

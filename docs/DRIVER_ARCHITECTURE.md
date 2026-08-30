@@ -67,13 +67,12 @@ queue serialization and completion fences. The existing misc device is a
 bring-up ABI and remains isolated here; it can later become a DRM render node
 without changing platform or MMIO code.
 
-Each DRM file owns an IDR of explicit render contexts. A context owns private
-DMA command staging and depth storage plus its latest completion fence;
-destroy/close waits before releasing those resources. `DRM_IOCTL_OPENGPU_SUBMIT`
-references a command GEM and color GEM, copies up to 64 draw records into the
-context staging buffer, validates every record, and only then submits the
-kernel-owned snapshot. This avoids a validate/execute race with writable GEM
-mappings.
+Each DRM file owns an IDR of explicit render contexts. A context owns a DRM
+scheduler entity, its binding table and latest completion fence. Every submit
+allocates private DMA command/depth staging for that job, copies up to 64 draw
+records from the command GEM and validates the immutable snapshot. Queued jobs
+therefore cannot overwrite one another, and context destroy/close drains the
+entity before releasing bindings.
 
 Each context also owns a 16-slot GEM resource-binding table. Bindings retain
 the GEM object and expose only a validated subrange; submit selects slots, not
@@ -86,9 +85,13 @@ offsets, but core-backed submission remains rejected until the device exposes a
 capability bit and the driver validates shader instructions/control flow; GEM
 bounds alone cannot sandbox arbitrary shader loads and stores.
 
-Hardware completion is represented by a standard `dma_fence` signaled from the
-completion IRQ (or timeout worker). The execution client publishes that fence
-into the target color GEM object's `dma_resv` with write usage.
+The shared DRM GPU scheduler has one hardware credit and a fair runqueue across
+context entities. It resolves GEM reservation and input-syncobj dependencies
+without blocking submit, then launches one hardware descriptor at a time.
+Hardware completion is represented by a `dma_fence` signaled from the IRQ (or
+timeout worker); the scheduler's finished fence is published to all referenced
+GEM reservations and to the optional output syncobj. Jobs retain their GEM
+objects and DMA snapshots until that fence completes.
 
 Graphics draws and general-compute kernels may use different job payloads, but
 share queue, memory and fence machinery. Display is not an execution job.
@@ -150,10 +153,10 @@ No block frees another block's objects.
 6. Add optional virtual-vblank events when applications require paced flips.
    **Complete (2026-08-29).**
 
-Validated command submission, per-file render contexts and the GEM resource
-binding table are complete (2026-08-29). The next execution milestone is queued
-scheduling and explicit sync objects. Core-backed shader enablement separately
-requires a hardware capability bit and instruction/control-flow validation.
+Validated command submission, per-file render contexts, GEM resource bindings,
+queued DRM scheduling and explicit binary syncobjs are complete (2026-08-30).
+Core-backed shader enablement separately requires a hardware capability bit and
+instruction/control-flow validation.
 
 ## RTL boundary
 

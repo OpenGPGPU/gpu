@@ -167,18 +167,25 @@ character device first, DRM display client next, per the roadmap):
 - **readback**: `/dev/opengpu0` exposes the framebuffer; `GPU_IOCTL_SUBMIT` re-runs
   a draw from userspace.
 - **DRM render contexts**: context create/destroy ioctls give each DRM file
-  private command staging, depth storage and fence lifetime.
+  independently scheduled entities, resource bindings and fence lifetime.
 - **validated DRM submission**: `DRM_IOCTL_OPENGPU_SUBMIT` references command
   and color GEM handles, copies at most 64 draw records into immutable
-  kernel-owned DMA staging, and validates their fixed-function fields before
-  launch. Completion IRQs signal a `dma_fence` published as a write fence in
-  the color GEM object's reservation.
+  per-job kernel-owned DMA staging, and validates their fixed-function fields
+  before queueing. Per-job staging prevents a later submit from changing a
+  queued command snapshot.
 - **GEM resource bindings**: each context has 16 typed shader, kernarg or
   texture slots retaining validated GEM subranges. Submit uses `drm_exec` to
-  lock all referenced objects, waits their implicit dependencies, and publishes
-  read/write fences by access direction. The current fixed-function RTL fully
+  lock all referenced objects and publishes read/write fences by access
+  direction. The scheduler waits their implicit dependencies asynchronously.
+  The current fixed-function RTL fully
   exercises texture bindings; core-backed shader submission remains disabled
   until capability discovery and program validation are available.
+- **queued execution and explicit synchronization**: each context maps to a DRM
+  scheduler entity on a one-credit hardware queue. Submit accepts optional
+  binary `in_syncobj`/`out_syncobj` handles; input and GEM dependencies are
+  resolved before launch, while the scheduler finished fence is installed in
+  the output syncobj and every written/read reservation object. This is DRM
+  interface version 1.2.
 - **implicit display synchronization**: the KMS plane extracts the reservation
   fence and DRM atomic helpers wait before programming the scanout bank.
 - **flip pacing**: a 60 Hz software vblank source delivers

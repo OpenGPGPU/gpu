@@ -13,6 +13,8 @@
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
+#include <drm/gpu_scheduler.h>
+
 #include "gpu_abi.h"
 
 struct platform_device;
@@ -57,7 +59,7 @@ struct opengpu_compute {
     struct opengpu_buffer cmd;
     struct opengpu_buffer color;
     struct opengpu_buffer depth;
-    struct dma_fence *last_fence;
+    struct drm_gpu_scheduler scheduler;
 };
 
 struct opengpu_display {
@@ -115,6 +117,7 @@ int opengpu_hw_submit(struct opengpu_device *gpu,
 int opengpu_hw_submit_async(struct opengpu_device *gpu,
                             const struct opengpu_job *job,
                             struct dma_fence **fence);
+void opengpu_hw_abort(struct opengpu_device *gpu, int error);
 int opengpu_hw_display_commit(struct opengpu_device *gpu,
                               const struct opengpu_scanout *scanout);
 

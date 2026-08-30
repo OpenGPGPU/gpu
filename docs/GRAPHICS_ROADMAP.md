@@ -736,8 +736,9 @@ Status (virtual display and DRM handoff, 2026-08-29):
   `DRM_EVENT_FLIP_COMPLETE` to arrive only after the delayed render fence and a
   refresh boundary.
 - **Validated contexts complete.** Every DRM file owns explicit render-context
-  IDs with private DMA command/depth storage and fence lifetime. Submit copies
-  command GEM records into kernel staging before validation, limits batch size,
+  IDs with a scheduler entity, resource state and fence lifetime. Submit copies
+  command GEM records into per-job kernel staging before validation, limits
+  batch size,
   checks target bounds and fixed-function fields, and rejects raw shader or
   kernarg addresses. The guest test covers a valid render, unsafe-command
   rejection, context destruction and stale-ID rejection.
@@ -751,8 +752,18 @@ Status (virtual display and DRM handoff, 2026-08-29):
   exist.
 - The full-system texture test also exposed and fixed an RTL channel-order bug:
   `TexturedFragStage` now consumes the established `0xRRGGBBAA` layout.
-- Next: add queued scheduling and explicit sync objects; add a fragment-core
-  capability/validator before enabling bound shader programs.
+- **Queued scheduling and explicit sync complete (2026-08-30).** Contexts own
+  DRM scheduler entities sharing a one-credit hardware queue. Every queued job
+  retains immutable command/depth DMA storage plus referenced GEM objects, so
+  back-to-back submits are safe. GEM reservation fences and optional binary
+  input syncobjs are scheduler dependencies; the scheduler finished fence is
+  published to reservations and an optional output syncobj. The full ARTI guest
+  test queues two textured draws, chains the first output syncobj into the
+  second input, observes both jobs pending, waits both outputs, and verifies KMS
+  fence waits and page-flip vblank. DRM interface version is now 1.2.
+- Next: add a fragment-core capability and shader instruction/control-flow
+  validator before enabling bound shader programs. Hardware-side per-draw
+  overlap/double buffering remains the separate M5 throughput milestone.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

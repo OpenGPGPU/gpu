@@ -243,11 +243,11 @@ static const struct drm_ioctl_desc opengpu_drm_ioctls[] = {
 
 static const struct drm_driver opengpu_drm_driver = {
     .driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC |
-                       DRIVER_RENDER,
+                       DRIVER_RENDER | DRIVER_SYNCOBJ,
     .name = "opengpu",
     .desc = "RISC-V SIMT OpenGPU",
     .major = 1,
-    .minor = 1,
+    .minor = 2,
     .fops = &opengpu_drm_fops,
     .open = opengpu_compute_drm_open,
     .postclose = opengpu_compute_drm_postclose,
