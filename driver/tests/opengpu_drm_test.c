@@ -421,7 +421,8 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
 
 static int reject_shader_submit(int fd, uint32_t context_id,
                                 const struct command_buffer *commands,
-                                const struct dumb_fb *fb, int expected_errno)
+                                const struct dumb_fb *fb, uint32_t texture_slot,
+                                int expected_errno)
 {
     struct drm_opengpu_submit submit = {
         .context_id = context_id,
@@ -429,6 +430,7 @@ static int reject_shader_submit(int fd, uint32_t context_id,
         .color_handle = fb->handle,
         .stride = fb->pitch,
         .command_count = 1,
+        .texture_slot = texture_slot,
         .shader_slot = 2,
         .kernarg_slot = 3,
     };
@@ -594,17 +596,16 @@ static void write_vector_shader(void *mapping)
 {
     uint32_t *program = mapping;
 
-    /* Warp zero keeps the input; later warps add one to each packed colour. */
+    /* Sample one texture per lane; warp zero keeps red and warp one adds one. */
     program[0] = 0x00241293u; /* slli x5,x8,2 */
     program[1] = 0x005082b3u; /* add x5,x1,x5 */
     program[2] = 0xc1027057u; /* vsetivli x0,4,e32,m1,ta,ma */
-    program[3] = 0x06028313u; /* addi x6,x5,96 */
-    program[4] = 0x02036107u; /* vle32.v v2,(x6) */
-    program[5] = 0x00040463u; /* beq x8,x0,+8 */
-    program[6] = 0x0220b157u; /* vadd.vi v2,v2,1 */
-    program[7] = 0x08028313u; /* addi x6,x5,128 */
-    program[8] = 0x02036127u; /* vse32.v v2,(x6) */
-    program[9] = 0x30500073u; /* cease */
+    program[3] = 0x0610812bu; /* vtex.sample v2,v1,v1 */
+    program[4] = 0x00040463u; /* beq x8,x0,+8 */
+    program[5] = 0x0220b157u; /* vadd.vi v2,v2,1 */
+    program[6] = 0x08028313u; /* addi x6,x5,128 */
+    program[7] = 0x02036127u; /* vse32.v v2,(x6) */
+    program[8] = 0x30500073u; /* cease */
 }
 
 static int create_syncobj(int fd, uint32_t *handle)
@@ -708,17 +709,21 @@ int main(void)
     CHECK(bind_resource(fd, context_id, 3, &kernarg,
                         OPENGPU_RESOURCE_KERNARG, 192), "bind kernarg");
     if (frag_core) {
-        ((uint32_t *)shader.map)[8] = 0x0200e127u; /* vse32.v v2,(x1) */
-        CHECK(reject_shader_submit(fd, context_id, &commands, &first, EINVAL),
+        CHECK(reject_shader_submit(fd, context_id, &commands, &first, 0,
+                                   EINVAL),
+              "require texture for vtex.sample");
+        ((uint32_t *)shader.map)[7] = 0x0200e127u; /* vse32.v v2,(x1) */
+        CHECK(reject_shader_submit(fd, context_id, &commands, &first, 1,
+                                   EINVAL),
               "reject unsafe vector fragment shader");
         write_vector_shader(shader.map);
-        texture_slot = 0;
+        texture_slot = 1;
         shader_slot = 2;
         kernarg_slot = 3;
-        expected_pixel = 0x102031ffu;
-        alternate_pixel = 0x102030ffu;
+        expected_pixel = 0xff0001ffu;
+        alternate_pixel = 0xff0000ffu;
     } else {
-        CHECK(reject_shader_submit(fd, context_id, &commands, &first,
+        CHECK(reject_shader_submit(fd, context_id, &commands, &first, 1,
                                    EOPNOTSUPP),
               "gate fragment shader capability");
         CHECK(reject_unsafe_command(fd, context_id, &commands, &first),
@@ -801,7 +806,7 @@ int main(void)
 #undef CHECK
 
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
-           "syncobj + forward-branch/vector sandbox + "
+           "syncobj + validated vtex/forward-branch sandbox + "
            "validated context + "
            "vblank flip event sequence=%u\n",
            frag_core ? "core-backed" : "texture", event.sequence);

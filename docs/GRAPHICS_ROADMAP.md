@@ -811,9 +811,19 @@ Status (virtual display and DRM handoff, 2026-08-29):
   bypassing the common final `CEASE` are rejected. The ARTI guest branches on
   x8: warp zero preserves `0x102030ff`, warp one executes `vadd.vi` to produce
   `0x102031ff`; each queued framebuffer must contain exactly 60 pixels of each.
-- Next: validate structured early-exit/discard and the existing core-backed
-  `vtex.sample` instruction. Hardware-side per-draw overlap/double buffering
-  remains the separate M5 throughput milestone.
+- **Validated core-backed texture sampling complete (2026-08-31).** Profile v5
+  admits only the unmasked custom-1 `vtex.sample` form, requires configured VL
+  plus defined UV source VGPRs, and requires the same submit to carry a valid
+  texture binding. Shader and texture bindings may now coexist; aliasing with
+  command, target, shader or kernarg BOs is rejected, and sampler addresses are
+  still generated exclusively from validated base/dimensions/wrap metadata.
+  Native tests reject missing textures, masking, undefined coordinates and
+  missing VL. The ARTI guest proves the missing-binding gate, samples a real
+  texture through guest memory, branches by warp and requires each queued
+  framebuffer to contain exactly 60 `0xff0000ff` and 60 `0xff0001ff` pixels.
+- Next: add a per-fragment output-valid ABI and validate structured
+  early-exit/discard. Hardware-side per-draw overlap/double buffering remains
+  the separate M5 throughput milestone.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

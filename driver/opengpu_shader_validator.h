@@ -146,11 +146,13 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * interpreter recognizes x1 +
  * 4*x8 + constant, where x8 is the trusted warp localLinearBase, and proves
  * every active vector lane remains in kernarg (loads) or the colour-output
- * slice (stores). Backward branches, jumps, atomics and custom instructions
- * remain rejected. */
-static inline bool opengpu_shader_validate_words(
+ * slice (stores). The bounded vector texture sample requires a validated
+ * texture binding. Backward branches, jumps, atomics and all other custom
+ * instructions remain rejected. */
+static inline bool opengpu_shader_validate_words_with_texture(
     const opengpu_shader_u32 *words, opengpu_shader_u32 word_count,
-    opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity)
+    opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity,
+    bool texture_enabled)
 {
     opengpu_shader_u64 stride, output_start, output_end;
     struct opengpu_shader_state state = { 0 };
@@ -338,11 +340,26 @@ static inline bool opengpu_shader_validate_words(
                 return false;
             break;
         }
+        case 0x2b: /* unmasked opengpu.vtex.sample vd,vs1,vs2 */
+            if ((insn & 0xfe00707fu) != 0x0600002bu ||
+                !texture_enabled || !state.vector_length ||
+                !vector_defined[rs1] || !vector_defined[rs2])
+                return false;
+            vector_defined[rd] = true;
+            break;
         default:
             return false;
         }
     }
     return false;
+}
+
+static inline bool opengpu_shader_validate_words(
+    const opengpu_shader_u32 *words, opengpu_shader_u32 word_count,
+    opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity)
+{
+    return opengpu_shader_validate_words_with_texture(
+        words, word_count, kernarg_size, batch_capacity, false);
 }
 
 #endif /* OPENGPU_SHADER_VALIDATOR_H */

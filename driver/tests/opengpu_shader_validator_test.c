@@ -71,6 +71,13 @@ static uint32_t branch(unsigned int funct3, unsigned int rs1,
            ((imm >> 11) & 1) << 7 | 0x63;
 }
 
+static uint32_t vtexsample(unsigned int vd, unsigned int vs1,
+                           unsigned int vs2)
+{
+    return 0x0600002bu | (vs2 & 0x1f) << 20 | (vs1 & 0x1f) << 15 |
+           (vd & 0x1f) << 7;
+}
+
 int main(void)
 {
     const uint32_t valid[] = {
@@ -105,6 +112,24 @@ int main(void)
 
     assert(opengpu_shader_validate_words(valid, 4, 192, 8));
     assert(opengpu_shader_validate_words(vector_valid, 10, 192, 8));
+
+    program[0] = vsetivli(4);
+    program[1] = vtexsample(2, 1, 1);
+    program[2] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_shader_validate_words_with_texture(
+        program, 3, 192, 8, true));
+    assert(!opengpu_shader_validate_words(program, 3, 192, 8));
+
+    program[1] = vtexsample(2, 1, 1) & ~(1u << 25);
+    assert(!opengpu_shader_validate_words_with_texture(
+        program, 3, 192, 8, true));
+    program[1] = vtexsample(3, 2, 1); /* v2 coordinate is undefined */
+    assert(!opengpu_shader_validate_words_with_texture(
+        program, 3, 192, 8, true));
+    program[0] = vtexsample(2, 1, 1); /* VL was not configured */
+    program[1] = OPENGPU_SHADER_CEASE;
+    assert(!opengpu_shader_validate_words_with_texture(
+        program, 2, 192, 8, true));
 
     for (i = 0; i < sizeof(branch_forms) / sizeof(branch_forms[0]); i++) {
         program[0] = branch(branch_forms[i], 0, 0, 4);

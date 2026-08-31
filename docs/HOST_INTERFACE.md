@@ -186,7 +186,7 @@ character device first, DRM display client next, per the roadmap):
   select texture or shader/kernarg bindings. On a capable build the driver waits
   for prior shader writers, copies
   the complete 64-byte-aligned binding into per-job DMA, validates that immutable
-  snapshot, and relocates only validated entry offsets. Sandbox profile v4 is
+  snapshot, and relocates only validated entry offsets. Sandbox profile v5 is
   RV32I/M+V ending in one common `CEASE`: x1 cannot be overwritten, scalar loads
   are bounded to kernarg, and stores are bounded to the batch colour-output
   slice. Its RVV subset is fixed e32/m1 configuration, unmasked unit-stride
@@ -197,8 +197,11 @@ character device first, DRM display client next, per the roadmap):
   task. Up to four unreconverged, 4-byte-aligned forward conditional branches
   are admitted; every target conservatively merges definedness, address
   provenance and VL, and every path must reconverge before the final exit.
-  Backward branches, jumps, atomics, masked/strided/gather memory and custom
-  instructions remain gated.
+  `vtex.sample` is admitted only in its unmasked vector form, with defined UV
+  sources and an attached, independently validated texture binding; address
+  generation remains inside the bounded hardware sampler. Backward branches,
+  jumps, atomics, masked/strided/gather memory and other custom instructions
+  remain gated.
 - **queued execution and explicit synchronization**: each context maps to a DRM
   scheduler entity on a one-credit hardware queue. Submit accepts optional
   binary `in_syncobj`/`out_syncobj` handles; input and GEM dependencies are
@@ -251,9 +254,9 @@ The underlying integration profile remains `driver/gpu_integration.yaml`.
 ARTI infers AXI4 from the `s_axi_*` names, generates the embedded QEMU model
 and DT node, then loads the DRM stack and module in the guest. The adaptive
 guest queries `CAPABILITIES`: the fixed top binds a texture and verifies the
-exact sampled RTL pixel, while the fragment-core top binds shader/kernarg GEMs,
-proves an unsafe vector store is rejected and executes a valid per-lane
-pass-through shader over all 120 covered triangle pixels.
+exact sampled RTL pixel, while the fragment-core top binds shader, kernarg and
+texture GEMs, proves missing texture and unsafe vector stores are rejected, and
+executes `vtex.sample` over all 120 covered triangle pixels.
 Both paths queue two draws with explicit syncobjs, render into two dumb buffers,
 perform an atomic modeset and page flip, receive a matching vblank-paced flip
 event, prove unbound resources and destroyed contexts cannot be reused, and print

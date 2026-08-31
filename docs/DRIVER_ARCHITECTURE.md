@@ -84,7 +84,7 @@ through the real RTL memory port. A read-only capability register advertises
 fragment-core presence and batch capacity. Without it shader submissions return
 `EOPNOTSUPP`. With it, the driver snapshots a bounded, cache-line-aligned shader
 binding into per-job DMA and validates the snapshot before relocation, removing
-the writable-GEM validate/execute race. Sandbox profile v4 accepts terminating
+the writable-GEM validate/execute race. Sandbox profile v5 accepts terminating
 RV32I/M+V with an immutable x1 kernarg base. Scalar loads stay inside
 kernarg and stores stay inside its colour-output slice. The vector subset is
 fixed e32/m1 `vsetivli`, unmasked unit-stride `vle32`/`vse32`, and lane-local
@@ -96,9 +96,12 @@ a validated load, preventing stale cross-task register disclosure. More complex
 control flow begins with up to four unreconverged forward conditional branches.
 At every target, the validator intersects defined registers, preserves only
 identical address provenance and invalidates differing VL; all paths must
-reconverge before one final `CEASE`. Backward edges, jumps,
-masked/strided/gather memory, atomics and custom instructions require future
-validator profiles.
+reconverge before one final `CEASE`. The custom vector `vtex.sample` is accepted
+only when its UV VGPRs are defined, it is unmasked, and the same submit carries
+a validated texture GEM; the hardware sampler derives all addresses from that
+binding's base, dimensions and wrap mode. Backward edges, jumps,
+masked/strided/gather memory, atomics and other custom instructions require
+future validator profiles.
 `DRM_IOCTL_OPENGPU_GET_PARAM` reports the capability word to userspace. The
 trusted probe self-test follows the same split: fixed hardware uses the texture
 pipeline, while capable hardware allocates private shader/kernarg buffers and
@@ -177,9 +180,9 @@ queued DRM scheduling and explicit binary syncobjs are complete (2026-08-30).
 Capability discovery, immutable shader validation and core-backed shader
 execution through ARTI/QEMU/Linux are also complete (2026-08-30). Proven
 unit-stride vector memory, lane-local integer arithmetic, bounded forward
-control flow and full per-lane framebuffer output are complete as well. The
-next execution milestone is validated early-exit/discard and core-backed
-texture sampling.
+control flow, core-backed texture sampling and full per-lane framebuffer output
+are complete as well. The next execution milestone is validated
+early-exit/discard.
 
 ## RTL boundary
 

@@ -483,8 +483,7 @@ static int opengpu_resolve_bindings(
         opengpu_binding_lookup(context, args->texture_slot,
                                OPENGPU_RESOURCE_TEXTURE) : NULL;
     if ((args->shader_slot && (!*shader || !*kernarg)) ||
-        (args->texture_slot && !*texture) ||
-        (*shader && *texture))
+        (args->texture_slot && !*texture))
         return -EINVAL;
     return 0;
 }
@@ -497,7 +496,7 @@ static u32 opengpu_fragment_batch_capacity(struct opengpu_device *gpu)
 
 static bool opengpu_validate_shader(
     struct opengpu_device *gpu, struct opengpu_buffer *shader,
-    u64 kernarg_size, u32 entry)
+    u64 kernarg_size, u32 entry, bool texture_enabled)
 {
     const u32 *program;
     u64 available;
@@ -509,16 +508,17 @@ static bool opengpu_validate_shader(
     words = min_t(u64, available / sizeof(u32),
                   OPENGPU_SHADER_MAX_INSTRUCTIONS);
     program = (const u32 *)((const u8 *)shader->cpu + entry);
-    return opengpu_shader_validate_words(
+    return opengpu_shader_validate_words_with_texture(
         program, words, kernarg_size,
-        opengpu_fragment_batch_capacity(gpu));
+        opengpu_fragment_batch_capacity(gpu), texture_enabled);
 }
 
 static int opengpu_validate_commands(struct opengpu_device *gpu,
                                      struct opengpu_buffer *commands,
                                      const struct drm_opengpu_submit *args,
                                      struct opengpu_buffer *shader,
-                                     struct opengpu_resource_binding *kernarg)
+                                     struct opengpu_resource_binding *kernarg,
+                                     bool texture_enabled)
 {
     struct gpu_draw_record *records = commands->cpu;
     u64 address, kernarg_min;
@@ -551,7 +551,7 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
             address > kernarg->size ||
             !opengpu_validate_shader(gpu, shader,
                                      kernarg->size - record->kernarg,
-                                     record->shader_pc))
+                                     record->shader_pc, texture_enabled))
             return -EINVAL;
         record->shader_pc += lower_32_bits(shader->dma);
         record->kernarg += lower_32_bits(kernarg->dma);
@@ -730,7 +730,9 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
                      kernarg->object == color_object ||
                      (shader && kernarg->object == shader->object))) ||
         (texture && (texture->object == command_object ||
-                     texture->object == color_object))) {
+                     texture->object == color_object ||
+                     (shader && texture->object == shader->object) ||
+                     (kernarg && texture->object == kernarg->object)))) {
         ret = -EINVAL;
         goto out_file;
     }
@@ -784,7 +786,7 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
            command_bytes);
     ret = opengpu_validate_commands(gpu, &sched_job->commands, args,
                                     shader ? &sched_job->shader : NULL,
-                                    kernarg);
+                                    kernarg, texture != NULL);
     if (ret)
         goto out_job;
     memset(sched_job->depth.cpu, 0xff, sched_job->depth.size);
