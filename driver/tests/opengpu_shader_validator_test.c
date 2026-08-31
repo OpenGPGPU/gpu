@@ -164,13 +164,19 @@ int main(void)
         program, 2, 288, 8, true));
 
     program[0] = vsetivli(4);
-    program[1] = vquad(0x0c, 2, 1);
-    program[2] = OPENGPU_SHADER_CEASE;
-    assert(!opengpu_shader_validate_words_with_texture(
-        program, 3, 288, 8, true));
-    program[1] = vquad(0x0d, 2, 1);
-    assert(!opengpu_shader_validate_words_with_texture(
-        program, 3, 288, 8, true));
+    program[1] = addi(5, 1, 96);
+    program[2] = vle32(1, 5);
+    program[3] = vquad(0x0c, 2, 1);
+    program[4] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_shader_validate_words(program, 5, 288, 8));
+    program[3] = vquad(0x0d, 2, 1);
+    assert(opengpu_shader_validate_words(program, 5, 288, 8));
+    program[3] = vquad(0x0d, 2, 1) & ~(1u << 25); /* masked */
+    assert(!opengpu_shader_validate_words(program, 5, 288, 8));
+    program[3] = vquad(0x0c, 2, 1) | 1u << 15; /* reserved rs1 */
+    assert(!opengpu_shader_validate_words(program, 5, 288, 8));
+    program[3] = vquad(0x0c, 2, 3); /* undefined source */
+    assert(!opengpu_shader_validate_words(program, 5, 288, 8));
 
     for (i = 0; i < sizeof(branch_forms) / sizeof(branch_forms[0]); i++) {
         program[0] = branch(branch_forms[i], 0, 0, 4);

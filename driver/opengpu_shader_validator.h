@@ -355,11 +355,19 @@ static inline bool opengpu_shader_validate_words_with_texture(
                 return false;
             break;
         }
-        case 0x2b: /* unmasked opengpu.vtex.sample vd,vs1,vs2 */
-            if ((insn & 0xfe00707fu) != 0x0600002bu ||
-                !texture_enabled || !state.vector_length ||
-                !vector_defined[rs1] || !vector_defined[rs2])
+        case 0x2b: /* OpenGPU texture and fragment-quad operations */
+            if ((insn & 0xfe00707fu) == 0x0600002bu) {
+                if (!texture_enabled || !state.vector_length ||
+                    !vector_defined[rs1] || !vector_defined[rs2])
+                    return false;
+            } else if ((insn & 0xfe0ff07fu) == 0x3200002bu ||
+                       (insn & 0xfe0ff07fu) == 0x3600002bu) {
+                /* vquad.dfdx/dfdy are unary-vs2, unmasked, rs1=0. */
+                if (!state.vector_length || !vector_defined[rs2])
+                    return false;
+            } else {
                 return false;
+            }
             vector_defined[rd] = true;
             break;
         default:

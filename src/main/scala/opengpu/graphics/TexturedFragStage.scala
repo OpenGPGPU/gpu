@@ -128,6 +128,7 @@ class TexturedFragStage(
   private val heldX = RegInit(0.S(gfxConfig.coordWidth.W))
   private val heldY = RegInit(0.S(gfxConfig.coordWidth.W))
   private val heldDepth = RegInit(0.S(32.W))
+  private val heldCovered = RegInit(false.B)
   private val heldColor = Reg(Vec(3, UInt(8.W))) // fragment colour
   private val texelWord = RegInit(0.U(32.W))
   private val heldE = Seq(RegInit(0.S(gfxConfig.edgeWidth.W)),
@@ -148,6 +149,7 @@ class TexturedFragStage(
   io.out.bits.e0 := heldE(0)
   io.out.bits.e1 := heldE(1)
   io.out.bits.e2 := heldE(2)
+  io.out.bits.covered := heldCovered
   io.out.bits.color.r := modulate(heldColor(0), texelWord(31, 24))
   io.out.bits.color.g := modulate(heldColor(1), texelWord(23, 16))
   io.out.bits.color.b := modulate(heldColor(2), texelWord(15, 8))
@@ -161,6 +163,7 @@ class TexturedFragStage(
         heldX := io.fragIn.bits.x
         heldY := io.fragIn.bits.y
         heldDepth := io.fragIn.bits.depth
+        heldCovered := io.fragIn.bits.covered
         heldE(0) := io.fragIn.bits.e0
         heldE(1) := io.fragIn.bits.e1
         heldE(2) := io.fragIn.bits.e2

@@ -66,6 +66,8 @@ class RasterPixel(config: GraphicsConfig) extends Bundle {
   val e1 = SInt(config.edgeWidth.W)
   val e2 = SInt(config.edgeWidth.W)
   val area = SInt(config.edgeWidth.W)
+  /** True for covered samples; false identifies a fragment-shader helper lane. */
+  val covered = Bool()
 }
 
 /** Signed fixed-point helpers.
@@ -273,12 +275,11 @@ class QuadCoverage(config: GraphicsConfig) extends Module {
   * single-cycle 64x64 multiply bank reached only ~526 MHz.
   *
   * Four-lane 2x2 quad evaluation with pure additions is provided by
-  * [[QuadCoverage]] (also exercised directly by its spec) and becomes the
-  * fragment-dispatch unit when M5 wires derivatives/discard onto warp lanes;
-  * integrating quad-packed emission here lands with that work so the OM
-  * contract stays single-fragment until then.
+  * [[QuadCoverage]]. `quadMode` emits complete TL/TR/BL/BR groups including
+  * uncovered helper lanes for fragment-core execution; the default mode keeps
+  * the fixed-function covered-only scalar contract.
   */
-class TriangleRasterizer(config: GraphicsConfig) extends Module {
+class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) extends Module {
   val io = IO(new Bundle {
     val draw = Flipped(Decoupled(new TriangleVertices(config)))
     val cullMode = Input(UInt(2.W))
@@ -380,6 +381,7 @@ class TriangleRasterizer(config: GraphicsConfig) extends Module {
   private val areaReg = RegInit(0.S(config.edgeWidth.W))
   private val frontReg = RegInit(true.B)
   private val tlReg = Seq(RegInit(false.B), RegInit(false.B), RegInit(false.B))
+  private val quadLane = RegInit(0.U(2.W))
 
   // Stepped candidates: single adds off the current registers.
   private val edgeNextCol = VecInit((0 until 3).map(i =>
@@ -397,32 +399,76 @@ class TriangleRasterizer(config: GraphicsConfig) extends Module {
   private val curInside =
     laneInside(Seq(edgeReg.e(0), edgeReg.e(1), edgeReg.e(2)))
 
-  io.pixel.valid := active && curInside
-  io.pixel.bits.x := curX.asSInt
-  io.pixel.bits.y := curY.asSInt
-  io.pixel.bits.e0 := edgeReg.e(0)
-  io.pixel.bits.e1 := edgeReg.e(1)
-  io.pixel.bits.e2 := edgeReg.e(2)
+  private val quad = Module(new QuadCoverage(config))
+  quad.io.base.zipWithIndex.foreach { case (e, i) => e := edgeReg.e(i) }
+  quad.io.dx.zipWithIndex.foreach { case (e, i) => e := dxReg.e(i) }
+  quad.io.dy.zipWithIndex.foreach { case (e, i) => e := dyReg.e(i) }
+  quad.io.front := frontReg
+  quad.io.topLeft.zipWithIndex.foreach { case (flag, i) => flag := tlReg(i) }
+
+  private val quadX = curX + quadLane(0)
+  private val quadY = curY + quadLane(1)
+  private val quadInsideScreen =
+    quadX < config.screenWidth.U && quadY < config.screenHeight.U
+  private val selectedInside = quad.io.inside(quadLane) && quadInsideScreen
+  private val selectedE = Seq(quad.io.e0(quadLane), quad.io.e1(quadLane),
+    quad.io.e2(quadLane))
+
+  io.pixel.valid := active && (if (quadMode) true.B else curInside)
+  io.pixel.bits.x := (if (quadMode) quadX else curX).asSInt
+  io.pixel.bits.y := (if (quadMode) quadY else curY).asSInt
+  io.pixel.bits.e0 := (if (quadMode) selectedE(0) else edgeReg.e(0))
+  io.pixel.bits.e1 := (if (quadMode) selectedE(1) else edgeReg.e(1))
+  io.pixel.bits.e2 := (if (quadMode) selectedE(2) else edgeReg.e(2))
   io.pixel.bits.area := areaReg
+  io.pixel.bits.covered := (if (quadMode) selectedInside else curInside)
 
   // ---------------------------------------------------------------------
   // Scan advance: column step or row wrap, both single-add per edge.
   // ---------------------------------------------------------------------
-  when(active) {
-    // Advance on a fire or a miss; never stall on an inside sample.
-    when(!curInside || io.pixel.fire) {
-      when(curX < maxX) {
-        curX := curX + 1.U
-        edgeReg.e.zipWithIndex.foreach { case (r, i) => r := edgeNextCol(i) }
+  if (quadMode) {
+    when(active && io.pixel.fire) {
+      when(quadLane =/= 3.U) {
+        quadLane := quadLane + 1.U
       }.otherwise {
-        curX := minX
-        when(curY < maxY) {
-          curY := curY + 1.U
-          edgeReg.e.zipWithIndex.foreach { case (r, i) => r := edgeNextRow(i) }
-          rowStartReg.e.zipWithIndex.foreach { case (r, i) =>
-            r := edgeNextRow(i) }
+        quadLane := 0.U
+        when(curX < maxX) {
+          curX := curX + 2.U
+          edgeReg.e.zipWithIndex.foreach { case (r, i) =>
+            r := FixedPointMath.trim64(edgeReg.e(i) + (dxReg.e(i) << 1)) }
         }.otherwise {
-          active := false.B
+          curX := minX
+          when(curY < maxY) {
+            curY := curY + 2.U
+            edgeReg.e.zipWithIndex.foreach { case (r, i) =>
+              r := FixedPointMath.trim64(rowStartReg.e(i) +
+                (dyReg.e(i) << 1)) }
+            rowStartReg.e.zipWithIndex.foreach { case (r, i) =>
+              r := FixedPointMath.trim64(rowStartReg.e(i) +
+                (dyReg.e(i) << 1)) }
+          }.otherwise {
+            active := false.B
+          }
+        }
+      }
+    }
+  } else {
+    when(active) {
+      // Advance on a fire or a miss; never stall on an inside sample.
+      when(!curInside || io.pixel.fire) {
+        when(curX < maxX) {
+          curX := curX + 1.U
+          edgeReg.e.zipWithIndex.foreach { case (r, i) => r := edgeNextCol(i) }
+        }.otherwise {
+          curX := minX
+          when(curY < maxY) {
+            curY := curY + 1.U
+            edgeReg.e.zipWithIndex.foreach { case (r, i) => r := edgeNextRow(i) }
+            rowStartReg.e.zipWithIndex.foreach { case (r, i) =>
+              r := edgeNextRow(i) }
+          }.otherwise {
+            active := false.B
+          }
         }
       }
     }
@@ -454,10 +500,14 @@ class TriangleRasterizer(config: GraphicsConfig) extends Module {
   when(setupState === stCoeffs) {
     setupState := stSetup
     // Clamp against the JUST-CAPTURED vertices (vHold registered last edge).
-    minX := clampPixN(bboxMinXW, config.screenWidth)
-    minY := clampPixN(bboxMinYW, config.screenHeight)
-    maxX := clampPixN(bboxMaxXW, config.screenWidth)
-    maxY := clampPixN(bboxMaxYW, config.screenHeight)
+    minX := (if (quadMode) clampPixN(bboxMinXW, config.screenWidth) & "hfffe".U
+      else clampPixN(bboxMinXW, config.screenWidth))
+    minY := (if (quadMode) clampPixN(bboxMinYW, config.screenHeight) & "hfffe".U
+      else clampPixN(bboxMinYW, config.screenHeight))
+    maxX := (if (quadMode) clampPixN(bboxMaxXW, config.screenWidth) & "hfffe".U
+      else clampPixN(bboxMaxXW, config.screenWidth))
+    maxY := (if (quadMode) clampPixN(bboxMaxYW, config.screenHeight) & "hfffe".U
+      else clampPixN(bboxMaxYW, config.screenHeight))
     coeffReg.a.zipWithIndex.foreach { case (r, i) => r := linesN(i)._1 }
     coeffReg.b.zipWithIndex.foreach { case (r, i) => r := linesN(i)._2 }
     coeffReg.c.zipWithIndex.foreach { case (r, i) => r := linesN(i)._3 }
@@ -499,6 +549,7 @@ class TriangleRasterizer(config: GraphicsConfig) extends Module {
       active := false.B
     }.otherwise {
       active := true.B
+      quadLane := 0.U
       curX := minX
       curY := minY
       areaReg := signedAreaN

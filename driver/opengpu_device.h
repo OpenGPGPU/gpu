@@ -26,7 +26,9 @@ struct opengpu_drm;
 #define OPENGPU_COMPUTE_NAME    "opengpu0"
 /* Embedded RTL simulation executes every memory handshake cycle-by-cycle;
  * textured batches are intentionally given a bounded but generous watchdog. */
-#define OPENGPU_DRAW_WAIT_MS    10000
+/* Verilated quad dispatch executes covered and helper lanes. A full 16x16
+ * fragment-core draw can exceed ten seconds under instruction-level QEMU. */
+#define OPENGPU_DRAW_WAIT_MS    30000
 #define OPENGPU_IOCTL_SUBMIT    _IO('G', 0x01)
 
 struct opengpu_buffer {

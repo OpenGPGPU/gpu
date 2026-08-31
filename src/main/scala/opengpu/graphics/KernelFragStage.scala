@@ -144,6 +144,7 @@ class KernelFragStage(
   private val packedColor = Reg(Vec(batchCap, UInt(32.W)))
   private val fragU = Reg(Vec(batchCap, UInt(32.W)))
   private val fragV = Reg(Vec(batchCap, UInt(32.W)))
+  private val fragCovered = Reg(Vec(batchCap, Bool()))
   private val outWords = Reg(Vec(batchCap, UInt(32.W)))
   private val outDepth = Reg(Vec(batchCap, SInt(32.W)))
   private val outValid = Reg(Vec(batchCap, Bool()))
@@ -178,6 +179,7 @@ class KernelFragStage(
   io.out.bits.e0 := fragE0(indexIdx)
   io.out.bits.e1 := fragE1(indexIdx)
   io.out.bits.e2 := fragE2(indexIdx)
+  io.out.bits.covered := fragCovered(indexIdx)
   io.out.bits.color.r := outWords(indexIdx)(31, 24)
   io.out.bits.color.g := outWords(indexIdx)(23, 16)
   io.out.bits.color.b := outWords(indexIdx)(15, 8)
@@ -192,7 +194,7 @@ class KernelFragStage(
     curKernarg + writeSlice * arrayStride.U + (index << 2),
     curKernarg + ((6.U + field) * arrayStride.U) + (index << 2)
   )
-  wordBits.data := MuxLookup(field, 1.U(32.W))(
+  wordBits.data := MuxLookup(field, fragCovered(indexIdx).asUInt)(
     Seq(
       0.U -> fragX(indexIdx).pad(32).asUInt,
       1.U -> fragY(indexIdx).pad(32).asUInt,
@@ -219,6 +221,7 @@ class KernelFragStage(
           0xff.U(8.W))
         fragU(countIdx) := io.fragUv.u
         fragV(countIdx) := io.fragUv.v
+        fragCovered(countIdx) := io.fragIn.bits.covered
         fragE0(countIdx) := io.fragIn.bits.e0
         fragE1(countIdx) := io.fragIn.bits.e1
         fragE2(countIdx) := io.fragIn.bits.e2
@@ -285,7 +288,10 @@ class KernelFragStage(
           outDepth(indexIdx) := bridge.io.out.bits.data.asSInt
           field := 2.U
         }.otherwise {
-          outValid(indexIdx) := bridge.io.out.bits.data =/= 0.U
+          // Helper lanes execute the shader and may participate in quad
+          // derivatives, but no shader store can promote one into an OM write.
+          outValid(indexIdx) := bridge.io.out.bits.data =/= 0.U &&
+            fragCovered(indexIdx)
           field := 0.U
           when(index === count - 1.U) {
             index := 0.U

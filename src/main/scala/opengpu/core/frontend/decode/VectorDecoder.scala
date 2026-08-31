@@ -255,7 +255,7 @@ private object VectorDecodeTable {
 
   // Fragment-quad derivatives. custom-1 keeps the operation outside standard
   // RVV encodings; vs2 is the varying and lane groups are ordered TL,TR,BL,BR.
-  // Driver validation remains gated until raster dispatch supplies true quads.
+  // Driver profile v8 admits these after true quad dispatch is established.
   private val quadPatterns = Seq(
     VectorPattern("vquad_dfdx",
       "001100???????????000?????0101011", 1,

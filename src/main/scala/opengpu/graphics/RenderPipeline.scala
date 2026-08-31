@@ -89,7 +89,7 @@ class RenderPipeline(
   })
 
   private val geo = Module(new GeometryStage(config))
-  private val shader = Module(new RasterShader(config))
+  private val shader = Module(new RasterShader(config, quadMode = fragCore))
   private val om = Module(new OutputMerger(config))
   private val textured =
     Module(new TexturedFragStage(config))

@@ -550,7 +550,10 @@ static int wait_flip_event(int fd, struct drm_event_vblank *event)
     ssize_t length;
     int ret;
 
-    ret = poll(&pollfd, 1, 1000);
+    /* A nonblocking atomic commit waits for the preceding render fence in its
+     * worker. Under instruction-level RTL simulation that draw takes roughly
+     * 21 host seconds, while guest virtual time advances much more slowly. */
+    ret = poll(&pollfd, 1, 5000);
     if (ret <= 0) {
         if (!ret)
             errno = ETIME;
@@ -599,7 +602,7 @@ static void write_vector_shader(void *mapping)
 {
     uint32_t *program = mapping;
 
-    /* Load fragment UVs, sample per lane, write depth+1; warp zero discards. */
+    /* Load quad UVs, sample per lane, write dFdx(u); warp zero discards. */
     program[0] = 0x00241293u; /* slli x5,x8,2 */
     program[1] = 0x005082b3u; /* add x5,x1,x5 */
     program[2] = 0xc1027057u; /* vsetivli x0,4,e32,m1,ta,ma */
@@ -615,7 +618,7 @@ static void write_vector_shader(void *mapping)
     program[12] = 0x30500073u; /* cease discarded warp early */
     program[13] = 0x04028313u; /* addi x6,x5,64: input depth */
     program[14] = 0x02036207u; /* vle32.v v4,(x6) */
-    program[15] = 0x0240b257u; /* vadd.vi v4,v4,1 */
+    program[15] = 0x3210022bu; /* vquad.dfdx v4,v1 */
     program[16] = 0x0e028313u; /* addi x6,x5,224: output depth */
     program[17] = 0x02036227u; /* vse32.v v4,(x6) */
     program[18] = 0x0c028313u; /* addi x6,x5,192: output colour */
@@ -655,7 +658,7 @@ static int wait_syncobjs(int fd, uint32_t *handles, uint32_t count)
         return -1;
     return wait_syncobjs_timeout(fd, handles, count,
                                  (int64_t)now.tv_sec * 1000000000ll +
-                                 now.tv_nsec + 10000000000ll);
+                                 now.tv_nsec + 30000000000ll);
 }
 
 int main(void)
@@ -784,9 +787,9 @@ int main(void)
         return 1;
     }
     CHECK(atomic_page_flip(fd, &ids, second.fb_id), "atomic page flip");
-    CHECK(wait_flip_event(fd, &event), "wait flip event");
     CHECK(wait_syncobjs(fd, output_syncobjs, ARRAY_SIZE(output_syncobjs)),
           "wait output syncobjs");
+    CHECK(wait_flip_event(fd, &event), "wait flip event");
     if ((frag_core &&
          (framebuffer_count(&second, expected_pixel) != 60 ||
           framebuffer_count(&second, alternate_pixel) != 0)) ||
@@ -821,9 +824,12 @@ int main(void)
 #undef CHECK
 
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
-           "syncobj + validated vtex/discard sandbox + "
+           "syncobj + %s sandbox + "
            "validated context + "
            "vblank flip event sequence=%u\n",
-           frag_core ? "core-backed" : "texture", event.sequence);
+           frag_core ? "core-backed" : "texture",
+           frag_core ? "validated vtex/quad-derivative/discard" :
+                       "fixed-function texture",
+           event.sequence);
     return 0;
 }

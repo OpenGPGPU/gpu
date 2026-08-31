@@ -189,7 +189,7 @@ character device first, DRM display client next, per the roadmap):
   select texture or shader/kernarg bindings. On a capable build the driver waits
   for prior shader writers, copies
   the complete 64-byte-aligned binding into per-job DMA, validates that immutable
-  snapshot, and relocates only validated entry offsets. Sandbox profile v7 is
+  snapshot, and relocates only validated entry offsets. Sandbox profile v8 is
   RV32I/M+V with independently terminating forward paths: x1 cannot be
   overwritten, scalar loads are bounded to kernarg, and stores are bounded to
   the batch colour-output, depth-output and output-valid slices. Its RVV subset is fixed
@@ -206,7 +206,10 @@ character device first, DRM display client next, per the roadmap):
   shaders may override depth or suppress a fragment by clearing validity.
   `vtex.sample` is admitted only in its unmasked vector form, with defined UV
   sources and an attached, independently validated texture binding; address
-  generation remains inside the bounded hardware sampler. Backward branches,
+  generation remains inside the bounded hardware sampler. Unmasked
+  `vquad.dfdx/dfdy` accepts one defined VGPR source after VL configuration;
+  complete TL/TR/BL/BR dispatch plus immutable coverage keeps helper lanes out
+  of OM. Backward branches,
   jumps, atomics, masked/strided/gather memory and other custom instructions
   remain gated.
 - **queued execution and explicit synchronization**: each context maps to a DRM
@@ -263,8 +266,8 @@ and DT node, then loads the DRM stack and module in the guest. The adaptive
 guest queries `CAPABILITIES`: the fixed top binds a texture and verifies the
 exact sampled RTL pixel, while the fragment-core top binds shader, kernarg and
 texture GEMs, proves missing texture and unsafe vector stores are rejected, and
-loads perspective-correct UVs, executes `vtex.sample`, writes shader-generated
-depth, and takes a structured early exit that discards warp zero.
+loads perspective-correct UVs, executes `vtex.sample` and `vquad.dfdx`, writes
+shader-generated depth, and takes a structured early exit that discards warp zero.
 Each queued core-backed framebuffer must contain exactly 60 live sampled pixels.
 Both paths queue two draws with explicit syncobjs, render into two dumb buffers,
 perform an atomic modeset and page flip, receive a matching vblank-paced flip

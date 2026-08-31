@@ -66,6 +66,9 @@ class KernelFragStageSpec extends AnyFlatSpec {
     (BigInt(1) << 26) | (BigInt(1) << 25) |
       (BigInt(vs2 & 0x1f) << 20) | (BigInt(vs1 & 0x1f) << 15) |
       (BigInt(vd & 0x1f) << 7) | 0x2b
+  private def vquad(funct6: Int, vd: Int, vs2: Int): BigInt =
+    (BigInt(funct6 & 0x3f) << 26) | (BigInt(1) << 25) |
+      (BigInt(vs2 & 0x1f) << 20) | (BigInt(vd & 0x1f) << 7) | 0x2b
 
   private def slli(rd: Int, rs1: Int, shamt: Int): BigInt =
     ((BigInt(shamt & 0x1f)) << 20) | ((BigInt(rs1 & 0x1f)) << 15) |
@@ -158,6 +161,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
 
   private def pokeDefaults(dut: KernelFragStage): Unit = {
     dut.io.fragIn.valid.poke(false.B)
+    dut.io.fragIn.bits.covered.poke(true.B)
     dut.io.fragUv.u.poke(0.U)
     dut.io.fragUv.v.poke(0.U)
     dut.io.out.ready.poke(true.B)
@@ -296,7 +300,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
     }
   }
 
-  it should "accumulate multiple fragments into one flushed batch, emitted in order" in {
+  it should "accumulate a batch while suppressing helper-lane output" in {
     // Batched dispatch: several fragments are accumulated and flushed as ONE
     // kernel launch (localSize = count) rather than one launch per fragment.
     // The FSM buffers each fragment's x/y/depth locally and re-emits the batch
@@ -321,14 +325,15 @@ class KernelFragStageSpec extends AnyFlatSpec {
 
       // Feed a batch of fragments with distinct x/y/depth.
       val inputs = Seq(
-        (0, 10, 0x20),
-        (1, 11, 0x30),
-        (2, 12, 0x40)
+        (0, 10, 0x20, true),
+        (1, 11, 0x30, false),
+        (2, 12, 0x40, true)
       )
-      for ((x, y, d) <- inputs) {
+      for ((x, y, d, covered) <- inputs) {
         dut.io.fragIn.bits.x.poke(x.S)
         dut.io.fragIn.bits.y.poke(y.S)
         dut.io.fragIn.bits.depth.poke(d.S)
+        dut.io.fragIn.bits.covered.poke(covered.B)
         dut.io.fragIn.bits.color.r.poke(0xab.U)
         dut.io.fragIn.bits.color.g.poke(0xcd.U)
         dut.io.fragIn.bits.color.b.poke(0xef.U)
@@ -396,13 +401,14 @@ class KernelFragStageSpec extends AnyFlatSpec {
         } else dut.io.out.ready.poke(false.B)
         dut.clock.step()
         guard += 1
-        if (emitted.size == count && dut.io.drained.peek().litToBoolean)
+        if (emitted.size == 2 && dut.io.drained.peek().litToBoolean)
           drained = true
       }
-      assert(emitted.size == count, s"expected $count fragments, got ${emitted.size}")
+      assert(emitted.size == 2, s"expected 2 covered fragments, got ${emitted.size}")
 
-      // Fragments are emitted in submission order with geometry/depth preserved.
-      for ((expected, got) <- inputs zip emitted) {
+      // Covered fragments retain submission order; the middle helper executed
+      // the shader but cannot be promoted into an output-memory transaction.
+      for ((expected, got) <- inputs.filter(_._4) zip emitted) {
         assert(got._1 == expected._1 &&
           got._2 == expected._2 && got._3 == expected._3,
           s"fragment geometry mismatch: expected $expected got $got")
@@ -607,7 +613,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
     }
   }
 
-  it should "consume per-lane fragment UVs and write shader-generated depth" in {
+  it should "consume quad UVs and write a dFdx-derived depth" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new KernelFragStage(config)) { dut =>
       val mem = new MemModel
@@ -621,7 +627,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.texWrapClamp.poke(false.B)
 
       // Each lane loads interpolated u/v from the fragment-input slices,
-      // samples into v3, and writes colour plus depth+1 output arrays.
+      // samples into v3, and writes colour plus dFdx(u) as depth.
       mem.putWord(0x1000L, 0, vsetivli(4))
       mem.putWord(0x1000L, 1, addi(5, 1, 128))
       mem.putWord(0x1000L, 2, vle32(5, 1))
@@ -630,12 +636,10 @@ class KernelFragStageSpec extends AnyFlatSpec {
       mem.putWord(0x1000L, 5, vtexsample(3, 1, 2))
       mem.putWord(0x1000L, 6, addi(5, 1, 192))
       mem.putWord(0x1000L, 7, vse32(5, 3))
-      mem.putWord(0x1000L, 8, addi(5, 1, 64))
-      mem.putWord(0x1000L, 9, vle32(5, 4))
-      mem.putWord(0x1000L, 10, vaddVi(4, 4, 1))
-      mem.putWord(0x1000L, 11, addi(5, 1, 224))
-      mem.putWord(0x1000L, 12, vse32(5, 4))
-      mem.putWord(0x1000L, 13, cease)
+      mem.putWord(0x1000L, 8, vquad(0x0c, 4, 1))
+      mem.putWord(0x1000L, 9, addi(5, 1, 224))
+      mem.putWord(0x1000L, 10, vse32(5, 4))
+      mem.putWord(0x1000L, 11, cease)
 
       // Texel-centre coordinates for black, red, green and yellow.
       val u = Seq(0x4000, 0xc000, 0x4000, 0xc000)
@@ -685,7 +689,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
         guard += 1
       }
       val expectedWithDepth = expected.map { case (r, g, b) =>
-        (r.toLong, g.toLong, b.toLong, 0x21L)
+        (r.toLong, g.toLong, b.toLong, 0x8000L)
       }
       assert(emitted == expectedWithDepth,
         s"per-lane UV/depth result mismatch: expected=$expectedWithDepth got=$emitted")

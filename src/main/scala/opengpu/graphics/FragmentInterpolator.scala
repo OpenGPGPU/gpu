@@ -68,6 +68,7 @@ class RasterFragment(config: GraphicsConfig) extends Bundle {
   val e0 = SInt(config.edgeWidth.W)
   val e1 = SInt(config.edgeWidth.W)
   val e2 = SInt(config.edgeWidth.W)
+  val covered = Bool()
 }
 
 /** Shades a rasterized triangle into fixed-point screen fragments.
@@ -77,7 +78,7 @@ class RasterFragment(config: GraphicsConfig) extends Bundle {
   * with its screen position.  A later milestone moves the per-pixel maths onto
   * the SIMT shader lanes.
   */
-class RasterShader(config: GraphicsConfig) extends Module {
+class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Module {
   val io = IO(new Bundle {
     val draw = Flipped(Decoupled(new TriangleVertices(config)))
     val colors = Input(Vec(3, new Varyings))
@@ -87,7 +88,7 @@ class RasterShader(config: GraphicsConfig) extends Module {
     val pixel = Decoupled(new RasterFragment(config))
   })
 
-  private val raster = Module(new TriangleRasterizer(config))
+  private val raster = Module(new TriangleRasterizer(config, quadMode))
   private val interp = Module(new FragmentInterpolator(config))
 
   raster.io.draw <> io.draw
@@ -111,6 +112,7 @@ class RasterShader(config: GraphicsConfig) extends Module {
   io.pixel.bits.e0 := raster.io.pixel.bits.e0
   io.pixel.bits.e1 := raster.io.pixel.bits.e1
   io.pixel.bits.e2 := raster.io.pixel.bits.e2
+  io.pixel.bits.covered := raster.io.pixel.bits.covered
   raster.io.pixel.ready := io.pixel.ready
   io.done := raster.io.draw.ready
 }

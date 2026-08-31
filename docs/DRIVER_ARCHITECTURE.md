@@ -84,7 +84,7 @@ through the real RTL memory port. A read-only capability register advertises
 fragment-core presence and batch capacity. Without it shader submissions return
 `EOPNOTSUPP`. With it, the driver snapshots a bounded, cache-line-aligned shader
 binding into per-job DMA and validates the snapshot before relocation, removing
-the writable-GEM validate/execute race. Sandbox profile v7 accepts terminating
+the writable-GEM validate/execute race. Sandbox profile v8 accepts terminating
 RV32I/M+V with an immutable x1 kernarg base. Scalar loads stay inside kernarg
 and stores stay inside its colour-output, depth-output or output-valid slice. The vector subset is
 fixed e32/m1 `vsetivli`, unmasked unit-stride `vle32`/`vse32`, and lane-local
@@ -103,9 +103,11 @@ override depth, while a zero validity store discards before output merging. The 
 `vtex.sample` is accepted
 only when its UV VGPRs are defined, it is unmasked, and the same submit carries
 a validated texture GEM; the hardware sampler derives all addresses from that
-binding's base, dimensions and wrap mode. Backward edges, jumps,
-masked/strided/gather memory, atomics and other custom instructions require
-future validator profiles.
+binding's base, dimensions and wrap mode. Unmasked `vquad.dfdx/dfdy` are
+admitted after VL setup with a defined VGPR source. The core rasterizer supplies
+complete TL/TR/BL/BR groups; helpers execute but immutable coverage suppresses
+their OM output. Backward edges, jumps, masked/strided/gather memory, atomics
+and other custom instructions require future validator profiles.
 `DRM_IOCTL_OPENGPU_GET_PARAM` reports the capability word to userspace. The
 trusted probe self-test follows the same split: fixed hardware uses the texture
 pipeline, while capable hardware allocates private shader/kernarg buffers and
@@ -186,8 +188,8 @@ execution through ARTI/QEMU/Linux are also complete (2026-08-30). Proven
 unit-stride vector memory, lane-local integer arithmetic, bounded forward
 control flow, core-backed texture sampling, structured early exit/discard,
 perspective-correct UV inputs, shader-generated depth and full per-lane
-framebuffer output are complete as well. The next execution milestone is
-2x2-quad neighbor/derivative support.
+framebuffer output and 2x2-quad neighbor/derivative support are complete as
+well. The next texture milestone is gradient-derived LOD and mip selection.
 
 ## RTL boundary
 

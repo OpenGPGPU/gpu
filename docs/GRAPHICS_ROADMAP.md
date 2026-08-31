@@ -269,11 +269,10 @@ Status (implementation, 2026-08-27):
 - Emitted SV check: the block's remaining multiplies sit only in the setup
   cone; the steady-state scan/emission datapath contains adds and sign tests
   only — the per-cycle multiply array is gone.
-- **2×2 quad evaluation delivered as a reusable unit, not yet wired into
-  emission.**  `QuadCoverage` evaluates all four lanes of a quad with pure
-  additions from base + dx/dy and is spec-tested directly; wiring four-lane
-  packed emission into the raster output lands with M5's quad-dispatch/
-  derivative work so the OM stays single-fragment until then.
+- **2×2 quad evaluation and emission complete.** `QuadCoverage` evaluates all
+  four lanes from base + dx/dy. The fragment-core rasterizer walks aligned
+  origins and emits TL/TR/BL/BR, including uncovered helper lanes; the
+  fixed-function build retains covered-only scalar emission.
 - Verification: `RasterizerSpec` keeps all four M3b tests green unchanged and
   adds a 24-triangle randomized sweep (solid/sliver/off-screen/reversed
   winding) asserted set-equal against the same software fill-rule reference;
@@ -848,14 +847,21 @@ Status (virtual display and DRM handoff, 2026-08-29):
   vector integer pipeline. For lane order TL,TR,BL,BR, dFdx replicates
   right-minus-left across each row and dFdy replicates bottom-minus-top across
   each column; inactive/masked lanes still preserve old `vd`. Directed ALU and
-  decode tests cover exact results, legality and backpressure. The driver
-  profile deliberately continues rejecting both instructions until raster
-  dispatch guarantees true quad grouping and helper-lane coverage.
-- Next: wire `QuadCoverage` into quad-packed fragment dispatch, including
-  helper lanes and a separate coverage/live mask, then admit derivatives in
-  the validator for texture LOD.
-  Hardware-side per-draw overlap/double buffering remains the separate M5
-  throughput milestone.
+  decode tests cover exact results, legality and backpressure.
+- **Quad-packed dispatch and safe helper lanes complete (2026-08-31).** The
+  core-backed rasterizer emits aligned TL/TR/BL/BR groups. Covered and helper
+  lanes all execute, but an immutable coverage bit initializes output-valid
+  and is ANDed again after shader completion, so helpers contribute to
+  derivatives without reaching OM. Sandbox profile v8 admits unmasked
+  `vquad.dfdx/dfdy` only after VL setup with a defined source and zero reserved
+  `rs1`. RTL tests cover grouping, helper suppression and real dFdx execution;
+  the ARTI guest executes dFdx in its textured fragment shader. The bounded
+  driver watchdog is 30 seconds because instruction-level QEMU must execute
+  all 256 lanes of a 16×16 bbox, rather than only its 120 covered samples
+  (measured about 12.5 seconds for probe and 20.8 seconds per textured draw).
+- Next: derive texture LOD from quad gradients and add mip-level storage and
+  selection. Hardware-side per-draw overlap/double buffering remains the
+  separate M5 throughput milestone.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

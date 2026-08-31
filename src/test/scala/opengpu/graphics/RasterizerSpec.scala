@@ -149,6 +149,51 @@ class RasterizerSpec extends AnyFlatSpec {
     }
   }
 
+  it should "emit complete TL/TR/BL/BR quads and mark uncovered helper lanes" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16,
+      subPixelBits = 8)
+    simulate(new TriangleRasterizer(config, quadMode = true)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.pixel.ready.poke(true.B)
+      dut.io.cullMode.poke(0.U)
+      dut.io.draw.valid.poke(true.B)
+      val vertices = Seq((2, 2), (12, 2), (2, 12))
+      dut.io.draw.bits.v0.x.poke(config.toFixed(vertices(0)._1).S)
+      dut.io.draw.bits.v0.y.poke(config.toFixed(vertices(0)._2).S)
+      dut.io.draw.bits.v1.x.poke(config.toFixed(vertices(1)._1).S)
+      dut.io.draw.bits.v1.y.poke(config.toFixed(vertices(1)._2).S)
+      dut.io.draw.bits.v2.x.poke(config.toFixed(vertices(2)._1).S)
+      dut.io.draw.bits.v2.y.poke(config.toFixed(vertices(2)._2).S)
+      dut.clock.step(); dut.io.draw.valid.poke(false.B)
+
+      val emitted = collection.mutable.ArrayBuffer.empty[(Int, Int, Boolean)]
+      var guard = 0
+      while (!dut.io.draw.ready.peek().litToBoolean && guard < 2000) {
+        if (dut.io.pixel.valid.peek().litToBoolean) {
+          emitted += ((dut.io.pixel.bits.x.peek().litValue.toInt,
+            dut.io.pixel.bits.y.peek().litValue.toInt,
+            dut.io.pixel.bits.covered.peek().litToBoolean))
+        }
+        dut.clock.step(); guard += 1
+      }
+      assert(guard < 2000 && emitted.nonEmpty)
+      assert(emitted.size % 4 == 0)
+      emitted.grouped(4).foreach { lanes =>
+        val (x, y, _) = lanes.head
+        assert((x & 1) == 0 && (y & 1) == 0)
+        assert(lanes.map(p => (p._1, p._2)) ==
+          Seq((x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)))
+      }
+      val covered = emitted.collect { case (x, y, true) => (x, y) }.toSet
+      // This winding's top-left rule excludes x=2/y=2 and owns the diagonal.
+      val expected = (3 until 12).flatMap { y => (3 until 12).collect {
+        case x if x + y <= 14 => (x, y)
+      }}.toSet
+      assert(covered == expected)
+      assert(emitted.exists(!_._3), "edge quads must contain helper lanes")
+    }
+  }
+
   it should "skip a back-facing triangle when cull mode is back" in {
     val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
     // Same geometry, but reversed winding => back-facing (negative area).

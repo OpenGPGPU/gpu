@@ -39,5 +39,5 @@ directed decoder tests.
 Custom-1 also carries unary-vs2 `vquad.dfdx` (funct6 `001100`) and
 `vquad.dfdy` (funct6 `001101`). They route to the integer ALU and replicate
 right-minus-left or bottom-minus-top differences across each 2x2 lane group.
-Decode support alone does not expose them to untrusted shaders; the driver
-validator waits for quad-packed fragment dispatch.
+The driver profile exposes only their unmasked unary form after VL setup and a
+defined source; fragment-core rasterization guarantees packed TL/TR/BL/BR lanes.
