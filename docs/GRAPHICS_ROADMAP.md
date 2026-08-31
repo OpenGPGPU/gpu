@@ -62,8 +62,9 @@ Current limitations that still drive the remaining roadmap:
 1. The core-backed kernarg staging does not yet publish perspective-corrected
    per-fragment UVs automatically; shaders can use `vtex.sample` once UV arrays
    are supplied in kernarg memory.
-2. Fragment `discard`, 2×2-quad neighbor operations, derivatives, mip LOD and
-   mip storage/addressing are not implemented.
+2. 2×2-quad neighbor operations, derivatives, mip LOD and mip
+   storage/addressing are not implemented. Fragment discard is now available
+   through the bounded output-valid ABI.
 3. Rasterization and physical texture taps are serialized; wider issue/fetch
    is a performance iteration after functional M5 completion.
 4. Per-draw overlap/double buffering remains open before the host/display path
@@ -493,7 +494,7 @@ Status (implementation):
   with `stride = 4 * warps * lanes`:
   `[0*stride, 1*stride)` per-fragment x (i32), `[1*stride, 2*stride)` y,
   `[2*stride, 3*stride)` depth, `[3*stride, 4*stride)` packed-colour inputs,
-  `[4*stride, 5*stride)` colour outputs, `[5*stride, 6*stride)` reserved,
+  `[4*stride, 5*stride)` colour outputs, `[5*stride, 6*stride)` output-valid,
   `[6*stride, ...)` per-draw uniforms.
   `flush` is
   pulsed by the pipeline when the rasterizer goes idle (draw boundary) so a
@@ -821,9 +822,21 @@ Status (virtual display and DRM handoff, 2026-08-29):
   missing VL. The ARTI guest proves the missing-binding gate, samples a real
   texture through guest memory, branches by warp and requires each queued
   framebuffer to contain exactly 60 `0xff0000ff` and 60 `0xff0001ff` pixels.
-- Next: add a per-fragment output-valid ABI and validate structured
-  early-exit/discard. Hardware-side per-draw overlap/double buffering remains
-  the separate M5 throughput milestone.
+- **Validated structured early-exit/discard complete (2026-08-31).** Profile v6
+  defines `[5*stride,6*stride)` as per-fragment output-valid words. The staging
+  RTL initializes them to one, reads them beside colour outputs, and suppresses
+  zero-valid fragments before the output merger. Scalar and unit-stride vector
+  stores may target only the colour/valid slices. Validator CFG propagation now
+  stops at `CEASE` per path and resumes at pending forward branch targets, so
+  paths may reconverge or terminate independently while backward/unbounded
+  control flow remains rejected. Native tests cover valid and invalid early
+  exits. The ARTI guest samples a real texture, clears all four valid lanes of
+  warp zero and exits that path early; warp one writes colour and exits at its
+  own `CEASE`. Both queued framebuffers must contain exactly 60 live sampled
+  pixels and no undiscarded warp-zero colour.
+- Next: expose richer fragment inputs and shader-generated depth while keeping
+  output validation bounded. Hardware-side per-draw overlap/double buffering
+  remains the separate M5 throughput milestone.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

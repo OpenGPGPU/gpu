@@ -95,7 +95,7 @@ static inline bool opengpu_shader_vector_access_valid(
 {
     opengpu_shader_u64 stride = 4ull * batch_capacity;
     opengpu_shader_u64 output_start = 4ull * stride;
-    opengpu_shader_u64 output_end = 5ull * stride;
+    opengpu_shader_u64 output_end = 6ull * stride;
     opengpu_shader_u64 start, bytes, end;
 
     if (!vl || base->offset < 0 || (base->offset & 3))
@@ -138,15 +138,17 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
 }
 
 /* Fragment shader sandbox. Unreconverged forward scalar branches are limited
- * to four; every path must reconverge before one final CEASE. x1 remains the
- * immutable kernarg base. Scalar lw/sw retain the v1
+ * to four. Paths may reconverge or terminate independently in CEASE; every
+ * reachable path must terminate. x1 remains the immutable kernarg base.
+ * Scalar lw/sw retain the v1
  * bounds. The RVV profile admits vsetivli e32,m1, a lane-local integer ALU
  * allow-list, and unmasked unit-stride vle32/vse32. Defined-register tracking
  * prevents stale SGPR/VGPR data from being exported. A small abstract
  * interpreter recognizes x1 +
  * 4*x8 + constant, where x8 is the trusted warp localLinearBase, and proves
- * every active vector lane remains in kernarg (loads) or the colour-output
- * slice (stores). The bounded vector texture sample requires a validated
+ * every active vector lane remains in kernarg (loads) or the colour-output /
+ * output-valid slices (stores). Clearing an output-valid word discards that
+ * fragment. The bounded vector texture sample requires a validated
  * texture binding. Backward branches, jumps, atomics and all other custom
  * instructions remain rejected. */
 static inline bool opengpu_shader_validate_words_with_texture(
@@ -161,13 +163,14 @@ static inline bool opengpu_shader_validate_words_with_texture(
     struct opengpu_shader_value *values = state.values;
     bool *scalar_defined = state.scalar_defined;
     bool *vector_defined = state.vector_defined;
+    bool reachable = true;
     opengpu_shader_u32 i, branch;
 
     if (!words || !word_count || !batch_capacity || batch_capacity > 64)
         return false;
     stride = 4ull * batch_capacity;
     output_start = 4ull * stride;
-    output_end = 5ull * stride;
+    output_end = 6ull * stride;
     if (kernarg_size < 6ull * stride)
         return false;
     if (word_count > OPENGPU_SHADER_MAX_INSTRUCTIONS)
@@ -189,23 +192,35 @@ static inline bool opengpu_shader_validate_words_with_texture(
         struct opengpu_shader_value lhs, rhs;
         opengpu_shader_s32 imm;
         opengpu_shader_u64 end;
+        bool target_reachable = false;
 
         for (branch = 0; branch < OPENGPU_SHADER_MAX_FORWARD_BRANCHES;
              branch++) {
             if (branches[branch].used && branches[branch].target < i)
                 return false;
             if (branches[branch].used && branches[branch].target == i) {
-                opengpu_shader_merge_state(&state, &branches[branch].state);
+                if (reachable || target_reachable)
+                    opengpu_shader_merge_state(
+                        &state, &branches[branch].state);
+                else
+                    state = branches[branch].state;
+                target_reachable = true;
                 branches[branch].used = false;
             }
         }
+        reachable |= target_reachable;
+        if (!reachable)
+            continue;
         if (insn == OPENGPU_SHADER_CEASE) {
             for (branch = 0;
                  branch < OPENGPU_SHADER_MAX_FORWARD_BRANCHES; branch++) {
                 if (branches[branch].used)
-                    return false;
+                    break;
             }
-            return true;
+            if (branch == OPENGPU_SHADER_MAX_FORWARD_BRANCHES)
+                return true;
+            reachable = false;
+            continue;
         }
         lhs = values[rs1];
         rhs = values[rs2];
@@ -277,7 +292,7 @@ static inline bool opengpu_shader_validate_words_with_texture(
             values[rd].offset = 0;
             scalar_defined[rd] = true;
             break;
-        case 0x23: /* only sw imm(x1) into output array */
+        case 0x23: /* only sw imm(x1) into output/valid arrays */
             imm = (opengpu_shader_s32)(((insn >> 7) & 0x1f) |
                                        ((insn >> 25) << 5));
             if (imm & 0x800)

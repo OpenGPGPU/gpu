@@ -133,7 +133,7 @@ struct gpu_draw_record {
  *   [2*stride, 3*stride)   depth (i32)
  *   [3*stride, 4*stride)   packed colour inputs (u32)
  *   [4*stride, 5*stride)   colour outputs (u32)
- *   [5*stride, 6*stride)   reserved
+ *   [5*stride, 6*stride)   output-valid words (1 = emit, 0 = discard)
  *   [6*stride, ...)        per-draw uniforms
  * ------------------------------------------------------------------------ */
 #define GPU_KERNARG_STRIDE(w, l)  (4u * (w) * (l))
@@ -142,6 +142,7 @@ struct gpu_draw_record {
 #define GPU_KERNARG_DEPTH_OFF(s)  (2u * (s))
 #define GPU_KERNARG_COLOR_OFF(s)  (3u * (s))
 #define GPU_KERNARG_OUT_OFF(s)    (4u * (s))
+#define GPU_KERNARG_VALID_OFF(s)  (5u * (s))
 #define GPU_KERNARG_UNIFORM_OFF(s)(6u * (s))
 
 #endif /* RISCV_SIMT_GPU_ABI_H */

@@ -23,9 +23,10 @@ import opengpu.core.memory.{
   *      tail warp gets a partial active mask, so vector loads/stores touch
   *      exactly the batched lanes;
   *   3. wait for kernel completion; the kernel writes per-fragment output
-  *      colours into the output array;
-  *   4. read the outputs back through the bridge and emit the fragments in
-  *      batch order.
+  *      colours into the output array and may clear output-valid words to
+  *      discard individual fragments;
+  *   4. read the outputs and output-valid words back through the bridge and
+  *      emit only live fragments in batch order.
   *
   * kernarg ABI (byte offsets from the draw's kernarg base, which must be
   * 64-byte aligned; `stride = 4 * warps * lanes` is the per-array byte size):
@@ -34,7 +35,7 @@ import opengpu.core.memory.{
   *   [2*stride, 3*stride)  per-fragment depth (u32 bits)
   *   [3*stride, 4*stride)  per-fragment packed-colour inputs (RGBA8888)
   *   [4*stride, 5*stride)  per-fragment packed-colour outputs
-  *   [5*stride, 6*stride)  reserved (zero-filled for ABI forward compatibility)
+  *   [5*stride, 6*stride)  output-valid words (1 = emit, 0 = discard)
   *   [6*stride, ...)       per-draw uniforms
   * The layout is structure-of-arrays so a lane-aware shader (fragment i = lane
   * i) can fetch each attribute with one unit-stride vector load at
@@ -138,6 +139,7 @@ class KernelFragStage(
   private val fragDepth = Reg(Vec(batchCap, SInt(32.W)))
   private val packedColor = Reg(Vec(batchCap, UInt(32.W)))
   private val outWords = Reg(Vec(batchCap, UInt(32.W)))
+  private val outValid = Reg(Vec(batchCap, Bool()))
   private val fragE0 = Reg(Vec(batchCap, SInt(64.W)))
   private val fragE1 = Reg(Vec(batchCap, SInt(64.W)))
   private val fragE2 = Reg(Vec(batchCap, SInt(64.W)))
@@ -151,8 +153,9 @@ class KernelFragStage(
   // One bridge transaction at a time keeps the staging FSM simple; the bridge
   // itself supports more outstanding transactions for other clients.
   private val wordPending = RegInit(false.B)
-  // Input-array field being written: 0=x, 1=y, 2=depth, 3=packed colour.
-  private val field = RegInit(0.U(2.W))
+  // Staging field: writes 0=x, 1=y, 2=depth, 3=packed colour,
+  // 4=output-valid initialization; reads 0=colour, 1=output-valid.
+  private val field = RegInit(0.U(3.W))
 
   private val curShaderPc = Reg(UInt(32.W))
   private val curKernarg = Reg(UInt(32.W))
@@ -160,7 +163,7 @@ class KernelFragStage(
   io.fragIn.ready := state === sAccum && count < batchCap.U
   io.drained := state === sAccum && count === 0.U
 
-  io.out.valid := state === sEmit
+  io.out.valid := state === sEmit && outValid(indexIdx)
   io.out.bits.x := fragX(indexIdx)
   io.out.bits.y := fragY(indexIdx)
   io.out.bits.depth := fragDepth(indexIdx)
@@ -175,14 +178,17 @@ class KernelFragStage(
   wordBits.write := state === sWrite
   wordBits.addr := Mux(
     state === sWrite,
-    curKernarg + (field * arrayStride.U) + (index << 2),
-    curKernarg + (4 * arrayStride).U + (index << 2)
+    curKernarg +
+      Mux(field === 4.U, (5 * arrayStride).U, field * arrayStride.U) +
+      (index << 2),
+    curKernarg + ((4.U + field) * arrayStride.U) + (index << 2)
   )
-  wordBits.data := MuxLookup(field, packedColor(indexIdx))(
+  wordBits.data := MuxLookup(field, 1.U(32.W))(
     Seq(
       0.U -> fragX(indexIdx).pad(32).asUInt,
       1.U -> fragY(indexIdx).pad(32).asUInt,
-      2.U -> fragDepth(indexIdx).asUInt
+      2.U -> fragDepth(indexIdx).asUInt,
+      3.U -> packedColor(indexIdx)
     )
   )
 
@@ -228,7 +234,7 @@ class KernelFragStage(
       when(!wordPending && bridge.io.in.fire) { wordPending := true.B }
       when(wordPending && bridge.io.out.fire) {
         wordPending := false.B
-        when(field =/= 3.U) {
+        when(field =/= 4.U) {
           field := field + 1.U
         }.otherwise {
           field := 0.U
@@ -257,18 +263,24 @@ class KernelFragStage(
     is(sRead) {
       when(!wordPending && bridge.io.in.fire) { wordPending := true.B }
       when(wordPending && bridge.io.out.fire) {
-        outWords(indexIdx) := bridge.io.out.bits.data
         wordPending := false.B
-        when(index === count - 1.U) {
-          index := 0.U
-          state := sEmit
+        when(field === 0.U) {
+          outWords(indexIdx) := bridge.io.out.bits.data
+          field := 1.U
         }.otherwise {
-          index := index + 1.U
+          outValid(indexIdx) := bridge.io.out.bits.data =/= 0.U
+          field := 0.U
+          when(index === count - 1.U) {
+            index := 0.U
+            state := sEmit
+          }.otherwise {
+            index := index + 1.U
+          }
         }
       }
     }
     is(sEmit) {
-      when(io.out.fire) {
+      when(!outValid(indexIdx) || io.out.fire) {
         when(index === count - 1.U) {
           count := 0.U
           index := 0.U

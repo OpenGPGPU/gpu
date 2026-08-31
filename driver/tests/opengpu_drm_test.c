@@ -596,16 +596,20 @@ static void write_vector_shader(void *mapping)
 {
     uint32_t *program = mapping;
 
-    /* Sample one texture per lane; warp zero keeps red and warp one adds one. */
+    /* Sample per lane; warp zero clears validity, warp one stays visible. */
     program[0] = 0x00241293u; /* slli x5,x8,2 */
     program[1] = 0x005082b3u; /* add x5,x1,x5 */
     program[2] = 0xc1027057u; /* vsetivli x0,4,e32,m1,ta,ma */
     program[3] = 0x0610812bu; /* vtex.sample v2,v1,v1 */
-    program[4] = 0x00040463u; /* beq x8,x0,+8 */
-    program[5] = 0x0220b157u; /* vadd.vi v2,v2,1 */
-    program[6] = 0x08028313u; /* addi x6,x5,128 */
-    program[7] = 0x02036127u; /* vse32.v v2,(x6) */
-    program[8] = 0x30500073u; /* cease */
+    program[4] = 0x00041a63u; /* bne x8,x0,+20 */
+    program[5] = 0x2e1081d7u; /* vxor.vv v3,v1,v1 */
+    program[6] = 0x0a028313u; /* addi x6,x5,160 */
+    program[7] = 0x020361a7u; /* vse32.v v3,(x6): discard warp zero */
+    program[8] = 0x30500073u; /* cease discarded warp early */
+    program[9] = 0x0220b157u; /* vadd.vi v2,v2,1 */
+    program[10] = 0x08028313u; /* addi x6,x5,128 */
+    program[11] = 0x02036127u; /* vse32.v v2,(x6) */
+    program[12] = 0x30500073u; /* cease live warp */
 }
 
 static int create_syncobj(int fd, uint32_t *handle)
@@ -712,7 +716,7 @@ int main(void)
         CHECK(reject_shader_submit(fd, context_id, &commands, &first, 0,
                                    EINVAL),
               "require texture for vtex.sample");
-        ((uint32_t *)shader.map)[7] = 0x0200e127u; /* vse32.v v2,(x1) */
+        ((uint32_t *)shader.map)[11] = 0x0200e127u; /* vse32.v v2,(x1) */
         CHECK(reject_shader_submit(fd, context_id, &commands, &first, 1,
                                    EINVAL),
               "reject unsafe vector fragment shader");
@@ -760,7 +764,7 @@ int main(void)
     }
     if ((frag_core &&
          (framebuffer_count(&first, expected_pixel) != 60 ||
-          framebuffer_count(&first, alternate_pixel) != 60)) ||
+          framebuffer_count(&first, alternate_pixel) != 0)) ||
         (!frag_core &&
          *(uint32_t *)((uint8_t *)first.map + first.pitch + 4) !=
              expected_pixel)) {
@@ -774,7 +778,7 @@ int main(void)
           "wait output syncobjs");
     if ((frag_core &&
          (framebuffer_count(&second, expected_pixel) != 60 ||
-          framebuffer_count(&second, alternate_pixel) != 60)) ||
+          framebuffer_count(&second, alternate_pixel) != 0)) ||
         (!frag_core &&
          *(uint32_t *)((uint8_t *)second.map + second.pitch + 4) !=
              expected_pixel)) {
@@ -806,7 +810,7 @@ int main(void)
 #undef CHECK
 
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
-           "syncobj + validated vtex/forward-branch sandbox + "
+           "syncobj + validated vtex/discard sandbox + "
            "validated context + "
            "vblank flip event sequence=%u\n",
            frag_core ? "core-backed" : "texture", event.sequence);

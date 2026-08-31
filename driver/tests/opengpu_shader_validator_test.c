@@ -98,6 +98,21 @@ int main(void)
         vse32(2, 6),
         OPENGPU_SHADER_CEASE,
     };
+    const uint32_t discard_valid[] = {
+        0x00241293u, /* slli x5,x8,2 */
+        0x005082b3u, /* add x5,x1,x5 */
+        0xc1027057u, /* vsetivli x0,4,e32,m1,ta,ma */
+        0x0610812bu, /* vtex.sample v2,v1,v1 */
+        0x00041a63u, /* bne x8,x0,+20 */
+        0x2e1081d7u, /* vxor.vv v3,v1,v1 */
+        0x0a028313u, /* addi x6,x5,160 */
+        0x020361a7u, /* vse32.v v3,(x6) */
+        OPENGPU_SHADER_CEASE,
+        0x0220b157u, /* vadd.vi v2,v2,1 */
+        0x08028313u, /* addi x6,x5,128 */
+        0x02036127u, /* vse32.v v2,(x6) */
+        OPENGPU_SHADER_CEASE,
+    };
     const struct {
         unsigned int funct6;
         unsigned int form;
@@ -112,6 +127,8 @@ int main(void)
 
     assert(opengpu_shader_validate_words(valid, 4, 192, 8));
     assert(opengpu_shader_validate_words(vector_valid, 10, 192, 8));
+    assert(opengpu_shader_validate_words_with_texture(
+        discard_valid, 13, 192, 8, true));
 
     program[0] = vsetivli(4);
     program[1] = vtexsample(2, 1, 1);
@@ -181,8 +198,18 @@ int main(void)
     program[3] = OPENGPU_SHADER_CEASE;
     assert(!opengpu_shader_validate_words(program, 4, 192, 8));
 
-    program[1] = addi(5, 1, 148); /* four words cross output_end */
+    program[1] = addi(5, 1, 180); /* four words cross validity end */
     assert(!opengpu_shader_validate_words(program, 4, 192, 8));
+
+    program[0] = sw(0, 160); /* clear one output-valid word: discard */
+    program[1] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_shader_validate_words(program, 2, 192, 8));
+
+    program[0] = vsetivli(4);
+    program[1] = addi(5, 1, 160);
+    program[2] = vse32(1, 5); /* per-lane output-valid store */
+    program[3] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_shader_validate_words(program, 4, 192, 8));
 
     program[1] = addi(5, 10, 128); /* unproven scalar base */
     assert(!opengpu_shader_validate_words(program, 4, 192, 8));
@@ -258,9 +285,15 @@ int main(void)
     assert(!opengpu_shader_validate_words(program, 4, 192, 8));
 
     program[0] = branch(0, 0, 0, 8);
-    program[1] = OPENGPU_SHADER_CEASE; /* branch bypasses this exit */
+    program[1] = OPENGPU_SHADER_CEASE; /* independently terminating paths */
     program[2] = OPENGPU_SHADER_CEASE;
-    assert(!opengpu_shader_validate_words(program, 3, 192, 8));
+    assert(opengpu_shader_validate_words(program, 3, 192, 8));
+
+    program[0] = branch(0, 0, 0, 8);
+    program[1] = OPENGPU_SHADER_CEASE;
+    program[2] = addi(10, 10, 1); /* alternate path uses undefined x10 */
+    program[3] = OPENGPU_SHADER_CEASE;
+    assert(!opengpu_shader_validate_words(program, 4, 192, 8));
 
     program[0] = vsetivli(4);
     program[1] = branch(0, 0, 0, 8);

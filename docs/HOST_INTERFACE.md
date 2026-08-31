@@ -125,7 +125,7 @@ one unit-stride vector load. With `stride = 4 * warps * lanes`:
 | `[2*stride, 3*stride)` | depth (i32) |
 | `[3*stride, 4*stride)` | packed colour inputs (u32) |
 | `[4*stride, 5*stride)` | colour outputs (u32) |
-| `[5*stride, 6*stride)` | reserved |
+| `[5*stride, 6*stride)` | output-valid words (`1` = emit, `0` = discard) |
 | `[6*stride, ...)` | per-draw uniforms |
 
 ### 3.3 Colour / depth buffers
@@ -186,17 +186,20 @@ character device first, DRM display client next, per the roadmap):
   select texture or shader/kernarg bindings. On a capable build the driver waits
   for prior shader writers, copies
   the complete 64-byte-aligned binding into per-job DMA, validates that immutable
-  snapshot, and relocates only validated entry offsets. Sandbox profile v5 is
-  RV32I/M+V ending in one common `CEASE`: x1 cannot be overwritten, scalar loads
-  are bounded to kernarg, and stores are bounded to the batch colour-output
-  slice. Its RVV subset is fixed e32/m1 configuration, unmasked unit-stride
+  snapshot, and relocates only validated entry offsets. Sandbox profile v6 is
+  RV32I/M+V with independently terminating forward paths: x1 cannot be
+  overwritten, scalar loads are bounded to kernarg, and stores are bounded to
+  the batch colour-output and output-valid slices. Its RVV subset is fixed
+  e32/m1 configuration, unmasked unit-stride
   `vle32`/`vse32`, and lane-local `vadd/vsub/vrsub/vand/vor/vxor` in vv/vi
   forms. Abstract address tracking proves `x1 + 4*x8 + constant` accesses stay
   within the SoA arrays for every active lane. Scalar and vector definedness
   tracking prevents a shader from exporting stale registers left by another
   task. Up to four unreconverged, 4-byte-aligned forward conditional branches
   are admitted; every target conservatively merges definedness, address
-  provenance and VL, and every path must reconverge before the final exit.
+  provenance and VL. A path may reconverge or terminate independently in
+  `CEASE`, but every reachable path must terminate. The RTL initializes each
+  output-valid word to one and suppresses fragments whose shader clears it.
   `vtex.sample` is admitted only in its unmasked vector form, with defined UV
   sources and an attached, independently validated texture binding; address
   generation remains inside the bounded hardware sampler. Backward branches,
@@ -256,7 +259,8 @@ and DT node, then loads the DRM stack and module in the guest. The adaptive
 guest queries `CAPABILITIES`: the fixed top binds a texture and verifies the
 exact sampled RTL pixel, while the fragment-core top binds shader, kernarg and
 texture GEMs, proves missing texture and unsafe vector stores are rejected, and
-executes `vtex.sample` over all 120 covered triangle pixels.
+executes `vtex.sample` with a structured early exit that discards warp zero.
+Each queued core-backed framebuffer must contain exactly 60 live sampled pixels.
 Both paths queue two draws with explicit syncobjs, render into two dumb buffers,
 perform an atomic modeset and page flip, receive a matching vblank-paced flip
 event, prove unbound resources and destroyed contexts cannot be reused, and print

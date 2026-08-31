@@ -15,6 +15,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
   //   [64,  96)   per-fragment depth
   //   [96,  128)  per-fragment packed-colour inputs
   //   [128, 160)  per-fragment colour outputs
+  //   [160, 192)  per-fragment output-valid (1 = emit, 0 = discard)
   //   [192, ...)  per-draw uniforms
 
   /** Byte-addressed 64-byte line memory model shared by the core and the
@@ -247,6 +248,42 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.out.bits.color.r.expect(0xab.U)
       dut.io.out.bits.color.g.expect(0xcd.U)
       dut.io.out.bits.color.b.expect(0xf0.U)
+    }
+  }
+
+  it should "discard a fragment whose shader clears output-valid" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelFragStage(config)) { dut =>
+      val mem = new MemModel
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.shaderPc.poke(0x1000.U)
+      dut.io.kernargBase.poke(0x8000.U)
+
+      // The stage initializes valid[0] to one. The shader's zero store kills
+      // the fragment before it can reach depth/colour output merging.
+      mem.putWord(0x1000L, 0, sw(0, 1, 160))
+      mem.putWord(0x1000L, 1, cease)
+
+      dut.io.fragIn.bits.x.poke(3.S)
+      dut.io.fragIn.bits.y.poke(4.S)
+      dut.io.fragIn.bits.depth.poke(0x20.S)
+      dut.io.fragIn.bits.color.r.poke(0xab.U)
+      dut.io.fragIn.bits.color.g.poke(0xcd.U)
+      dut.io.fragIn.bits.color.b.poke(0xef.U)
+      dut.io.fragIn.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.fragIn.valid.poke(false.B)
+      dut.io.flush.poke(true.B); dut.clock.step()
+      dut.io.flush.poke(false.B)
+
+      val done = pump(dut, mem, () => dut.io.drained.peek().litToBoolean,
+        guard = 2000)
+      assert(done, "discarded fragment did not drain")
+      assert(!dut.io.out.valid.peek().litToBoolean,
+        "discarded fragment must not be emitted")
+      assert(((mem.readLine(0x8080L) >> (8 * 32)) & 0xffffffffL) == 0,
+        "shader did not clear the output-valid word")
     }
   }
 
