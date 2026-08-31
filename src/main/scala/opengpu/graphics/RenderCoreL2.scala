@@ -78,6 +78,7 @@ class RenderCoreL2(
     val texWidth = Input(UInt(14.W))
     val texHeight = Input(UInt(14.W))
     val texWrapClamp = Input(Bool())
+    val texMaxLevel = Input(UInt(4.W))
     val done = Output(Bool())
     val memoryRequest = Decoupled(
       new ComputeMemoryRequest(gpuConfig, lineBytes, totalOutstanding))
@@ -109,6 +110,7 @@ class RenderCoreL2(
   core.io.texWidth := io.texWidth
   core.io.texHeight := io.texHeight
   core.io.texWrapClamp := io.texWrapClamp
+  core.io.texMaxLevel := io.texMaxLevel
   io.done := core.io.done
 
   // Word-level clients (command buffer, framebuffer, texture) behind bridges.

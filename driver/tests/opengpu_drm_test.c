@@ -272,16 +272,18 @@ static int create_command_buffer(int fd, struct command_buffer *commands)
     draw->d0 = 0x10;
     draw->d1 = 0x10;
     draw->d2 = 0x10;
-    draw->uv0[0] = 0x8000; draw->uv0[1] = 0x8000;
-    draw->uv1[0] = 0x8000; draw->uv1[1] = 0x8000;
-    draw->uv2[0] = 0x8000; draw->uv2[1] = 0x8000;
+    /* Eight repeats over 16 pixels => two base texels/pixel on a 4x4
+     * texture, selecting mip 1 in the quad-backed fragment path. */
+    draw->uv0[0] = 0;       draw->uv0[1] = 0;
+    draw->uv1[0] = 0x80000; draw->uv1[1] = 0;
+    draw->uv2[0] = 0;       draw->uv2[1] = 0x80000;
     return 0;
 }
 
 static int create_texture_buffer(int fd, struct resource_buffer *texture)
 {
     struct drm_mode_create_dumb create = {
-        .width = 1,
+        .width = 21,
         .height = 1,
         .bpp = 32,
     };
@@ -298,7 +300,17 @@ static int create_texture_buffer(int fd, struct resource_buffer *texture)
                         MAP_SHARED, fd, map.offset);
     if (texture->map == MAP_FAILED)
         return -1;
-    *(uint32_t *)texture->map = 0xff0000ffu;
+    /* Packed chain: 4x4 green, 2x2 red, 1x1 blue. */
+    {
+        uint32_t *texels = texture->map;
+        uint32_t i;
+
+        for (i = 0; i < 16; i++)
+            texels[i] = 0x00ff00ffu;
+        for (i = 16; i < 20; i++)
+            texels[i] = 0xff0000ffu;
+        texels[20] = 0x0000ffffu;
+    }
     return 0;
 }
 
@@ -349,13 +361,39 @@ static int bind_texture(int fd, uint32_t context_id, uint32_t slot,
         .slot = slot,
         .handle = texture->handle,
         .type = OPENGPU_RESOURCE_TEXTURE,
-        .size = 4,
-        .width = 1,
-        .height = 1,
-        .flags = OPENGPU_RESOURCE_TEXTURE_CLAMP,
+        .size = 21 * sizeof(uint32_t),
+        .width = 4,
+        .height = 4,
+        .flags = OPENGPU_RESOURCE_TEXTURE_CLAMP |
+            (2u << OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT),
     };
 
     return ioctl(fd, DRM_IOCTL_OPENGPU_RESOURCE_BIND, &resource);
+}
+
+static int reject_truncated_mip_chain(int fd, uint32_t context_id,
+                                      uint32_t slot,
+                                      const struct resource_buffer *texture)
+{
+    struct drm_opengpu_resource resource = {
+        .context_id = context_id,
+        .slot = slot,
+        .handle = texture->handle,
+        .type = OPENGPU_RESOURCE_TEXTURE,
+        .size = 16 * sizeof(uint32_t), /* base only; advertised chain is 21 */
+        .width = 4,
+        .height = 4,
+        .flags = OPENGPU_RESOURCE_TEXTURE_CLAMP |
+            (2u << OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT),
+    };
+
+    errno = 0;
+    if (ioctl(fd, DRM_IOCTL_OPENGPU_RESOURCE_BIND, &resource) != -1 ||
+        errno != EINVAL) {
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
 }
 
 static int bind_resource(int fd, uint32_t context_id, uint32_t slot,
@@ -721,6 +759,8 @@ int main(void)
     CHECK(create_resource_buffer(fd, 288, &kernarg), "kernarg buffer");
     write_vector_shader(shader.map);
     CHECK(create_context(fd, &context_id), "create render context");
+    CHECK(reject_truncated_mip_chain(fd, context_id, 1, &texture),
+          "reject truncated mip chain");
     CHECK(bind_texture(fd, context_id, 1, &texture), "bind texture");
     CHECK(bind_resource(fd, context_id, 2, &shader,
                         OPENGPU_RESOURCE_SHADER, 128), "bind shader");
@@ -749,7 +789,7 @@ int main(void)
         texture_slot = 1;
         shader_slot = 0;
         kernarg_slot = 0;
-        expected_pixel = 0xfe0000ffu;
+        expected_pixel = 0x00fe00ffu;
     }
     CHECK(create_syncobj(fd, &syncobjs[1]), "create first output syncobj");
     CHECK(create_syncobj(fd, &syncobjs[2]), "create second output syncobj");

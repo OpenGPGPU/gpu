@@ -52,8 +52,10 @@
 #define GPU_SCANOUT_ENABLE          (1u << 0)
 #define GPU_SCANOUT_ACTIVE          (1u << 0)
 
-/* TEX_CONFIG bits: bit0 wrap==CLAMP (else REPEAT), bit8 sampling enable. */
+/* TEX_CONFIG: bit0 CLAMP, bits[5:2] max mip level, bit8 sampling enable. */
 #define GPU_TEX_WRAP_CLAMP    (1u << 0)
+#define GPU_TEX_MAX_MIP_SHIFT 2u
+#define GPU_TEX_MAX_MIP_MASK  (0xfu << GPU_TEX_MAX_MIP_SHIFT)
 #define GPU_TEX_ENABLE        (1u << 8)
 
 #define GPU_ID                ((GPU_DEVICE_ID << 16) | GPU_VERSION)

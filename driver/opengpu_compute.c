@@ -323,6 +323,7 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
     struct drm_gem_dma_object *dma_object;
     struct drm_gem_object *object;
     u64 end, dma_end, texture_bytes;
+    u32 mip_level, mip_width, mip_height, level;
     int ret;
 
     if (!args->context_id || !args->slot ||
@@ -337,16 +338,33 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
          args->size > OPENGPU_SHADER_MAX_INSTRUCTIONS * sizeof(u32)))
         return -EINVAL;
     if (args->type == OPENGPU_RESOURCE_TEXTURE) {
+        mip_level = (args->flags & OPENGPU_RESOURCE_TEXTURE_MAX_MIP_MASK) >>
+                    OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT;
         if (!args->width || !args->height ||
             args->width > 0x3fff || args->height > 0x3fff ||
-            (args->flags & ~OPENGPU_RESOURCE_TEXTURE_CLAMP) ||
+            (args->flags & ~(OPENGPU_RESOURCE_TEXTURE_CLAMP |
+                             OPENGPU_RESOURCE_TEXTURE_MAX_MIP_MASK)) ||
+            mip_level >= 32 - __builtin_clz(max(args->width, args->height)) ||
             (!(args->flags & OPENGPU_RESOURCE_TEXTURE_CLAMP) &&
              (!opengpu_is_power_of_two(args->width) ||
-              !opengpu_is_power_of_two(args->height))) ||
-            check_mul_overflow((u64)args->width, (u64)args->height,
-                               &texture_bytes) ||
-            check_mul_overflow(texture_bytes, 4ull, &texture_bytes) ||
-            texture_bytes > args->size)
+              !opengpu_is_power_of_two(args->height))))
+            return -EINVAL;
+        texture_bytes = 0;
+        mip_width = args->width;
+        mip_height = args->height;
+        for (level = 0; level <= mip_level; level++) {
+            u64 level_bytes;
+
+            if (check_mul_overflow((u64)mip_width, (u64)mip_height,
+                                   &level_bytes) ||
+                check_mul_overflow(level_bytes, 4ull, &level_bytes) ||
+                check_add_overflow(texture_bytes, level_bytes,
+                                   &texture_bytes))
+                return -EINVAL;
+            mip_width = max(1u, mip_width >> 1);
+            mip_height = max(1u, mip_height >> 1);
+        }
+        if (texture_bytes > args->size)
             return -EINVAL;
     } else if (args->width || args->height || args->flags) {
         return -EINVAL;
@@ -805,7 +823,10 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         .texture_height = texture ? texture->height : 0,
         .texture_config = texture ? GPU_TEX_ENABLE |
             (texture->flags & OPENGPU_RESOURCE_TEXTURE_CLAMP ?
-             GPU_TEX_WRAP_CLAMP : 0) : 0,
+             GPU_TEX_WRAP_CLAMP : 0) |
+            (((texture->flags & OPENGPU_RESOURCE_TEXTURE_MAX_MIP_MASK) >>
+              OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT) <<
+             GPU_TEX_MAX_MIP_SHIFT) : 0,
         .completion_delay_ms =
             args->flags & OPENGPU_SUBMIT_TEST_FENCE_DELAY ? 50 : 0,
     };

@@ -395,10 +395,9 @@ Status (implementation, 2026-08-27) — M5b texture unit:
   instruction reads Q16.16 UVs from `vs1`/`vs2`, observes ordinary RVV
   `vl`/`vm`/v0 masking, serializes active lanes through the shared physical
   sampler, preserves inactive `vd` lanes, and returns packed RGBA8888 through
-  vector commit/writeback.  Unit verification covers masking and result
+  vector commit/writeback. Unit verification covers masking and result
   backpressure; the kernel regression loads four distinct UV pairs, samples
-  four texels, and writes all lane results with one vector store.  Automatic
-  perspective-UV staging, LOD/mips and quad derivatives remain follow-up work.
+  four texels, and writes all lane results with one vector store.
 
 Risks: still the largest milestone, but the ISA/toolchain deletion removes
 the worst of it. Split as: (a) dispatch + uniform bank + trivial color
@@ -859,9 +858,19 @@ Status (virtual display and DRM handoff, 2026-08-29):
   driver watchdog is 30 seconds because instruction-level QEMU must execute
   all 256 lanes of a 16×16 bbox, rather than only its 120 covered samples
   (measured about 12.5 seconds for probe and 20.8 seconds per textured draw).
-- Next: derive texture LOD from quad gradients and add mip-level storage and
-  selection. Hardware-side per-draw overlap/double buffering remains the
-  separate M5 throughput milestone.
+- **Nearest mip selection complete (2026-08-31).** Texture GEMs use a packed
+  level chain (base followed by successively halved, tightly packed RGBA8888
+  images). Binding flags publish max level; the driver overflow-checks the sum
+  of all advertised extents and rejects truncated chains. `TextureUnit` walks
+  to the clamped requested level before tap decode. `TexSampleUnit` computes
+  rho from all horizontal/vertical TL/TR/BL/BR UV differences scaled by base
+  dimensions, selects `floor(log2(rho))`, and shares that nearest LOD across
+  the quad. Tests distinguish green base/red mip1/blue mip2 and prove a
+  two-texel-per-pixel gradient selects red mip1. The QEMU guest uses the same
+  packed chain and validates mip1 through the framebuffer.
+- Next: optional trilinear blending and sampler LOD bias/clamps. Hardware-side
+  per-draw overlap/double buffering remains the separate M5 throughput
+  milestone.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

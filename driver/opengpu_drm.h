@@ -61,6 +61,9 @@ struct drm_opengpu_resource {
 };
 
 #define OPENGPU_RESOURCE_TEXTURE_CLAMP (1u << 0)
+#define OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT 4u
+#define OPENGPU_RESOURCE_TEXTURE_MAX_MIP_MASK \
+    (0xfu << OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT)
 #define OPENGPU_MAX_RESOURCE_SLOTS 16u
 
 struct drm_opengpu_submit {

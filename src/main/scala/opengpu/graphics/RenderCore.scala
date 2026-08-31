@@ -64,6 +64,7 @@ class RenderCore(
     val texWidth = Input(UInt(14.W))
     val texHeight = Input(UInt(14.W))
     val texWrapClamp = Input(Bool())
+    val texMaxLevel = Input(UInt(4.W))
     val depthTestEnable = Input(Bool())
     val depthFunc = Input(UInt(3.W))
     val depthWriteEnable = Input(Bool())
@@ -99,6 +100,7 @@ class RenderCore(
   rp.io.texWidth := io.texWidth
   rp.io.texHeight := io.texHeight
   rp.io.texWrapClamp := io.texWrapClamp
+  rp.io.texMaxLevel := io.texMaxLevel
   rp.io.mem.req <> io.fbMem.req
   rp.io.mem.resp <> io.fbMem.resp
   rp.io.texMem <> io.texMem

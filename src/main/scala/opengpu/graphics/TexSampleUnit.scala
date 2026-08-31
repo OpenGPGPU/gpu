@@ -34,6 +34,7 @@ class TexSampleUnit(
     val texWidth = Input(UInt(14.W))
     val texHeight = Input(UInt(14.W))
     val wrapClamp = Input(Bool())
+    val texMaxLevel = Input(UInt(4.W))
     val mem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
@@ -46,6 +47,7 @@ class TexSampleUnit(
   sampler.io.texWidth := io.texWidth
   sampler.io.texHeight := io.texHeight
   sampler.io.wrapMode := io.wrapClamp
+  sampler.io.texMaxLevel := io.texMaxLevel
   io.mem.req <> sampler.io.mem.req
   sampler.io.mem.resp <> io.mem.resp
 
@@ -71,6 +73,31 @@ class TexSampleUnit(
   // only stable through the handshake cycle (same race class as M4b/M5b).
   private val uReg = RegInit(0.U(32.W))
   private val vReg = RegInit(0.U(32.W))
+  private val mipLevelReg = RegInit(0.U(4.W))
+
+  /** One nearest mip per quad. UV differences remain Q16.16; multiplying by
+    * the base extent converts them to texels-per-pixel in Q16.16. */
+  private def absDiff(a: UInt, b: UInt): UInt = Mux(a >= b, a - b, b - a)
+  private val automaticMip = WireDefault(0.U(4.W))
+  if (config.lanes >= 4) {
+    val u = io.vectorIn.bits.issued.vs1Data
+    val v = io.vectorIn.bits.issued.vs2Data
+    val gradients = Seq(
+      absDiff(u(1), u(0)) * io.texWidth,
+      absDiff(u(3), u(2)) * io.texWidth,
+      absDiff(u(2), u(0)) * io.texWidth,
+      absDiff(u(3), u(1)) * io.texWidth,
+      absDiff(v(1), v(0)) * io.texHeight,
+      absDiff(v(3), v(2)) * io.texHeight,
+      absDiff(v(2), v(0)) * io.texHeight,
+      absDiff(v(3), v(1)) * io.texHeight)
+    val rho = gradients.reduce((a, b) => Mux(a >= b, a, b))
+    for (level <- 1 until 16) {
+      when(rho >= (BigInt(1) << (16 + level)).U) {
+        automaticMip := level.U
+      }
+    }
+  }
 
   // Alternate priority after every accepted instruction so independent scalar
   // and vector warps cannot starve one another at the shared physical sampler.
@@ -87,6 +114,7 @@ class TexSampleUnit(
     Mux(vectorModeReg, uVectorReg(laneReg), uReg)
   sampler.io.sample.bits.v :=
     Mux(vectorModeReg, vVectorReg(laneReg), vReg)
+  sampler.io.sample.bits.mipLevel := mipLevelReg
   sampler.io.result.ready :=
     state === sSample && (!vectorModeReg || vectorLaneActive)
 
@@ -121,6 +149,7 @@ class TexSampleUnit(
         vectorDataReg := io.vectorIn.bits.issued.oldVdData
         uVectorReg := io.vectorIn.bits.issued.vs1Data
         vVectorReg := io.vectorIn.bits.issued.vs2Data
+        mipLevelReg := automaticMip
         laneReg := 0.U
         preferVector := false.B
         state := sSample
@@ -132,6 +161,7 @@ class TexSampleUnit(
         activeMaskReg := io.in.bits.decode.activeMask
         uReg := io.in.bits.rs1Data
         vReg := io.in.bits.rs2Data
+        mipLevelReg := 0.U
         preferVector := true.B
         state := sSample
       }

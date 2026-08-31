@@ -79,7 +79,7 @@ single source of truth exported to C in `driver/gpu_abi.h`.
 | 0x34 | TEX_BASE | RW | texture texel (0,0) physical byte address |
 | 0x38 | TEX_WIDTH | RW | texture width in texels |
 | 0x3C | TEX_HEIGHT | RW | texture height in texels |
-| 0x40 | TEX_CONFIG | RW | bit0 CLAMP (else REPEAT), bit8 texture enable |
+| 0x40 | TEX_CONFIG | RW | bit0 CLAMP, bits 5:2 max mip level, bit8 texture enable |
 | 0x44 | SCANOUT_BASE | RW | display framebuffer physical byte address |
 | 0x48 | SCANOUT_STRIDE | RW | display pitch in bytes |
 | 0x4C | SCANOUT_WIDTH | RW | active width in pixels |
@@ -136,6 +136,16 @@ one unit-stride vector load. With `stride = 4 * warps * lanes`:
 Colour is r8g8b8a8 (`0xRRGGBBAA`; little-endian bytes `[AA BB GG RR]`). Depth
 is a 24-bit fixed-point value in a 32-bit word. The framebuffer is addressed
 `base + (y*stride + x)*4` on integer pixel coordinates.
+
+### 3.4 Texture mip chain
+
+RGBA8888 mip levels are tightly packed from `TEX_BASE`: level 0 first, then
+each `max(1,width>>level) × max(1,height>>level)` image with no row padding.
+The texture GEM binding advertises its deepest level in flags bits 7:4. The
+driver checks that the complete chain fits in the bound range before exposing
+its base to hardware. `vtex.sample` derives one nearest integer LOD per
+TL/TR/BL/BR quad as `floor(log2(max UV gradient in base-level texels))`, clamped
+to `[0,maxLevel]`; the scalar/fixed-function sampler selects level 0.
 
 ## 4. Device-tree binding
 

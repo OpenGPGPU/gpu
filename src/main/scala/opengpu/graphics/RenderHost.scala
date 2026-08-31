@@ -38,7 +38,7 @@ object RenderHostRegs {
   val TEX_BASE          = 0x34
   val TEX_WIDTH         = 0x38
   val TEX_HEIGHT        = 0x3C
-  /** bit0: wrap==CLAMP (else REPEAT); bit8: texture sampling enable. */
+  /** bit0: CLAMP; bits[5:2]: max mip level; bit8: sampling enable. */
   val TEX_CONFIG        = 0x40
   /** Display registers are independent of the execution COLOR_BASE/STRIDE. */
   val SCANOUT_BASE      = 0x44
@@ -363,6 +363,7 @@ class RenderHost(
   core.io.texWidth := activeTexWidth(13, 0)
   core.io.texHeight := activeTexHeight(13, 0)
   core.io.texWrapClamp := activeTexConfig(0)
+  core.io.texMaxLevel := activeTexConfig(5, 2)
   core.io.start := launch
 
   core.io.cbMem.req <> io.cbMem.req

@@ -29,6 +29,7 @@ class TexSampleUnitSpec extends AnyFlatSpec {
       dut.io.texWidth.poke(2.U)
       dut.io.texHeight.poke(2.U)
       dut.io.wrapClamp.poke(false.B)
+      dut.io.texMaxLevel.poke(0.U)
       dut.io.in.valid.poke(false.B)
       dut.io.commit.ready.poke(true.B)
       dut.io.vectorIn.valid.poke(true.B)
@@ -92,6 +93,66 @@ class TexSampleUnitSpec extends AnyFlatSpec {
       dut.io.vectorCommit.ready.poke(true.B)
       dut.clock.step()
       dut.io.vectorCommit.valid.expect(false.B)
+    }
+  }
+
+  it should "select a nearest mip level from 2x2 quad UV gradients" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new TexSampleUnit(config)) { dut =>
+      val pending = mutable.Queue.empty[Long]
+      val green = texel(0, 255, 0)
+      val red = texel(255, 0, 0)
+      val blue = texel(0, 0, 255)
+
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.texBase.poke(0x2000.U)
+      dut.io.texWidth.poke(4.U)
+      dut.io.texHeight.poke(4.U)
+      dut.io.wrapClamp.poke(true.B)
+      dut.io.texMaxLevel.poke(2.U)
+      dut.io.in.valid.poke(false.B)
+      dut.io.commit.ready.poke(true.B)
+      dut.io.vectorIn.valid.poke(true.B)
+      dut.io.vectorIn.bits.poke(0.U.asTypeOf(dut.io.vectorIn.bits))
+      dut.io.vectorIn.bits.issued.decode.activeMask.poke(0xf.U)
+      dut.io.vectorIn.bits.issued.decode.instruction.poke("h062081ab".U)
+      dut.io.vectorIn.bits.executionMask.poke(0xf.U)
+      // Half a UV unit per pixel * four base texels = two texels/pixel:
+      // floor(log2(rho)) = 1. Lane order is TL,TR,BL,BR.
+      val u = Seq(0, 0x8000, 0, 0x8000)
+      val v = Seq(0, 0, 0x8000, 0x8000)
+      for (lane <- 0 until 4) {
+        dut.io.vectorIn.bits.issued.vs1Data(lane).poke(u(lane).U)
+        dut.io.vectorIn.bits.issued.vs2Data(lane).poke(v(lane).U)
+      }
+      dut.io.vectorCommit.ready.poke(false.B)
+      dut.io.mem.req.ready.poke(true.B)
+      dut.io.mem.resp.valid.poke(false.B)
+      dut.io.mem.resp.bits.poke(0.U.asTypeOf(dut.io.mem.resp.bits))
+      dut.clock.step(); dut.io.vectorIn.valid.poke(false.B)
+
+      var guard = 0
+      while (!dut.io.vectorCommit.valid.peek().litToBoolean && guard < 400) {
+        if (pending.nonEmpty) {
+          val addr = pending.front
+          // Packed 4x4 base [0x2000,0x2040), 2x2 mip1
+          // [0x2040,0x2050), 1x1 mip2 [0x2050,0x2054).
+          val word = if (addr < 0x2040L) green
+            else if (addr < 0x2050L) red else blue
+          dut.io.mem.resp.valid.poke(true.B)
+          dut.io.mem.resp.bits.data.poke(word.U)
+          dut.io.mem.resp.bits.write.poke(false.B)
+          if (dut.io.mem.resp.ready.peek().litToBoolean) pending.dequeue()
+        } else dut.io.mem.resp.valid.poke(false.B)
+        if (dut.io.mem.req.valid.peek().litToBoolean &&
+          dut.io.mem.req.ready.peek().litToBoolean)
+          pending.enqueue(dut.io.mem.req.bits.addr.peek().litValue.toLong)
+        dut.clock.step(); guard += 1
+      }
+      assert(dut.io.vectorCommit.valid.peek().litToBoolean,
+        "gradient-derived mip sample did not complete")
+      for (lane <- 0 until 4)
+        dut.io.vectorCommit.bits.writeback.data(lane).expect(red.U)
     }
   }
 }

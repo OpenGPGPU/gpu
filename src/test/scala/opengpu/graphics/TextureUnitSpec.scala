@@ -17,15 +17,31 @@ class TextureUnitSpec extends AnyFlatSpec {
   behavior of "TextureUnit"
 
   /** Byte-addressed word memory model with out-of-range tracking. */
-  private class TexMem(val base: Long, val width: Int, val height: Int) {
+  private class TexMem(val base: Long, val width: Int, val height: Int,
+                       val levels: Int = 1) {
     val words = mutable.LongMap[Int]()
     var oobReads = 0
+    def levelInfo(level: Int): (Long, Int, Int) = {
+      var offset = 0L
+      var w = width
+      var h = height
+      for (_ <- 0 until level) {
+        offset += w.toLong * h * 4
+        w = math.max(1, w / 2)
+        h = math.max(1, h / 2)
+      }
+      (base + offset, w, h)
+    }
     def put(x: Int, y: Int, argb: Int): Unit =
       words(base + (y.toLong * width + x) * 4) = argb
+    def putLevel(level: Int, x: Int, y: Int, argb: Int): Unit = {
+      val (levelBase, w, _) = levelInfo(level)
+      words(levelBase + (y.toLong * w + x) * 4) = argb
+    }
     def texel(x: Int, y: Int): Int =
       words.getOrElse(base + (y.toLong * width + x) * 4, 0)
     private def inRange(a: Long): Boolean =
-      a >= base && a < base + width.toLong * height * 4 &&
+      a >= base && a < levelInfo(levels)._1 &&
         ((a - base) % 4) == 0
     def read(a: Long): Int = {
       if (!inRange(a)) oobReads += 1
@@ -86,11 +102,13 @@ class TextureUnitSpec extends AnyFlatSpec {
   /** Attach config pins once; request/response/memory lines are driven by
     * the shared service loop below.
     */
-  private def attach(dut: TextureUnit, mem: TexMem, wrapClamp: Boolean): Unit = {
+  private def attach(dut: TextureUnit, mem: TexMem, wrapClamp: Boolean,
+                     maxLevel: Int = 0): Unit = {
     dut.io.texBase.poke(mem.base.U)
     dut.io.texWidth.poke(mem.width.U)
     dut.io.texHeight.poke(mem.height.U)
     dut.io.wrapMode.poke(wrapClamp.B)
+    dut.io.texMaxLevel.poke(maxLevel.U)
     dut.io.mem.req.ready.poke(true.B)
   }
 
@@ -107,12 +125,14 @@ class TextureUnitSpec extends AnyFlatSpec {
     mem: TexMem,
     u: Long,
     v: Long,
+    mipLevel: Int = 0,
     stallCycles: Int = 0,
     maxCycles: Int = 400
   ): Int = {
     dut.io.sample.valid.poke(true.B)
     dut.io.sample.bits.u.poke(u.U)
     dut.io.sample.bits.v.poke(v.U)
+    dut.io.sample.bits.mipLevel.poke(mipLevel.U)
     var pendingAddr = -1L
     var accepted = false
     var seenValue = false
@@ -229,6 +249,27 @@ class TextureUnitSpec extends AnyFlatSpec {
           f"texel centre ($x,$y) got ${got.toHexString} want ${want.toHexString}")
       }
       assert(mem.oobReads == 0, "hardware fetched outside the texture")
+    }
+  }
+
+  it should "walk a packed mip chain and clamp requests to max level" in {
+    val mem = new TexMem(0x4000L, width = 8, height = 4, levels = 4)
+    val colors = Seq(
+      texel(0x10, 0, 0), texel(0x20, 0, 0),
+      texel(0x30, 0, 0), texel(0x40, 0, 0))
+    simulate(new TextureUnit()) { dut =>
+      attach(dut, mem, wrapClamp = true, maxLevel = 3)
+      for (level <- colors.indices) {
+        val (_, w, h) = mem.levelInfo(level)
+        for (y <- 0 until h; x <- 0 until w)
+          mem.putLevel(level, x, y, colors(level))
+      }
+      for (level <- colors.indices)
+        assert(runSample(dut, mem, q(0.5), q(0.5), mipLevel = level) ==
+          colors(level), s"mip level $level selected the wrong packed image")
+      assert(runSample(dut, mem, q(0.5), q(0.5), mipLevel = 7) == colors(3),
+        "requested mip must clamp to texMaxLevel")
+      assert(mem.oobReads == 0, "mip walk fetched outside the packed chain")
     }
   }
 

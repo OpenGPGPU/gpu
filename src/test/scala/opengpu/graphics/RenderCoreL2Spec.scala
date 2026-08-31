@@ -267,6 +267,7 @@ class RenderCoreL2Spec extends AnyFlatSpec {
       dut.io.texWidth.poke(16.U)
       dut.io.texHeight.poke(16.U)
       dut.io.texWrapClamp.poke(false.B)
+      dut.io.texMaxLevel.poke(0.U)
       dut.io.memoryResponse.valid.poke(false.B)
       dut.io.memoryResponse.bits.fault.poke(false.B)
       dut.io.memoryResponse.bits.transactionId.poke(0.U)

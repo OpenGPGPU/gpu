@@ -81,6 +81,7 @@ class RenderPipeline(
     val texWidth = Input(UInt(14.W))
     val texHeight = Input(UInt(14.W))
     val texWrapClamp = Input(Bool())
+    val texMaxLevel = Input(UInt(4.W))
     val texMem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
@@ -127,6 +128,7 @@ class RenderPipeline(
   textured.io.texWidth := io.texWidth
   textured.io.texHeight := io.texHeight
   textured.io.wrapClamp := io.texWrapClamp
+  textured.io.texMaxLevel := io.texMaxLevel
   io.texMem <> textured.io.mem
 
   // Whole-bundle payload + consumer ready live outside the fragCore branches
@@ -162,6 +164,7 @@ class RenderPipeline(
     kernelFrag.io.texWidth := io.texWidth
     kernelFrag.io.texHeight := io.texHeight
     kernelFrag.io.texWrapClamp := io.texWrapClamp
+    kernelFrag.io.texMaxLevel := io.texMaxLevel
     // The batch must be flushed exactly at the draw boundary: once the
     // rasterizer has gone idle (all pixels of the current draw emitted), any
     // accumulated-but-unlaunched fragments are launched as one kernel.  The

@@ -103,7 +103,10 @@ override depth, while a zero validity store discards before output merging. The 
 `vtex.sample` is accepted
 only when its UV VGPRs are defined, it is unmasked, and the same submit carries
 a validated texture GEM; the hardware sampler derives all addresses from that
-binding's base, dimensions and wrap mode. Unmasked `vquad.dfdx/dfdy` are
+binding's base, dimensions, wrap mode and validated packed mip count. The
+driver sums every advertised mip extent and rejects truncated chains. Vector
+sampling derives a nearest LOD from each quad's UV gradients. Unmasked
+`vquad.dfdx/dfdy` are
 admitted after VL setup with a defined VGPR source. The core rasterizer supplies
 complete TL/TR/BL/BR groups; helpers execute but immutable coverage suppresses
 their OM output. Backward edges, jumps, masked/strided/gather memory, atomics

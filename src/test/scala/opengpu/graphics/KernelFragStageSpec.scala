@@ -568,6 +568,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.texWidth.poke(2.U)
       dut.io.texHeight.poke(2.U)
       dut.io.texWrapClamp.poke(false.B)
+      dut.io.texMaxLevel.poke(0.U)
 
       // Program: u = uniform(288), v = uniform(292); sample; output[0] = rd.
       mem.putWord(0x1000L, 0, lw(10, 1, 288))
@@ -625,6 +626,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.texWidth.poke(2.U)
       dut.io.texHeight.poke(2.U)
       dut.io.texWrapClamp.poke(false.B)
+      dut.io.texMaxLevel.poke(0.U)
 
       // Each lane loads interpolated u/v from the fragment-input slices,
       // samples into v3, and writes colour plus dFdx(u) as depth.

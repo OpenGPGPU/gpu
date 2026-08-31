@@ -81,6 +81,7 @@ class TexturedFragStage(
     val texWidth = Input(UInt(14.W))
     val texHeight = Input(UInt(14.W))
     val wrapClamp = Input(Bool())
+    val texMaxLevel = Input(UInt(4.W))
 
     /** Current fragment's perspective-correct coordinates. The core-backed
       * path reuses this interpolation while bypassing the fixed sampler. */
@@ -100,6 +101,7 @@ class TexturedFragStage(
   sampler.io.texWidth := io.texWidth
   sampler.io.texHeight := io.texHeight
   sampler.io.wrapMode := io.wrapClamp
+  sampler.io.texMaxLevel := io.texMaxLevel
 
   // Mem passthrough: the sampler owns fetches exclusively (single-sample FSM).
   io.mem.req <> sampler.io.mem.req
@@ -141,6 +143,7 @@ class TexturedFragStage(
     state === sWait && io.fragIn.valid && io.fragIn.ready
   sampler.io.sample.bits.u := uvInterp.io.uvPx.u
   sampler.io.sample.bits.v := uvInterp.io.uvPx.v
+  sampler.io.sample.bits.mipLevel := 0.U
 
   io.out.valid := state === sOut
   io.out.bits.x := heldX
