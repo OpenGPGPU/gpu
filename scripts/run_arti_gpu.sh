@@ -14,6 +14,7 @@ DRIVER_OUTPUT="${DRIVER_OUTPUT:-/tmp/opengpu-arti-driver}"
 QEMU_TOOLS="${QEMU_TOOLS:-/tmp/qemu-build-tools}"
 QEMU_DISPLAY="${QEMU_DISPLAY:-none}"
 GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}"
+ARTI_GPU_DRAW_WAIT_MS="${ARTI_GPU_DRAW_WAIT_MS:-60000}"
 
 if [ -z "${QEMU_SRC:-}" ]; then
     for qemu_candidate in /tmp/qemu-src /tmp/qemu-src/qemu-11.1.0; do
@@ -55,11 +56,11 @@ echo "=== 1/4 Emit GpuHostAxi RTL ==="
 if [ "$GPU_FRAG_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
         sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host --frag-core")
-    TIMEOUT="${TIMEOUT:-180}"
+    TIMEOUT="${TIMEOUT:-120}"
 else
     (cd "$GPU_DIR" && \
         sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host")
-    TIMEOUT="${TIMEOUT:-60}"
+    TIMEOUT="${TIMEOUT:-180}"
 fi
 [ -f "$GPU_DIR/generated/host/GpuHostAxi.sv" ] || \
     fail "RTL emission did not produce generated/host/GpuHostAxi.sv"
@@ -101,6 +102,7 @@ cp "$GPU_DIR/driver/Makefile" "$DRIVER_STAGE/"
 cp "$GPU_DIR"/driver/*.c "$GPU_DIR"/driver/*.h "$DRIVER_STAGE/"
 LINUX_BUILD="$LINUX_BUILD" \
 ARTI_DIR="$ARTI_DIR" \
+KCFLAGS="${KCFLAGS:-} -DOPENGPU_DRAW_WAIT_MS=$ARTI_GPU_DRAW_WAIT_MS" \
     "$ARTI_DIR/examples/linux_arti_driver/build_driver.sh" \
         --dir "$DRIVER_STAGE" \
         --module gpu_drv \

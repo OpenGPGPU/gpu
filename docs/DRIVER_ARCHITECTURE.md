@@ -116,11 +116,16 @@ trusted probe self-test follows the same split: fixed hardware uses the texture
 pipeline, while capable hardware allocates private shader/kernarg buffers and
 executes a pass-through fragment program before DRM registration.
 
-The shared DRM GPU scheduler has one hardware credit and a fair runqueue across
-context entities. It resolves GEM reservation and input-syncobj dependencies
-without blocking submit, then launches one hardware descriptor at a time.
-Hardware completion is represented by a `dma_fence` signaled from the IRQ (or
-timeout worker); the scheduler's finished fence is published to all referenced
+The shared DRM GPU scheduler has a fair runqueue across context entities. It
+resolves GEM reservation and input-syncobj dependencies without blocking
+submit, then publishes each job as a descriptor in the host-memory job ring
+and rings the doorbell (devices without the job-queue capability fall back to
+single-job register programming). The device fetches descriptors while the
+previous job renders, runs jobs strictly in order, and records every
+completion — job id, ring slot, status — in the host-memory IH ring before
+raising the interrupt, AMDGPU-style; the IRQ handler drains IH records and
+signals the `dma_fence` named by each job id (or the timeout worker retires
+it on error). The scheduler's finished fence is published to all referenced
 GEM reservations and to the optional output syncobj. Jobs retain their GEM
 objects and DMA snapshots until that fence completes.
 

@@ -87,11 +87,48 @@ single source of truth exported to C in `driver/gpu_abi.h`.
 | 0x54 | SCANOUT_FORMAT | RW | 0 packed RGBA8888 |
 | 0x58 | SCANOUT_CONTROL | RW | bit0 ENABLE |
 | 0x5C | SCANOUT_STATUS | RO | bit0 ACTIVE |
-| 0x60 | CAPABILITIES | RO | bit0 fragment-core; bits 15:8 fragment batch capacity |
+| 0x60 | CAPABILITIES | RO | bit0 fragment-core; bit1 job queue + IH; bits 15:8 fragment batch capacity |
+| 0x64 | JOB_RING_BASE | RW | job-ring physical (byte) address in host memory |
+| 0x68 | JOB_RING_SIZE | RW | job-ring entry count (power of two); 0 keeps the queue idle |
+| 0x6C | JOB_WPTR | RW | host doorbell: index of the next free ring entry |
+| 0x70 | JOB_RPTR | RO | device read pointer (next descriptor to fetch) |
+| 0x74 | JOB_CONTROL | RW | bit0 ENABLE, bit1 RESET (w1p); ro bit8 ACTIVE, bit9 PENDING |
+| 0x78 | IH_BASE | RW | interrupt-history (IH) ring physical byte address |
+| 0x7C | IH_SIZE | RW | IH record count (power of two) |
+| 0x80 | IH_WPTR | RO | device write pointer (next IH record to write) |
+| 0x84 | IH_RPTR | RW | host read pointer (next IH record to drain) |
 
 At START the engine snapshots the configuration so the host can program the
 next frame while the current one is in flight (a minimal double-buffered
 submission); the completion interrupt (`m_irq`) rises when the draw retires.
+
+### 2.1 Hardware job queue and interrupt history (IH) ring
+
+When `CAPABILITIES` bit1 is set the device supports AMDGPU-style submission:
+job descriptors live in a host-memory ring and, on completion, the device
+first records the interrupt *details* into a second host-memory ring (the IH
+ring) and only then raises `m_irq`. The IRQ handler drains IH records instead
+of guessing which submission completed. Legacy register-programmed START
+submissions remain fully functional; the two paths share one engine and never
+run concurrently.
+
+**Submission.** The host writes a 64-byte descriptor (section 3.5) into the
+entry at `JOB_WPTR & (entries-1)`, then writes the new `JOB_WPTR` (the
+doorbell). Pointers are free-running modulo 65536; the host must keep fewer
+jobs in flight than ring entries. The device fetches one descriptor while the
+previous job is still rendering (queue depth two, no reordering), launches
+jobs strictly in order, and advances the read-only `JOB_RPTR` per fetch.
+`JOB_CONTROL` reads back `ENABLE` (bit0), `ACTIVE` (bit8: a job is running)
+and `PENDING` (bit9: a descriptor is staged). `JOB_CONTROL.RESET` (bit1,
+write-1 pulse) drops the queue state — staged jobs, pointers and pending IH
+records; it is only meaningful while `ACTIVE` is clear.
+
+**Completion.** For each completed job the device writes a 16-byte IH record
+(section 3.5) at `IH_WPTR & (records-1)` — job id, job-ring slot, status —
+bumps `IH_WPTR`, and then pulses the completion interrupt. The host drains
+records from its `IH_RPTR` up to `IH_WPTR` and retires the fence named by the
+job id; writing `IH_RPTR` back is informational. The device never waits for
+the host to drain, so `IH_SIZE` should be sized for the drain latency.
 
 ## 3. Shared-memory data ABI
 
@@ -147,6 +184,32 @@ its base to hardware. `vtex.sample` derives one nearest integer LOD per
 TL/TR/BL/BR quad as `floor(log2(max UV gradient in base-level texels))`, clamped
 to `[0,maxLevel]`; the scalar/fixed-function sampler selects level 0.
 
+### 3.5 Job ring descriptor and IH record
+
+Queued jobs carry the complete per-job configuration in the descriptor, so no
+register programming is needed between jobs (`driver/gpu_abi.h` mirrors this
+as `struct gpu_job_record`). 16 words, little-endian:
+
+| word(s) | field |
+|---|---|
+| 0 | bits 15:0 job id, bits 31:16 command record count |
+| 1–4 | CMD_BASE, COLOR_BASE, DEPTH_BASE, STRIDE |
+| 5 | bit0 depth-test enable, bits 6:4 depth func, bit7 depth-write enable, bits 9:8 cull mode |
+| 6 | TEX_BASE |
+| 7 | bits 13:0 texture width, bits 29:16 texture height |
+| 8 | TEX_CONFIG (bit0 CLAMP, bits 5:2 max mip level, bit8 sampling enable) |
+| 9–15 | reserved (zero) |
+
+The completion record written into the IH ring is 4 words
+(`struct gpu_ih_record`):
+
+| word(s) | field |
+|---|---|
+| 0 | bits 15:0 job id, bit16 DONE, bit17 ERROR |
+| 1 | bits 15:0 job-ring slot index (queue position) |
+| 2 | status code (0 = completed) |
+| 3 | reserved |
+
 ## 4. Device-tree binding
 
 `driver/gpu.dtsi` provides the node (an ARTI-generated variant uses its own
@@ -174,10 +237,15 @@ character device first, DRM display client next, per the roadmap):
   command/colour/depth buffers with `dma_alloc_coherent`, request the
   completion IRQ, programme the register file, run a self-test draw and print
   `OPENGPU DRIVER PASS`.
-- **submission**: the driver writes the draw record and depth clear into the
-  shared buffers, writes the register file (CMD_BASE, COLOR_BASE, DEPTH_BASE,
-  STRIDE, depth/cull state), enables the IRQ, writes `CONTROL.START`, and waits
-  on `gpu_irq` (with a `STATUS.DONE` polling fallback).
+- **submission**: when the device advertises `CAPABILITIES` bit1 the driver
+  allocates the host-memory job ring and IH ring with `dma_alloc_coherent`,
+  publishes them via JOB_RING_*/IH_* registers and submits each draw as a
+  ring descriptor plus doorbell write; the IRQ handler drains IH records and
+  completes the matching fence by job id. Otherwise the driver writes the
+  draw record and depth clear into the shared buffers, writes the register
+  file (CMD_BASE, COLOR_BASE, DEPTH_BASE, STRIDE, depth/cull state), enables
+  the IRQ, writes `CONTROL.START`, and waits on `gpu_irq` (with a
+  `STATUS.DONE` polling fallback).
 - **readback**: `/dev/opengpu0` exposes the framebuffer; `GPU_IOCTL_SUBMIT` re-runs
   a draw from userspace.
 - **DRM render contexts**: context create/destroy ioctls give each DRM file
@@ -222,12 +290,15 @@ character device first, DRM display client next, per the roadmap):
   of OM. Backward branches,
   jumps, atomics, masked/strided/gather memory and other custom instructions
   remain gated.
-- **queued execution and explicit synchronization**: each context maps to a DRM
-  scheduler entity on a one-credit hardware queue. Submit accepts optional
-  binary `in_syncobj`/`out_syncobj` handles; input and GEM dependencies are
-  resolved before launch, while the scheduler finished fence is installed in
-  the output syncobj and every written/read reservation object. This is DRM
-  interface version 1.3.
+- **queued execution and explicit synchronization**: each context maps to a
+  DRM scheduler entity. Submissions publish job descriptors into the
+  host-memory job ring and ring the doorbell; the IRQ handler drains the
+  host-memory IH ring and retires each job's fence by its job id, so several
+  jobs can be in flight while completions stay unambiguous. Submit accepts
+  optional binary `in_syncobj`/`out_syncobj` handles; input and GEM
+  dependencies are resolved before launch, while the scheduler finished fence
+  is installed in the output syncobj and every written/read reservation
+  object. This is DRM interface version 1.3.
 - **implicit display synchronization**: the KMS plane extracts the reservation
   fence and DRM atomic helpers wait before programming the scanout bank.
 - **flip pacing**: a 60 Hz software vblank source delivers

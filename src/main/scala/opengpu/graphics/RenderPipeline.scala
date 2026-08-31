@@ -95,24 +95,38 @@ class RenderPipeline(
   private val textured =
     Module(new TexturedFragStage(config))
 
+  // The command FIFO is allowed to advance to the next draw as soon as this
+  // module accepts the current one.  Keep every per-draw field stable until
+  // RasterShader has captured the draw; otherwise the next FIFO entry could
+  // change geometry, varyings, or the core-shader descriptor mid-render.
+  private val drawHold = RegInit(0.U.asTypeOf(new SceneTriangle(config)))
+  private val drawHoldValid = RegInit(false.B)
+  when(io.draw.fire) {
+    drawHold := io.draw.bits
+    drawHoldValid := true.B
+  }
+  when(shader.io.draw.fire && !io.draw.fire) {
+    drawHoldValid := false.B
+  }
+
   // Geometry: clip-space -> fixed-point screen-space vertices.
-  geo.io.clip := io.draw.bits.clip
-  geo.io.color := io.draw.bits.color
+  geo.io.clip := drawHold.clip
+  geo.io.color := drawHold.color
   geo.io.screenW := config.screenWidth.U
   geo.io.screenH := config.screenHeight.U
 
   // Shader consumes the screen-space triangle (sub-pixel fixed-point) directly.
-  shader.io.draw.valid := io.draw.valid
+  shader.io.draw.valid := drawHoldValid
   shader.io.draw.bits.v0.x := geo.io.out(0).sx(31, 0).asSInt
   shader.io.draw.bits.v0.y := geo.io.out(0).sy(31, 0).asSInt
   shader.io.draw.bits.v1.x := geo.io.out(1).sx(31, 0).asSInt
   shader.io.draw.bits.v1.y := geo.io.out(1).sy(31, 0).asSInt
   shader.io.draw.bits.v2.x := geo.io.out(2).sx(31, 0).asSInt
   shader.io.draw.bits.v2.y := geo.io.out(2).sy(31, 0).asSInt
-  shader.io.colors := io.draw.bits.color
-  shader.io.depths := io.draw.bits.depth
+  shader.io.colors := drawHold.color
+  shader.io.depths := drawHold.depth
   shader.io.cullMode := io.cullMode
-  io.draw.ready := shader.io.draw.ready
+  io.draw.ready := !drawHoldValid && shader.io.draw.ready
 
   // Texture sampling configuration + word port (sampler owns its fetches).
   textured.io.e0 := shader.io.pixel.bits.e0
@@ -121,9 +135,9 @@ class RenderPipeline(
   textured.io.invW0 := geo.io.out(0).invW
   textured.io.invW1 := geo.io.out(1).invW
   textured.io.invW2 := geo.io.out(2).invW
-  textured.io.uv0 := io.draw.bits.uv(0)
-  textured.io.uv1 := io.draw.bits.uv(1)
-  textured.io.uv2 := io.draw.bits.uv(2)
+  textured.io.uv0 := drawHold.uv(0)
+  textured.io.uv1 := drawHold.uv(1)
+  textured.io.uv2 := drawHold.uv(2)
   textured.io.texBase := io.texBase
   textured.io.texWidth := io.texWidth
   textured.io.texHeight := io.texHeight
@@ -153,13 +167,19 @@ class RenderPipeline(
     // soon as it emits its last pixel, but the core-backed sampler can still
     // be draining that batch; gating here keeps shader descriptors and
     // per-draw kernarg state from overlapping.
-    io.draw.ready := shader.io.draw.ready && kernelFrag.io.drained
+    // RasterShader becomes ready one cycle before the last accepted fragment's
+    // OutputMerger transaction has drained.  Keep the next draw in the
+    // command FIFO until the complete previous draw boundary is idle, or the
+    // OM can receive the next draw while its last depth RMW is still active.
+    io.draw.ready := (!drawHoldValid || shader.io.draw.fire) &&
+      shader.io.draw.ready && kernelFrag.io.drained &&
+      shader.io.done && om.io.fragIn.ready
     kernelFrag.io.fragIn.valid := shader.io.pixel.valid
     kernelFrag.io.fragIn.bits := shader.io.pixel.bits
     kernelFrag.io.fragUv := textured.io.interpolatedUv
     shader.io.pixel.ready := kernelFrag.io.fragIn.ready
-    kernelFrag.io.shaderPc := io.draw.bits.shaderPc
-    kernelFrag.io.kernargBase := io.draw.bits.shaderKernarg
+    kernelFrag.io.shaderPc := drawHold.shaderPc
+    kernelFrag.io.kernargBase := drawHold.shaderKernarg
     kernelFrag.io.texBase := io.texBase
     kernelFrag.io.texWidth := io.texWidth
     kernelFrag.io.texHeight := io.texHeight
@@ -196,8 +216,14 @@ class RenderPipeline(
     // Done only once every rasterized fragment has been flushed, shaded, and
     // handed to the OM: the batch must be empty (drained) so an in-flight batch
     // is never mistaken for an idle pipeline during a draw boundary.
-    io.done := shader.io.done && kernelFrag.io.drained && om.io.fragIn.ready
+    io.done := !drawHoldValid && shader.io.done && kernelFrag.io.drained &&
+      om.io.fragIn.ready
   } else {
+    // As in the core-backed path, wait for the final fragment's serialized
+    // depth/color RMW to retire before accepting the next draw.
+    io.draw.ready := (!drawHoldValid || shader.io.draw.fire) &&
+      shader.io.draw.ready && shader.io.done &&
+      om.io.fragIn.ready
     // Fragment stream: sampled-and-modulated when texturing is enabled, else
     // straight from the interpolator.  The bypass path keeps disabled draws
     // free of sampler latency and frees its memory port entirely.
@@ -235,6 +261,6 @@ class RenderPipeline(
     io.kernelGlobalAtomicRequest.bits :=
       0.U.asTypeOf(io.kernelGlobalAtomicRequest.bits)
     io.kernelGlobalAtomicResponse.ready := true.B
-    io.done := shader.io.done && om.io.fragIn.ready
+    io.done := !drawHoldValid && shader.io.done && om.io.fragIn.ready
   }
 }

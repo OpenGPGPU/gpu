@@ -44,9 +44,32 @@
 #define GPU_REG_SCANOUT_STATUS  0x05c
 #define GPU_REG_CAPABILITIES    0x060
 
+/* Hardware job queue + interrupt history (IH) ring, both in host memory.
+ * The device fetches job descriptors from the ring behind JOB_RING_BASE and
+ * rings the completion interrupt only after recording the interrupt details
+ * (job id, ring slot, status) into the IH ring behind IH_BASE — AMDGPU-style
+ * interrupt history that the IRQ handler drains instead of guessing. */
+#define GPU_REG_JOB_RING_BASE   0x064
+#define GPU_REG_JOB_RING_SIZE   0x068
+#define GPU_REG_JOB_WPTR        0x06c
+#define GPU_REG_JOB_RPTR        0x070
+#define GPU_REG_JOB_CONTROL     0x074
+#define GPU_REG_IH_BASE         0x078
+#define GPU_REG_IH_SIZE         0x07c
+#define GPU_REG_IH_WPTR         0x080
+#define GPU_REG_IH_RPTR         0x084
+
 #define GPU_CAP_FRAGMENT_CORE   (1u << 0)
+#define GPU_CAP_JOB_QUEUE       (1u << 1)
 #define GPU_CAP_FRAGMENT_BATCH_SHIFT 8u
 #define GPU_CAP_FRAGMENT_BATCH_MASK  (0xffu << GPU_CAP_FRAGMENT_BATCH_SHIFT)
+
+/* JOB_CONTROL: bit0 ENABLE (RW), bit1 RESET (w1p, idle only),
+ * bit8 ACTIVE (ro: a job is running), bit9 PENDING (ro: descriptor staged). */
+#define GPU_JOB_ENABLE          (1u << 0)
+#define GPU_JOB_RESET           (1u << 1)
+#define GPU_JOB_STATUS_ACTIVE   (1u << 8)
+#define GPU_JOB_STATUS_PENDING  (1u << 9)
 
 #define GPU_SCANOUT_FORMAT_RGBA8888 0u
 #define GPU_SCANOUT_ENABLE          (1u << 0)
@@ -152,5 +175,69 @@ struct gpu_draw_record {
 #define GPU_KERNARG_DEPTH_OUT_OFF(s) (7u * (s))
 #define GPU_KERNARG_VALID_OFF(s)  (8u * (s))
 #define GPU_KERNARG_UNIFORM_OFF(s)(9u * (s))
+
+/* ---------------------------------------------------------------------------
+ * Job ring descriptor (JobQueue), 16 32-bit words (64 bytes), little-endian.
+ * One entry per submission; the host publishes entries in shared memory and
+ * rings the JOB_WPTR doorbell.  Ring entry counts must be powers of two;
+ * pointers are free-running modulo 65536 and index entries as ptr & (n - 1).
+ * The host must keep fewer jobs in flight than ring entries.
+ *                                                                   word idx
+ *   bits 15:0 job id, bits 31:16 command record count                    [0]
+ *   command buffer base                                                  [1]
+ *   colour buffer base                                                   [2]
+ *   depth buffer base                                                    [3]
+ *   framebuffer stride (bytes)                                           [4]
+ *   state: bit0 depth test, bits 6:4 depth func, bit7 depth write,
+ *          bits 9:8 cull mode                                            [5]
+ *   texture base                                                         [6]
+ *   bits 13:0 texture width, bits 29:16 texture height                   [7]
+ *   TEX_CONFIG (bit0 CLAMP, bits 5:2 max mip level, bit8 enable)         [8]
+ *   reserved                                                             [9..15]
+ * ------------------------------------------------------------------------ */
+#define GPU_JOB_WORDS 16u
+struct gpu_job_record {
+    u32 header;
+    u32 cmd_base;
+    u32 color_base;
+    u32 depth_base;
+    u32 stride;
+    u32 state;
+    u32 tex_base;
+    u32 tex_size;
+    u32 tex_config;
+    u32 reserved[7];
+};
+
+#define GPU_JOB_HDR_ID(h)       ((h) & 0xffffu)
+#define GPU_JOB_HDR_COUNT(h)    (((h) >> 16) & 0xffffu)
+#define GPU_JOB_HDR(id, count)  ((((u32)(count)) << 16) | ((u32)(id)))
+#define GPU_JOB_STATE(test, func, write, cull) \
+    ((((u32)(cull)) << 8) | (((u32)(write)) << 7) | \
+     (((u32)(func)) << 4) | ((u32)!!(test)))
+#define GPU_JOB_TEX_SIZE(w, h)  ((((u32)(h)) << 16) | ((u32)(w) & 0x3fffu))
+
+/* ---------------------------------------------------------------------------
+ * IH (interrupt history) record, 4 32-bit words (16 bytes).  The device
+ * writes one record per completed job, in job order, before raising the
+ * completion interrupt.  The driver drains records from IH_RPTR up to the
+ * device's IH_WPTR and retires the fence named by the job id.
+ *                                                                   word idx
+ *   bits 15:0 job id, bit16 DONE, bit17 ERROR                            [0]
+ *   bits 15:0 job-ring slot index (queue position)                       [1]
+ *   status code (0 = completed)                                          [2]
+ *   reserved                                                             [3]
+ * ------------------------------------------------------------------------ */
+#define GPU_IH_WORDS 4u
+struct gpu_ih_record {
+    u32 header;
+    u32 slot;
+    u32 status;
+    u32 reserved;
+};
+
+#define GPU_IH_HDR_ID(h)     ((h) & 0xffffu)
+#define GPU_IH_HDR_DONE(h)   ((h) & (1u << 16))
+#define GPU_IH_HDR_ERROR(h)  ((h) & (1u << 17))
 
 #endif /* RISCV_SIMT_GPU_ABI_H */

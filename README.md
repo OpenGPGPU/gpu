@@ -13,7 +13,7 @@ package that is incrementally verifiable.
 - `src/main/scala/opengpu/core/frontend/simt/` — SIMT divergence/reconvergence state
 - `src/main/scala/opengpu/core/execute/` — execution units
 - `src/main/scala/opengpu/core/simt/` — SIMT lane wrapper
-- `src/main/scala/opengpu/graphics/` — graphics pipeline (rasterizer, interpolators, output merger, geometry, command buffer), see `docs/GRAPHICS_ROADMAP.md`
+- `src/main/scala/opengpu/graphics/` — graphics pipeline (rasterizer, interpolators, output merger, geometry, command buffer, host-memory job queue with interrupt-history ring), see `docs/GRAPHICS_ROADMAP.md`
 - `src/main/scala/opengpu/config/` — architectural configuration
 - `src/test/scala/` — tests
 - `build.sbt` — Scala and Chisel dependency configuration

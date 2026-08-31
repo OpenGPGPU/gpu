@@ -23,6 +23,7 @@ import chisel3.util._
   */
 class CommandBufferStage(config: GraphicsConfig) extends Module {
   private val wordsPerRecord = 32
+  private val drawFifoDepth = 2
 
   val io = IO(new Bundle {
     val base = Input(UInt(32.W))
@@ -42,53 +43,68 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
   private val words = Reg(Vec(wordsPerRecord, UInt(32.W)))
   private val running = RegInit(false.B)
   private val presenting = RegInit(false.B)
+  /**
+    * Decouple command-buffer memory latency from rasterization.  The parser
+    * may fill these entries while the pipeline is still rendering the
+    * previous draw, but the FIFO remains the ordering point for draw records.
+    */
+  private val drawFifo = Module(new Queue(new SceneTriangle(config), drawFifoDepth))
 
   private val wordAddr = io.base + ((record * wordsPerRecord.U) + word) * 4.U
 
-  io.done := !running
+  private val decodedDraw = Wire(new SceneTriangle(config))
+  decodedDraw := 0.U.asTypeOf(new SceneTriangle(config))
+  decodedDraw.clip(0).x := words(0).asSInt
+  decodedDraw.clip(0).y := words(1).asSInt
+  decodedDraw.clip(0).z := words(2).asSInt
+  decodedDraw.clip(0).w := words(3).asSInt
+  decodedDraw.clip(1).x := words(4).asSInt
+  decodedDraw.clip(1).y := words(5).asSInt
+  decodedDraw.clip(1).z := words(6).asSInt
+  decodedDraw.clip(1).w := words(7).asSInt
+  decodedDraw.clip(2).x := words(8).asSInt
+  decodedDraw.clip(2).y := words(9).asSInt
+  decodedDraw.clip(2).z := words(10).asSInt
+  decodedDraw.clip(2).w := words(11).asSInt
+  decodedDraw.color(0).r := words(12)(7, 0)
+  decodedDraw.color(0).g := words(13)(7, 0)
+  decodedDraw.color(0).b := words(14)(7, 0)
+  decodedDraw.color(1).r := words(15)(7, 0)
+  decodedDraw.color(1).g := words(16)(7, 0)
+  decodedDraw.color(1).b := words(17)(7, 0)
+  decodedDraw.color(2).r := words(18)(7, 0)
+  decodedDraw.color(2).g := words(19)(7, 0)
+  decodedDraw.color(2).b := words(20)(7, 0)
+  decodedDraw.depth(0) := words(21).asSInt
+  decodedDraw.depth(1) := words(22).asSInt
+  decodedDraw.depth(2) := words(23).asSInt
+  decodedDraw.shaderPc := words(24)
+  decodedDraw.shaderKernarg := words(25)
+  decodedDraw.uv(0).u := words(26)
+  decodedDraw.uv(0).v := words(27)
+  decodedDraw.uv(1).u := words(28)
+  decodedDraw.uv(1).v := words(29)
+  decodedDraw.uv(2).u := words(30)
+  decodedDraw.uv(2).v := words(31)
+
+  drawFifo.io.enq.valid := presenting
+  drawFifo.io.enq.bits := decodedDraw
+  io.draw <> drawFifo.io.deq
+
+  // A start pulse is not itself a completed job.  This also makes the
+  // contract robust for users that sample done in the launch cycle rather
+  // than using the RenderHost sawBusy guard.
+  io.done := !io.start && !running && !presenting && !waiting &&
+    !drawFifo.io.deq.valid
   io.mem.req.valid := running && !presenting && !waiting
   io.mem.req.bits.addr := wordAddr
   io.mem.req.bits.write := false.B
   io.mem.req.bits.data := 0.U
   io.mem.resp.ready := running && waiting
 
-  io.draw.valid := presenting
-  io.draw.bits.clip(0).x := words(0).asSInt
-  io.draw.bits.clip(0).y := words(1).asSInt
-  io.draw.bits.clip(0).z := words(2).asSInt
-  io.draw.bits.clip(0).w := words(3).asSInt
-  io.draw.bits.clip(1).x := words(4).asSInt
-  io.draw.bits.clip(1).y := words(5).asSInt
-  io.draw.bits.clip(1).z := words(6).asSInt
-  io.draw.bits.clip(1).w := words(7).asSInt
-  io.draw.bits.clip(2).x := words(8).asSInt
-  io.draw.bits.clip(2).y := words(9).asSInt
-  io.draw.bits.clip(2).z := words(10).asSInt
-  io.draw.bits.clip(2).w := words(11).asSInt
-  io.draw.bits.color(0).r := words(12)(7, 0)
-  io.draw.bits.color(0).g := words(13)(7, 0)
-  io.draw.bits.color(0).b := words(14)(7, 0)
-  io.draw.bits.color(1).r := words(15)(7, 0)
-  io.draw.bits.color(1).g := words(16)(7, 0)
-  io.draw.bits.color(1).b := words(17)(7, 0)
-  io.draw.bits.color(2).r := words(18)(7, 0)
-  io.draw.bits.color(2).g := words(19)(7, 0)
-  io.draw.bits.color(2).b := words(20)(7, 0)
-  io.draw.bits.depth(0) := words(21).asSInt
-  io.draw.bits.depth(1) := words(22).asSInt
-  io.draw.bits.depth(2) := words(23).asSInt
-  io.draw.bits.uv(0).u := words(26)
-  io.draw.bits.uv(0).v := words(27)
-  io.draw.bits.uv(1).u := words(28)
-  io.draw.bits.uv(1).v := words(29)
-  io.draw.bits.uv(2).u := words(30)
-  io.draw.bits.uv(2).v := words(31)
-  io.draw.bits.shaderPc := words(24)
-  io.draw.bits.shaderKernarg := words(25)
-
   private val lastRecord = record === io.count - 1.U
 
-  when(!running && io.start) {
+  when(!running && io.start && io.count.orR && !drawFifo.io.deq.valid) {
     running := true.B
     record := 0.U
     word := 0.U
@@ -105,7 +121,7 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
       }
     }
   }.elsewhen(presenting) {
-    when(io.draw.fire) {
+    when(drawFifo.io.enq.fire) {
       presenting := false.B
       when(lastRecord) {
         running := false.B
@@ -118,4 +134,5 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
     // issue the next word read
     when(io.mem.req.fire) { waiting := true.B }
   }
+
 }

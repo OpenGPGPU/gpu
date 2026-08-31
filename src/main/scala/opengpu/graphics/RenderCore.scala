@@ -79,10 +79,15 @@ class RenderCore(
 
   private val cb = Module(new CommandBufferStage(config))
   private val rp = Module(new RenderPipeline(config, gpuConfig, fragCore))
+  // RenderHost snapshots the legacy registers and queue ownership on the
+  // same edge that it presents start.  Delay the parser start one cycle so
+  // the selected command configuration is visible at the parser boundary.
+  private val startDelay = RegInit(false.B)
+  startDelay := io.start
 
   cb.io.base := io.cmdBase
   cb.io.count := io.cmdCount
-  cb.io.start := io.start
+  cb.io.start := startDelay
   cb.io.mem.req <> io.cbMem.req
   cb.io.mem.resp <> io.cbMem.resp
 

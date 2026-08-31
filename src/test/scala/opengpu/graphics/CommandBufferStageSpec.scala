@@ -112,4 +112,95 @@ class CommandBufferStageSpec extends AnyFlatSpec {
       assert(decoded(1)._5 == 0x21000)
     }
   }
+
+  it should "prefetch two decoded draws while the consumer is stalled" in {
+    def tri(depth: Int, r: Int, g: Int, b: Int) =
+      Seq(
+        ((q(-1), q(-1), 0, q(1)), (r, g, b), depth),
+        ((q(1), q(-1), 0, q(1)), (r, g, b), depth),
+        ((q(-1), q(1), 0, q(1)), (r, g, b), depth))
+
+    val base = 0x6000
+    val records = Seq(
+      encode(tri(0x10, 255, 0, 0), 0x1000, 0x2000),
+      encode(tri(0x20, 0, 255, 0), 0x1100, 0x2100),
+      encode(tri(0x30, 0, 0, 255), 0x1200, 0x2200))
+    val mem = Array.fill(1 << 15)(0)
+    records.flatten.zipWithIndex.foreach { case (w, i) => mem(base / 4 + i) = w }
+
+    simulate(new CommandBufferStage(GraphicsConfig())) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.base.poke(base.U)
+      dut.io.count.poke(3.U)
+      dut.io.mem.req.ready.poke(true.B)
+      dut.io.mem.resp.valid.poke(false.B)
+      dut.io.draw.ready.poke(false.B)
+
+      var responsePending = false
+      var responseData = 0L
+      val reads = collection.mutable.ArrayBuffer.empty[Int]
+      var guard = 0
+      dut.io.start.poke(true.B)
+      dut.clock.step()
+      dut.io.start.poke(false.B)
+
+      // Keep the consumer stopped long enough for the two-entry draw FIFO to
+      // fill.  The third record must not be fetched past the FIFO capacity.
+      while (guard < 300 && reads.size < 64) {
+        dut.io.mem.req.ready.poke(true.B)
+        if (responsePending) {
+          dut.io.mem.resp.valid.poke(true.B)
+          dut.io.mem.resp.bits.data.poke(responseData.U)
+          responsePending = false
+        } else {
+          dut.io.mem.resp.valid.poke(false.B)
+        }
+        dut.io.draw.ready.poke(false.B)
+        if (dut.io.mem.req.valid.peek().litToBoolean) {
+          val addr = dut.io.mem.req.bits.addr.peek().litValue.toInt
+          reads += addr
+          responsePending = true
+          responseData = mem(addr / 4) & 0xffffffffL
+        }
+        dut.clock.step()
+        guard += 1
+      }
+
+      assert(reads.size >= 64, s"expected two records prefetched, got ${reads.size} words")
+      assert(!reads.exists(_ >= base + 2 * 32 * 4),
+        "a stalled consumer must prevent fetching a third record")
+      assert(dut.io.draw.valid.peek().litToBoolean,
+        "the FIFO must hold a draw under consumer backpressure")
+
+      // Release the consumer and drain all three records in order.
+      var decodedPcs = collection.mutable.ArrayBuffer.empty[Long]
+      guard = 0
+      while (!dut.io.done.peek().litToBoolean && guard < 500) {
+        dut.io.mem.req.ready.poke(true.B)
+        if (responsePending) {
+          dut.io.mem.resp.valid.poke(true.B)
+          dut.io.mem.resp.bits.data.poke(responseData.U)
+          responsePending = false
+        } else {
+          dut.io.mem.resp.valid.poke(false.B)
+        }
+        dut.io.draw.ready.poke(true.B)
+        if (dut.io.draw.valid.peek().litToBoolean)
+          decodedPcs += dut.io.draw.bits.shaderPc.peek().litValue.toLong
+        if (dut.io.mem.req.valid.peek().litToBoolean) {
+          val addr = dut.io.mem.req.bits.addr.peek().litValue.toInt
+          responsePending = true
+          responseData = mem(addr / 4) & 0xffffffffL
+        }
+        dut.clock.step()
+        guard += 1
+      }
+
+      assert(guard < 500, "FIFO-backed command parser did not drain")
+      assert(decodedPcs.toSeq == Seq(0x1000L, 0x1100L, 0x1200L),
+        s"draws must remain ordered, got $decodedPcs")
+    }
+  }
 }
