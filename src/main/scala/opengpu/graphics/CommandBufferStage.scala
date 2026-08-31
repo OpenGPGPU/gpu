@@ -23,7 +23,6 @@ import chisel3.util._
   */
 class CommandBufferStage(config: GraphicsConfig) extends Module {
   private val wordsPerRecord = 32
-  private val drawFifoDepth = 2
 
   val io = IO(new Bundle {
     val base = Input(UInt(32.W))
@@ -48,7 +47,8 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
     * may fill these entries while the pipeline is still rendering the
     * previous draw, but the FIFO remains the ordering point for draw records.
     */
-  private val drawFifo = Module(new Queue(new SceneTriangle(config), drawFifoDepth))
+  private val drawFifo = Module(new Queue(
+    new SceneTriangle(config), config.drawFifoDepth))
 
   private val wordAddr = io.base + ((record * wordsPerRecord.U) + word) * 4.U
 

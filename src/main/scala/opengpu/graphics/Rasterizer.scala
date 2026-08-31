@@ -13,8 +13,10 @@ import chisel3.util._
 case class GraphicsConfig(
   screenWidth: Int = 128,
   screenHeight: Int = 128,
-  subPixelBits: Int = 8
+  subPixelBits: Int = 8,
+  drawFifoDepth: Int = 8
 ) {
+  require(drawFifoDepth >= 2, "draw FIFO must hold at least two records")
   def coordWidth: Int = 32
   def edgeWidth: Int = 64
 

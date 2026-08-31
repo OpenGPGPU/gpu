@@ -138,7 +138,10 @@ the registers above, so the ABI is a driver-side concern only (see
 
 ### 3.1 Draw record (`CommandBufferStage`, 32 words)
 
-One record per draw call. The 32-word layout is fixed by the RTL:
+One record per draw call. The command reader prefetches decoded records into a
+configurable draw FIFO (`GraphicsConfig.drawFifoDepth`, default 8), while
+preserving submission order and backpressuring memory at capacity. The 32-word
+layout is fixed by the RTL:
 
 | word(s) | field |
 |---|---|
