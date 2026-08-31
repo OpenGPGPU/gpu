@@ -34,9 +34,12 @@ import opengpu.core.memory.{
   *   [1*stride, 2*stride)  per-fragment y (sign-extended i32)
   *   [2*stride, 3*stride)  per-fragment depth (u32 bits)
   *   [3*stride, 4*stride)  per-fragment packed-colour inputs (RGBA8888)
-  *   [4*stride, 5*stride)  per-fragment packed-colour outputs
-  *   [5*stride, 6*stride)  output-valid words (1 = emit, 0 = discard)
-  *   [6*stride, ...)       per-draw uniforms
+  *   [4*stride, 5*stride)  perspective-correct u (unsigned Q16.16)
+  *   [5*stride, 6*stride)  perspective-correct v (unsigned Q16.16)
+  *   [6*stride, 7*stride)  per-fragment packed-colour outputs
+  *   [7*stride, 8*stride)  per-fragment depth outputs
+  *   [8*stride, 9*stride)  output-valid words (1 = emit, 0 = discard)
+  *   [9*stride, ...)       per-draw uniforms
   * The layout is structure-of-arrays so a lane-aware shader (fragment i = lane
   * i) can fetch each attribute with one unit-stride vector load at
   * `kernarg + k*stride + 4*localLinearBase` (scalar base = x1 + (x8 << 2));
@@ -66,6 +69,7 @@ class KernelFragStage(
 
   val io = IO(new Bundle {
     val fragIn = Flipped(Decoupled(new RasterFragment(gfxConfig)))
+    val fragUv = Input(new TexUV)
     val out = Decoupled(new RasterFragment(gfxConfig))
     val shaderPc = Input(UInt(32.W))
     val kernargBase = Input(UInt(32.W))
@@ -138,7 +142,10 @@ class KernelFragStage(
   private val fragY = Reg(Vec(batchCap, SInt(gfxConfig.coordWidth.W)))
   private val fragDepth = Reg(Vec(batchCap, SInt(32.W)))
   private val packedColor = Reg(Vec(batchCap, UInt(32.W)))
+  private val fragU = Reg(Vec(batchCap, UInt(32.W)))
+  private val fragV = Reg(Vec(batchCap, UInt(32.W)))
   private val outWords = Reg(Vec(batchCap, UInt(32.W)))
+  private val outDepth = Reg(Vec(batchCap, SInt(32.W)))
   private val outValid = Reg(Vec(batchCap, Bool()))
   private val fragE0 = Reg(Vec(batchCap, SInt(64.W)))
   private val fragE1 = Reg(Vec(batchCap, SInt(64.W)))
@@ -153,9 +160,10 @@ class KernelFragStage(
   // One bridge transaction at a time keeps the staging FSM simple; the bridge
   // itself supports more outstanding transactions for other clients.
   private val wordPending = RegInit(false.B)
-  // Staging field: writes 0=x, 1=y, 2=depth, 3=packed colour,
-  // 4=output-valid initialization; reads 0=colour, 1=output-valid.
-  private val field = RegInit(0.U(3.W))
+  // Staging field: writes 0=x, 1=y, 2=depth, 3=packed colour, 4=u, 5=v,
+  // 6=depth-output initialization, 7=output-valid initialization; reads
+  // 0=colour, 1=depth, 2=output-valid.
+  private val field = RegInit(0.U(4.W))
 
   private val curShaderPc = Reg(UInt(32.W))
   private val curKernarg = Reg(UInt(32.W))
@@ -166,7 +174,7 @@ class KernelFragStage(
   io.out.valid := state === sEmit && outValid(indexIdx)
   io.out.bits.x := fragX(indexIdx)
   io.out.bits.y := fragY(indexIdx)
-  io.out.bits.depth := fragDepth(indexIdx)
+  io.out.bits.depth := outDepth(indexIdx)
   io.out.bits.e0 := fragE0(indexIdx)
   io.out.bits.e1 := fragE1(indexIdx)
   io.out.bits.e2 := fragE2(indexIdx)
@@ -176,19 +184,23 @@ class KernelFragStage(
 
   wordValid := (state === sWrite || state === sRead) && !wordPending
   wordBits.write := state === sWrite
+  private val writeSlice = MuxLookup(field, 8.U)(Seq(
+    0.U -> 0.U, 1.U -> 1.U, 2.U -> 2.U, 3.U -> 3.U,
+    4.U -> 4.U, 5.U -> 5.U, 6.U -> 7.U))
   wordBits.addr := Mux(
     state === sWrite,
-    curKernarg +
-      Mux(field === 4.U, (5 * arrayStride).U, field * arrayStride.U) +
-      (index << 2),
-    curKernarg + ((4.U + field) * arrayStride.U) + (index << 2)
+    curKernarg + writeSlice * arrayStride.U + (index << 2),
+    curKernarg + ((6.U + field) * arrayStride.U) + (index << 2)
   )
   wordBits.data := MuxLookup(field, 1.U(32.W))(
     Seq(
       0.U -> fragX(indexIdx).pad(32).asUInt,
       1.U -> fragY(indexIdx).pad(32).asUInt,
       2.U -> fragDepth(indexIdx).asUInt,
-      3.U -> packedColor(indexIdx)
+      3.U -> packedColor(indexIdx),
+      4.U -> fragU(indexIdx),
+      5.U -> fragV(indexIdx),
+      6.U -> fragDepth(indexIdx).asUInt
     )
   )
 
@@ -205,6 +217,8 @@ class KernelFragStage(
           io.fragIn.bits.color.g,
           io.fragIn.bits.color.b,
           0xff.U(8.W))
+        fragU(countIdx) := io.fragUv.u
+        fragV(countIdx) := io.fragUv.v
         fragE0(countIdx) := io.fragIn.bits.e0
         fragE1(countIdx) := io.fragIn.bits.e1
         fragE2(countIdx) := io.fragIn.bits.e2
@@ -234,7 +248,7 @@ class KernelFragStage(
       when(!wordPending && bridge.io.in.fire) { wordPending := true.B }
       when(wordPending && bridge.io.out.fire) {
         wordPending := false.B
-        when(field =/= 4.U) {
+        when(field =/= 7.U) {
           field := field + 1.U
         }.otherwise {
           field := 0.U
@@ -267,6 +281,9 @@ class KernelFragStage(
         when(field === 0.U) {
           outWords(indexIdx) := bridge.io.out.bits.data
           field := 1.U
+        }.elsewhen(field === 1.U) {
+          outDepth(indexIdx) := bridge.io.out.bits.data.asSInt
+          field := 2.U
         }.otherwise {
           outValid(indexIdx) := bridge.io.out.bits.data =/= 0.U
           field := 0.U

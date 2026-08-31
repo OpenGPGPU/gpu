@@ -542,7 +542,7 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
                 return -EINVAL;
             continue;
         }
-        kernarg_min = 6ull * 4ull * opengpu_fragment_batch_capacity(gpu);
+        kernarg_min = 9ull * 4ull * opengpu_fragment_batch_capacity(gpu);
         if (!kernarg_min ||
             check_add_overflow((u64)record->shader_pc, 4ull, &address) ||
             address > shader->size ||

@@ -94,8 +94,8 @@ static inline bool opengpu_shader_vector_access_valid(
     opengpu_shader_u32 batch_capacity)
 {
     opengpu_shader_u64 stride = 4ull * batch_capacity;
-    opengpu_shader_u64 output_start = 4ull * stride;
-    opengpu_shader_u64 output_end = 6ull * stride;
+    opengpu_shader_u64 output_start = 6ull * stride;
+    opengpu_shader_u64 output_end = 9ull * stride;
     opengpu_shader_u64 start, bytes, end;
 
     if (!vl || base->offset < 0 || (base->offset & 3))
@@ -169,9 +169,9 @@ static inline bool opengpu_shader_validate_words_with_texture(
     if (!words || !word_count || !batch_capacity || batch_capacity > 64)
         return false;
     stride = 4ull * batch_capacity;
-    output_start = 4ull * stride;
-    output_end = 6ull * stride;
-    if (kernarg_size < 6ull * stride)
+    output_start = 6ull * stride;
+    output_end = 9ull * stride;
+    if (kernarg_size < 9ull * stride)
         return false;
     if (word_count > OPENGPU_SHADER_MAX_INSTRUCTIONS)
         word_count = OPENGPU_SHADER_MAX_INSTRUCTIONS;

@@ -160,22 +160,28 @@ class RenderCoreSpec extends AnyFlatSpec {
     encode(record, shaderPc, kernarg).zipWithIndex.foreach { case (w, i) => wwrite(cmdBase + i * 4, w) }
     // Lane-aware batched pass-through over the SoA kernarg ABI (stride = 32
     // for warps=2, lanes=4): colour inputs at kernarg+96+4*i, outputs at
-    // kernarg+128+4*i.  Each warp shades its own slice of the batch:
+    // kernarg+192+4*i.  Each warp shades its own slice of the batch:
     // x8 = localLinearBase gives the warp's first fragment index, so one
     // vector load/store pair moves all four lanes.
     //   slli x5, x8, 2 ; add x5, x1, x5 ; vsetivli x0, 4, e32 ;
     //   addi x6, x5, 96 ; vle32.v v2, (x6) ;
-    //   addi x6, x5, 128 ; vse32.v v2, (x6) ; cease
+    //   addi x6, x5, 192 ; vse32.v v2, (x6) ;
+    //   load input depth; add one; store output depth; cease
     def slli(rd: Int, rs1: Int, sh: Int): Int = (sh << 20) | (rs1 << 15) | (1 << 12) | (rd << 7) | 0x13
     def add(rd: Int, rs1: Int, rs2: Int): Int = (rs2 << 20) | (rs1 << 15) | (rd << 7) | 0x33
     def addi(rd: Int, rs1: Int, imm: Int): Int = ((imm & 0xfff) << 20) | (rs1 << 15) | (rd << 7) | 0x13
     def vsetivli(uimm: Int): Int = (0x3 << 30) | (0x10 << 20) | (uimm << 15) | (0x7 << 12) | 0x57
     def vle32(rs1: Int, vd: Int): Int = (1 << 25) | (0x6 << 12) | (vd << 7) | (rs1 << 15) | 0x07
     def vse32(rs1: Int, vs3: Int): Int = (1 << 25) | (0x6 << 12) | (vs3 << 7) | (rs1 << 15) | 0x27
+    def vaddVi(vd: Int, vs2: Int, imm: Int): Int =
+      (1 << 25) | (vs2 << 20) | ((imm & 0x1f) << 15) |
+        (3 << 12) | (vd << 7) | 0x57
     val cease = 0x30500073
     val program = Seq(
       slli(5, 8, 2), add(5, 1, 5), vsetivli(4), addi(6, 5, 96),
-      vle32(6, 2), addi(6, 5, 128), vse32(6, 2), cease)
+      vle32(6, 2), addi(6, 5, 192), vse32(6, 2),
+      addi(6, 5, 64), vle32(6, 3), vaddVi(3, 3, 1),
+      addi(6, 5, 224), vse32(6, 3), cease)
     program.zipWithIndex.foreach { case (w, i) => wwrite(shaderPc + i * 4, w) }
     for (i <- 0 until (16 * 16)) wwrite(depthBase + i * 4, 0xffffffff) // depth far
 
@@ -284,7 +290,7 @@ class RenderCoreSpec extends AnyFlatSpec {
       assert(rgb(2, 2) == (255, 0, 0), s"core-shaded (2,2) should be red, got ${rgb(2, 2)}")
       assert(rgb(5, 5) == (255, 0, 0), s"core-shaded (5,5) should be red, got ${rgb(5, 5)}")
       assert(rgb(8, 2) == (255, 0, 0), s"core-shaded (8,2) should be red, got ${rgb(8, 2)}")
-      assert(depth(5, 5) == 0x10, s"core-shaded depth (5,5) should be 0x10, got ${depth(5, 5)}")
+      assert(depth(5, 5) == 0x11, s"shader depth (5,5) should be 0x11, got ${depth(5, 5)}")
     }
   }
 }

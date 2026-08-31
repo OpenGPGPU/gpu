@@ -59,15 +59,12 @@ ALU, register files, L1/L2 (SharedL2Slice), memory hierarchy with a standardized
 
 Current limitations that still drive the remaining roadmap:
 
-1. The core-backed kernarg staging does not yet publish perspective-corrected
-   per-fragment UVs automatically; shaders can use `vtex.sample` once UV arrays
-   are supplied in kernarg memory.
-2. 2×2-quad neighbor operations, derivatives, mip LOD and mip
+1. 2×2-quad neighbor operations, derivatives, mip LOD and mip
    storage/addressing are not implemented. Fragment discard is now available
    through the bounded output-valid ABI.
-3. Rasterization and physical texture taps are serialized; wider issue/fetch
+2. Rasterization and physical texture taps are serialized; wider issue/fetch
    is a performance iteration after functional M5 completion.
-4. Per-draw overlap/double buffering remains open before the host/display path
+3. Per-draw overlap/double buffering remains open before the host/display path
    is production-ready; the core-backed path now gates the next draw until the
    previous batched kernel output is drained into the OM.
 
@@ -494,8 +491,10 @@ Status (implementation):
   with `stride = 4 * warps * lanes`:
   `[0*stride, 1*stride)` per-fragment x (i32), `[1*stride, 2*stride)` y,
   `[2*stride, 3*stride)` depth, `[3*stride, 4*stride)` packed-colour inputs,
-  `[4*stride, 5*stride)` colour outputs, `[5*stride, 6*stride)` output-valid,
-  `[6*stride, ...)` per-draw uniforms.
+  `[4*stride, 5*stride)` u, `[5*stride, 6*stride)` v,
+  `[6*stride, 7*stride)` colour outputs, `[7*stride, 8*stride)` depth outputs,
+  `[8*stride, 9*stride)` output-valid, `[9*stride, ...)` uniforms (the UV and
+  depth-output slices were added by profile v7 below).
   `flush` is
   pulsed by the pipeline when the rasterizer goes idle (draw boundary) so a
   batch never mixes draws; `drained` reports an empty in-flight batch.
@@ -823,7 +822,8 @@ Status (virtual display and DRM handoff, 2026-08-29):
   texture through guest memory, branches by warp and requires each queued
   framebuffer to contain exactly 60 `0xff0000ff` and 60 `0xff0001ff` pixels.
 - **Validated structured early-exit/discard complete (2026-08-31).** Profile v6
-  defines `[5*stride,6*stride)` as per-fragment output-valid words. The staging
+  introduced a per-fragment output-valid slice (relocated to
+  `[8*stride,9*stride)` by profile v7). The staging
   RTL initializes them to one, reads them beside colour outputs, and suppresses
   zero-valid fragments before the output merger. Scalar and unit-stride vector
   stores may target only the colour/valid slices. Validator CFG propagation now
@@ -834,9 +834,19 @@ Status (virtual display and DRM handoff, 2026-08-29):
   warp zero and exits that path early; warp one writes colour and exits at its
   own `CEASE`. Both queued framebuffers must contain exactly 60 live sampled
   pixels and no undiscarded warp-zero colour.
-- Next: expose richer fragment inputs and shader-generated depth while keeping
-  output validation bounded. Hardware-side per-draw overlap/double buffering
-  remains the separate M5 throughput milestone.
+- **Perspective-correct UV input and shader depth complete (2026-08-31).**
+  Profile v7 expands the SoA ABI with per-lane `u/v` input slices and a bounded
+  depth-output slice: input `x/y/depth/colour/u/v`, output
+  `colour/depth/valid`, then uniforms. `RenderPipeline` reuses the existing
+  perspective interpolator for the core path. `KernelFragStage` stages UVs,
+  initializes output depth as pass-through, and reads shader depth beside
+  colour/valid before OM. Validator stores remain confined to the three output
+  slices. RTL tests load distinct per-lane UVs, sample four texels and require
+  shader-written `depth+1` on every live fragment; `RenderCoreSpec` further
+  requires that generated depth to reach the OM depth buffer as `0x11`.
+- Next: define 2x2-quad neighbor and derivative semantics for texture LOD.
+  Hardware-side per-draw overlap/double buffering remains the separate M5
+  throughput milestone.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

@@ -132,17 +132,23 @@ struct gpu_draw_record {
  *   [1*stride, 2*stride)   per-fragment y (i32)
  *   [2*stride, 3*stride)   depth (i32)
  *   [3*stride, 4*stride)   packed colour inputs (u32)
- *   [4*stride, 5*stride)   colour outputs (u32)
- *   [5*stride, 6*stride)   output-valid words (1 = emit, 0 = discard)
- *   [6*stride, ...)        per-draw uniforms
+ *   [4*stride, 5*stride)   perspective-correct u (unsigned Q16.16)
+ *   [5*stride, 6*stride)   perspective-correct v (unsigned Q16.16)
+ *   [6*stride, 7*stride)   colour outputs (u32)
+ *   [7*stride, 8*stride)   depth outputs (i32)
+ *   [8*stride, 9*stride)   output-valid words (1 = emit, 0 = discard)
+ *   [9*stride, ...)        per-draw uniforms
  * ------------------------------------------------------------------------ */
 #define GPU_KERNARG_STRIDE(w, l)  (4u * (w) * (l))
 #define GPU_KERNARG_X_OFF(s)      (0u * (s))
 #define GPU_KERNARG_Y_OFF(s)      (1u * (s))
 #define GPU_KERNARG_DEPTH_OFF(s)  (2u * (s))
 #define GPU_KERNARG_COLOR_OFF(s)  (3u * (s))
-#define GPU_KERNARG_OUT_OFF(s)    (4u * (s))
-#define GPU_KERNARG_VALID_OFF(s)  (5u * (s))
-#define GPU_KERNARG_UNIFORM_OFF(s)(6u * (s))
+#define GPU_KERNARG_U_OFF(s)      (4u * (s))
+#define GPU_KERNARG_V_OFF(s)      (5u * (s))
+#define GPU_KERNARG_OUT_OFF(s)    (6u * (s))
+#define GPU_KERNARG_DEPTH_OUT_OFF(s) (7u * (s))
+#define GPU_KERNARG_VALID_OFF(s)  (8u * (s))
+#define GPU_KERNARG_UNIFORM_OFF(s)(9u * (s))
 
 #endif /* RISCV_SIMT_GPU_ABI_H */

@@ -14,9 +14,12 @@ class KernelFragStageSpec extends AnyFlatSpec {
   //   [32,  64)   per-fragment y
   //   [64,  96)   per-fragment depth
   //   [96,  128)  per-fragment packed-colour inputs
-  //   [128, 160)  per-fragment colour outputs
-  //   [160, 192)  per-fragment output-valid (1 = emit, 0 = discard)
-  //   [192, ...)  per-draw uniforms
+  //   [128, 160)  perspective-correct u
+  //   [160, 192)  perspective-correct v
+  //   [192, 224)  per-fragment colour outputs
+  //   [224, 256)  per-fragment depth outputs
+  //   [256, 288)  per-fragment output-valid (1 = emit, 0 = discard)
+  //   [288, ...)  per-draw uniforms
 
   /** Byte-addressed 64-byte line memory model shared by the core and the
     * word->line bridge.  Lines are keyed by their aligned byte address.
@@ -84,6 +87,10 @@ class KernelFragStageSpec extends AnyFlatSpec {
   private def vaddVv(vd: Int, vs2: Int, vs1: Int): BigInt =
     (BigInt(1) << 25) | (BigInt(vs2 & 0x1f) << 20) |
       (BigInt(vs1 & 0x1f) << 15) | (BigInt(vd & 0x1f) << 7) | 0x57
+  private def vaddVi(vd: Int, vs2: Int, imm: Int): BigInt =
+    (BigInt(1) << 25) | (BigInt(vs2 & 0x1f) << 20) |
+      (BigInt(imm & 0x1f) << 15) | (BigInt(3) << 12) |
+      (BigInt(vd & 0x1f) << 7) | 0x57
   private val cease = BigInt("30500073", 16)
 
   /** Services KernelFragStage's two memory ports against `mem` until `pred`
@@ -151,6 +158,8 @@ class KernelFragStageSpec extends AnyFlatSpec {
 
   private def pokeDefaults(dut: KernelFragStage): Unit = {
     dut.io.fragIn.valid.poke(false.B)
+    dut.io.fragUv.u.poke(0.U)
+    dut.io.fragUv.v.poke(0.U)
     dut.io.out.ready.poke(true.B)
     dut.io.flush.poke(false.B)
     dut.io.memReq.ready.poke(true.B)
@@ -175,9 +184,9 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.kernargBase.poke(0x8000.U)
 
       // Program: read the packed-colour input array (kernarg+96), write the
-      // output array (kernarg+128), halt.
+      // output array (kernarg+192), halt.
       mem.putWord(0x1000L, 0, lw(10, 1, 96))
-      mem.putWord(0x1000L, 1, sw(10, 1, 128))
+      mem.putWord(0x1000L, 1, sw(10, 1, 192))
       mem.putWord(0x1000L, 2, cease)
 
       dut.io.fragIn.bits.x.poke(3.S)
@@ -215,16 +224,16 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.shaderPc.poke(0x1000.U)
       dut.io.kernargBase.poke(0x8000.U)
 
-      // Program: colour = input[0] (kernarg+96) + uniform (kernarg+192);
-      //          output[0] (kernarg+128); cease.
+      // Program: colour = input[0] (kernarg+96) + uniform (kernarg+288);
+      //          output[0] (kernarg+192); cease.
       mem.putWord(0x1000L, 0, lw(10, 1, 96))
-      mem.putWord(0x1000L, 1, lw(11, 1, 192))
+      mem.putWord(0x1000L, 1, lw(11, 1, 288))
       mem.putWord(0x1000L, 2, add(10, 10, 11))
-      mem.putWord(0x1000L, 3, sw(10, 1, 128))
+      mem.putWord(0x1000L, 3, sw(10, 1, 192))
       mem.putWord(0x1000L, 4, cease)
 
-      // Uniform at kernarg+192 (line 0x80c0, word 0): +1 blue.
-      mem.putWord(0x80c0L, 0, BigInt("00000100", 16))
+      // Uniform at kernarg+288 (line 0x8100, word 8): +1 blue.
+      mem.putWord(0x8100L, 8, BigInt("00000100", 16))
 
       dut.io.fragIn.bits.x.poke(3.S)
       dut.io.fragIn.bits.y.poke(4.S)
@@ -262,7 +271,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
 
       // The stage initializes valid[0] to one. The shader's zero store kills
       // the fragment before it can reach depth/colour output merging.
-      mem.putWord(0x1000L, 0, sw(0, 1, 160))
+      mem.putWord(0x1000L, 0, sw(0, 1, 256))
       mem.putWord(0x1000L, 1, cease)
 
       dut.io.fragIn.bits.x.poke(3.S)
@@ -282,7 +291,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       assert(done, "discarded fragment did not drain")
       assert(!dut.io.out.valid.peek().litToBoolean,
         "discarded fragment must not be emitted")
-      assert(((mem.readLine(0x8080L) >> (8 * 32)) & 0xffffffffL) == 0,
+      assert((mem.readLine(0x8100L) & 0xffffffffL) == 0,
         "shader did not clear the output-valid word")
     }
   }
@@ -307,7 +316,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       // Pass-through scalar kernel: read the colour input word, write the
       // output word, cease.
       mem.putWord(0x1000L, 0, lw(10, 1, 96))
-      mem.putWord(0x1000L, 1, sw(10, 1, 128))
+      mem.putWord(0x1000L, 1, sw(10, 1, 192))
       mem.putWord(0x1000L, 2, cease)
 
       // Feed a batch of fragments with distinct x/y/depth.
@@ -425,7 +434,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       //   addi x6, x5, 96
       //   vle32.v v3, (x6)    // per-lane packed-colour inputs
       //   vadd.vv v4, v3, v2  // colour + x, per lane
-      //   addi x6, x5, 128
+      //   addi x6, x5, 192
       //   vse32.v v4, (x6)    // per-lane colour outputs
       //   cease
       mem.putWord(0x1000L, 0, slli(5, 8, 2))
@@ -435,7 +444,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       mem.putWord(0x1000L, 4, addi(6, 5, 96))
       mem.putWord(0x1000L, 5, vle32(6, 3))
       mem.putWord(0x1000L, 6, vaddVv(4, 3, 2))
-      mem.putWord(0x1000L, 7, addi(6, 5, 128))
+      mem.putWord(0x1000L, 7, addi(6, 5, 192))
       mem.putWord(0x1000L, 8, vse32(6, 4))
       mem.putWord(0x1000L, 9, cease)
 
@@ -519,10 +528,10 @@ class KernelFragStageSpec extends AnyFlatSpec {
       assert(emitted.size == count, s"expected $count fragments, got ${emitted.size}")
 
       // The vector output store covers all four lanes of the warp in one
-      // 16-byte mask at kernarg+128.
+      // 16-byte mask at kernarg+192.
       assert(kernelStores.exists { case (addr, bm) =>
-        addr == 0x8080L && bm == BigInt(0xffff)
-      }, s"expected a full 4-lane store at 0x8080, got $kernelStores")
+        addr == 0x80c0L && bm == BigInt(0xffff)
+      }, s"expected a full 4-lane store at 0x80c0, got $kernelStores")
 
       // Every fragment gets colour + its own x back, in submission order.
       for (i <- 0 until count) {
@@ -554,17 +563,17 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.texHeight.poke(2.U)
       dut.io.texWrapClamp.poke(false.B)
 
-      // Program: u = uniform(192), v = uniform(196); sample; output[0] = rd.
-      mem.putWord(0x1000L, 0, lw(10, 1, 192))
-      mem.putWord(0x1000L, 1, lw(11, 1, 196))
+      // Program: u = uniform(288), v = uniform(292); sample; output[0] = rd.
+      mem.putWord(0x1000L, 0, lw(10, 1, 288))
+      mem.putWord(0x1000L, 1, lw(11, 1, 292))
       mem.putWord(0x1000L, 2, texsample(12, 10, 11))
-      mem.putWord(0x1000L, 3, sw(12, 1, 128))
+      mem.putWord(0x1000L, 3, sw(12, 1, 192))
       mem.putWord(0x1000L, 4, cease)
 
       // Uniforms: u = v = 0.75 (Q16.16) -- the centre of texel (1,1),
       // so the sample must return the pure yellow texel word.
-      mem.putWord(0x80c0L, 0, 0xc000)
-      mem.putWord(0x80c0L, 1, 0xc000)
+      mem.putWord(0x8100L, 8, 0xc000)
+      mem.putWord(0x8100L, 9, 0xc000)
 
       // 2x2 gradient: black / red / green / yellow.  Texel words use the
       // pipeline's packed-colour byte order (colour channels in the top
@@ -598,7 +607,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
     }
   }
 
-  it should "sample distinct texture coordinates per vector lane" in {
+  it should "consume per-lane fragment UVs and write shader-generated depth" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new KernelFragStage(config)) { dut =>
       val mem = new MemModel
@@ -611,31 +620,34 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.texHeight.poke(2.U)
       dut.io.texWrapClamp.poke(false.B)
 
-      // Each lane loads its own u/v from the uniform tail, samples into v3,
-      // and stores the four packed results to the ordinary output array.
+      // Each lane loads interpolated u/v from the fragment-input slices,
+      // samples into v3, and writes colour plus depth+1 output arrays.
       mem.putWord(0x1000L, 0, vsetivli(4))
-      mem.putWord(0x1000L, 1, addi(5, 1, 192))
+      mem.putWord(0x1000L, 1, addi(5, 1, 128))
       mem.putWord(0x1000L, 2, vle32(5, 1))
-      mem.putWord(0x1000L, 3, addi(5, 1, 208))
+      mem.putWord(0x1000L, 3, addi(5, 1, 160))
       mem.putWord(0x1000L, 4, vle32(5, 2))
       mem.putWord(0x1000L, 5, vtexsample(3, 1, 2))
-      mem.putWord(0x1000L, 6, addi(5, 1, 128))
+      mem.putWord(0x1000L, 6, addi(5, 1, 192))
       mem.putWord(0x1000L, 7, vse32(5, 3))
-      mem.putWord(0x1000L, 8, cease)
+      mem.putWord(0x1000L, 8, addi(5, 1, 64))
+      mem.putWord(0x1000L, 9, vle32(5, 4))
+      mem.putWord(0x1000L, 10, vaddVi(4, 4, 1))
+      mem.putWord(0x1000L, 11, addi(5, 1, 224))
+      mem.putWord(0x1000L, 12, vse32(5, 4))
+      mem.putWord(0x1000L, 13, cease)
 
       // Texel-centre coordinates for black, red, green and yellow.
       val u = Seq(0x4000, 0xc000, 0x4000, 0xc000)
       val v = Seq(0x4000, 0x4000, 0xc000, 0xc000)
-      for (lane <- 0 until 4) {
-        mem.putWord(0x80c0L, lane, u(lane))
-        mem.putWord(0x80c0L, 4 + lane, v(lane))
-      }
       mem.putWord(0x2000L, 0, 0x000000ff)
       mem.putWord(0x2000L, 1, 0xff0000ff)
       mem.putWord(0x2000L, 2, 0x00ff00ff)
       mem.putWord(0x2000L, 3, 0xffff00ff)
 
       for (lane <- 0 until 4) {
+        dut.io.fragUv.u.poke(u(lane).U)
+        dut.io.fragUv.v.poke(v(lane).U)
         dut.io.fragIn.bits.x.poke(lane.S)
         dut.io.fragIn.bits.y.poke((8 + lane).S)
         dut.io.fragIn.bits.depth.poke(0x20.S)
@@ -655,7 +667,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
         (0x00, 0xff, 0x00),
         (0xff, 0xff, 0x00)
       )
-      val emitted = scala.collection.mutable.ArrayBuffer.empty[(Long, Long, Long)]
+      val emitted = scala.collection.mutable.ArrayBuffer.empty[(Long, Long, Long, Long)]
       val done = pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean,
         guard = 6000)
       assert(done, "per-lane texture kernel did not complete")
@@ -664,15 +676,19 @@ class KernelFragStageSpec extends AnyFlatSpec {
         if (dut.io.out.valid.peek().litToBoolean) {
           emitted += ((dut.io.out.bits.color.r.peek().litValue.toLong,
             dut.io.out.bits.color.g.peek().litValue.toLong,
-            dut.io.out.bits.color.b.peek().litValue.toLong))
+            dut.io.out.bits.color.b.peek().litValue.toLong,
+            dut.io.out.bits.depth.peek().litValue.toLong))
           dut.io.out.ready.poke(true.B)
           dut.clock.step()
           dut.io.out.ready.poke(false.B)
         }
         guard += 1
       }
-      assert(emitted == expected,
-        s"per-lane texture result mismatch: expected=$expected got=$emitted")
+      val expectedWithDepth = expected.map { case (r, g, b) =>
+        (r.toLong, g.toLong, b.toLong, 0x21L)
+      }
+      assert(emitted == expectedWithDepth,
+        s"per-lane UV/depth result mismatch: expected=$expectedWithDepth got=$emitted")
     }
   }
 }

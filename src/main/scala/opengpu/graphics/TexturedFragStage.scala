@@ -82,6 +82,10 @@ class TexturedFragStage(
     val texHeight = Input(UInt(14.W))
     val wrapClamp = Input(Bool())
 
+    /** Current fragment's perspective-correct coordinates. The core-backed
+      * path reuses this interpolation while bypassing the fixed sampler. */
+    val interpolatedUv = Output(new TexUV)
+
     val out = Decoupled(new RasterFragment(gfxConfig))
     val mem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
@@ -112,6 +116,7 @@ class TexturedFragStage(
   uvInterp.io.uv0 := io.uv0
   uvInterp.io.uv1 := io.uv1
   uvInterp.io.uv2 := io.uv2
+  io.interpolatedUv := uvInterp.io.uvPx
 
   private val sWait :: sOut :: Nil = Enum(2)
   private val state = RegInit(sWait)

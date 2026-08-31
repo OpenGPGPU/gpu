@@ -154,6 +154,7 @@ class RenderPipeline(
     io.draw.ready := shader.io.draw.ready && kernelFrag.io.drained
     kernelFrag.io.fragIn.valid := shader.io.pixel.valid
     kernelFrag.io.fragIn.bits := shader.io.pixel.bits
+    kernelFrag.io.fragUv := textured.io.interpolatedUv
     shader.io.pixel.ready := kernelFrag.io.fragIn.ready
     kernelFrag.io.shaderPc := io.draw.bits.shaderPc
     kernelFrag.io.kernargBase := io.draw.bits.shaderKernarg

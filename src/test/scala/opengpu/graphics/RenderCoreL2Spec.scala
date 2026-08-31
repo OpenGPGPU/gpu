@@ -86,7 +86,7 @@ class RenderCoreL2Spec extends AnyFlatSpec {
     // Lane-aware batched pass-through over the SoA kernarg ABI.  Each warp
     // bases the kernarg with its localLinearBase (x8 << 2), reads the packed
     // input colour at +96 (3*stride for warps=2,lanes=4), and writes it to the
-    // output at +128 (4*stride).
+    // output at +192 (6*stride).
     def slli(rd: Int, rs1: Int, sh: Int): Int =
       (sh << 20) | (rs1 << 15) | (1 << 12) | (rd << 7) | 0x13
     def add(rd: Int, rs1: Int, rs2: Int): Int =
@@ -102,7 +102,7 @@ class RenderCoreL2Spec extends AnyFlatSpec {
     val cease = 0x30500073
     val program = Seq(
       slli(5, 8, 2), add(5, 1, 5), vsetivli(4), addi(6, 5, 96),
-      vle32(6, 2), addi(6, 5, 128), vse32(6, 2), cease)
+      vle32(6, 2), addi(6, 5, 192), vse32(6, 2), cease)
     program.zipWithIndex.foreach { case (w, i) => m.wwrite(shaderPc + i * 4, w) }
     for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0xffffffff)
     // Record the kernarg base so the shader descriptor points at the same
@@ -208,7 +208,7 @@ class RenderCoreL2Spec extends AnyFlatSpec {
         s"core-shaded depth (5,5) got 0x${m.word(depthBase + (5 * 16 + 5) * 4).toHexString}")
       // The shader kernel ran on the compute unit through the L2 and produced
       // the per-fragment output colour in the kernarg output region.
-      assert(m.word(kernarg + 128 + 2 * 4) == 0xff0000ffL,
+      assert(m.word(kernarg + 192 + 2 * 4) == 0xff0000ffL,
         s"kernarg output word should be the shaded colour")
     }
   }

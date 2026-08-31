@@ -84,9 +84,9 @@ through the real RTL memory port. A read-only capability register advertises
 fragment-core presence and batch capacity. Without it shader submissions return
 `EOPNOTSUPP`. With it, the driver snapshots a bounded, cache-line-aligned shader
 binding into per-job DMA and validates the snapshot before relocation, removing
-the writable-GEM validate/execute race. Sandbox profile v6 accepts terminating
+the writable-GEM validate/execute race. Sandbox profile v7 accepts terminating
 RV32I/M+V with an immutable x1 kernarg base. Scalar loads stay inside kernarg
-and stores stay inside its colour-output or output-valid slice. The vector subset is
+and stores stay inside its colour-output, depth-output or output-valid slice. The vector subset is
 fixed e32/m1 `vsetivli`, unmasked unit-stride `vle32`/`vse32`, and lane-local
 `vadd/vsub/vrsub/vand/vor/vxor` vv/vi forms. Abstract interpretation tracks the
 trusted `x1 + 4*x8 + constant` per-warp address form and proves all active lanes
@@ -97,8 +97,9 @@ control flow begins with up to four unreconverged forward conditional branches.
 At every target, the validator intersects defined registers, preserves only
 identical address provenance and invalidates differing VL. Paths may reconverge
 or terminate independently in `CEASE`; every reachable path must terminate.
-The RTL initializes per-fragment output-valid words to one, and a validated
-zero store discards a fragment before output merging. The custom vector
+The RTL stages perspective-correct UV inputs, initializes depth outputs from
+interpolated depth and output-valid words to one. A validated shader may
+override depth, while a zero validity store discards before output merging. The custom vector
 `vtex.sample` is accepted
 only when its UV VGPRs are defined, it is unmasked, and the same submit carries
 a validated texture GEM; the hardware sampler derives all addresses from that
@@ -183,9 +184,10 @@ queued DRM scheduling and explicit binary syncobjs are complete (2026-08-30).
 Capability discovery, immutable shader validation and core-backed shader
 execution through ARTI/QEMU/Linux are also complete (2026-08-30). Proven
 unit-stride vector memory, lane-local integer arithmetic, bounded forward
-control flow, core-backed texture sampling, structured early exit/discard and
-full per-lane framebuffer output are complete as well. The next execution
-milestone is richer fragment inputs and shader-generated depth.
+control flow, core-backed texture sampling, structured early exit/discard,
+perspective-correct UV inputs, shader-generated depth and full per-lane
+framebuffer output are complete as well. The next execution milestone is
+2x2-quad neighbor/derivative support.
 
 ## RTL boundary
 

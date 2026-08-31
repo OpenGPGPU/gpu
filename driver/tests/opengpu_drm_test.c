@@ -272,6 +272,9 @@ static int create_command_buffer(int fd, struct command_buffer *commands)
     draw->d0 = 0x10;
     draw->d1 = 0x10;
     draw->d2 = 0x10;
+    draw->uv0[0] = 0x8000; draw->uv0[1] = 0x8000;
+    draw->uv1[0] = 0x8000; draw->uv1[1] = 0x8000;
+    draw->uv2[0] = 0x8000; draw->uv2[1] = 0x8000;
     return 0;
 }
 
@@ -596,20 +599,28 @@ static void write_vector_shader(void *mapping)
 {
     uint32_t *program = mapping;
 
-    /* Sample per lane; warp zero clears validity, warp one stays visible. */
+    /* Load fragment UVs, sample per lane, write depth+1; warp zero discards. */
     program[0] = 0x00241293u; /* slli x5,x8,2 */
     program[1] = 0x005082b3u; /* add x5,x1,x5 */
     program[2] = 0xc1027057u; /* vsetivli x0,4,e32,m1,ta,ma */
-    program[3] = 0x0610812bu; /* vtex.sample v2,v1,v1 */
-    program[4] = 0x00041a63u; /* bne x8,x0,+20 */
-    program[5] = 0x2e1081d7u; /* vxor.vv v3,v1,v1 */
-    program[6] = 0x0a028313u; /* addi x6,x5,160 */
-    program[7] = 0x020361a7u; /* vse32.v v3,(x6): discard warp zero */
-    program[8] = 0x30500073u; /* cease discarded warp early */
-    program[9] = 0x0220b157u; /* vadd.vi v2,v2,1 */
-    program[10] = 0x08028313u; /* addi x6,x5,128 */
-    program[11] = 0x02036127u; /* vse32.v v2,(x6) */
-    program[12] = 0x30500073u; /* cease live warp */
+    program[3] = 0x08028313u; /* addi x6,x5,128: u */
+    program[4] = 0x02036087u; /* vle32.v v1,(x6) */
+    program[5] = 0x0a028313u; /* addi x6,x5,160: v */
+    program[6] = 0x02036107u; /* vle32.v v2,(x6) */
+    program[7] = 0x0620812bu; /* vtex.sample v2,v1,v2 */
+    program[8] = 0x00041a63u; /* bne x8,x0,+20 */
+    program[9] = 0x2e1081d7u; /* vxor.vv v3,v1,v1 */
+    program[10] = 0x10028313u; /* addi x6,x5,256: valid */
+    program[11] = 0x020361a7u; /* vse32.v v3,(x6): discard warp zero */
+    program[12] = 0x30500073u; /* cease discarded warp early */
+    program[13] = 0x04028313u; /* addi x6,x5,64: input depth */
+    program[14] = 0x02036207u; /* vle32.v v4,(x6) */
+    program[15] = 0x0240b257u; /* vadd.vi v4,v4,1 */
+    program[16] = 0x0e028313u; /* addi x6,x5,224: output depth */
+    program[17] = 0x02036227u; /* vse32.v v4,(x6) */
+    program[18] = 0x0c028313u; /* addi x6,x5,192: output colour */
+    program[19] = 0x02036127u; /* vse32.v v2,(x6) */
+    program[20] = 0x30500073u; /* cease live warp */
 }
 
 static int create_syncobj(int fd, uint32_t *handle)
@@ -703,20 +714,20 @@ int main(void)
         }
     }
     CHECK(create_texture_buffer(fd, &texture), "texture buffer");
-    CHECK(create_resource_buffer(fd, 64, &shader), "shader buffer");
-    CHECK(create_resource_buffer(fd, 192, &kernarg), "kernarg buffer");
+    CHECK(create_resource_buffer(fd, 128, &shader), "shader buffer");
+    CHECK(create_resource_buffer(fd, 288, &kernarg), "kernarg buffer");
     write_vector_shader(shader.map);
     CHECK(create_context(fd, &context_id), "create render context");
     CHECK(bind_texture(fd, context_id, 1, &texture), "bind texture");
     CHECK(bind_resource(fd, context_id, 2, &shader,
-                        OPENGPU_RESOURCE_SHADER, 64), "bind shader");
+                        OPENGPU_RESOURCE_SHADER, 128), "bind shader");
     CHECK(bind_resource(fd, context_id, 3, &kernarg,
-                        OPENGPU_RESOURCE_KERNARG, 192), "bind kernarg");
+                        OPENGPU_RESOURCE_KERNARG, 288), "bind kernarg");
     if (frag_core) {
         CHECK(reject_shader_submit(fd, context_id, &commands, &first, 0,
                                    EINVAL),
               "require texture for vtex.sample");
-        ((uint32_t *)shader.map)[11] = 0x0200e127u; /* vse32.v v2,(x1) */
+        ((uint32_t *)shader.map)[19] = 0x0200e127u; /* vse32.v v2,(x1) */
         CHECK(reject_shader_submit(fd, context_id, &commands, &first, 1,
                                    EINVAL),
               "reject unsafe vector fragment shader");
@@ -724,8 +735,8 @@ int main(void)
         texture_slot = 1;
         shader_slot = 2;
         kernarg_slot = 3;
-        expected_pixel = 0xff0001ffu;
-        alternate_pixel = 0xff0000ffu;
+        expected_pixel = 0xff0000ffu;
+        alternate_pixel = 0xff0001ffu;
     } else {
         CHECK(reject_shader_submit(fd, context_id, &commands, &first, 1,
                                    EOPNOTSUPP),
