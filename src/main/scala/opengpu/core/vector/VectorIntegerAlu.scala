@@ -97,6 +97,16 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
     val signedMax = ((BigInt(1) << 31) - 1).U(32.W)
     val signedMin = (BigInt(1) << 31).U(32.W)
 
+    val quadBase = (lane / 4) * 4
+    val quadDx = if (quadBase + 3 < config.lanes) {
+      val left = if (lane % 4 < 2) quadBase else quadBase + 2
+      partialBits.lhs(left + 1) - partialBits.lhs(left)
+    } else 0.U(32.W)
+    val quadDy = if (quadBase + 3 < config.lanes) {
+      val top = if (lane % 2 == 0) quadBase else quadBase + 1
+      partialBits.lhs(top + 2) - partialBits.lhs(top)
+    } else 0.U(32.W)
+
     val basicResult = MuxLookup(partialBits.funct6, 0.U(32.W))(Seq(
       "h00".U -> partialBits.add(lane),
       "h02".U -> partialBits.sub(lane),
@@ -107,7 +117,9 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       "h07".U -> Mux(partialBits.greaterSigned(lane), lhs, rhs),
       "h09".U -> (lhs & rhs),
       "h0a".U -> (lhs | rhs),
-      "h0b".U -> (lhs ^ rhs)
+      "h0b".U -> (lhs ^ rhs),
+      "h0c".U -> quadDx,
+      "h0d".U -> quadDy
     ))
     val saturatingResult = Mux(
       partialBits.funct6 === "h20".U || partialBits.funct6 === "h21".U,

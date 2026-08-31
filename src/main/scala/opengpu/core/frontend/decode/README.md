@@ -35,3 +35,9 @@ per warp, while `vtex.sample vd, vs1, vs2` (custom-1, opcode `0x2b`) samples
 Q16.16 coordinates independently for each active vector lane. Both forms are
 legal only in their documented `funct7`/`funct3` rows and are covered by
 directed decoder tests.
+
+Custom-1 also carries unary-vs2 `vquad.dfdx` (funct6 `001100`) and
+`vquad.dfdy` (funct6 `001101`). They route to the integer ALU and replicate
+right-minus-left or bottom-minus-top differences across each 2x2 lane group.
+Decode support alone does not expose them to untrusted shaders; the driver
+validator waits for quad-packed fragment dispatch.

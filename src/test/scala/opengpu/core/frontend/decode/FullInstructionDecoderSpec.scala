@@ -105,6 +105,21 @@ class ExtendedDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.vector.readsVs2.expect(true.B)
       dut.io.decoded.vector.writesVd.expect(true.B)
       dut.io.decoded.vector.vm.expect(true.B)
+
+      // vquad.dfdx v3, v2 (custom-1, unary vs2 source)
+      dut.io.instruction.poke("h322001ab".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.executionType.expect(ExecutionType.vector)
+      dut.io.decoded.vector.unit.expect(VectorUnit.alu)
+      dut.io.decoded.vector.readsVs1.expect(false.B)
+      dut.io.decoded.vector.readsVs2.expect(true.B)
+      dut.io.decoded.vector.writesVd.expect(true.B)
+
+      // vquad.dfdy v3, v2
+      dut.io.instruction.poke("h362001ab".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.vector.unit.expect(VectorUnit.alu)
+      dut.io.decoded.vector.readsVs2.expect(true.B)
     }
   }
 

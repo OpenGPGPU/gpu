@@ -12,6 +12,10 @@ subsystem. It is intentionally rewritten around the fixed GPU profile:
 
 `VectorIntegerAlu` implements the lane-local integer ALU, comparison/mask,
 saturating add/subtract, and shift instructions accepted by `VectorDecoder`.
+It also implements the custom fragment-quad `vquad.dfdx`/`vquad.dfdy`
+cross-lane primitives over four-lane groups ordered TL, TR, BL, BR. These
+encodings remain outside the driver shader profile until graphics dispatch
+guarantees that ordering and supplies helper lanes at primitive edges.
 
 `VectorMultiplyAlu` implements `vmul`, `vmulh`, `vmulhu`, and `vmulhsu` in
 `vv` and `vx` forms with one elastic radix-4 Booth pipeline per lane. It also

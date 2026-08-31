@@ -314,9 +314,8 @@ ISA and toolchain:
   - `ld.var` / varying read: consume the fixed-function interpolator's
     per-lane attributes (perspective-corrected in hardware),
   - `discard` (kill fragment: predicate off through OM write),
-  - derivatives `dFdx/dFdy` come free from 2×2-quad lane mapping
-    (difference of neighbor lanes), no instruction needed beyond a
-    lane-id read if the core lacks one.
+  - derivatives use minimal custom-1 `vquad.dfdx/vquad.dfdy` primitives over
+    2×2-mapped lanes (difference of neighbor lanes, replicated per row/column).
 - Toolchain: existing RISC-V gcc/LLVM + a tiny header/library for the
   custom intrinsics. No assembler, no compiler backend.
 
@@ -844,7 +843,17 @@ Status (virtual display and DRM handoff, 2026-08-29):
   slices. RTL tests load distinct per-lane UVs, sample four texels and require
   shader-written `depth+1` on every live fragment; `RenderCoreSpec` further
   requires that generated depth to reach the OM depth buffer as `0x11`.
-- Next: define 2x2-quad neighbor and derivative semantics for texture LOD.
+- **Quad derivative execution primitive complete (2026-08-31).** Custom-1
+  `vquad.dfdx` (funct6 `001100`) and `vquad.dfdy` (`001101`) route to the
+  vector integer pipeline. For lane order TL,TR,BL,BR, dFdx replicates
+  right-minus-left across each row and dFdy replicates bottom-minus-top across
+  each column; inactive/masked lanes still preserve old `vd`. Directed ALU and
+  decode tests cover exact results, legality and backpressure. The driver
+  profile deliberately continues rejecting both instructions until raster
+  dispatch guarantees true quad grouping and helper-lane coverage.
+- Next: wire `QuadCoverage` into quad-packed fragment dispatch, including
+  helper lanes and a separate coverage/live mask, then admit derivatives in
+  the validator for texture LOD.
   Hardware-side per-draw overlap/double buffering remains the separate M5
   throughput milestone.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly

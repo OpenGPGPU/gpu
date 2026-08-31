@@ -253,9 +253,21 @@ private object VectorDecodeTable {
       readsVs1 = true, readsVs2 = true, writesVd = true)
   )
 
+  // Fragment-quad derivatives. custom-1 keeps the operation outside standard
+  // RVV encodings; vs2 is the varying and lane groups are ordered TL,TR,BL,BR.
+  // Driver validation remains gated until raster dispatch supplies true quads.
+  private val quadPatterns = Seq(
+    VectorPattern("vquad_dfdx",
+      "001100???????????000?????0101011", 1,
+      readsVs2 = true, writesVd = true),
+    VectorPattern("vquad_dfdy",
+      "001101???????????000?????0101011", 1,
+      readsVs2 = true, writesVd = true)
+  )
+
   val patterns: Seq[VectorPattern] =
     memoryPatterns ++ configPatterns ++ arithmeticPatterns ++
-      unary0Patterns ++ unary1Patterns ++ texturePatterns
+      unary0Patterns ++ unary1Patterns ++ texturePatterns ++ quadPatterns
   val fields: Seq[DecodeField[VectorPattern, _ <: Data]] = Seq(
     Legal,
     Unit,

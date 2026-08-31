@@ -78,6 +78,13 @@ static uint32_t vtexsample(unsigned int vd, unsigned int vs1,
            (vd & 0x1f) << 7;
 }
 
+static uint32_t vquad(unsigned int funct6, unsigned int vd,
+                      unsigned int vs2)
+{
+    return (funct6 & 0x3f) << 26 | 1u << 25 | (vs2 & 0x1f) << 20 |
+           (vd & 0x1f) << 7 | 0x2b;
+}
+
 int main(void)
 {
     const uint32_t valid[] = {
@@ -155,6 +162,15 @@ int main(void)
     program[1] = OPENGPU_SHADER_CEASE;
     assert(!opengpu_shader_validate_words_with_texture(
         program, 2, 288, 8, true));
+
+    program[0] = vsetivli(4);
+    program[1] = vquad(0x0c, 2, 1);
+    program[2] = OPENGPU_SHADER_CEASE;
+    assert(!opengpu_shader_validate_words_with_texture(
+        program, 3, 288, 8, true));
+    program[1] = vquad(0x0d, 2, 1);
+    assert(!opengpu_shader_validate_words_with_texture(
+        program, 3, 288, 8, true));
 
     for (i = 0; i < sizeof(branch_forms) / sizeof(branch_forms[0]); i++) {
         program[0] = branch(branch_forms[i], 0, 0, 4);
