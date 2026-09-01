@@ -38,7 +38,7 @@ jobs:
     - name: Install Verilator (v5.050 from source) and espresso
       run: |
         sudo apt-get update
-        sudo apt-get install -y git perl python3 make autoconf g++ flex bison libfl-dev zlib1g-dev ccache
+        sudo apt-get install -y git perl python3 make autoconf g++ flex bison libfl-dev zlib1g-dev ccache help2man
         git clone --depth 1 --branch v5.050 https://github.com/verilator/verilator /tmp/verilator
         cd /tmp/verilator
         autoconf
