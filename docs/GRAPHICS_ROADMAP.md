@@ -667,7 +667,7 @@ model + device-tree node.  Verified in `GpuHostAxiSpec` (single-beat and INCR
 burst register R/W, SLVERR on unaligned/out-of-map reads, and a full draw
 submitted purely over the bus until the interrupt fires). `EmitGpuHostAxi`
 (`gpu/elaboration`) emits `GpuHostAxi.sv` for ARTI. The shared ABI is exported
-to `driver/gpu_abi.h` (register map, the 32-word draw record, texture state and
+to `driver/gpu_abi.h` (register map, the 40-word draw record, texture state and
 the SoA kernarg layout). The layered driver under `driver/` binds to
 `riscv-simt,opengpu`: its platform, hardware, memory, and execution modules map the
 `ctrl` resource, allocate software command/colour/depth buffers, submit a

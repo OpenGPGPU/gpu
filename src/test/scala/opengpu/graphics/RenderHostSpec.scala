@@ -32,6 +32,7 @@ class RenderHostSpec extends AnyFlatSpec {
     for (i <- 0 until 3) { w += tri(i)._3 }
     w += 0; w += 0 // shader descriptor (unused on the fixed-function path)
     for (_ <- 0 until 6) { w += 0 } // uv0..uv2
+    for (_ <- 0 until 8) { w += 0 } // state override + reserved
     w.result()
   }
 
@@ -299,6 +300,7 @@ class RenderHostSpec extends AnyFlatSpec {
       for (i <- 0 until 3) { w += record(i)._3 }
       w += 0; w += 0 // shader descriptor (unused on the fixed-function path)
       for (_ <- 0 until 6) { w += 0 } // uv0..uv2
+      for (_ <- 0 until 8) { w += 0 } // state override + reserved
       w.result()
     }
 

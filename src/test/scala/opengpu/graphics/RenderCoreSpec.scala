@@ -15,7 +15,8 @@ class RenderCoreSpec extends AnyFlatSpec {
   private def encode(
     tri: Seq[((Int, Int, Int, Int), (Int, Int, Int), Int)],
     shaderPc: Int,
-    kernarg: Int
+    kernarg: Int,
+    state: Int = 0
   ): Seq[Int] = {
     val w = Seq.newBuilder[Int]
     for (i <- 0 until 3) { w += tri(i)._1._1; w += tri(i)._1._2; w += tri(i)._1._3; w += tri(i)._1._4 }
@@ -23,6 +24,8 @@ class RenderCoreSpec extends AnyFlatSpec {
     for (i <- 0 until 3) { w += tri(i)._3 }
     w += shaderPc; w += kernarg
     for (_ <- 0 until 6) { w += 0 } // uv0..uv2
+    w += state
+    for (_ <- 0 until 7) { w += 0 } // reserved
     w.result()
   }
 
@@ -31,7 +34,7 @@ class RenderCoreSpec extends AnyFlatSpec {
     (((c >> 24) & 0xff), ((c >> 16) & 0xff), ((c >> 8) & 0xff))
   }
 
-  it should "render a command-driven multi-triangle scene with depth and export PPM" in {
+  it should "apply independent per-draw state in one command buffer" in {
     val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
     val stride = 16 * 4
     val colorBase = 0x8000
@@ -51,7 +54,11 @@ class RenderCoreSpec extends AnyFlatSpec {
     )
 
     val cbMem = Array.fill(1 << 15)(0)
-    (encode(green, 0x9000, 0x20000) ++ encode(red, 0x9000, 0x20000))
+    // Draw 0 inherits LESS from the job. Draw 1 overrides depth to ALWAYS,
+    // so its farther red fragments replace green in the overlap.
+    val redAlways = 1 | 2 | (3 << 4) | (1 << 7)
+    (encode(green, 0x9000, 0x20000) ++
+      encode(red, 0x9000, 0x20000, state = redAlways))
       .zipWithIndex.foreach { case (w, i) => cbMem(cmdBase / 4 + i) = w }
 
     simulate(new RenderCore(config)) { dut =>
@@ -70,6 +77,14 @@ class RenderCoreSpec extends AnyFlatSpec {
       dut.io.depthFunc.poke(0.U)
       dut.io.depthWriteEnable.poke(true.B)
       dut.io.cullMode.poke(0.U)
+      dut.io.texEnable.poke(false.B)
+      dut.io.texBase.poke(0.U)
+      dut.io.texWidth.poke(0.U)
+      dut.io.texHeight.poke(0.U)
+      dut.io.texWrapClamp.poke(false.B)
+      dut.io.texMaxLevel.poke(0.U)
+      dut.io.texMem.req.ready.poke(true.B)
+      dut.io.texMem.resp.valid.poke(false.B)
       dut.io.cbMem.req.ready.poke(true.B)
       dut.io.cbMem.resp.valid.poke(false.B)
       dut.io.fbMem.req.ready.poke(true.B)
@@ -105,9 +120,10 @@ class RenderCoreSpec extends AnyFlatSpec {
       }
       assert(guard < 20000, "did not drain")
       def rgb(x: Int, y: Int): (Int, Int, Int) = rgbOf(fbMem, colorBase, x, y)
-      // Green (near) wins strictly inside overlap; red survives red-only pixels.
-      assert(rgb(5, 5) == (0, 255, 0), s"green interior (5,5) should be green, got ${rgb(5, 5)}")
-      assert(rgb(2, 2) == (255, 0, 0), s"red-only (2,2) should be red, got ${rgb(2, 2)}")
+      // Per-draw ALWAYS makes the farther second draw win in the overlap.
+      assert(rgb(5, 5) == (255, 0, 0), s"red override (5,5) should win, got ${rgb(5, 5)}")
+      assert(fbMem(depthBase / 4 + 5 * 16 + 5) == 0x10,
+        "ALWAYS override must replace the nearer 0x08 depth with 0x10")
 
       val px = new Array[Int](16 * 16 * 3); var i = 0
       for (y <- 0 until 16; x <- 0 until 16) {

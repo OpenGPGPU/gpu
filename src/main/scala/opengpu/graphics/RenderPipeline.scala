@@ -26,6 +26,14 @@ class SceneTriangle(config: GraphicsConfig) extends Bundle {
   val uv = Vec(3, new TexUV)
   val shaderPc = UInt(32.W)
   val shaderKernarg = UInt(32.W)
+  val stateOverride = Bool()
+  val depthTestEnable = Bool()
+  val depthFunc = UInt(3.W)
+  val depthWriteEnable = Bool()
+  val cullMode = UInt(2.W)
+  val texEnable = Bool()
+  val texWrapClamp = Bool()
+  val texMaxLevel = UInt(4.W)
 }
 
 /** Fixed-function and render-target state sampled at a draw boundary. */
@@ -125,16 +133,23 @@ class RenderPipeline(
     drawState.colorBase := io.colorBase
     drawState.depthBase := io.depthBase
     drawState.stride := io.stride
-    drawState.depthTestEnable := io.depthTestEnable
-    drawState.depthFunc := io.depthFunc
-    drawState.depthWriteEnable := io.depthWriteEnable
-    drawState.cullMode := io.cullMode
-    drawState.texEnable := io.texEnable
+    drawState.depthTestEnable := Mux(io.draw.bits.stateOverride,
+      io.draw.bits.depthTestEnable, io.depthTestEnable)
+    drawState.depthFunc := Mux(io.draw.bits.stateOverride,
+      io.draw.bits.depthFunc, io.depthFunc)
+    drawState.depthWriteEnable := Mux(io.draw.bits.stateOverride,
+      io.draw.bits.depthWriteEnable, io.depthWriteEnable)
+    drawState.cullMode := Mux(io.draw.bits.stateOverride,
+      io.draw.bits.cullMode, io.cullMode)
+    drawState.texEnable := Mux(io.draw.bits.stateOverride,
+      io.draw.bits.texEnable, io.texEnable)
     drawState.texBase := io.texBase
     drawState.texWidth := io.texWidth
     drawState.texHeight := io.texHeight
-    drawState.texWrapClamp := io.texWrapClamp
-    drawState.texMaxLevel := io.texMaxLevel
+    drawState.texWrapClamp := Mux(io.draw.bits.stateOverride,
+      io.draw.bits.texWrapClamp, io.texWrapClamp)
+    drawState.texMaxLevel := Mux(io.draw.bits.stateOverride,
+      io.draw.bits.texMaxLevel, io.texMaxLevel)
   }
   when(shader.io.draw.fire && !io.draw.fire) {
     drawHoldValid := false.B

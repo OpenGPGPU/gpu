@@ -536,7 +536,7 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
                                      const struct drm_opengpu_submit *args,
                                      struct opengpu_buffer *shader,
                                      struct opengpu_resource_binding *kernarg,
-                                     bool texture_enabled)
+                                     struct opengpu_resource_binding *texture)
 {
     struct gpu_draw_record *records = commands->cpu;
     u64 address, kernarg_min;
@@ -555,6 +555,34 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
                 record->c2[j] > 255)
                 return -EINVAL;
         }
+        for (j = 0; j < ARRAY_SIZE(record->reserved); j++)
+            if (record->reserved[j])
+                return -EINVAL;
+        if (record->state & ~OPENGPU_DRAW_STATE_VALID_MASK)
+            return -EINVAL;
+        if (!(record->state & OPENGPU_DRAW_STATE_OVERRIDE)) {
+            if (record->state)
+                return -EINVAL;
+        } else {
+            u32 depth_func = (record->state &
+                OPENGPU_DRAW_STATE_DEPTH_FUNC_MASK) >>
+                OPENGPU_DRAW_STATE_DEPTH_FUNC_SHIFT;
+            u32 cull = (record->state & OPENGPU_DRAW_STATE_CULL_MASK) >>
+                OPENGPU_DRAW_STATE_CULL_SHIFT;
+            u32 max_mip = (record->state &
+                OPENGPU_DRAW_STATE_MAX_MIP_MASK) >>
+                OPENGPU_DRAW_STATE_MAX_MIP_SHIFT;
+            u32 bound_max_mip = texture ?
+                (texture->flags & OPENGPU_RESOURCE_TEXTURE_MAX_MIP_MASK) >>
+                OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT : 0;
+
+            if (depth_func > GPU_DEPTH_FUNC_ALWAYS ||
+                cull > GPU_CULL_FRONT ||
+                ((record->state & OPENGPU_DRAW_STATE_TEX_ENABLE) &&
+                 !texture) ||
+                max_mip > bound_max_mip)
+                return -EINVAL;
+        }
         if (!shader) {
             if (record->shader_pc || record->kernarg)
                 return -EINVAL;
@@ -569,7 +597,7 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
             address > kernarg->size ||
             !opengpu_validate_shader(gpu, shader,
                                      kernarg->size - record->kernarg,
-                                     record->shader_pc, texture_enabled))
+                                     record->shader_pc, texture != NULL))
             return -EINVAL;
         record->shader_pc += lower_32_bits(shader->dma);
         record->kernarg += lower_32_bits(kernarg->dma);
@@ -804,7 +832,7 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
            command_bytes);
     ret = opengpu_validate_commands(gpu, &sched_job->commands, args,
                                     shader ? &sched_job->shader : NULL,
-                                    kernarg, texture != NULL);
+                                    kernarg, texture);
     if (ret)
         goto out_job;
     memset(sched_job->depth.cpu, 0xff, sched_job->depth.size);

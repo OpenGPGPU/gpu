@@ -136,17 +136,16 @@ All buffers live in host physical memory. The host publishes their addresses in
 the registers above, so the ABI is a driver-side concern only (see
 `driver/gpu_abi.h`).
 
-### 3.1 Draw record (`CommandBufferStage`, 32 words)
+### 3.1 Draw record (`CommandBufferStage`, 40 words)
 
 One record per draw call. The command reader prefetches decoded records into a
 configurable draw FIFO (`GraphicsConfig.drawFifoDepth`, default 8), while
-preserving submission order and backpressuring memory at capacity. The 32-word
+preserving submission order and backpressuring memory at capacity. The 40-word
 layout is fixed by the RTL:
 
 When a FIFO entry is accepted by the render pipeline, the active render-target,
 depth/cull, and texture configuration is snapshotted with that draw. Later host
-or queue configuration changes therefore cannot affect an in-flight draw; a
-future command-record state extension can use the same draw-boundary contract.
+or queue configuration changes therefore cannot affect an in-flight draw.
 
 | word(s) | field |
 |---|---|
@@ -156,6 +155,15 @@ future command-record state extension can use the same draw-boundary contract.
 | 24 | shader entry PC (kernel address) |
 | 25 | kernarg buffer address |
 | 26–31 | v0/v1/v2 texture `(u,v)`, unsigned Q16.16 |
+| 32 | state override: bit 0 valid, bit 1 depth test, bits 6:4 depth function, bit 7 depth write, bits 9:8 cull, bit 10 texture enable, bit 11 clamp, bits 15:12 max mip |
+| 33–39 | reserved; must be zero |
+
+When word 32 bit 0 is clear, all draw state inherits from the job descriptor
+and every other bit in the word must be zero. Resource addresses and texture
+dimensions are never command-controlled: they remain sourced from validated
+job bindings. The driver rejects unknown bits, invalid depth/cull values,
+texture enable without a bound texture, and max-mip requests beyond the bound
+mip chain.
 
 ### 3.2 Kernarg SoA ABI (core-backed fragment shading)
 

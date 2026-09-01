@@ -13,7 +13,8 @@ class CommandBufferStageSpec extends AnyFlatSpec {
   private def encode(
     tri: Seq[((Int, Int, Int, Int), (Int, Int, Int), Int)],
     shaderPc: Int,
-    shaderKernarg: Int
+    shaderKernarg: Int,
+    state: Int = 0
   ): Seq[Int] = {
     val w = Seq.newBuilder[Int]
     for (i <- 0 until 3) {
@@ -24,6 +25,8 @@ class CommandBufferStageSpec extends AnyFlatSpec {
     w += shaderPc; w += shaderKernarg
     // uv0..uv2 as unsigned Q16.16 (unused by these tests)
     for (_ <- 0 until 6) { w += 0 }
+    w += state
+    for (_ <- 0 until 7) { w += 0 } // reserved
     w.result()
   }
 
@@ -41,7 +44,10 @@ class CommandBufferStageSpec extends AnyFlatSpec {
       tri(q(-1), q(1), q(1), 255, 0, 255, 0x20)
     )
     val base = 0x4000
-    val words0 = encode(record0, shaderPc = 0x9000, shaderKernarg = 0x20000)
+    val state0 = 1 | 2 | (3 << 4) | (1 << 7) | (2 << 8) |
+      (1 << 10) | (1 << 11) | (2 << 12)
+    val words0 = encode(record0, shaderPc = 0x9000,
+      shaderKernarg = 0x20000, state = state0)
     val words1 = encode(record1, shaderPc = 0x9100, shaderKernarg = 0x21000)
     val mem = Array.fill(1 << 15)(0)
     (words0 ++ words1).zipWithIndex.foreach { case (w, i) => mem(base / 4 + i) = w }
@@ -55,8 +61,8 @@ class CommandBufferStageSpec extends AnyFlatSpec {
       dut.io.mem.req.ready.poke(true.B)
       dut.io.mem.resp.valid.poke(false.B)
 
-      val decoded =
-        collection.mutable.Buffer.empty[(Seq[Int], Seq[(Int, Int, Int)], Seq[Int], Int, Int)]
+      val decoded = collection.mutable.Buffer.empty[
+        (Seq[Int], Seq[(Int, Int, Int)], Seq[Int], Int, Int, Int)]
       var lastReadValid = false
       var lastReadData = 0L
       var guard = 0
@@ -86,7 +92,15 @@ class CommandBufferStageSpec extends AnyFlatSpec {
             (0 until 3).map(i => (d.color(i).r.peek().litValue.toInt, d.color(i).g.peek().litValue.toInt, d.color(i).b.peek().litValue.toInt)),
             (0 until 3).map(i => d.depth(i).peek().litValue.toInt),
             d.shaderPc.peek().litValue.toInt,
-            d.shaderKernarg.peek().litValue.toInt
+            d.shaderKernarg.peek().litValue.toInt,
+            (if (d.stateOverride.peek().litToBoolean) 1 else 0) |
+              (if (d.depthTestEnable.peek().litToBoolean) 2 else 0) |
+              (d.depthFunc.peek().litValue.toInt << 4) |
+              (if (d.depthWriteEnable.peek().litToBoolean) 1 << 7 else 0) |
+              (d.cullMode.peek().litValue.toInt << 8) |
+              (if (d.texEnable.peek().litToBoolean) 1 << 10 else 0) |
+              (if (d.texWrapClamp.peek().litToBoolean) 1 << 11 else 0) |
+              (d.texMaxLevel.peek().litValue.toInt << 12)
           ))
           dut.io.draw.ready.poke(true.B)
         } else {
@@ -105,11 +119,14 @@ class CommandBufferStageSpec extends AnyFlatSpec {
       // Shader descriptor carried through the draw record.
       assert(decoded(0)._4 == 0x9000)
       assert(decoded(0)._5 == 0x20000)
+      assert(decoded(0)._6 == state0)
       // Record 1 differs.
       assert(decoded(1)._2 == Seq((255, 255, 0), (0, 255, 255), (255, 0, 255)))
       assert(decoded(1)._3 == Seq(0x20, 0x20, 0x20))
       assert(decoded(1)._4 == 0x9100)
       assert(decoded(1)._5 == 0x21000)
+      assert(decoded(1)._6 == 0)
+      assert(dut.io.done.peek().litToBoolean)
     }
   }
 
@@ -149,7 +166,7 @@ class CommandBufferStageSpec extends AnyFlatSpec {
 
       // Keep the consumer stopped long enough for the configured FIFO to
       // fill.  The next record must not be fetched past FIFO capacity.
-      while (guard < 800 && reads.size < fifoDepth * 32) {
+      while (guard < 800 && reads.size < fifoDepth * 40) {
         dut.io.mem.req.ready.poke(true.B)
         if (responsePending) {
           dut.io.mem.resp.valid.poke(true.B)
@@ -169,9 +186,9 @@ class CommandBufferStageSpec extends AnyFlatSpec {
         guard += 1
       }
 
-      assert(reads.size == fifoDepth * 32,
-        s"expected $fifoDepth records prefetched, got ${reads.size / 32} records")
-      assert(!reads.exists(_ >= base + fifoDepth * 32 * 4),
+      assert(reads.size == fifoDepth * 40,
+        s"expected $fifoDepth records prefetched, got ${reads.size / 40} records")
+      assert(!reads.exists(_ >= base + fifoDepth * 40 * 4),
         "a stalled consumer must prevent fetching beyond FIFO capacity")
       assert(dut.io.draw.valid.peek().litToBoolean,
         "the FIFO must hold a draw under consumer backpressure")

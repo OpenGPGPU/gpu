@@ -112,7 +112,7 @@
     ((((u32)(r)) << 24) | (((u32)(g)) << 16) | (((u32)(b)) << 8) | ((u32)(a)))
 
 /* ---------------------------------------------------------------------------
- * Draw-call record (CommandBufferStage), 32 32-bit words, little-endian.
+ * Draw-call record (CommandBufferStage), 40 32-bit words, little-endian.
  *                                                                   word idx
  *   v0/v1/v2 clip-space (x,y,z,w) as Q16.16                           [0..11]
  *   v0/v1/v2 colour (r,g,b) as 8-bit                                   [12..20]
@@ -120,12 +120,14 @@
  *   shader entry PC (shader descriptor)                                [24]
  *   kernarg buffer address                                             [25]
  *   per-vertex texture coords u,v (unsigned Q16.16, u0v0u1v1u2v2)      [26..31]
+ *   optional per-draw depth/cull/texture state override                      [32]
+ *   reserved, must be zero                                               [33..39]
  *
  * The colour/depth registers are the fixed-function interpolation inputs on
  * `fragCore = false`; the shader descriptor is used only on the core-backed
  * path, where it selects a compiled RV32 kernel launched on the SIMT lanes.
  * ------------------------------------------------------------------------ */
-#define GPU_DRAW_WORDS 32u
+#define GPU_DRAW_WORDS 40u
 struct gpu_draw_record {
     /* clip-space, Q16.16 */
     s32 v0[4];
@@ -145,6 +147,8 @@ struct gpu_draw_record {
     u32 uv0[2];
     u32 uv1[2];
     u32 uv2[2];
+    u32 state;
+    u32 reserved[7];
 };
 
 /* ---------------------------------------------------------------------------

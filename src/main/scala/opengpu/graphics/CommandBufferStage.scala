@@ -7,7 +7,7 @@ import chisel3.util._
   *
   * Reads `count` sequential draw-call records from software-allocated host
   * memory starting at `base` and emits each as a SceneTriangle on `draw`.
-  * A record is a fixed 32-word layout (little-endian word index):
+  * A record is a fixed 40-word layout (little-endian word index):
   *
   *   [0..11]  v0/v1/v2 clip-space (x,y,z,w) as Q16.16   (12 words)
   *   [12..20] v0/v1/v2 colour (r,g,b) as 8-bit          (9 words)
@@ -15,6 +15,8 @@ import chisel3.util._
   *   [24]     shader entry PC (the draw's shader descriptor)
   *   [25]     kernarg buffer address
   *   [26..31] v0/v1/v2 texture u,v as unsigned Q16.16
+  *   [32]     optional depth/cull/texture state override
+  *   [33..39] reserved
   *
   * This is the hardware side of "the driver writes a command list, the GPU
   * executes it", the prerequisite for a host-driven (M6) Linux device.  The
@@ -22,7 +24,7 @@ import chisel3.util._
   * and point at it kernarg buffer.
   */
 class CommandBufferStage(config: GraphicsConfig) extends Module {
-  private val wordsPerRecord = 32
+  private val wordsPerRecord = 40
 
   val io = IO(new Bundle {
     val base = Input(UInt(32.W))
@@ -37,7 +39,7 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
   })
 
   private val record = RegInit(0.U(16.W))
-  private val word = RegInit(0.U(log2Ceil(wordsPerRecord).W)) // 0..31
+  private val word = RegInit(0.U(log2Ceil(wordsPerRecord).W)) // 0..39
   private val waiting = RegInit(false.B) // a read is in flight
   private val words = Reg(Vec(wordsPerRecord, UInt(32.W)))
   private val running = RegInit(false.B)
@@ -86,6 +88,14 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
   decodedDraw.uv(1).v := words(29)
   decodedDraw.uv(2).u := words(30)
   decodedDraw.uv(2).v := words(31)
+  decodedDraw.stateOverride := words(32)(0)
+  decodedDraw.depthTestEnable := words(32)(1)
+  decodedDraw.depthFunc := words(32)(6, 4)
+  decodedDraw.depthWriteEnable := words(32)(7)
+  decodedDraw.cullMode := words(32)(9, 8)
+  decodedDraw.texEnable := words(32)(10)
+  decodedDraw.texWrapClamp := words(32)(11)
+  decodedDraw.texMaxLevel := words(32)(15, 12)
 
   drawFifo.io.enq.valid := presenting
   drawFifo.io.enq.bits := decodedDraw

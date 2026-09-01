@@ -22,7 +22,23 @@ struct drm_opengpu_draw {
     __u32 uv0[2];
     __u32 uv1[2];
     __u32 uv2[2];
+    __u32 state;
+    __u32 reserved[7];
 };
+
+/* Per-draw state override. Resource addresses and extents remain job-owned. */
+#define OPENGPU_DRAW_STATE_OVERRIDE       (1u << 0)
+#define OPENGPU_DRAW_STATE_DEPTH_TEST     (1u << 1)
+#define OPENGPU_DRAW_STATE_DEPTH_FUNC_SHIFT 4u
+#define OPENGPU_DRAW_STATE_DEPTH_FUNC_MASK  (0x7u << 4)
+#define OPENGPU_DRAW_STATE_DEPTH_WRITE    (1u << 7)
+#define OPENGPU_DRAW_STATE_CULL_SHIFT     8u
+#define OPENGPU_DRAW_STATE_CULL_MASK      (0x3u << 8)
+#define OPENGPU_DRAW_STATE_TEX_ENABLE     (1u << 10)
+#define OPENGPU_DRAW_STATE_TEX_CLAMP      (1u << 11)
+#define OPENGPU_DRAW_STATE_MAX_MIP_SHIFT  12u
+#define OPENGPU_DRAW_STATE_MAX_MIP_MASK   (0xfu << 12)
+#define OPENGPU_DRAW_STATE_VALID_MASK     0xffffu
 
 struct drm_opengpu_context {
     __u32 id;

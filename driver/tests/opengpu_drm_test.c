@@ -277,6 +277,13 @@ static int create_command_buffer(int fd, struct command_buffer *commands)
     draw->uv0[0] = 0;       draw->uv0[1] = 0;
     draw->uv1[0] = 0x80000; draw->uv1[1] = 0;
     draw->uv2[0] = 0;       draw->uv2[1] = 0x80000;
+    draw->state = OPENGPU_DRAW_STATE_OVERRIDE |
+        OPENGPU_DRAW_STATE_DEPTH_TEST |
+        (0u << OPENGPU_DRAW_STATE_DEPTH_FUNC_SHIFT) |
+        OPENGPU_DRAW_STATE_DEPTH_WRITE |
+        OPENGPU_DRAW_STATE_TEX_ENABLE |
+        OPENGPU_DRAW_STATE_TEX_CLAMP |
+        (2u << OPENGPU_DRAW_STATE_MAX_MIP_SHIFT);
     return 0;
 }
 
@@ -454,8 +461,25 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
     errno = 0;
     ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
     commands->map->shader_pc = 0;
+    if (ret != -1 || errno != EINVAL)
+        goto fail;
+
+    commands->map->state &= ~OPENGPU_DRAW_STATE_MAX_MIP_MASK;
+    commands->map->state |= 3u << OPENGPU_DRAW_STATE_MAX_MIP_SHIFT;
+    errno = 0;
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
+    commands->map->state &= ~OPENGPU_DRAW_STATE_MAX_MIP_MASK;
+    commands->map->state |= 2u << OPENGPU_DRAW_STATE_MAX_MIP_SHIFT;
+    if (ret != -1 || errno != EINVAL)
+        goto fail;
+
+    commands->map->reserved[0] = 1;
+    errno = 0;
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
+    commands->map->reserved[0] = 0;
     if (ret == -1 && errno == EINVAL)
         return 0;
+fail:
     errno = EPROTO;
     return -1;
 }

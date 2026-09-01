@@ -38,6 +38,7 @@ class RenderCoreL2Spec extends AnyFlatSpec {
     w += shaderPc; w += kernarg
     // uv0..uv2 as unsigned Q16.16 (unused by these tests)
     for (_ <- 0 until 6) { w += 0 }
+    for (_ <- 0 until 8) { w += 0 } // state override + reserved
     w.result()
   }
 
@@ -242,6 +243,7 @@ class RenderCoreL2Spec extends AnyFlatSpec {
     for (i <- 0 until 3) { w += record(i)._3 }
     w += 0; w += 0 // descriptor
     for (i <- 0 until 3) { w += record(i)._4; w += record(i)._5 }
+    for (_ <- 0 until 8) { w += 0 } // state override + reserved
     w.result().zipWithIndex.foreach { case (word, i) =>
       m.wwrite(cmdBase + i * 4, word)
     }

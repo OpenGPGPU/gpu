@@ -51,6 +51,7 @@ class RenderPipelineSpec extends AnyFlatSpec {
         (q(-1.0), q(1.0), q(1.0))
       )
       dut.io.draw.valid.poke(true.B)
+      dut.io.draw.bits.stateOverride.poke(false.B)
       for (i <- 0 until 3) {
         dut.io.draw.bits.clip(i).x.poke(clip(i)._1.S)
         dut.io.draw.bits.clip(i).y.poke(clip(i)._2.S)
