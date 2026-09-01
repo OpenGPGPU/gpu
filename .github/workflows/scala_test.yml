@@ -30,7 +30,7 @@ jobs:
         distribution: 'temurin'
         cache: 'sbt'
     - name: Set up sbt
-      uses: olafurpg/setup-sbt@v3
+      uses: sbt/setup-sbt@v1
     - name: Run tests
       run: sbt test
     - name: Upload dependency graph
