@@ -24,7 +24,8 @@ struct drm_opengpu_draw {
     __u32 uv2[2];
     __u32 state;
     __u32 sampler;
-    __u32 reserved[6];
+    __u32 kernarg_bank_stride;
+    __u32 reserved[5];
 };
 
 /* Per-draw state override. Resource addresses and extents remain job-owned. */

@@ -157,7 +157,8 @@ or queue configuration changes therefore cannot affect an in-flight draw.
 | 26–31 | v0/v1/v2 texture `(u,v)`, unsigned Q16.16 |
 | 32 | state override: bit 0 valid, bit 1 depth test, bits 6:4 depth function, bit 7 depth write, bits 9:8 cull, bit 10 texture enable, bit 11 clamp, bits 15:12 max mip |
 | 33 | core sampler controls: bits 4:0 signed integer LOD bias, bits 11:8 inclusive minimum mip clamp |
-| 34–39 | reserved; must be zero |
+| 34 | optional kernarg bank stride in bytes; zero selects legacy single-bank operation |
+| 35–39 | reserved; must be zero |
 
 When word 32 bit 0 is clear, all draw state inherits from the job descriptor
 and every other bit in the word must be zero. Resource addresses and texture
@@ -166,6 +167,15 @@ job bindings. The driver rejects unknown bits, invalid depth/cull values,
 texture enable without a bound texture, and max-mip requests beyond the bound
 mip chain. The minimum clamp must not exceed the draw's maximum mip; gradient
 LOD is biased with signed saturation and then clamped to this validated range.
+
+For core-backed pipelining, word 34 may describe two complete kernarg banks.
+The stride must be 64-byte aligned and at least `9*stride` bytes, where the
+inner SoA stride is defined below. Both banks have identical layouts and
+uniform data; software places bank 1 at `kernarg + bank_stride`. The driver
+checks that both banks fit the bound resource and validates shader accesses
+against one bank only, preventing a shader in batch N from reaching batch
+N+1. Hardware alternates banks only after a completed batch. Zero preserves
+the original single-bank behavior.
 
 ### 3.2 Kernarg SoA ABI (core-backed fragment shading)
 

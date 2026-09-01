@@ -73,6 +73,8 @@ class KernelFragStage(
     val out = Decoupled(new RasterFragment(gfxConfig))
     val shaderPc = Input(UInt(32.W))
     val kernargBase = Input(UInt(32.W))
+    /** Byte stride between two complete, identically laid-out kernarg banks. */
+    val kernargBankStride = Input(UInt(32.W))
     /** Texture sampling config for the tex.sample instruction. */
     val texBase = Input(UInt(32.W))
     val texWidth = Input(UInt(14.W))
@@ -174,6 +176,11 @@ class KernelFragStage(
 
   private val curShaderPc = Reg(UInt(32.W))
   private val curKernarg = Reg(UInt(32.W))
+  private val bankSelect = RegInit(false.B)
+  private val selectedKernarg = Mux(
+    bankSelect && io.kernargBankStride.orR,
+    io.kernargBase + io.kernargBankStride,
+    io.kernargBase)
 
   io.fragIn.ready := state === sAccum && count < batchCap.U
   io.drained := state === sAccum && count === 0.U
@@ -233,10 +240,10 @@ class KernelFragStage(
         fragE2(countIdx) := io.fragIn.bits.e2
         when(count === 0.U) {
           curShaderPc := io.shaderPc
-          curKernarg := io.kernargBase
+          curKernarg := selectedKernarg
         }.otherwise {
           assert(
-            io.shaderPc === curShaderPc && io.kernargBase === curKernarg,
+            io.shaderPc === curShaderPc && selectedKernarg === curKernarg,
             "a fragment batch must not mix draw descriptors")
         }
         count := count + 1.U
@@ -313,6 +320,7 @@ class KernelFragStage(
         when(index === count - 1.U) {
           count := 0.U
           index := 0.U
+          when(io.kernargBankStride.orR) { bankSelect := ~bankSelect }
           state := sAccum
         }.otherwise {
           index := index + 1.U

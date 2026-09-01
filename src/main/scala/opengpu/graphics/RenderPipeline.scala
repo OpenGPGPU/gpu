@@ -36,6 +36,7 @@ class SceneTriangle(config: GraphicsConfig) extends Bundle {
   val texMaxLevel = UInt(4.W)
   val texLodBias = SInt(5.W)
   val texMinLevel = UInt(4.W)
+  val kernargBankStride = UInt(32.W)
 }
 
 /** Fixed-function and render-target state sampled at a draw boundary. */
@@ -234,6 +235,7 @@ class RenderPipeline(
     shader.io.pixel.ready := kernelFrag.io.fragIn.ready
     kernelFrag.io.shaderPc := drawHold.shaderPc
     kernelFrag.io.kernargBase := drawHold.shaderKernarg
+    kernelFrag.io.kernargBankStride := drawHold.kernargBankStride
     kernelFrag.io.texBase := drawState.texBase
     kernelFrag.io.texWidth := drawState.texWidth
     kernelFrag.io.texHeight := drawState.texHeight

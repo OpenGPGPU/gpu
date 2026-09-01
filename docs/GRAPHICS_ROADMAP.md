@@ -873,6 +873,13 @@ Status (virtual display and DRM handoff, 2026-08-29):
   sampler applies saturating bias after quad-gradient selection and clamps to
   the validated `[min,max]` range; the driver rejects unknown bits, inverted
   ranges and clamps outside the bound mip chain.
+- **Dual kernarg bank ABI complete (2026-09-01).** Draw word 34 optionally
+  supplies a 64-byte-aligned stride between two complete, identical kernarg
+  banks. The driver bounds both banks but validates shader addressing against
+  one bank, and `KernelFragStage` alternates bank bases only at completed batch
+  boundaries. This removes the scratch overwrite hazard required before M5
+  can overlap rasterization of batch N+1 with SIMT execution of batch N; zero
+  retains legacy single-bank execution.
 - Next: optional trilinear blending. Hardware-side
   per-draw overlap/double buffering remains the separate M5 throughput
   milestone.

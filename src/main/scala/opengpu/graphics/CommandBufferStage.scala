@@ -17,7 +17,8 @@ import chisel3.util._
   *   [26..31] v0/v1/v2 texture u,v as unsigned Q16.16
   *   [32]     optional depth/cull/texture state override
   *   [33]     signed integer LOD bias and minimum mip clamp
-  *   [34..39] reserved
+  *   [34]     optional two-bank kernarg byte stride
+  *   [35..39] reserved
   *
   * This is the hardware side of "the driver writes a command list, the GPU
   * executes it", the prerequisite for a host-driven (M6) Linux device.  The
@@ -99,6 +100,7 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
   decodedDraw.texMaxLevel := words(32)(15, 12)
   decodedDraw.texLodBias := words(33)(4, 0).asSInt
   decodedDraw.texMinLevel := words(33)(11, 8)
+  decodedDraw.kernargBankStride := words(34)
 
   drawFifo.io.enq.valid := presenting
   drawFifo.io.enq.bits := decodedDraw

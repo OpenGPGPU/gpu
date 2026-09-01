@@ -42,6 +42,49 @@ class KernelFragStageSpec extends AnyFlatSpec {
       lines(addr) = line
     }
     def readLine(addr: Long): BigInt = lines.getOrElse(addr, BigInt(0))
+    def getWord(addr: Long): BigInt = {
+      val line = readLine(addr & ~63L)
+      (line >> ((addr & 63L).toInt * 8)) & BigInt("ffffffff", 16)
+    }
+  }
+
+  it should "alternate complete kernarg banks at batch boundaries" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelFragStage(config)) { dut =>
+      val mem = new MemModel
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.shaderPc.poke(0x1000.U)
+      dut.io.kernargBase.poke(0x8000.U)
+      dut.io.kernargBankStride.poke(0x200.U)
+      mem.putWord(0x1000L, 0, lw(10, 1, 96))
+      mem.putWord(0x1000L, 1, sw(10, 1, 192))
+      mem.putWord(0x1000L, 2, cease)
+
+      def runBatch(red: Int): Unit = {
+        dut.io.fragIn.bits.x.poke(red.S)
+        dut.io.fragIn.bits.y.poke(0.S)
+        dut.io.fragIn.bits.depth.poke(1.S)
+        dut.io.fragIn.bits.color.r.poke(red.U)
+        dut.io.fragIn.bits.color.g.poke(0.U)
+        dut.io.fragIn.bits.color.b.poke(0.U)
+        dut.io.fragIn.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.fragIn.valid.poke(false.B)
+        dut.io.flush.poke(true.B); dut.clock.step(); dut.io.flush.poke(false.B)
+        assert(pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean),
+          "banked fragment batch did not complete")
+        dut.io.out.bits.color.r.expect(red.U)
+        dut.clock.step()
+        assert(pump(dut, mem, () => dut.io.drained.peek().litToBoolean),
+          "banked fragment batch did not drain")
+      }
+
+      runBatch(0x11)
+      runBatch(0x22)
+      assert(mem.getWord(0x8000L + 96) == BigInt("110000ff", 16))
+      assert(mem.getWord(0x8200L + 96) == BigInt("220000ff", 16))
+    }
   }
 
   /** Shader program snippet helpers (RV32I + the RVV subset). */
@@ -186,6 +229,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       pokeDefaults(dut)
       dut.io.shaderPc.poke(0x1000.U)
       dut.io.kernargBase.poke(0x8000.U)
+      dut.io.kernargBankStride.poke(0.U)
 
       // Program: read the packed-colour input array (kernarg+96), write the
       // output array (kernarg+192), halt.
@@ -227,6 +271,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       pokeDefaults(dut)
       dut.io.shaderPc.poke(0x1000.U)
       dut.io.kernargBase.poke(0x8000.U)
+      dut.io.kernargBankStride.poke(0.U)
 
       // Program: colour = input[0] (kernarg+96) + uniform (kernarg+288);
       //          output[0] (kernarg+192); cease.
@@ -272,6 +317,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       pokeDefaults(dut)
       dut.io.shaderPc.poke(0x1000.U)
       dut.io.kernargBase.poke(0x8000.U)
+      dut.io.kernargBankStride.poke(0.U)
 
       // The stage initializes valid[0] to one. The shader's zero store kills
       // the fragment before it can reach depth/colour output merging.
@@ -316,6 +362,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       pokeDefaults(dut)
       dut.io.shaderPc.poke(0x1000.U)
       dut.io.kernargBase.poke(0x8000.U)
+      dut.io.kernargBankStride.poke(0.U)
 
       // Pass-through scalar kernel: read the colour input word, write the
       // output word, cease.
@@ -431,6 +478,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       pokeDefaults(dut)
       dut.io.shaderPc.poke(0x1000.U)
       dut.io.kernargBase.poke(0x8000.U)
+      dut.io.kernargBankStride.poke(0.U)
 
       // Program (lane = fragment; x1 = kernarg, x8 = localLinearBase):
       //   slli x5, x8, 2      // x5 = 4 * localLinearBase (this warp's slice)
@@ -564,6 +612,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       pokeDefaults(dut)
       dut.io.shaderPc.poke(0x1000.U)
       dut.io.kernargBase.poke(0x8000.U)
+      dut.io.kernargBankStride.poke(0.U)
       dut.io.texBase.poke(0x2000.U)
       dut.io.texWidth.poke(2.U)
       dut.io.texHeight.poke(2.U)
@@ -624,6 +673,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       pokeDefaults(dut)
       dut.io.shaderPc.poke(0x1000.U)
       dut.io.kernargBase.poke(0x8000.U)
+      dut.io.kernargBankStride.poke(0.U)
       dut.io.texBase.poke(0x2000.U)
       dut.io.texWidth.poke(2.U)
       dut.io.texHeight.poke(2.U)

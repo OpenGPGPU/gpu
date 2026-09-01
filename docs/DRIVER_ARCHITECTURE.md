@@ -111,6 +111,10 @@ admitted after VL setup with a defined VGPR source. The core rasterizer supplies
 complete TL/TR/BL/BR groups; helpers execute but immutable coverage suppresses
 their OM output. Backward edges, jumps, masked/strided/gather memory, atomics
 and other custom instructions require future validator profiles.
+Core-backed draws may expose two identical kernarg banks through a validated
+64-byte-aligned bank stride. Both banks must fit the binding, while shader
+validation is deliberately limited to one bank so adjacent in-flight scratch
+state cannot alias.
 `DRM_IOCTL_OPENGPU_GET_PARAM` reports the capability word to userspace. The
 trusted probe self-test follows the same split: fixed hardware uses the texture
 pipeline, while capable hardware allocates private shader/kernarg buffers and

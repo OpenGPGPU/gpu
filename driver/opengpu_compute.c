@@ -85,6 +85,7 @@ static void opengpu_fill_test_command(struct opengpu_device *gpu)
     if (gpu->hw.capabilities & GPU_CAP_FRAGMENT_CORE) {
         r->shader_pc = lower_32_bits(gpu->compute.shader.dma);
         r->kernarg = lower_32_bits(gpu->compute.kernarg.dma);
+        r->kernarg_bank_stride = gpu->compute.kernarg.size / GPU_KERNARG_BANKS;
     }
 }
 
@@ -105,7 +106,9 @@ static int opengpu_init_test_shader(struct opengpu_device *gpu)
     if (ret)
         return ret;
     ret = opengpu_buffer_alloc(gpu, &gpu->compute.kernarg,
-                               GPU_KERNARG_UNIFORM_OFF(stride));
+                               GPU_KERNARG_BANKS *
+                               ALIGN(GPU_KERNARG_UNIFORM_OFF(stride),
+                                     GPU_KERNARG_BANK_ALIGN));
     if (ret) {
         opengpu_buffer_free(gpu, &gpu->compute.shader);
         return ret;
@@ -539,7 +542,7 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
                                      struct opengpu_resource_binding *texture)
 {
     struct gpu_draw_record *records = commands->cpu;
-    u64 address, kernarg_min;
+    u64 address, kernarg_min, kernarg_span, shader_kernarg_size;
     u32 i, j;
 
     BUILD_BUG_ON(sizeof(struct drm_opengpu_draw) !=
@@ -590,19 +593,33 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
                 return -EINVAL;
         }
         if (!shader) {
-            if (record->shader_pc || record->kernarg || record->sampler)
+            if (record->shader_pc || record->kernarg || record->sampler ||
+                record->kernarg_bank_stride)
                 return -EINVAL;
             continue;
         }
         kernarg_min = 9ull * 4ull * opengpu_fragment_batch_capacity(gpu);
+        kernarg_span = kernarg_min;
+        shader_kernarg_size = kernarg->size - record->kernarg;
+        if (record->kernarg_bank_stride) {
+            if ((record->kernarg & (GPU_KERNARG_BANK_ALIGN - 1)) ||
+                (record->kernarg_bank_stride &
+                 (GPU_KERNARG_BANK_ALIGN - 1)) ||
+                record->kernarg_bank_stride < kernarg_min ||
+                check_mul_overflow((u64)record->kernarg_bank_stride,
+                                   (u64)GPU_KERNARG_BANKS,
+                                   &kernarg_span))
+                return -EINVAL;
+            shader_kernarg_size = record->kernarg_bank_stride;
+        }
         if (!kernarg_min ||
             check_add_overflow((u64)record->shader_pc, 4ull, &address) ||
             address > shader->size ||
             check_add_overflow((u64)record->kernarg,
-                               kernarg_min, &address) ||
+                               kernarg_span, &address) ||
             address > kernarg->size ||
             !opengpu_validate_shader(gpu, shader,
-                                     kernarg->size - record->kernarg,
+                                     shader_kernarg_size,
                                      record->shader_pc, texture != NULL))
             return -EINVAL;
         record->shader_pc += lower_32_bits(shader->dma);

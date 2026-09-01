@@ -122,7 +122,8 @@
  *   per-vertex texture coords u,v (unsigned Q16.16, u0v0u1v1u2v2)      [26..31]
  *   optional per-draw depth/cull/texture state override                      [32]
  *   signed integer LOD bias [4:0], minimum mip clamp [11:8]                  [33]
- *   reserved, must be zero                                               [34..39]
+ *   optional two-bank kernarg stride in bytes (zero = legacy single bank)   [34]
+ *   reserved, must be zero                                               [35..39]
  *
  * The colour/depth registers are the fixed-function interpolation inputs on
  * `fragCore = false`; the shader descriptor is used only on the core-backed
@@ -150,7 +151,8 @@ struct gpu_draw_record {
     u32 uv2[2];
     u32 state;
     u32 sampler;
-    u32 reserved[6];
+    u32 kernarg_bank_stride;
+    u32 reserved[5];
 };
 
 /* ---------------------------------------------------------------------------
@@ -181,6 +183,8 @@ struct gpu_draw_record {
 #define GPU_KERNARG_DEPTH_OUT_OFF(s) (7u * (s))
 #define GPU_KERNARG_VALID_OFF(s)  (8u * (s))
 #define GPU_KERNARG_UNIFORM_OFF(s)(9u * (s))
+#define GPU_KERNARG_BANKS          2u
+#define GPU_KERNARG_BANK_ALIGN     64u
 
 /* ---------------------------------------------------------------------------
  * Job ring descriptor (JobQueue), 16 32-bit words (64 bytes), little-endian.

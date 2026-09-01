@@ -15,7 +15,8 @@ class CommandBufferStageSpec extends AnyFlatSpec {
     shaderPc: Int,
     shaderKernarg: Int,
     state: Int = 0,
-    sampler: Int = 0
+    sampler: Int = 0,
+    kernargBankStride: Int = 0
   ): Seq[Int] = {
     val w = Seq.newBuilder[Int]
     for (i <- 0 until 3) {
@@ -28,7 +29,8 @@ class CommandBufferStageSpec extends AnyFlatSpec {
     for (_ <- 0 until 6) { w += 0 }
     w += state
     w += sampler
-    for (_ <- 0 until 6) { w += 0 } // reserved
+    w += kernargBankStride
+    for (_ <- 0 until 5) { w += 0 } // reserved
     w.result()
   }
 
@@ -50,7 +52,8 @@ class CommandBufferStageSpec extends AnyFlatSpec {
       (1 << 10) | (1 << 11) | (2 << 12)
     val sampler0 = 0x1f | (1 << 8) // bias -1, minimum mip 1
     val words0 = encode(record0, shaderPc = 0x9000,
-      shaderKernarg = 0x20000, state = state0, sampler = sampler0)
+      shaderKernarg = 0x20000, state = state0, sampler = sampler0,
+      kernargBankStride = 0x140)
     val words1 = encode(record1, shaderPc = 0x9100, shaderKernarg = 0x21000)
     val mem = Array.fill(1 << 15)(0)
     (words0 ++ words1).zipWithIndex.foreach { case (w, i) => mem(base / 4 + i) = w }
@@ -65,7 +68,7 @@ class CommandBufferStageSpec extends AnyFlatSpec {
       dut.io.mem.resp.valid.poke(false.B)
 
       val decoded = collection.mutable.Buffer.empty[
-        (Seq[Int], Seq[(Int, Int, Int)], Seq[Int], Int, Int, Int, Int)]
+        (Seq[Int], Seq[(Int, Int, Int)], Seq[Int], Int, Int, Int, Int, Int)]
       var lastReadValid = false
       var lastReadData = 0L
       var guard = 0
@@ -105,7 +108,8 @@ class CommandBufferStageSpec extends AnyFlatSpec {
               (if (d.texWrapClamp.peek().litToBoolean) 1 << 11 else 0) |
               (d.texMaxLevel.peek().litValue.toInt << 12),
             (d.texLodBias.peek().litValue.toInt & 0x1f) |
-              (d.texMinLevel.peek().litValue.toInt << 8)
+              (d.texMinLevel.peek().litValue.toInt << 8),
+            d.kernargBankStride.peek().litValue.toInt
           ))
           dut.io.draw.ready.poke(true.B)
         } else {
@@ -126,6 +130,7 @@ class CommandBufferStageSpec extends AnyFlatSpec {
       assert(decoded(0)._5 == 0x20000)
       assert(decoded(0)._6 == state0)
       assert(decoded(0)._7 == sampler0)
+      assert(decoded(0)._8 == 0x140)
       // Record 1 differs.
       assert(decoded(1)._2 == Seq((255, 255, 0), (0, 255, 255), (255, 0, 255)))
       assert(decoded(1)._3 == Seq(0x20, 0x20, 0x20))
@@ -133,6 +138,7 @@ class CommandBufferStageSpec extends AnyFlatSpec {
       assert(decoded(1)._5 == 0x21000)
       assert(decoded(1)._6 == 0)
       assert(decoded(1)._7 == 0)
+      assert(decoded(1)._8 == 0)
       assert(dut.io.done.peek().litToBoolean)
     }
   }

@@ -779,6 +779,8 @@ int main(void)
     if (frag_core) {
         uint32_t i;
 
+        commands.map->kernarg_bank_stride = 320;
+
         for (i = 0; i < 3; i++) {
             commands.map->c0[i] = (i + 1) * 0x10;
             commands.map->c1[i] = (i + 1) * 0x10;
@@ -787,7 +789,7 @@ int main(void)
     }
     CHECK(create_texture_buffer(fd, &texture), "texture buffer");
     CHECK(create_resource_buffer(fd, 128, &shader), "shader buffer");
-    CHECK(create_resource_buffer(fd, 288, &kernarg), "kernarg buffer");
+    CHECK(create_resource_buffer(fd, 640, &kernarg), "kernarg buffer");
     write_vector_shader(shader.map);
     CHECK(create_context(fd, &context_id), "create render context");
     CHECK(reject_truncated_mip_chain(fd, context_id, 1, &texture),
@@ -796,7 +798,7 @@ int main(void)
     CHECK(bind_resource(fd, context_id, 2, &shader,
                         OPENGPU_RESOURCE_SHADER, 128), "bind shader");
     CHECK(bind_resource(fd, context_id, 3, &kernarg,
-                        OPENGPU_RESOURCE_KERNARG, 288), "bind kernarg");
+                        OPENGPU_RESOURCE_KERNARG, 640), "bind kernarg");
     if (frag_core) {
         CHECK(reject_shader_submit(fd, context_id, &commands, &first, 0,
                                    EINVAL),
