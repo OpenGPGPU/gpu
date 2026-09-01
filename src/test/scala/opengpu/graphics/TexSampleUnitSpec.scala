@@ -30,6 +30,8 @@ class TexSampleUnitSpec extends AnyFlatSpec {
       dut.io.texHeight.poke(2.U)
       dut.io.wrapClamp.poke(false.B)
       dut.io.texMaxLevel.poke(0.U)
+      dut.io.lodBias.poke(0.S)
+      dut.io.minLevel.poke(0.U)
       dut.io.in.valid.poke(false.B)
       dut.io.commit.ready.poke(true.B)
       dut.io.vectorIn.valid.poke(true.B)
@@ -96,7 +98,7 @@ class TexSampleUnitSpec extends AnyFlatSpec {
     }
   }
 
-  it should "select a nearest mip level from 2x2 quad UV gradients" in {
+  it should "apply bias and clamps to gradient-selected mip levels" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new TexSampleUnit(config)) { dut =>
       val pending = mutable.Queue.empty[Long]
@@ -110,6 +112,8 @@ class TexSampleUnitSpec extends AnyFlatSpec {
       dut.io.texHeight.poke(4.U)
       dut.io.wrapClamp.poke(true.B)
       dut.io.texMaxLevel.poke(2.U)
+      dut.io.lodBias.poke(1.S)
+      dut.io.minLevel.poke(0.U)
       dut.io.in.valid.poke(false.B)
       dut.io.commit.ready.poke(true.B)
       dut.io.vectorIn.valid.poke(true.B)
@@ -151,8 +155,9 @@ class TexSampleUnitSpec extends AnyFlatSpec {
       }
       assert(dut.io.vectorCommit.valid.peek().litToBoolean,
         "gradient-derived mip sample did not complete")
+      // Gradient chooses mip1; +1 bias selects mip2 without exceeding max=2.
       for (lane <- 0 until 4)
-        dut.io.vectorCommit.bits.writeback.data(lane).expect(red.U)
+        dut.io.vectorCommit.bits.writeback.data(lane).expect(blue.U)
     }
   }
 }

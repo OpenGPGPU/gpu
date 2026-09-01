@@ -868,7 +868,12 @@ Status (virtual display and DRM handoff, 2026-08-29):
   the quad. Tests distinguish green base/red mip1/blue mip2 and prove a
   two-texel-per-pixel gradient selects red mip1. The QEMU guest uses the same
   packed chain and validates mip1 through the framebuffer.
-- Next: optional trilinear blending and sampler LOD bias/clamps. Hardware-side
+- **Sampler integer LOD bias/clamps complete (2026-09-01).** Draw word 33 now
+  carries a signed five-bit LOD bias and inclusive minimum mip clamp. The core
+  sampler applies saturating bias after quad-gradient selection and clamps to
+  the validated `[min,max]` range; the driver rejects unknown bits, inverted
+  ranges and clamps outside the bound mip chain.
+- Next: optional trilinear blending. Hardware-side
   per-draw overlap/double buffering remains the separate M5 throughput
   milestone.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly

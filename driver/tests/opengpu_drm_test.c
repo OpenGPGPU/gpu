@@ -477,6 +477,13 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
     errno = 0;
     ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
     commands->map->reserved[0] = 0;
+    if (ret != -1 || errno != EINVAL)
+        goto fail;
+
+    commands->map->sampler = 3u << OPENGPU_DRAW_SAMPLER_MIN_LOD_SHIFT;
+    errno = 0;
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
+    commands->map->sampler = 0;
     if (ret == -1 && errno == EINVAL)
         return 0;
 fail:

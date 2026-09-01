@@ -23,7 +23,8 @@ struct drm_opengpu_draw {
     __u32 uv1[2];
     __u32 uv2[2];
     __u32 state;
-    __u32 reserved[7];
+    __u32 sampler;
+    __u32 reserved[6];
 };
 
 /* Per-draw state override. Resource addresses and extents remain job-owned. */
@@ -39,6 +40,12 @@ struct drm_opengpu_draw {
 #define OPENGPU_DRAW_STATE_MAX_MIP_SHIFT  12u
 #define OPENGPU_DRAW_STATE_MAX_MIP_MASK   (0xfu << 12)
 #define OPENGPU_DRAW_STATE_VALID_MASK     0xffffu
+
+/* Signed integer LOD bias plus an inclusive minimum-level clamp. */
+#define OPENGPU_DRAW_SAMPLER_LOD_BIAS_MASK 0x1fu
+#define OPENGPU_DRAW_SAMPLER_MIN_LOD_SHIFT 8u
+#define OPENGPU_DRAW_SAMPLER_MIN_LOD_MASK  (0xfu << 8)
+#define OPENGPU_DRAW_SAMPLER_VALID_MASK    0x0f1fu
 
 struct drm_opengpu_context {
     __u32 id;

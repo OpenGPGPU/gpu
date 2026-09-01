@@ -34,6 +34,8 @@ class SceneTriangle(config: GraphicsConfig) extends Bundle {
   val texEnable = Bool()
   val texWrapClamp = Bool()
   val texMaxLevel = UInt(4.W)
+  val texLodBias = SInt(5.W)
+  val texMinLevel = UInt(4.W)
 }
 
 /** Fixed-function and render-target state sampled at a draw boundary. */
@@ -51,6 +53,8 @@ private class DrawRenderState extends Bundle {
   val texHeight = UInt(14.W)
   val texWrapClamp = Bool()
   val texMaxLevel = UInt(4.W)
+  val texLodBias = SInt(5.W)
+  val texMinLevel = UInt(4.W)
 }
 
 /** Top-of-pipeline renderer.
@@ -150,6 +154,10 @@ class RenderPipeline(
       io.draw.bits.texWrapClamp, io.texWrapClamp)
     drawState.texMaxLevel := Mux(io.draw.bits.stateOverride,
       io.draw.bits.texMaxLevel, io.texMaxLevel)
+    drawState.texLodBias := Mux(io.draw.bits.stateOverride,
+      io.draw.bits.texLodBias, 0.S)
+    drawState.texMinLevel := Mux(io.draw.bits.stateOverride,
+      io.draw.bits.texMinLevel, 0.U)
   }
   when(shader.io.draw.fire && !io.draw.fire) {
     drawHoldValid := false.B
@@ -231,6 +239,8 @@ class RenderPipeline(
     kernelFrag.io.texHeight := drawState.texHeight
     kernelFrag.io.texWrapClamp := drawState.texWrapClamp
     kernelFrag.io.texMaxLevel := drawState.texMaxLevel
+    kernelFrag.io.texLodBias := drawState.texLodBias
+    kernelFrag.io.texMinLevel := drawState.texMinLevel
     // The batch must be flushed exactly at the draw boundary: once the
     // rasterizer has gone idle (all pixels of the current draw emitted), any
     // accumulated-but-unlaunched fragments are launched as one kernel.  The

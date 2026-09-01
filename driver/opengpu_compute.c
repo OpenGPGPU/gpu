@@ -560,8 +560,10 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
                 return -EINVAL;
         if (record->state & ~OPENGPU_DRAW_STATE_VALID_MASK)
             return -EINVAL;
+        if (record->sampler & ~OPENGPU_DRAW_SAMPLER_VALID_MASK)
+            return -EINVAL;
         if (!(record->state & OPENGPU_DRAW_STATE_OVERRIDE)) {
-            if (record->state)
+            if (record->state || record->sampler)
                 return -EINVAL;
         } else {
             u32 depth_func = (record->state &
@@ -575,16 +577,20 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
             u32 bound_max_mip = texture ?
                 (texture->flags & OPENGPU_RESOURCE_TEXTURE_MAX_MIP_MASK) >>
                 OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT : 0;
+            u32 min_mip = (record->sampler &
+                OPENGPU_DRAW_SAMPLER_MIN_LOD_MASK) >>
+                OPENGPU_DRAW_SAMPLER_MIN_LOD_SHIFT;
 
             if (depth_func > GPU_DEPTH_FUNC_ALWAYS ||
                 cull > GPU_CULL_FRONT ||
                 ((record->state & OPENGPU_DRAW_STATE_TEX_ENABLE) &&
                  !texture) ||
-                max_mip > bound_max_mip)
+                (record->sampler && !texture) ||
+                max_mip > bound_max_mip || min_mip > max_mip)
                 return -EINVAL;
         }
         if (!shader) {
-            if (record->shader_pc || record->kernarg)
+            if (record->shader_pc || record->kernarg || record->sampler)
                 return -EINVAL;
             continue;
         }

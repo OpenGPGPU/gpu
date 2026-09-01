@@ -121,7 +121,8 @@
  *   kernarg buffer address                                             [25]
  *   per-vertex texture coords u,v (unsigned Q16.16, u0v0u1v1u2v2)      [26..31]
  *   optional per-draw depth/cull/texture state override                      [32]
- *   reserved, must be zero                                               [33..39]
+ *   signed integer LOD bias [4:0], minimum mip clamp [11:8]                  [33]
+ *   reserved, must be zero                                               [34..39]
  *
  * The colour/depth registers are the fixed-function interpolation inputs on
  * `fragCore = false`; the shader descriptor is used only on the core-backed
@@ -148,7 +149,8 @@ struct gpu_draw_record {
     u32 uv1[2];
     u32 uv2[2];
     u32 state;
-    u32 reserved[7];
+    u32 sampler;
+    u32 reserved[6];
 };
 
 /* ---------------------------------------------------------------------------

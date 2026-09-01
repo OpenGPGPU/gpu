@@ -79,6 +79,8 @@ class KernelFragStage(
     val texHeight = Input(UInt(14.W))
     val texWrapClamp = Input(Bool())
     val texMaxLevel = Input(UInt(4.W))
+    val texLodBias = Input(SInt(5.W))
+    val texMinLevel = Input(UInt(4.W))
     val flush = Input(Bool())
     val drained = Output(Bool())
     val memReq = Decoupled(new ComputeMemoryRequest(config))
@@ -105,6 +107,8 @@ class KernelFragStage(
   texUnit.io.texHeight := io.texHeight
   texUnit.io.wrapClamp := io.texWrapClamp
   texUnit.io.texMaxLevel := io.texMaxLevel
+  texUnit.io.lodBias := io.texLodBias
+  texUnit.io.minLevel := io.texMinLevel
   kernel.io.texSample <> texUnit.io.in
   texUnit.io.commit <> kernel.io.texWriteback
   kernel.io.vectorTexSample <> texUnit.io.vectorIn

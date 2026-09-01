@@ -35,6 +35,10 @@ class TexSampleUnit(
     val texHeight = Input(UInt(14.W))
     val wrapClamp = Input(Bool())
     val texMaxLevel = Input(UInt(4.W))
+    /** Signed integer bias applied after gradient LOD selection. */
+    val lodBias = Input(SInt(5.W))
+    /** Inclusive lower clamp; texMaxLevel is the inclusive upper clamp. */
+    val minLevel = Input(UInt(4.W))
     val mem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
@@ -98,6 +102,10 @@ class TexSampleUnit(
       }
     }
   }
+  private val biasedMip = automaticMip.zext + io.lodBias
+  private val clampedMip = Mux(biasedMip < io.minLevel.zext,
+    io.minLevel, Mux(biasedMip > io.texMaxLevel.zext,
+      io.texMaxLevel, biasedMip.asUInt(3, 0)))
 
   // Alternate priority after every accepted instruction so independent scalar
   // and vector warps cannot starve one another at the shared physical sampler.
@@ -149,7 +157,7 @@ class TexSampleUnit(
         vectorDataReg := io.vectorIn.bits.issued.oldVdData
         uVectorReg := io.vectorIn.bits.issued.vs1Data
         vVectorReg := io.vectorIn.bits.issued.vs2Data
-        mipLevelReg := automaticMip
+        mipLevelReg := clampedMip
         laneReg := 0.U
         preferVector := false.B
         state := sSample
@@ -161,7 +169,10 @@ class TexSampleUnit(
         activeMaskReg := io.in.bits.decode.activeMask
         uReg := io.in.bits.rs1Data
         vReg := io.in.bits.rs2Data
-        mipLevelReg := 0.U
+        val scalarBiased = io.lodBias
+        mipLevelReg := Mux(scalarBiased < io.minLevel.zext,
+          io.minLevel, Mux(scalarBiased > io.texMaxLevel.zext,
+            io.texMaxLevel, scalarBiased.asUInt(3, 0)))
         preferVector := true.B
         state := sSample
       }

@@ -156,14 +156,16 @@ or queue configuration changes therefore cannot affect an in-flight draw.
 | 25 | kernarg buffer address |
 | 26–31 | v0/v1/v2 texture `(u,v)`, unsigned Q16.16 |
 | 32 | state override: bit 0 valid, bit 1 depth test, bits 6:4 depth function, bit 7 depth write, bits 9:8 cull, bit 10 texture enable, bit 11 clamp, bits 15:12 max mip |
-| 33–39 | reserved; must be zero |
+| 33 | core sampler controls: bits 4:0 signed integer LOD bias, bits 11:8 inclusive minimum mip clamp |
+| 34–39 | reserved; must be zero |
 
 When word 32 bit 0 is clear, all draw state inherits from the job descriptor
 and every other bit in the word must be zero. Resource addresses and texture
 dimensions are never command-controlled: they remain sourced from validated
 job bindings. The driver rejects unknown bits, invalid depth/cull values,
 texture enable without a bound texture, and max-mip requests beyond the bound
-mip chain.
+mip chain. The minimum clamp must not exceed the draw's maximum mip; gradient
+LOD is biased with signed saturation and then clamped to this validated range.
 
 ### 3.2 Kernarg SoA ABI (core-backed fragment shading)
 
