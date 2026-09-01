@@ -234,22 +234,19 @@ class RenderPipeline(
     ctxFifo.io.enq.bits.depthFunc := Mux(io.draw.bits.stateOverride, io.draw.bits.depthFunc, io.depthFunc)
     ctxFifo.io.enq.bits.depthWriteEnable := Mux(io.draw.bits.stateOverride, io.draw.bits.depthWriteEnable, io.depthWriteEnable)
     ctxFifo.io.enq.bits.blendEnable := io.draw.bits.stateOverride && io.draw.bits.blendEnable
-    val pendingRetire = RegInit(false.B)
-    when(kernelFrag.io.drawRetired && ctxFifo.io.headValid) { pendingRetire := true.B }
-    ctxFifo.io.retire := pendingRetire && om.io.fragIn.ready
-    when(ctxFifo.io.retire) { pendingRetire := false.B }
-    // Do not accept the next command-buffer record until the previous draw's
-    // batched kernel output has reached the OM.  RasterShader becomes idle as
-    // soon as it emits its last pixel, but the core-backed sampler can still
-    // be draining that batch; gating here keeps shader descriptors and
-    // per-draw kernarg state from overlapping.
-    // RasterShader becomes ready one cycle before the last accepted fragment's
-    // OutputMerger transaction has drained.  Keep the next draw in the
-    // command FIFO until the complete previous draw boundary is idle, or the
-    // OM can receive the next draw while its last depth RMW is still active.
+    // Ordered retire handshake: the stage presents one completion event per
+    // draw boundary in submission order and holds it until the OM is idle;
+    // each accepted event pops the matching head context.
+    ctxFifo.io.retire := kernelFrag.io.drawRetire.valid && om.io.fragIn.ready
+    kernelFrag.io.drawRetire.ready := ctxFifo.io.retire
+    // Per-draw overlap: the rasterizer is the only shared front-end resource,
+    // so the next draw is admitted as soon as it is idle and the fragment
+    // producer's staging slot can take fragments.  Batch N+1 accumulates
+    // (and later executes) while batch N's kernel is still running; per-draw
+    // state is carried by the context FIFO and the dual staging slots, and
+    // the ordered drawRetire handshake retires contexts in submission order.
     io.draw.ready := (!drawHoldValid || shader.io.draw.fire) &&
-      shader.io.draw.ready && kernelFrag.io.drained &&
-      shader.io.done && om.io.fragIn.ready && ctxFifo.io.enq.ready
+      shader.io.draw.ready && kernelFrag.io.fragIn.ready && ctxFifo.io.enq.ready
     kernelFrag.io.fragIn.valid := shader.io.pixel.valid
     kernelFrag.io.fragIn.bits := shader.io.pixel.bits
     kernelFrag.io.fragUv := textured.io.interpolatedUv
@@ -301,10 +298,11 @@ class RenderPipeline(
     om.io.blendEnable := ctxFifo.io.head.blendEnable
 
     // Done only once every rasterized fragment has been flushed, shaded, and
-    // handed to the OM: the batch must be empty (drained) so an in-flight batch
-    // is never mistaken for an idle pipeline during a draw boundary.
+    // handed to the OM: the batch slots must be empty (drained) and every
+    // admitted draw retired, so an in-flight batch or an unpresented retire
+    // event is never mistaken for an idle pipeline at a draw boundary.
     io.done := !drawHoldValid && shader.io.done && kernelFrag.io.drained &&
-      om.io.fragIn.ready && !ctxFifo.io.headValid && !pendingRetire
+      om.io.fragIn.ready && !ctxFifo.io.headValid
   } else {
     om.io.colorBase := drawState.colorBase
     om.io.depthBase := drawState.depthBase

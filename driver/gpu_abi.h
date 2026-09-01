@@ -122,8 +122,15 @@
  *   per-vertex texture coords u,v (unsigned Q16.16, u0v0u1v1u2v2)      [26..31]
  *   optional per-draw depth/cull/texture state override                      [32]
  *   signed integer LOD bias [4:0], minimum mip clamp [11:8]                  [33]
- *   optional two-bank kernarg stride in bytes (zero = legacy single bank)   [34]
- *   reserved, must be zero                                               [35..39]
+  *   optional two-bank kernarg stride in bytes (zero = legacy single bank)   [34]
+  *   reserved, must be zero                                               [35..39]
+  *
+  * Consecutive batches must not re-read lines a previous batch's kernel also
+  * loaded (the kernel's loads hit the CU's L1 while staging writes go to
+  * memory directly).  The host therefore programs a non-zero two-bank stride
+  * (the driver always does) or gives draws disjoint kernarg buffers; a zero
+  * stride is only safe for single-batch draws or uniform per-fragment
+  * inputs.
  *
  * The colour/depth registers are the fixed-function interpolation inputs on
  * `fragCore = false`; the shader descriptor is used only on the core-backed

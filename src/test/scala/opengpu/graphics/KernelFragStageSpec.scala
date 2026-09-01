@@ -210,6 +210,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
     dut.io.fragUv.v.poke(0.U)
     dut.io.out.ready.poke(true.B)
     dut.io.flush.poke(false.B)
+    dut.io.drawRetire.ready.poke(true.B)
     dut.io.memReq.ready.poke(true.B)
     dut.io.memResp.valid.poke(false.B)
     dut.io.memResp.bits.readData.poke(0.U)
@@ -754,7 +755,145 @@ class KernelFragStageSpec extends AnyFlatSpec {
     }
   }
 
-  it should "pulse drawRetired once per draw boundary, including empty draws" in {
+  it should "accumulate the next draw while the previous batch executes" in {
+    // Per-draw overlap: draw 2's fragment is accepted while batch 1 is still
+    // in flight (not drained), and both draws complete in submission order
+    // with one retire event each.
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelFragStage(config)) { dut =>
+      val mem = new MemModel
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.shaderPc.poke(0x1000.U)
+      dut.io.kernargBase.poke(0x8000.U)
+      // Overlapping batches alternate banks: with a zero stride the second
+      // kernel's loads would hit the first kernel's stale L1 lines for the
+      // same input addresses (the hazard the dual-bank ABI exists for).
+      dut.io.kernargBankStride.poke(0x200.U)
+      mem.putWord(0x1000L, 0, lw(10, 1, 96))
+      mem.putWord(0x1000L, 1, sw(10, 1, 192))
+      mem.putWord(0x1000L, 2, cease)
+
+      def feed(x: Int, red: Int): Unit = {
+        dut.io.fragIn.bits.x.poke(x.S)
+        dut.io.fragIn.bits.y.poke(0.S)
+        dut.io.fragIn.bits.depth.poke(1.S)
+        dut.io.fragIn.bits.color.r.poke(red.U)
+        dut.io.fragIn.bits.color.g.poke(0.U)
+        dut.io.fragIn.bits.color.b.poke(0.U)
+        dut.io.fragIn.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.fragIn.valid.poke(false.B)
+      }
+
+      // Draw 1: one fragment, flush at the boundary.
+      feed(1, 0x11)
+      dut.io.flush.poke(true.B); dut.clock.step(); dut.io.flush.poke(false.B)
+      // The consumer has taken batch 1 (not drained), yet the producer must
+      // already accept draw 2's fragment into the second staging slot.
+      dut.io.fragIn.ready.expect(true.B, "producer stalled during execution")
+      dut.io.drained.expect(false.B, "batch 1 should still be in flight")
+
+      // Serve both memory ports with deferred responses while polling, so
+      // batch 1's staging requests are captured from the first cycle.  Draw
+      // 2's fragment and boundary are injected mid-flight: the fragment is
+      // accepted while batch 1 executes, and its flush commits batch 2 as
+      // the parked slot.
+      val emitted = scala.collection.mutable.ArrayBuffer.empty[Int]
+      val kQueue = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
+      val wQueue = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
+      var guard = 0
+      var drained = false
+      var inject = 0
+      while ((!drained || emitted.size < 2) && guard < 4000) {
+        // Mid-flight injection: draw 2's fragment is accepted while batch 1
+        // executes (inject 0/1), then its boundary flush commits batch 2 as
+        // the parked slot (inject 2/3).
+        inject match {
+          case 0 =>
+            dut.io.fragIn.bits.x.poke(2.S)
+            dut.io.fragIn.bits.y.poke(0.S)
+            dut.io.fragIn.bits.depth.poke(1.S)
+            dut.io.fragIn.bits.color.r.poke(0x22.U)
+            dut.io.fragIn.bits.color.g.poke(0.U)
+            dut.io.fragIn.bits.color.b.poke(0.U)
+            dut.io.fragIn.valid.poke(true.B)
+            inject = 1
+          case 1 =>
+            dut.io.fragIn.valid.poke(false.B)
+            dut.io.flush.poke(true.B)
+            inject = 2
+          case 2 =>
+            dut.io.flush.poke(false.B)
+            inject = 3
+          case _ =>
+        }
+        if (kQueue.nonEmpty) {
+          dut.io.memResp.valid.poke(true.B)
+          dut.io.memResp.bits.transactionId.poke(kQueue.head._1.U)
+          dut.io.memResp.bits.readData.poke(kQueue.head._2.U)
+          dut.io.memResp.bits.fault.poke(false.B)
+        } else dut.io.memResp.valid.poke(false.B)
+        if (kQueue.nonEmpty && dut.io.memResp.ready.peek().litToBoolean) kQueue.dequeue()
+        if (dut.io.memReq.valid.peek().litToBoolean && dut.io.memReq.ready.peek().litToBoolean) {
+          val addr = dut.io.memReq.bits.address.peek().litValue.toLong
+          val id = dut.io.memReq.bits.transactionId.peek().litValue
+          if (dut.io.memReq.bits.isWrite.peek().litToBoolean) {
+            mem.applyWrite(addr, dut.io.memReq.bits.writeData.peek().litValue,
+              dut.io.memReq.bits.byteMask.peek().litValue)
+            kQueue.enqueue((id, BigInt(0)))
+          } else kQueue.enqueue((id, mem.readLine(addr)))
+        }
+        if (wQueue.nonEmpty) {
+          dut.io.wordMemResp.valid.poke(true.B)
+          dut.io.wordMemResp.bits.transactionId.poke(wQueue.head._1.U)
+          dut.io.wordMemResp.bits.readData.poke(wQueue.head._2.U)
+          dut.io.wordMemResp.bits.fault.poke(false.B)
+        } else dut.io.wordMemResp.valid.poke(false.B)
+        if (wQueue.nonEmpty && dut.io.wordMemResp.ready.peek().litToBoolean) wQueue.dequeue()
+        if (dut.io.wordMemReq.valid.peek().litToBoolean &&
+          dut.io.wordMemReq.ready.peek().litToBoolean) {
+          val addr = dut.io.wordMemReq.bits.address.peek().litValue.toLong
+          val id = dut.io.wordMemReq.bits.transactionId.peek().litValue
+          if (dut.io.wordMemReq.bits.isWrite.peek().litToBoolean) {
+            mem.applyWrite(addr, dut.io.wordMemReq.bits.writeData.peek().litValue,
+              dut.io.wordMemReq.bits.byteMask.peek().litValue)
+            wQueue.enqueue((id, BigInt(0)))
+          } else wQueue.enqueue((id, mem.readLine(addr)))
+        }
+        if (dut.io.out.valid.peek().litToBoolean) {
+          emitted += dut.io.out.bits.color.r.peek().litValue.toInt
+          dut.io.out.ready.poke(true.B)
+        } else dut.io.out.ready.poke(false.B)
+        dut.clock.step()
+        guard += 1
+        if (sys.env.contains("KFS_DEBUG") && guard < 120)
+          println(f"dbg g=$guard out.valid=${dut.io.out.valid.peek().litToBoolean}" +
+            f" drained=${dut.io.drained.peek().litToBoolean}" +
+            f" wreq=${dut.io.wordMemReq.valid.peek().litToBoolean}" +
+            f" kreq=${dut.io.memReq.valid.peek().litToBoolean}" +
+            f" retire=${dut.io.drawRetire.valid.peek().litToBoolean}")
+        if (emitted.size == 2 && dut.io.drained.peek().litToBoolean)
+          drained = true
+      }
+      assert(emitted == Seq(0x11, 0x22),
+        s"overlapped draws emitted out of order: $emitted")
+
+      // Drain, then exactly one further retire event (draw 1's fired during
+      // the emission loop once the OM-facing output drained).
+      assert(pump(dut, mem, () => dut.io.drained.peek().litToBoolean),
+        "overlapped draws did not drain")
+      dut.io.drawRetire.valid.expect(true.B, "draw 2 did not retire")
+      dut.clock.step()
+      dut.io.drawRetire.valid.expect(false.B)
+
+      // The two batches staged into alternating kernarg banks.
+      assert(mem.getWord(0x8000L + 96) == BigInt("110000ff", 16))
+      assert(mem.getWord(0x8200L + 96) == BigInt("220000ff", 16))
+    }
+  }
+
+  it should "retire exactly one event per draw boundary, including empty draws" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new KernelFragStage(config)) { dut =>
       val mem = new MemModel
@@ -772,9 +911,9 @@ class KernelFragStageSpec extends AnyFlatSpec {
       // must still release one context token.
       dut.io.flush.poke(true.B)
       dut.clock.step()
-      dut.io.drawRetired.expect(true.B)
+      dut.io.drawRetire.valid.expect(true.B)
       dut.clock.step()
-      dut.io.drawRetired.expect(false.B)
+      dut.io.drawRetire.valid.expect(false.B)
       dut.io.flush.poke(false.B)
       dut.clock.step()
 
@@ -788,11 +927,11 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.clock.step()
       dut.io.fragIn.valid.poke(false.B)
       dut.io.flush.poke(true.B)
-      assert(pump(dut, mem, () => dut.io.drawRetired.peek().litToBoolean),
+      assert(pump(dut, mem, () => dut.io.drawRetire.valid.peek().litToBoolean),
         "flushed draw did not retire")
       dut.io.drained.expect(true.B)
       dut.clock.step(4)
-      dut.io.drawRetired.expect(false.B)
+      dut.io.drawRetire.valid.expect(false.B)
     }
   }
 }

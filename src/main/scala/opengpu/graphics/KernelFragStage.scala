@@ -11,7 +11,8 @@ import opengpu.core.memory.{
   SharedAtomicResponse
 }
 
-/** Core-backed fragment shader stage (Phase D), batched dispatch.
+/** Core-backed fragment shader stage (Phase D), batched dispatch with
+  * per-draw overlap.
   *
   * Fragments are accumulated into a batch of up to `warps*lanes` and shaded by
   * ONE kernel launch on the compute unit's SIMT warps (lane = fragment):
@@ -46,13 +47,35 @@ import opengpu.core.memory.{
   * an AoS record would need strided/gather loads the vector memory unit does
   * not implement.
   *
-  * A batch is launched when it fills or when `flush` is asserted with a
-  * non-empty batch. `flush` marks the rasterizer-idle boundary between draws;
-  * a following draw's fragments cannot arrive without an intervening flush,
-  * so a batch never mixes draws. The shader descriptor and sampler state are
-  * registered at the first fragment of a batch so a following draw cannot
-  * change an in-flight batch. `drawRetired` pulses once for every rising
-  * `flush`, including an empty draw, after its output has drained.
+  * Overlap: the stage keeps TWO staging slots (ping-pong).  While the
+  * consumer FSM streams/launches/runs/reads/emits one slot's batch, the
+  * producer keeps accumulating the next draw's fragments into the other slot,
+  * so rasterization of draw N+1 overlaps SIMT execution of batch N.  Batches
+  * never mix draws: `flush` marks the rasterizer-idle draw boundary and
+  * commits the accumulated batch; a full batch also commits.  The committed
+  * slot stalls the producer until the consumer drains and swaps.  Each slot
+  * snapshots its draw's shader descriptor and sampler state at its first
+  * snapshot at first fragment, and executes against the kernarg bank selected
+  * by slot parity (`kernargBase + slot * kernargBankStride` when a bank
+  * stride is programmed), so consecutive batches alternate banks exactly as
+  * the dual kernarg bank ABI requires (zero stride retains legacy single-bank
+  * execution).
+  *
+  * Coherence note (software contract): a kernel's input loads hit the CU's
+  * L1 while batch staging writes reach memory through the word bridge, so
+  * two consecutively executed batches must not read addresses a previous
+  * batch's kernel also loaded from the same lines.  Software avoids this by
+  * programming the dual kernarg bank stride (the Linux driver always does)
+  * or by giving draws disjoint kernarg buffers; with a shared L2 the
+  * external-write invalidation covers it as well.  Zero-stride legacy
+  * single-bank streams are only safe when consecutive batches do not reuse
+  * loaded lines (uniform per-fragment inputs or single-batch draws).
+  *
+  * `drawRetire` is an ordered valid/ready handshake carrying one completion
+  * event per rising `flush` (i.e. per draw, including empty draws).  An event
+  * is presented once that draw's last batch has been emitted, and is accepted
+  * by the owner only when the output merger is idle, so the draw's context
+  * can be retired without reordering.
   *
   * The shader program, kernarg, and output all sit in the line-based memory
   * behind the two memory ports: `memReq/memResp` serve the compute unit and
@@ -86,7 +109,8 @@ class KernelFragStage(
     val texMinLevel = Input(UInt(4.W))
     val flush = Input(Bool())
     val drained = Output(Bool())
-    val drawRetired = Output(Bool())
+    /** Ordered per-draw completion event (one per rising flush). */
+    val drawRetire = Decoupled(Bool())
     val memReq = Decoupled(new ComputeMemoryRequest(config))
     val memResp = Flipped(Decoupled(new ComputeMemoryResponse()))
     val wordMemReq = Decoupled(new ComputeMemoryRequest(config))
@@ -106,27 +130,12 @@ class KernelFragStage(
   private val texBridge = Module(new OmWordToLinePort(config))
   private val texUnit = Module(new TexSampleUnit(config, gfxConfig))
 
-  private val curTexBase = Reg(UInt(32.W))
-  private val curTexWidth = Reg(UInt(14.W))
-  private val curTexHeight = Reg(UInt(14.W))
-  private val curTexWrapClamp = Reg(Bool())
-  private val curTexMaxLevel = Reg(UInt(4.W))
-  private val curTexLodBias = Reg(SInt(5.W))
-  private val curTexMinLevel = Reg(UInt(4.W))
-  texUnit.io.texBase := curTexBase
-  texUnit.io.texWidth := curTexWidth
-  texUnit.io.texHeight := curTexHeight
-  texUnit.io.wrapClamp := curTexWrapClamp
-  texUnit.io.texMaxLevel := curTexMaxLevel
-  texUnit.io.lodBias := curTexLodBias
-  texUnit.io.minLevel := curTexMinLevel
   kernel.io.texSample <> texUnit.io.in
   texUnit.io.commit <> kernel.io.texWriteback
   kernel.io.vectorTexSample <> texUnit.io.vectorIn
   texUnit.io.vectorCommit <> kernel.io.vectorTexWriteback
   texBridge.io.in <> texUnit.io.mem.req
   texUnit.io.mem.resp <> texBridge.io.out
-
 
   kernel.io.launch.kernelPc := 0.U
   kernel.io.launch.kernargAddress := 0.U
@@ -151,29 +160,64 @@ class KernelFragStage(
   bridge.io.in.bits := wordBits
   bridge.io.out.ready := true.B
 
-  private val sAccum :: sWrite :: sLaunch :: sRun :: sRead :: sEmit :: Nil =
-    Enum(6)
-  private val state = RegInit(sAccum)
-
-  private val fragX = Reg(Vec(batchCap, SInt(gfxConfig.coordWidth.W)))
-  private val fragY = Reg(Vec(batchCap, SInt(gfxConfig.coordWidth.W)))
-  private val fragDepth = Reg(Vec(batchCap, SInt(32.W)))
-  private val packedColor = Reg(Vec(batchCap, UInt(32.W)))
-  private val fragU = Reg(Vec(batchCap, UInt(32.W)))
-  private val fragV = Reg(Vec(batchCap, UInt(32.W)))
-  private val fragCovered = Reg(Vec(batchCap, Bool()))
+  // ---------------------------------------------------------------------
+  // Ping-pong staging slots.  Slot registers are indexed dynamically by
+  // prodSlot (producer accumulation) and execSlot (consumer execution).
+  // ---------------------------------------------------------------------
+  private val fragX = Reg(Vec(2, Vec(batchCap, SInt(gfxConfig.coordWidth.W))))
+  private val fragY = Reg(Vec(2, Vec(batchCap, SInt(gfxConfig.coordWidth.W))))
+  private val fragDepth = Reg(Vec(2, Vec(batchCap, SInt(32.W))))
+  private val packedColor = Reg(Vec(2, Vec(batchCap, UInt(32.W))))
+  private val fragU = Reg(Vec(2, Vec(batchCap, UInt(32.W))))
+  private val fragV = Reg(Vec(2, Vec(batchCap, UInt(32.W))))
+  private val fragCovered = Reg(Vec(2, Vec(batchCap, Bool())))
+  private val fragE0 = Reg(Vec(2, Vec(batchCap, SInt(64.W))))
+  private val fragE1 = Reg(Vec(2, Vec(batchCap, SInt(64.W))))
+  private val fragE2 = Reg(Vec(2, Vec(batchCap, SInt(64.W))))
+  // Output staging is consumer-only (one batch reads/emit at a time).
   private val outWords = Reg(Vec(batchCap, UInt(32.W)))
   private val outDepth = Reg(Vec(batchCap, SInt(32.W)))
   private val outValid = Reg(Vec(batchCap, Bool()))
-  private val fragE0 = Reg(Vec(batchCap, SInt(64.W)))
-  private val fragE1 = Reg(Vec(batchCap, SInt(64.W)))
-  private val fragE2 = Reg(Vec(batchCap, SInt(64.W)))
-  private val count = RegInit(0.U(countWidth.W))
+
+  private val slotCount = RegInit(VecInit(0.U(countWidth.W), 0.U(countWidth.W)))
+  private val prodSlot = RegInit(0.U(1.W))
+  private val execSlot = RegInit(0.U(1.W))
+
+  // Per-slot draw descriptor snapshot (registered at the slot's first
+  // fragment; bank parity = slot index).
+  private val slotShaderPc = Reg(Vec(2, UInt(32.W)))
+  private val slotKernarg = Reg(Vec(2, UInt(32.W)))
+  private val slotTexBase = Reg(Vec(2, UInt(32.W)))
+  private val slotTexWidth = Reg(Vec(2, UInt(14.W)))
+  private val slotTexHeight = Reg(Vec(2, UInt(14.W)))
+  private val slotTexWrapClamp = Reg(Vec(2, Bool()))
+  private val slotTexMaxLevel = Reg(Vec(2, UInt(4.W)))
+  private val slotTexLodBias = Reg(Vec(2, SInt(5.W)))
+  private val slotTexMinLevel = Reg(Vec(2, UInt(4.W)))
+
+  texUnit.io.texBase := slotTexBase(execSlot)
+  texUnit.io.texWidth := slotTexWidth(execSlot)
+  texUnit.io.texHeight := slotTexHeight(execSlot)
+  texUnit.io.wrapClamp := slotTexWrapClamp(execSlot)
+  texUnit.io.texMaxLevel := slotTexMaxLevel(execSlot)
+  texUnit.io.lodBias := slotTexLodBias(execSlot)
+  texUnit.io.minLevel := slotTexMinLevel(execSlot)
+
+  private def bankedKernarg(slot: UInt): UInt = Mux(
+    slot === 1.U && io.kernargBankStride.orR,
+    io.kernargBase + io.kernargBankStride,
+    io.kernargBase)
+
+  private val sIdle :: sWrite :: sLaunch :: sRun :: sRead :: sEmit :: Nil =
+    Enum(6)
+  private val state = RegInit(sIdle)
+
+  private val execCount = RegInit(0.U(countWidth.W))
   private val index = RegInit(0.U(countWidth.W))
-  // Vec indexing only ever touches [0, batchCap); narrowing avoids an over-wide
-  // dynamic index.  `count` reaches `batchCap` for the fullness comparison, so
-  // it keeps the wider width and is narrowed when used to index a Vec.
-  private val countIdx = count(countWidth - 2, 0)
+  // Vec indexing only ever touches [0, batchCap); narrowing avoids an
+  // over-wide dynamic index.  Counts reach `batchCap` for the fullness
+  // comparison, so they keep the wider width and are narrowed when used to
+  // index a Vec.
   private val indexIdx = index(countWidth - 2, 0)
   // One bridge transaction at a time keeps the staging FSM simple; the bridge
   // itself supports more outstanding transactions for other clients.
@@ -183,30 +227,155 @@ class KernelFragStage(
   // 0=colour, 1=depth, 2=output-valid.
   private val field = RegInit(0.U(4.W))
 
-  private val curShaderPc = Reg(UInt(32.W))
-  private val curKernarg = Reg(UInt(32.W))
-  private val bankSelect = RegInit(false.B)
-  private val selectedKernarg = Mux(
-    bankSelect && io.kernargBankStride.orR,
-    io.kernargBase + io.kernargBankStride,
-    io.kernargBase)
+  // ---------------------------------------------------------------------
+  // Producer: accumulate the next draw's fragments into slot prodSlot.
+  // ---------------------------------------------------------------------
+  private val prodCount = slotCount(prodSlot)
+  private val prodCountIdx = prodCount(countWidth - 2, 0)
+  // Count including a fragment accepted this cycle (commit-by-fullness takes
+  // the batch with the firing fragment; a flush commit has no fire).
+  private val prodCountNext = prodCount + Mux(io.fragIn.fire, 1.U, 0.U)
 
-  io.fragIn.ready := state === sAccum && count < batchCap.U
-  io.drained := state === sAccum && count === 0.U
+  private val pendingValid = RegInit(false.B)
+  private val pendingSlot = Reg(UInt(1.W))
+  private val pendingCarries = RegInit(false.B)
+  private val pendingEntryIdx = Reg(UInt(1.W))
 
-  io.out.valid := state === sEmit && outValid(indexIdx)
-  io.out.bits.x := fragX(indexIdx)
-  io.out.bits.y := fragY(indexIdx)
-  io.out.bits.depth := outDepth(indexIdx)
-  io.out.bits.e0 := fragE0(indexIdx)
-  io.out.bits.e1 := fragE1(indexIdx)
-  io.out.bits.e2 := fragE2(indexIdx)
-  io.out.bits.covered := fragCovered(indexIdx)
-  io.out.bits.color.r := outWords(indexIdx)(31, 24)
-  io.out.bits.color.g := outWords(indexIdx)(23, 16)
-  io.out.bits.color.b := outWords(indexIdx)(15, 8)
-  io.out.bits.alpha := outWords(indexIdx)(7, 0)
+  io.fragIn.ready := !pendingValid && prodCount < batchCap.U
+  io.drained := state === sIdle && !pendingValid
 
+  // ---------------------------------------------------------------------
+  // Draw-boundary commit and the ordered retire queue.
+  //
+  // Every rising `flush` pushes exactly one retire entry (depth two: at most
+  // two draws can be outstanding because the draw-context FIFO above also
+  // holds two).  An entry is "done" when the draw produced no batch (empty
+  // entry, done at enqueue) or when the batch bound to it drains.  Batches
+  // bind to entries when committed at a flush (accumulated fragments = the
+  // draw's last batch) or when a later empty-accumulation flush promotes the
+  // most recent unbound batch.
+  // ---------------------------------------------------------------------
+  private val qDone = RegInit(VecInit(true.B, true.B))
+  private val qHead = RegInit(0.U(1.W))
+  private val qCount = RegInit(0.U(2.W))
+  private val qTail = qHead ^ qCount(0)
+  private val execCarries = RegInit(false.B)
+  private val execEntryIdx = Reg(UInt(1.W))
+
+  private val prevFlush = RegInit(true.B)
+  prevFlush := io.flush
+  private val flushRise = io.flush && !prevFlush
+
+  private val prodNonEmpty = prodCount =/= 0.U
+  private val commitFull = io.fragIn.fire && prodCount === (batchCap - 1).U
+  private val commitFlush = flushRise && prodNonEmpty
+  private val commitAny = (commitFull || commitFlush) && !pendingValid
+
+  when(flushRise) { assert(qCount =/= 2.U, "retire queue overflow") }
+
+  // Producer accumulation (data always; count frozen on a take-commit).
+  when(io.fragIn.fire) {
+    fragX(prodSlot)(prodCountIdx) := io.fragIn.bits.x
+    fragY(prodSlot)(prodCountIdx) := io.fragIn.bits.y
+    fragDepth(prodSlot)(prodCountIdx) := io.fragIn.bits.depth
+    packedColor(prodSlot)(prodCountIdx) := Cat(
+      io.fragIn.bits.color.r,
+      io.fragIn.bits.color.g,
+      io.fragIn.bits.color.b,
+      0xff.U(8.W))
+    fragU(prodSlot)(prodCountIdx) := io.fragUv.u
+    fragV(prodSlot)(prodCountIdx) := io.fragUv.v
+    fragCovered(prodSlot)(prodCountIdx) := io.fragIn.bits.covered
+    fragE0(prodSlot)(prodCountIdx) := io.fragIn.bits.e0
+    fragE1(prodSlot)(prodCountIdx) := io.fragIn.bits.e1
+    fragE2(prodSlot)(prodCountIdx) := io.fragIn.bits.e2
+    when(prodCount === 0.U) {
+      slotShaderPc(prodSlot) := io.shaderPc
+      slotKernarg(prodSlot) := bankedKernarg(prodSlot)
+      slotTexBase(prodSlot) := io.texBase
+      slotTexWidth(prodSlot) := io.texWidth
+      slotTexHeight(prodSlot) := io.texHeight
+      slotTexWrapClamp(prodSlot) := io.texWrapClamp
+      slotTexMaxLevel(prodSlot) := io.texMaxLevel
+      slotTexLodBias(prodSlot) := io.texLodBias
+      slotTexMinLevel(prodSlot) := io.texMinLevel
+    }.otherwise {
+      assert(
+        io.shaderPc === slotShaderPc(prodSlot) &&
+          bankedKernarg(prodSlot) === slotKernarg(prodSlot),
+        "a fragment batch must not mix draw descriptors")
+    }
+    when(!(commitAny && state === sIdle)) {
+      slotCount(prodSlot) := prodCountNext
+    }
+  }
+
+  private def pushEntry(done: Bool): Unit = {
+    qDone(qTail) := done
+  }
+
+  when(commitAny) {
+    when(state === sIdle) {
+      // Take immediately: the consumer is idle, so the committed batch
+      // starts streaming straight away.
+      execSlot := prodSlot
+      execCount := prodCountNext
+      execCarries := commitFlush
+      when(commitFlush) { execEntryIdx := qTail }
+      slotCount(prodSlot) := 0.U
+      prodSlot := ~prodSlot
+      index := 0.U
+      field := 0.U
+      wordPending := false.B
+      state := sWrite
+    }.otherwise {
+      // Consumer busy: park the batch; the drain swaps it in.
+      pendingValid := true.B
+      pendingSlot := prodSlot
+      pendingCarries := commitFlush
+      when(commitFlush) { pendingEntryIdx := qTail }
+    }
+  }
+  when(commitAny && commitFlush) { pushEntry(false.B) }
+
+  // Empty-accumulation flush: the flushing draw produced no new batch.  Bind
+  // the most recent unbound batch (pending, else executing) as the draw's
+  // last; otherwise the draw retires as an empty entry.
+  private val bindPending = pendingValid && !pendingCarries
+  private val bindExec = !pendingValid && state =/= sIdle && !execCarries
+  when(flushRise && !commitFlush) {
+    when(prodNonEmpty && pendingValid) {
+      assert(false.B, "producer must be stalled while a batch is parked")
+    }
+    when(bindPending) {
+      pendingCarries := true.B
+      pendingEntryIdx := qTail
+      pushEntry(false.B)
+    }.elsewhen(bindExec) {
+      execCarries := true.B
+      execEntryIdx := qTail
+      pushEntry(false.B)
+    }.otherwise {
+      pushEntry(true.B)
+    }
+  }
+
+  // Retire handshake: present completed entries in order.
+  io.drawRetire.valid := qCount =/= 0.U && qDone(qHead)
+  io.drawRetire.bits := true.B
+  when(io.drawRetire.fire) {
+    qHead := ~qHead
+    qCount := qCount - 1.U
+  }
+  // A flush pushes exactly one entry; composed with a same-cycle retire.
+  when(flushRise) {
+    qCount := Mux(io.drawRetire.fire, qCount, qCount + 1.U)
+  }
+
+  // ---------------------------------------------------------------------
+  // Consumer FSM: stream the executing slot's batch into its kernarg bank,
+  // launch, wait, read back, emit — then swap in the parked batch.
+  // ---------------------------------------------------------------------
   wordValid := (state === sWrite || state === sRead) && !wordPending
   wordBits.write := state === sWrite
   private val writeSlice = MuxLookup(field, 8.U)(Seq(
@@ -214,68 +383,40 @@ class KernelFragStage(
     4.U -> 4.U, 5.U -> 5.U, 6.U -> 7.U))
   wordBits.addr := Mux(
     state === sWrite,
-    curKernarg + writeSlice * arrayStride.U + (index << 2),
-    curKernarg + ((6.U + field) * arrayStride.U) + (index << 2)
+    slotKernarg(execSlot) + writeSlice * arrayStride.U + (index << 2),
+    slotKernarg(execSlot) + ((6.U + field) * arrayStride.U) + (index << 2)
   )
-  wordBits.data := MuxLookup(field, fragCovered(indexIdx).asUInt)(
+  wordBits.data := MuxLookup(field, fragCovered(execSlot)(indexIdx).asUInt)(
     Seq(
-      0.U -> fragX(indexIdx).pad(32).asUInt,
-      1.U -> fragY(indexIdx).pad(32).asUInt,
-      2.U -> fragDepth(indexIdx).asUInt,
-      3.U -> packedColor(indexIdx),
-      4.U -> fragU(indexIdx),
-      5.U -> fragV(indexIdx),
-      6.U -> fragDepth(indexIdx).asUInt
+      0.U -> fragX(execSlot)(indexIdx).pad(32).asUInt,
+      1.U -> fragY(execSlot)(indexIdx).pad(32).asUInt,
+      2.U -> fragDepth(execSlot)(indexIdx).asUInt,
+      3.U -> packedColor(execSlot)(indexIdx),
+      4.U -> fragU(execSlot)(indexIdx),
+      5.U -> fragV(execSlot)(indexIdx),
+      6.U -> fragDepth(execSlot)(indexIdx).asUInt
     )
   )
 
   kernel.io.launch.valid := state === sLaunch
 
+  io.out.valid := state === sEmit && outValid(indexIdx)
+  io.out.bits.x := fragX(execSlot)(indexIdx)
+  io.out.bits.y := fragY(execSlot)(indexIdx)
+  io.out.bits.depth := outDepth(indexIdx)
+  io.out.bits.e0 := fragE0(execSlot)(indexIdx)
+  io.out.bits.e1 := fragE1(execSlot)(indexIdx)
+  io.out.bits.e2 := fragE2(execSlot)(indexIdx)
+  io.out.bits.covered := fragCovered(execSlot)(indexIdx)
+  io.out.bits.color.r := outWords(indexIdx)(31, 24)
+  io.out.bits.color.g := outWords(indexIdx)(23, 16)
+  io.out.bits.color.b := outWords(indexIdx)(15, 8)
+  io.out.bits.alpha := outWords(indexIdx)(7, 0)
+
   switch(state) {
-    is(sAccum) {
-      when(io.fragIn.fire) {
-        fragX(countIdx) := io.fragIn.bits.x
-        fragY(countIdx) := io.fragIn.bits.y
-        fragDepth(countIdx) := io.fragIn.bits.depth
-        packedColor(countIdx) := Cat(
-          io.fragIn.bits.color.r,
-          io.fragIn.bits.color.g,
-          io.fragIn.bits.color.b,
-          0xff.U(8.W))
-        fragU(countIdx) := io.fragUv.u
-        fragV(countIdx) := io.fragUv.v
-        fragCovered(countIdx) := io.fragIn.bits.covered
-        fragE0(countIdx) := io.fragIn.bits.e0
-        fragE1(countIdx) := io.fragIn.bits.e1
-        fragE2(countIdx) := io.fragIn.bits.e2
-        when(count === 0.U) {
-          curShaderPc := io.shaderPc
-          curKernarg := selectedKernarg
-          curTexBase := io.texBase
-          curTexWidth := io.texWidth
-          curTexHeight := io.texHeight
-          curTexWrapClamp := io.texWrapClamp
-          curTexMaxLevel := io.texMaxLevel
-          curTexLodBias := io.texLodBias
-          curTexMinLevel := io.texMinLevel
-        }.otherwise {
-          assert(
-            io.shaderPc === curShaderPc && selectedKernarg === curKernarg,
-            "a fragment batch must not mix draw descriptors")
-        }
-        count := count + 1.U
-        when(count === (batchCap - 1).U) {
-          index := 0.U
-          field := 0.U
-          wordPending := false.B
-          state := sWrite
-        }
-      }.elsewhen(io.flush && count =/= 0.U) {
-        index := 0.U
-        field := 0.U
-        wordPending := false.B
-        state := sWrite
-      }
+    is(sIdle) {
+      // Nothing executing; the producer fills prodSlot (equal to execSlot
+      // until the first commit flips it).
     }
     is(sWrite) {
       when(!wordPending && bridge.io.in.fire) { wordPending := true.B }
@@ -285,7 +426,7 @@ class KernelFragStage(
           field := field + 1.U
         }.otherwise {
           field := 0.U
-          when(index === count - 1.U) {
+          when(index === execCount - 1.U) {
             index := 0.U
             state := sLaunch
           }.otherwise {
@@ -295,9 +436,9 @@ class KernelFragStage(
       }
     }
     is(sLaunch) {
-      kernel.io.launch.kernelPc := curShaderPc
-      kernel.io.launch.kernargAddress := curKernarg
-      kernel.io.launch.localX := count
+      kernel.io.launch.kernelPc := slotShaderPc(execSlot)
+      kernel.io.launch.kernargAddress := slotKernarg(execSlot)
+      kernel.io.launch.localX := execCount
       when(kernel.io.launch.ready) { state := sRun }
     }
     is(sRun) {
@@ -321,9 +462,9 @@ class KernelFragStage(
           // Helper lanes execute the shader and may participate in quad
           // derivatives, but no shader store can promote one into an OM write.
           outValid(indexIdx) := bridge.io.out.bits.data =/= 0.U &&
-            fragCovered(indexIdx)
+            fragCovered(execSlot)(indexIdx)
           field := 0.U
-          when(index === count - 1.U) {
+          when(index === execCount - 1.U) {
             index := 0.U
             state := sEmit
           }.otherwise {
@@ -334,32 +475,38 @@ class KernelFragStage(
     }
     is(sEmit) {
       when(!outValid(indexIdx) || io.out.fire) {
-        when(index === count - 1.U) {
-          count := 0.U
-          index := 0.U
-          when(io.kernargBankStride.orR) { bankSelect := ~bankSelect }
-          state := sAccum
+        when(index === execCount - 1.U) {
+          when(execCarries) { qDone(execEntryIdx) := true.B }
+          execCarries := false.B
+          slotCount(execSlot) := 0.U
+          when(pendingValid) {
+            execSlot := pendingSlot
+            execCount := slotCount(pendingSlot)
+            execCarries := pendingCarries
+            execEntryIdx := pendingEntryIdx
+            slotCount(pendingSlot) := 0.U
+            pendingValid := false.B
+            prodSlot := execSlot
+            index := 0.U
+            field := 0.U
+            wordPending := false.B
+            state := sWrite
+          }.otherwise {
+            state := sIdle
+          }
         }.otherwise {
           index := index + 1.U
         }
       }
     }
   }
-  private val prevFlush = RegInit(true.B)
-  prevFlush := io.flush
-  private val flushRise = io.flush && !prevFlush
-  private val finalPending = RegInit(false.B)
-  when(flushRise) {
-    assert(!finalPending, "a draw boundary arrived before the previous draw retired")
-    finalPending := true.B
-  }
-  io.drawRetired := finalPending && state === sAccum && count === 0.U
-  when(io.drawRetired) { finalPending := false.B }
 
   // The staging FSM (kernarg write/read phases) and the sampler never have
   // requests in flight at the same time (staging completes before the kernel
   // launches; sampling happens while the kernel runs), so a phase-selected
-  // mux over the single line-memory port is race-free.
+  // mux over the single line-memory port is race-free.  The producer never
+  // touches the word port: its fragments stage into registers and stream
+  // through sWrite only after the slot is swapped in.
   private val stagingActive = state === sWrite || state === sRead
   io.wordMemReq.valid := Mux(stagingActive, bridge.io.memoryRequest.valid,
     texBridge.io.memoryRequest.valid)

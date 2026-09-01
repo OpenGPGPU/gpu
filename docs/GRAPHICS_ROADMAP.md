@@ -64,9 +64,10 @@ Current limitations that still drive the remaining roadmap:
    through the bounded output-valid ABI.
 2. Rasterization and physical texture taps are serialized; wider issue/fetch
    is a performance iteration after functional M5 completion.
-3. Per-draw overlap/double buffering remains open before the host/display path
-   is production-ready; the core-backed path now gates the next draw until the
-   previous batched kernel output is drained into the OM.
+3. Per-draw overlap landed (2026-09-01): draw N+1's rasterization and
+   kernarg staging accumulate in a second slot while batch N's kernel
+   executes on the SIMT lanes. Still open: a completion/fence contract that
+   already implies the final shared-L2 store drain (M6 work).
 
 ---
 
@@ -511,8 +512,10 @@ Status (implementation):
   command-buffer record cannot overwrite the shader descriptor or kernarg
   selection while the prior draw's batched kernel output is still reaching the
   OM. Full overlap/double buffering is still a throughput optimization.
-- Remaining: explicit double buffering and completion contracts that include
-  the final shared-L2 store drain.
+  (Superseded 2026-09-01: admission is now gated only on raster-idle and
+  producer-slot availability — see the per-draw overlap entry above.)
+- Remaining: completion contracts that include the final shared-L2 store
+  drain (the overlap/double-buffering half is complete, 2026-09-01).
 
 Resolved — off-chip memory arbitration via `SharedL2Cache` (2026-08-26).
 `RenderCoreL2` (`src/main/scala/opengpu/graphics/RenderCoreL2.scala`) composes
@@ -882,6 +885,33 @@ Status (virtual display and DRM handoff, 2026-08-29):
   boundaries. This removes the scratch overwrite hazard required before M5
   can overlap rasterization of batch N+1 with SIMT execution of batch N; zero
   retains legacy single-bank execution.
+- **Per-draw overlap / double buffering complete (2026-09-01).** The M5
+  throughput milestone: `KernelFragStage` now keeps two ping-pong staging
+  slots. While the consumer FSM streams, launches, runs, reads back and emits
+  one slot's batch, the producer keeps accumulating the next draw's fragments
+  into the other slot, so rasterization of draw N+1 overlaps SIMT execution
+  of batch N instead of the whole pipeline serializing behind it. Batches
+  never mix draws: a rising `flush` (raster-idle draw boundary) or a full
+  batch commits the accumulated slot, and a committed slot backpressures the
+  producer until the consumer drains and swaps. Each slot snapshots its
+  draw's shader descriptor and sampler state at its first fragment and
+  executes against the kernarg bank selected by slot parity, so consecutive
+  batches alternate banks (the dual-bank ABI above; overlap with a zero
+  stride would let the second kernel hit the first kernel's stale L1 lines
+  for the same input addresses, which is exactly the hazard the ABI removes).
+  `drawRetired` became `drawRetire`, an ordered valid/ready handshake that
+  presents one completion event per draw boundary (including empty draws,
+  which queue an immediately-done event) and holds it until the owner pops
+  the matching draw context once the OM is idle — so back-to-back retire
+  events can no longer be lost. `RenderPipeline`'s fragCore branch admits the
+  next command-buffer record as soon as the rasterizer is idle and the
+  producer slot can take fragments; per-draw state is carried by the context
+  FIFO and the slot snapshots rather than by pipeline stalls. Verified by a
+  new `KernelFragStageSpec` overlap regression (draw 2 accepted and committed
+  while batch 1 is in flight; outputs and retire events in submission order;
+  alternating banks observed in memory) plus the full graphics suite and the
+  two-draw core-backed `RenderCoreSpec` regression. Still open: a
+  completion/fence that already implies the final shared-L2 store drain.
 - **Draw-token/context FIFO complete (2026-09-01).** Each admitted draw now
   pushes one `DrawContextFifo` entry (`DrawContextFifo.scala`) binding its
   shader descriptor, sampler configuration and OM render-target state.
@@ -900,8 +930,8 @@ Status (virtual display and DRM handoff, 2026-08-29):
   packed mip levels before exact Q0.8 RGB mixing. `TexSampleUnit` derives an
   8-bit `log2` fractional weight from the quad gradient; scalar samples retain
   their exact integer-level behaviour. Hardware-side
-  per-draw overlap/double buffering remains the separate M5 throughput
-  milestone.
+  per-draw overlap/double buffering is complete (see the per-draw overlap
+  entry above).
 - **Source-over output blending complete (2026-09-01).** `OutputMerger`
   serially reads a passing fragment's destination colour and applies exact
   rounded RGBA8888 source-over composition. Draw record word 32 bit 16 enables
