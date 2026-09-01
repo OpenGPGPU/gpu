@@ -205,18 +205,33 @@ class RenderPipeline(
   textured.io.fragIn.bits := shader.io.pixel.bits
   textured.io.out.ready := om.io.fragIn.ready
 
-  // Output-merge registers + memory port.
-  om.io.colorBase := drawState.colorBase
-  om.io.depthBase := drawState.depthBase
-  om.io.stride := drawState.stride
-  om.io.depthTestEnable := drawState.depthTestEnable
-  om.io.depthFunc := drawState.depthFunc
-  om.io.depthWriteEnable := drawState.depthWriteEnable
   om.io.blendEnable := false.B
   io.mem <> om.io.mem
 
   if (fragCore) {
     val kernelFrag = Module(new KernelFragStage(gpuConfig, config))
+    val ctxFifo = Module(new DrawContextFifo(2))
+    ctxFifo.io.enq.valid := io.draw.fire
+    ctxFifo.io.enq.bits.shaderPc := io.draw.bits.shaderPc
+    ctxFifo.io.enq.bits.kernargBase := io.draw.bits.shaderKernarg
+    ctxFifo.io.enq.bits.kernargBankStride := io.draw.bits.kernargBankStride
+    ctxFifo.io.enq.bits.texBase := io.texBase
+    ctxFifo.io.enq.bits.texWidth := io.texWidth
+    ctxFifo.io.enq.bits.texHeight := io.texHeight
+    ctxFifo.io.enq.bits.texWrapClamp := Mux(io.draw.bits.stateOverride, io.draw.bits.texWrapClamp, io.texWrapClamp)
+    ctxFifo.io.enq.bits.texMaxLevel := Mux(io.draw.bits.stateOverride, io.draw.bits.texMaxLevel, io.texMaxLevel)
+    ctxFifo.io.enq.bits.texLodBias := Mux(io.draw.bits.stateOverride, io.draw.bits.texLodBias, 0.S)
+    ctxFifo.io.enq.bits.texMinLevel := Mux(io.draw.bits.stateOverride, io.draw.bits.texMinLevel, 0.U)
+    ctxFifo.io.enq.bits.colorBase := io.colorBase
+    ctxFifo.io.enq.bits.depthBase := io.depthBase
+    ctxFifo.io.enq.bits.stride := io.stride
+    ctxFifo.io.enq.bits.depthTestEnable := Mux(io.draw.bits.stateOverride, io.draw.bits.depthTestEnable, io.depthTestEnable)
+    ctxFifo.io.enq.bits.depthFunc := Mux(io.draw.bits.stateOverride, io.draw.bits.depthFunc, io.depthFunc)
+    ctxFifo.io.enq.bits.depthWriteEnable := Mux(io.draw.bits.stateOverride, io.draw.bits.depthWriteEnable, io.depthWriteEnable)
+    val pendingRetire = RegInit(false.B)
+    when(kernelFrag.io.drawRetired && ctxFifo.io.headValid) { pendingRetire := true.B }
+    ctxFifo.io.retire := pendingRetire && om.io.fragIn.ready
+    when(ctxFifo.io.retire) { pendingRetire := false.B }
     // Do not accept the next command-buffer record until the previous draw's
     // batched kernel output has reached the OM.  RasterShader becomes idle as
     // soon as it emits its last pixel, but the core-backed sampler can still
@@ -228,21 +243,21 @@ class RenderPipeline(
     // OM can receive the next draw while its last depth RMW is still active.
     io.draw.ready := (!drawHoldValid || shader.io.draw.fire) &&
       shader.io.draw.ready && kernelFrag.io.drained &&
-      shader.io.done && om.io.fragIn.ready
+      shader.io.done && om.io.fragIn.ready && ctxFifo.io.enq.ready
     kernelFrag.io.fragIn.valid := shader.io.pixel.valid
     kernelFrag.io.fragIn.bits := shader.io.pixel.bits
     kernelFrag.io.fragUv := textured.io.interpolatedUv
     shader.io.pixel.ready := kernelFrag.io.fragIn.ready
-    kernelFrag.io.shaderPc := drawHold.shaderPc
-    kernelFrag.io.kernargBase := drawHold.shaderKernarg
-    kernelFrag.io.kernargBankStride := drawHold.kernargBankStride
-    kernelFrag.io.texBase := drawState.texBase
-    kernelFrag.io.texWidth := drawState.texWidth
-    kernelFrag.io.texHeight := drawState.texHeight
-    kernelFrag.io.texWrapClamp := drawState.texWrapClamp
-    kernelFrag.io.texMaxLevel := drawState.texMaxLevel
-    kernelFrag.io.texLodBias := drawState.texLodBias
-    kernelFrag.io.texMinLevel := drawState.texMinLevel
+    kernelFrag.io.shaderPc := ctxFifo.io.tail.shaderPc
+    kernelFrag.io.kernargBase := ctxFifo.io.tail.kernargBase
+    kernelFrag.io.kernargBankStride := ctxFifo.io.tail.kernargBankStride
+    kernelFrag.io.texBase := ctxFifo.io.tail.texBase
+    kernelFrag.io.texWidth := ctxFifo.io.tail.texWidth
+    kernelFrag.io.texHeight := ctxFifo.io.tail.texHeight
+    kernelFrag.io.texWrapClamp := ctxFifo.io.tail.texWrapClamp
+    kernelFrag.io.texMaxLevel := ctxFifo.io.tail.texMaxLevel
+    kernelFrag.io.texLodBias := ctxFifo.io.tail.texLodBias
+    kernelFrag.io.texMinLevel := ctxFifo.io.tail.texMinLevel
     // The batch must be flushed exactly at the draw boundary: once the
     // rasterizer has gone idle (all pixels of the current draw emitted), any
     // accumulated-but-unlaunched fragments are launched as one kernel.  The
@@ -271,12 +286,25 @@ class RenderPipeline(
     io.kernelGlobalAtomicRequest <> kernelFrag.io.globalAtomicRequest
     kernelFrag.io.globalAtomicResponse <> io.kernelGlobalAtomicResponse
 
+    om.io.colorBase := ctxFifo.io.head.colorBase
+    om.io.depthBase := ctxFifo.io.head.depthBase
+    om.io.stride := ctxFifo.io.head.stride
+    om.io.depthTestEnable := ctxFifo.io.head.depthTestEnable
+    om.io.depthFunc := ctxFifo.io.head.depthFunc
+    om.io.depthWriteEnable := ctxFifo.io.head.depthWriteEnable
+
     // Done only once every rasterized fragment has been flushed, shaded, and
     // handed to the OM: the batch must be empty (drained) so an in-flight batch
     // is never mistaken for an idle pipeline during a draw boundary.
     io.done := !drawHoldValid && shader.io.done && kernelFrag.io.drained &&
-      om.io.fragIn.ready
+      om.io.fragIn.ready && !ctxFifo.io.headValid && !pendingRetire
   } else {
+    om.io.colorBase := drawState.colorBase
+    om.io.depthBase := drawState.depthBase
+    om.io.stride := drawState.stride
+    om.io.depthTestEnable := drawState.depthTestEnable
+    om.io.depthFunc := drawState.depthFunc
+    om.io.depthWriteEnable := drawState.depthWriteEnable
     // As in the core-backed path, wait for the final fragment's serialized
     // depth/color RMW to retire before accepting the next draw.
     io.draw.ready := (!drawHoldValid || shader.io.draw.fire) &&

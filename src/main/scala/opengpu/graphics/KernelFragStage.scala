@@ -49,9 +49,10 @@ import opengpu.core.memory.{
   * A batch is launched when it fills or when `flush` is asserted with a
   * non-empty batch. `flush` marks the rasterizer-idle boundary between draws;
   * a following draw's fragments cannot arrive without an intervening flush,
-  * so a batch never mixes draws. The shader descriptor is registered at the
-  * first fragment of a batch so a following draw cannot change the descriptor
-  * of an in-flight batch.
+  * so a batch never mixes draws. The shader descriptor and sampler state are
+  * registered at the first fragment of a batch so a following draw cannot
+  * change an in-flight batch. `drawRetired` pulses once for every rising
+  * `flush`, including an empty draw, after its output has drained.
   *
   * The shader program, kernarg, and output all sit in the line-based memory
   * behind the two memory ports: `memReq/memResp` serve the compute unit and
@@ -85,6 +86,7 @@ class KernelFragStage(
     val texMinLevel = Input(UInt(4.W))
     val flush = Input(Bool())
     val drained = Output(Bool())
+    val drawRetired = Output(Bool())
     val memReq = Decoupled(new ComputeMemoryRequest(config))
     val memResp = Flipped(Decoupled(new ComputeMemoryResponse()))
     val wordMemReq = Decoupled(new ComputeMemoryRequest(config))
@@ -104,13 +106,20 @@ class KernelFragStage(
   private val texBridge = Module(new OmWordToLinePort(config))
   private val texUnit = Module(new TexSampleUnit(config, gfxConfig))
 
-  texUnit.io.texBase := io.texBase
-  texUnit.io.texWidth := io.texWidth
-  texUnit.io.texHeight := io.texHeight
-  texUnit.io.wrapClamp := io.texWrapClamp
-  texUnit.io.texMaxLevel := io.texMaxLevel
-  texUnit.io.lodBias := io.texLodBias
-  texUnit.io.minLevel := io.texMinLevel
+  private val curTexBase = Reg(UInt(32.W))
+  private val curTexWidth = Reg(UInt(14.W))
+  private val curTexHeight = Reg(UInt(14.W))
+  private val curTexWrapClamp = Reg(Bool())
+  private val curTexMaxLevel = Reg(UInt(4.W))
+  private val curTexLodBias = Reg(SInt(5.W))
+  private val curTexMinLevel = Reg(UInt(4.W))
+  texUnit.io.texBase := curTexBase
+  texUnit.io.texWidth := curTexWidth
+  texUnit.io.texHeight := curTexHeight
+  texUnit.io.wrapClamp := curTexWrapClamp
+  texUnit.io.texMaxLevel := curTexMaxLevel
+  texUnit.io.lodBias := curTexLodBias
+  texUnit.io.minLevel := curTexMinLevel
   kernel.io.texSample <> texUnit.io.in
   texUnit.io.commit <> kernel.io.texWriteback
   kernel.io.vectorTexSample <> texUnit.io.vectorIn
@@ -241,6 +250,13 @@ class KernelFragStage(
         when(count === 0.U) {
           curShaderPc := io.shaderPc
           curKernarg := selectedKernarg
+          curTexBase := io.texBase
+          curTexWidth := io.texWidth
+          curTexHeight := io.texHeight
+          curTexWrapClamp := io.texWrapClamp
+          curTexMaxLevel := io.texMaxLevel
+          curTexLodBias := io.texLodBias
+          curTexMinLevel := io.texMinLevel
         }.otherwise {
           assert(
             io.shaderPc === curShaderPc && selectedKernarg === curKernarg,
@@ -328,6 +344,17 @@ class KernelFragStage(
       }
     }
   }
+  private val prevFlush = RegInit(true.B)
+  prevFlush := io.flush
+  private val flushRise = io.flush && !prevFlush
+  private val finalPending = RegInit(false.B)
+  when(flushRise) {
+    assert(!finalPending, "a draw boundary arrived before the previous draw retired")
+    finalPending := true.B
+  }
+  io.drawRetired := finalPending && state === sAccum && count === 0.U
+  when(io.drawRetired) { finalPending := false.B }
+
   // The staging FSM (kernarg write/read phases) and the sampler never have
   // requests in flight at the same time (staging completes before the kernel
   // launches; sampling happens while the kernel runs), so a phase-selected

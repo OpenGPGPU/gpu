@@ -880,6 +880,19 @@ Status (virtual display and DRM handoff, 2026-08-29):
   boundaries. This removes the scratch overwrite hazard required before M5
   can overlap rasterization of batch N+1 with SIMT execution of batch N; zero
   retains legacy single-bank execution.
+- **Draw-token/context FIFO complete (2026-09-01).** Each admitted draw now
+  pushes one `DrawContextFifo` entry (`DrawContextFifo.scala`) binding its
+  shader descriptor, sampler configuration and OM render-target state.
+  `KernelFragStage` snapshots the descriptor *and* the sampler configuration
+  per batch and pulses a new `drawRetired` output exactly once per draw
+  boundary (including empty draws) when the ended draw's last fragment has
+  been emitted; `RenderPipeline`'s fragCore branch feeds the OM from the FIFO
+  head and pops it only once the OM is idle after that pulse, so an in-flight
+  RMW can never be redirected to the next draw's render target.  Draw
+  admission is still fully serialized (no overlap yet); this is the tracked
+  state infrastructure the M5 overlap step builds on, verified by
+  `DrawContextFifoSpec`, a `drawRetired` pulse spec, and a two-draw
+  core-backed end-to-end regression in `RenderCoreSpec`.
 - Next: optional trilinear blending. Hardware-side
   per-draw overlap/double buffering remains the separate M5 throughput
   milestone.

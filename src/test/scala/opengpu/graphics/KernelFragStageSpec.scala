@@ -751,4 +751,46 @@ class KernelFragStageSpec extends AnyFlatSpec {
         s"per-lane UV/depth result mismatch: expected=$expectedWithDepth got=$emitted")
     }
   }
+
+  it should "pulse drawRetired once per draw boundary, including empty draws" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelFragStage(config)) { dut =>
+      val mem = new MemModel
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.shaderPc.poke(0x1000.U)
+      dut.io.kernargBase.poke(0x8000.U)
+      dut.io.kernargBankStride.poke(0.U)
+      mem.putWord(0x1000L, 0, lw(10, 1, 96))
+      mem.putWord(0x1000L, 1, sw(10, 1, 192))
+      mem.putWord(0x1000L, 2, cease)
+      dut.clock.step(2)
+
+      // `flush` is a level: only its rising edge ends a draw.  An empty draw
+      // must still release one context token.
+      dut.io.flush.poke(true.B)
+      dut.clock.step()
+      dut.io.drawRetired.expect(true.B)
+      dut.clock.step()
+      dut.io.drawRetired.expect(false.B)
+      dut.io.flush.poke(false.B)
+      dut.clock.step()
+
+      dut.io.fragIn.bits.x.poke(1.S)
+      dut.io.fragIn.bits.y.poke(2.S)
+      dut.io.fragIn.bits.depth.poke(0x20.S)
+      dut.io.fragIn.bits.color.r.poke(0xab.U)
+      dut.io.fragIn.bits.color.g.poke(0xcd.U)
+      dut.io.fragIn.bits.color.b.poke(0xef.U)
+      dut.io.fragIn.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.fragIn.valid.poke(false.B)
+      dut.io.flush.poke(true.B)
+      assert(pump(dut, mem, () => dut.io.drawRetired.peek().litToBoolean),
+        "flushed draw did not retire")
+      dut.io.drained.expect(true.B)
+      dut.clock.step(4)
+      dut.io.drawRetired.expect(false.B)
+    }
+  }
 }
