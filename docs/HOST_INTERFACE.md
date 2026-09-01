@@ -143,6 +143,11 @@ configurable draw FIFO (`GraphicsConfig.drawFifoDepth`, default 8), while
 preserving submission order and backpressuring memory at capacity. The 32-word
 layout is fixed by the RTL:
 
+When a FIFO entry is accepted by the render pipeline, the active render-target,
+depth/cull, and texture configuration is snapshotted with that draw. Later host
+or queue configuration changes therefore cannot affect an in-flight draw; a
+future command-record state extension can use the same draw-boundary contract.
+
 | word(s) | field |
 |---|---|
 | 0–11 | v0/v1/v2 clip-space (x,y,z,w), Q16.16 |

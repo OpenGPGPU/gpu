@@ -28,6 +28,23 @@ class SceneTriangle(config: GraphicsConfig) extends Bundle {
   val shaderKernarg = UInt(32.W)
 }
 
+/** Fixed-function and render-target state sampled at a draw boundary. */
+private class DrawRenderState extends Bundle {
+  val colorBase = UInt(32.W)
+  val depthBase = UInt(32.W)
+  val stride = UInt(32.W)
+  val depthTestEnable = Bool()
+  val depthFunc = UInt(3.W)
+  val depthWriteEnable = Bool()
+  val cullMode = UInt(2.W)
+  val texEnable = Bool()
+  val texBase = UInt(32.W)
+  val texWidth = UInt(14.W)
+  val texHeight = UInt(14.W)
+  val texWrapClamp = Bool()
+  val texMaxLevel = UInt(4.W)
+}
+
 /** Top-of-pipeline renderer.
   *
   * Chains GeometryStage (perspective divide + viewport) -> RasterShader
@@ -101,9 +118,23 @@ class RenderPipeline(
   // change geometry, varyings, or the core-shader descriptor mid-render.
   private val drawHold = RegInit(0.U.asTypeOf(new SceneTriangle(config)))
   private val drawHoldValid = RegInit(false.B)
+  private val drawState = RegInit(0.U.asTypeOf(new DrawRenderState))
   when(io.draw.fire) {
     drawHold := io.draw.bits
     drawHoldValid := true.B
+    drawState.colorBase := io.colorBase
+    drawState.depthBase := io.depthBase
+    drawState.stride := io.stride
+    drawState.depthTestEnable := io.depthTestEnable
+    drawState.depthFunc := io.depthFunc
+    drawState.depthWriteEnable := io.depthWriteEnable
+    drawState.cullMode := io.cullMode
+    drawState.texEnable := io.texEnable
+    drawState.texBase := io.texBase
+    drawState.texWidth := io.texWidth
+    drawState.texHeight := io.texHeight
+    drawState.texWrapClamp := io.texWrapClamp
+    drawState.texMaxLevel := io.texMaxLevel
   }
   when(shader.io.draw.fire && !io.draw.fire) {
     drawHoldValid := false.B
@@ -125,7 +156,7 @@ class RenderPipeline(
   shader.io.draw.bits.v2.y := geo.io.out(2).sy(31, 0).asSInt
   shader.io.colors := drawHold.color
   shader.io.depths := drawHold.depth
-  shader.io.cullMode := io.cullMode
+  shader.io.cullMode := drawState.cullMode
   io.draw.ready := !drawHoldValid && shader.io.draw.ready
 
   // Texture sampling configuration + word port (sampler owns its fetches).
@@ -138,11 +169,11 @@ class RenderPipeline(
   textured.io.uv0 := drawHold.uv(0)
   textured.io.uv1 := drawHold.uv(1)
   textured.io.uv2 := drawHold.uv(2)
-  textured.io.texBase := io.texBase
-  textured.io.texWidth := io.texWidth
-  textured.io.texHeight := io.texHeight
-  textured.io.wrapClamp := io.texWrapClamp
-  textured.io.texMaxLevel := io.texMaxLevel
+  textured.io.texBase := drawState.texBase
+  textured.io.texWidth := drawState.texWidth
+  textured.io.texHeight := drawState.texHeight
+  textured.io.wrapClamp := drawState.texWrapClamp
+  textured.io.texMaxLevel := drawState.texMaxLevel
   io.texMem <> textured.io.mem
 
   // Whole-bundle payload + consumer ready live outside the fragCore branches
@@ -151,12 +182,12 @@ class RenderPipeline(
   textured.io.out.ready := om.io.fragIn.ready
 
   // Output-merge registers + memory port.
-  om.io.colorBase := io.colorBase
-  om.io.depthBase := io.depthBase
-  om.io.stride := io.stride
-  om.io.depthTestEnable := io.depthTestEnable
-  om.io.depthFunc := io.depthFunc
-  om.io.depthWriteEnable := io.depthWriteEnable
+  om.io.colorBase := drawState.colorBase
+  om.io.depthBase := drawState.depthBase
+  om.io.stride := drawState.stride
+  om.io.depthTestEnable := drawState.depthTestEnable
+  om.io.depthFunc := drawState.depthFunc
+  om.io.depthWriteEnable := drawState.depthWriteEnable
   om.io.blendEnable := false.B
   io.mem <> om.io.mem
 
@@ -180,11 +211,11 @@ class RenderPipeline(
     shader.io.pixel.ready := kernelFrag.io.fragIn.ready
     kernelFrag.io.shaderPc := drawHold.shaderPc
     kernelFrag.io.kernargBase := drawHold.shaderKernarg
-    kernelFrag.io.texBase := io.texBase
-    kernelFrag.io.texWidth := io.texWidth
-    kernelFrag.io.texHeight := io.texHeight
-    kernelFrag.io.texWrapClamp := io.texWrapClamp
-    kernelFrag.io.texMaxLevel := io.texMaxLevel
+    kernelFrag.io.texBase := drawState.texBase
+    kernelFrag.io.texWidth := drawState.texWidth
+    kernelFrag.io.texHeight := drawState.texHeight
+    kernelFrag.io.texWrapClamp := drawState.texWrapClamp
+    kernelFrag.io.texMaxLevel := drawState.texMaxLevel
     // The batch must be flushed exactly at the draw boundary: once the
     // rasterizer has gone idle (all pixels of the current draw emitted), any
     // accumulated-but-unlaunched fragments are launched as one kernel.  The
@@ -229,22 +260,22 @@ class RenderPipeline(
     // free of sampler latency and frees its memory port entirely.
     def packColor(r: UInt, g: UInt, b: UInt): UInt = Cat(r, g, b, 0xff.U(8.W))
 
-    textured.io.fragIn.valid := io.texEnable && shader.io.pixel.valid
+    textured.io.fragIn.valid := drawState.texEnable && shader.io.pixel.valid
 
-    om.io.fragIn.valid := Mux(io.texEnable, textured.io.out.valid,
+    om.io.fragIn.valid := Mux(drawState.texEnable, textured.io.out.valid,
       shader.io.pixel.valid)
-    om.io.fragIn.bits.x := Mux(io.texEnable,
+    om.io.fragIn.bits.x := Mux(drawState.texEnable,
       textured.io.out.bits.x, shader.io.pixel.bits.x)(15, 0).asUInt
-    om.io.fragIn.bits.y := Mux(io.texEnable,
+    om.io.fragIn.bits.y := Mux(drawState.texEnable,
       textured.io.out.bits.y, shader.io.pixel.bits.y)(15, 0).asUInt
-    om.io.fragIn.bits.color := Mux(io.texEnable,
+    om.io.fragIn.bits.color := Mux(drawState.texEnable,
       packColor(textured.io.out.bits.color.r, textured.io.out.bits.color.g,
         textured.io.out.bits.color.b),
       Cat(shader.io.pixel.bits.color.r, shader.io.pixel.bits.color.g,
         shader.io.pixel.bits.color.b, 0xff.U(8.W)))
-    om.io.fragIn.bits.depth := Mux(io.texEnable,
+    om.io.fragIn.bits.depth := Mux(drawState.texEnable,
       textured.io.out.bits.depth, shader.io.pixel.bits.depth)(29, 0).asUInt
-    shader.io.pixel.ready := Mux(io.texEnable, textured.io.fragIn.ready,
+    shader.io.pixel.ready := Mux(drawState.texEnable, textured.io.fragIn.ready,
       om.io.fragIn.ready)
 
     io.kernelMemReq.valid := false.B

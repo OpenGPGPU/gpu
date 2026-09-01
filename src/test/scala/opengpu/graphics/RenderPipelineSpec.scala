@@ -32,6 +32,14 @@ class RenderPipelineSpec extends AnyFlatSpec {
       dut.io.depthFunc.poke(0.U) // less
       dut.io.depthWriteEnable.poke(true.B)
       dut.io.cullMode.poke(0.U)
+      dut.io.texEnable.poke(false.B)
+      dut.io.texBase.poke(0.U)
+      dut.io.texWidth.poke(0.U)
+      dut.io.texHeight.poke(0.U)
+      dut.io.texWrapClamp.poke(false.B)
+      dut.io.texMaxLevel.poke(0.U)
+      dut.io.texMem.req.ready.poke(true.B)
+      dut.io.texMem.resp.valid.poke(false.B)
       dut.io.mem.req.ready.poke(true.B)
       dut.io.mem.resp.valid.poke(false.B)
 
@@ -55,6 +63,22 @@ class RenderPipelineSpec extends AnyFlatSpec {
       }
       dut.clock.step()
       dut.io.draw.valid.poke(false.B)
+
+      // Mutate every externally supplied state field after acceptance.  The
+      // in-flight draw must continue with its boundary snapshot.
+      dut.io.colorBase.poke(0x3000.U)
+      dut.io.depthBase.poke(0x4000.U)
+      dut.io.stride.poke((stride * 2).U)
+      dut.io.depthTestEnable.poke(false.B)
+      dut.io.depthFunc.poke(3.U)
+      dut.io.depthWriteEnable.poke(false.B)
+      dut.io.cullMode.poke(1.U)
+      dut.io.texEnable.poke(true.B)
+      dut.io.texBase.poke(0x5000.U)
+      dut.io.texWidth.poke(1.U)
+      dut.io.texHeight.poke(1.U)
+      dut.io.texWrapClamp.poke(true.B)
+      dut.io.texMaxLevel.poke(2.U)
 
       // Drain: service the OM memory port (1-cycle read latency) until done.
       var lastReadValid = false
