@@ -15,8 +15,6 @@ Compile / scalacOptions ++= Seq("-language:reflectiveCalls")
 
 Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-oD")
 
-Test / parallelExecution := false
-
 // FloatFMA is vendored at src/main/scala/yunsuan/fpu/FloatFMA.scala (a local
 // copy of YunSuan's FMA with an explicit intermediate register for the
 // infinity-sign selection, used by the FpuBackend timing closure) so the

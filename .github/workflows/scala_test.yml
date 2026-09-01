@@ -42,6 +42,6 @@ jobs:
         curl -sL https://github.com/chipsalliance/espresso/releases/download/v2.4/x86_64-linux-gnu-espresso -o /usr/local/bin/espresso
         chmod +x /usr/local/bin/espresso
     - name: Run tests
-      run: sbt test
+      run: sbt 'set Test / parallelExecution := false' test
     - name: Upload dependency graph
       uses: scalacenter/sbt-dependency-submission@ab086b50c947c9774b70f39fc7f6e20ca2706c91
