@@ -29,6 +29,8 @@ jobs:
         java-version: '11'
         distribution: 'temurin'
         cache: 'sbt'
+    - name: Set up sbt
+      uses: olafurpg/setup-sbt@v3
     - name: Run tests
       run: sbt test
     - name: Upload dependency graph
