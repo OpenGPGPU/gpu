@@ -50,8 +50,8 @@ command-buffer parser, and the composite `RenderPipeline`/`RenderCore` that
 renders a command-driven scene into an exported PPM image. M5 now has the
 production core-backed fragment path, batched per-lane RVV shading, the
 fixed-function texture sampler, and scalar plus per-lane texture instructions.
-Shaders run as kernels on `GpuComputeUnit`; the standalone shader cores remain
-only as reference/compatibility paths.
+Shaders run as kernels on `GpuComputeUnit`; the standalone shader cores were
+removed (2026-09-01) now that the core-backed path is the sole shading backend.
 
 Compute core already present: RV32 SIMT lanes + FPU (FMA/div/sqrt/est), RVV
 ALU, register files, L1/L2 (SharedL2Slice), memory hierarchy with a standardized
@@ -133,8 +133,8 @@ that hardware interfaces can be frozen.
   `io.completion` carry a `KernelLaunch{kernelPc, kernargAddress, gridSize,
   localSize}` and `KernelCompletion`, so a vertex/fragment shader is a **kernel
   launched on the core's SIMT warps** with its varyings/uniforms/output placed
-  in the kernarg buffer. The `opengpu.graphics` `ShaderCore`/`RV32ShaderCore` are
-  standalone verification stepping stones; the production path is to emit a
+  in the kernarg buffer. The `opengpu.graphics` `ShaderCore`/`RV32ShaderCore` were
+  standalone verification stepping stones (removed 2026-09-01); the production path is to emit a
   `KernelLaunch` per draw and consume `KernelCompletion`, reusing the core's
   warp/register/ALU/FPU machinery rather than a separate shader datapath. Real
   GPUs use a dedicated GPU ISA (PTX/SASS/GCN/RDNA) + compiler; this design uses
@@ -411,8 +411,8 @@ program, (b) texture unit, (c) derivatives/discard, with a test at each.
 **Goal:** the production, commercial-GPU-aligned path — a vertex/fragment
 shader is a kernel launched on `GpuComputeUnit`'s SIMT warps, reusing the
 core's fetch/decode/issue/RF/ALU/FPU/commit machinery. The standalone
-`opengpu.graphics` `ShaderCore`/`RV32ShaderCore` are verification stepping stones
-and are superseded by this.
+`opengpu.graphics` `ShaderCore`/`RV32ShaderCore` were verification stepping stones
+and are superseded by this (removed 2026-09-01).
 
 Starting state (already present):
 - `GpuComputeUnit.io.kernel: Decoupled(KernelLaunch{kernelPc, kernargAddress,
@@ -504,9 +504,10 @@ Status (implementation):
   multi-fragment batch (geometry/order preserved), and a full-warp vector
   batch whose shader reads the per-lane x array and adds it to the colour
   (reference computed per fragment in the spec).
-- The standalone `ShaderCore`/`RV32ShaderCore`/`ShaderFragStage` remain as the
-  fixed-function stepping stones (default `fragCore = false`) and are to be
-  removed once the core-backed path is the sole shading backend.
+- The standalone `ShaderCore`/`RV32ShaderCore`/`ShaderFragStage` (and
+  `ShadedPipeline`/`FragmentShader`) were removed 2026-09-01: the core-backed
+  kernel path is the sole shading backend, so the stepping stones and their
+  specs were deleted.
 - **Per-draw pacing (2026-08-28).** `RenderPipeline(fragCore = true)` now
   gates `draw.ready` on both raster-idle and `KernelFragStage.drained`. A
   command-buffer record cannot overwrite the shader descriptor or kernarg
@@ -977,5 +978,6 @@ reference), and none requires a full graphics API to demonstrate. M1–M4 are
 complete (see the status note above). The confirmed direction for M5 is to
 **align with commercial GPUs**: run vertex/fragment shaders as kernels on the
 core's SIMT lanes via `GpuComputeUnit`'s kernel launch/completion, reusing the
-existing RISC-V toolchain. The standalone `ShaderCore`/`RV32ShaderCore` are
-reference implementations; the production path is the core-kernel unification.
+existing RISC-V toolchain. The standalone `ShaderCore`/`RV32ShaderCore` were
+reference implementations (removed 2026-09-01); the production path is the
+core-kernel unification.
