@@ -35,10 +35,12 @@ jobs:
         cache: 'sbt'
     - name: Set up sbt
       uses: sbt/setup-sbt@v1
-    - name: Install Verilator
+    - name: Install Verilator and espresso
       run: |
         sudo apt-get update
         sudo apt-get install -y verilator
+        curl -sL https://github.com/chipsalliance/espresso/releases/download/v2.4/x86_64-linux-gnu-espresso -o /usr/local/bin/espresso
+        chmod +x /usr/local/bin/espresso
     - name: Run tests
       run: sbt test
     - name: Upload dependency graph
