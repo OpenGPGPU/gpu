@@ -59,11 +59,10 @@ ALU, register files, L1/L2 (SharedL2Slice), memory hierarchy with a standardized
 
 Current limitations that still drive the remaining roadmap:
 
-1. 2×2-quad neighbor operations, derivatives, mip LOD and mip
-   storage/addressing are not implemented. Fragment discard is now available
-   through the bounded output-valid ABI.
-2. Rasterization and physical texture taps are serialized; wider issue/fetch
-   is a performance iteration after functional M5 completion.
+1. Rasterization and physical texture taps are serialized; wider issue/fetch
+   is a performance iteration after functional M5 completion.  (The earlier
+   limitation list item on 2×2-quad derivatives, mip LOD and discard is
+   resolved — see the M5/M7 status entries.)
 3. Per-draw overlap landed (2026-09-01): draw N+1's rasterization and
    kernarg staging accumulate in a second slot while batch N's kernel
    executes on the SIMT lanes, and `RenderCoreL2.io.done` now implies the
