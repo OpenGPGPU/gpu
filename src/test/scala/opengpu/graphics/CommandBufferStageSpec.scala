@@ -106,7 +106,8 @@ class CommandBufferStageSpec extends AnyFlatSpec {
               (d.cullMode.peek().litValue.toInt << 8) |
               (if (d.texEnable.peek().litToBoolean) 1 << 10 else 0) |
               (if (d.texWrapClamp.peek().litToBoolean) 1 << 11 else 0) |
-              (d.texMaxLevel.peek().litValue.toInt << 12),
+              (d.texMaxLevel.peek().litValue.toInt << 12) |
+              (if (d.blendEnable.peek().litToBoolean) 1 << 16 else 0),
             (d.texLodBias.peek().litValue.toInt & 0x1f) |
               (d.texMinLevel.peek().litValue.toInt << 8),
             d.kernargBankStride.peek().litValue.toInt

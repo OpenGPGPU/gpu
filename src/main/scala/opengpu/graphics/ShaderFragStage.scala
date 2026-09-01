@@ -33,6 +33,7 @@ class ShaderFragStage(
   private val fragY = Reg(SInt(config.coordWidth.W))
   private val fragDepth = Reg(SInt(32.W))
   private val fragCovered = Reg(Bool())
+  private val fragAlpha = Reg(UInt(8.W))
   private val fragE = Seq(Reg(SInt(config.edgeWidth.W)),
     Reg(SInt(config.edgeWidth.W)), Reg(SInt(config.edgeWidth.W)))
   private val fragColor = Reg(new Varyings)
@@ -64,6 +65,7 @@ class ShaderFragStage(
   io.out.bits.color.r := shaded
   io.out.bits.color.g := shaded
   io.out.bits.color.b := shaded
+  io.out.bits.alpha := fragAlpha
 
   switch(state) {
     is(idle) {
@@ -75,6 +77,7 @@ class ShaderFragStage(
         fragY := io.fragIn.bits.y
         fragDepth := io.fragIn.bits.depth
         fragCovered := io.fragIn.bits.covered
+        fragAlpha := io.fragIn.bits.alpha
         fragColor := io.fragIn.bits.color
         state := sInit
       }

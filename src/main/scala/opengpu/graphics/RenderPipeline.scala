@@ -30,6 +30,8 @@ class SceneTriangle(config: GraphicsConfig) extends Bundle {
   val depthTestEnable = Bool()
   val depthFunc = UInt(3.W)
   val depthWriteEnable = Bool()
+  /** Source-over RGBA8888 blending, valid when stateOverride is set. */
+  val blendEnable = Bool()
   val cullMode = UInt(2.W)
   val texEnable = Bool()
   val texWrapClamp = Bool()
@@ -47,6 +49,7 @@ private class DrawRenderState extends Bundle {
   val depthTestEnable = Bool()
   val depthFunc = UInt(3.W)
   val depthWriteEnable = Bool()
+  val blendEnable = Bool()
   val cullMode = UInt(2.W)
   val texEnable = Bool()
   val texBase = UInt(32.W)
@@ -144,6 +147,9 @@ class RenderPipeline(
       io.draw.bits.depthFunc, io.depthFunc)
     drawState.depthWriteEnable := Mux(io.draw.bits.stateOverride,
       io.draw.bits.depthWriteEnable, io.depthWriteEnable)
+    // Blending currently has no global host register: it is deliberately
+    // opt-in per draw so legacy command streams remain bit-identical.
+    drawState.blendEnable := io.draw.bits.stateOverride && io.draw.bits.blendEnable
     drawState.cullMode := Mux(io.draw.bits.stateOverride,
       io.draw.bits.cullMode, io.cullMode)
     drawState.texEnable := Mux(io.draw.bits.stateOverride,
@@ -205,7 +211,6 @@ class RenderPipeline(
   textured.io.fragIn.bits := shader.io.pixel.bits
   textured.io.out.ready := om.io.fragIn.ready
 
-  om.io.blendEnable := false.B
   io.mem <> om.io.mem
 
   if (fragCore) {
@@ -228,6 +233,7 @@ class RenderPipeline(
     ctxFifo.io.enq.bits.depthTestEnable := Mux(io.draw.bits.stateOverride, io.draw.bits.depthTestEnable, io.depthTestEnable)
     ctxFifo.io.enq.bits.depthFunc := Mux(io.draw.bits.stateOverride, io.draw.bits.depthFunc, io.depthFunc)
     ctxFifo.io.enq.bits.depthWriteEnable := Mux(io.draw.bits.stateOverride, io.draw.bits.depthWriteEnable, io.depthWriteEnable)
+    ctxFifo.io.enq.bits.blendEnable := io.draw.bits.stateOverride && io.draw.bits.blendEnable
     val pendingRetire = RegInit(false.B)
     when(kernelFrag.io.drawRetired && ctxFifo.io.headValid) { pendingRetire := true.B }
     ctxFifo.io.retire := pendingRetire && om.io.fragIn.ready
@@ -272,7 +278,7 @@ class RenderPipeline(
       kernelFrag.io.out.bits.color.r,
       kernelFrag.io.out.bits.color.g,
       kernelFrag.io.out.bits.color.b,
-      0xff.U(8.W))
+      kernelFrag.io.out.bits.alpha)
     om.io.fragIn.bits.depth := kernelFrag.io.out.bits.depth(29, 0).asUInt
     kernelFrag.io.out.ready := om.io.fragIn.ready
 
@@ -292,6 +298,7 @@ class RenderPipeline(
     om.io.depthTestEnable := ctxFifo.io.head.depthTestEnable
     om.io.depthFunc := ctxFifo.io.head.depthFunc
     om.io.depthWriteEnable := ctxFifo.io.head.depthWriteEnable
+    om.io.blendEnable := ctxFifo.io.head.blendEnable
 
     // Done only once every rasterized fragment has been flushed, shaded, and
     // handed to the OM: the batch must be empty (drained) so an in-flight batch
@@ -305,6 +312,7 @@ class RenderPipeline(
     om.io.depthTestEnable := drawState.depthTestEnable
     om.io.depthFunc := drawState.depthFunc
     om.io.depthWriteEnable := drawState.depthWriteEnable
+    om.io.blendEnable := drawState.blendEnable
     // As in the core-backed path, wait for the final fragment's serialized
     // depth/color RMW to retire before accepting the next draw.
     io.draw.ready := (!drawHoldValid || shader.io.draw.fire) &&
@@ -313,7 +321,7 @@ class RenderPipeline(
     // Fragment stream: sampled-and-modulated when texturing is enabled, else
     // straight from the interpolator.  The bypass path keeps disabled draws
     // free of sampler latency and frees its memory port entirely.
-    def packColor(r: UInt, g: UInt, b: UInt): UInt = Cat(r, g, b, 0xff.U(8.W))
+    def packColor(r: UInt, g: UInt, b: UInt, a: UInt): UInt = Cat(r, g, b, a)
 
     textured.io.fragIn.valid := drawState.texEnable && shader.io.pixel.valid
 
@@ -325,9 +333,9 @@ class RenderPipeline(
       textured.io.out.bits.y, shader.io.pixel.bits.y)(15, 0).asUInt
     om.io.fragIn.bits.color := Mux(drawState.texEnable,
       packColor(textured.io.out.bits.color.r, textured.io.out.bits.color.g,
-        textured.io.out.bits.color.b),
+        textured.io.out.bits.color.b, textured.io.out.bits.alpha),
       Cat(shader.io.pixel.bits.color.r, shader.io.pixel.bits.color.g,
-        shader.io.pixel.bits.color.b, 0xff.U(8.W)))
+        shader.io.pixel.bits.color.b, shader.io.pixel.bits.alpha))
     om.io.fragIn.bits.depth := Mux(drawState.texEnable,
       textured.io.out.bits.depth, shader.io.pixel.bits.depth)(29, 0).asUInt
     shader.io.pixel.ready := Mux(drawState.texEnable, textured.io.fragIn.ready,

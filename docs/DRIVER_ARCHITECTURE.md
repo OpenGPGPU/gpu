@@ -201,7 +201,8 @@ unit-stride vector memory, lane-local integer arithmetic, bounded forward
 control flow, core-backed texture sampling, structured early exit/discard,
 perspective-correct UV inputs, shader-generated depth and full per-lane
 framebuffer output and 2x2-quad neighbor/derivative support are complete as
-well. The next texture milestone is gradient-derived LOD and mip selection.
+well. Gradient-derived LOD, packed mip selection, integer LOD bias/clamps and
+trilinear filtering are also complete (2026-09-01).
 
 ## RTL boundary
 

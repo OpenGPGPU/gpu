@@ -132,6 +132,30 @@ class OutputMergerSpec extends AnyFlatSpec {
     }
   }
 
+  it should "source-over blend a passing fragment and preserve depth semantics" in {
+    simulate(new OutputMerger(GraphicsConfig())) { dut =>
+      val mem = Array.fill(1 << 15)(0xffffffff)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.colorBase.poke(colorBase.U)
+      dut.io.depthBase.poke(depthBase.U)
+      dut.io.stride.poke(stride.U)
+      dut.io.depthTestEnable.poke(true.B)
+      dut.io.depthFunc.poke(0.U)
+      dut.io.depthWriteEnable.poke(true.B)
+      dut.io.mem.resp.valid.poke(false.B)
+      dut.io.mem.resp.bits.write.poke(false.B)
+      dut.io.blendEnable.poke(true.B)
+      val addr = colorBase + stride + 4
+      mem(addr) = 0x0000ffff // opaque blue destination
+      // 50% red over blue: rounded source-over gives (128, 0, 127, 255).
+      runFragment(dut, mem, 1, 1, 0xff000080, 0x10, true, 0, true)
+      assert(mem(addr) == 0x80007fff,
+        f"source-over blend was ${mem(addr)}%08x, expected 80007fff")
+      assert(mem(depthBase + stride + 4) == 0x10,
+        "a blended passing fragment must retain ordinary depth-write behaviour")
+    }
+  }
+
   it should "ignore write acknowledgements that arrive while a depth read is in flight" in {
     simulate(new OutputMerger(GraphicsConfig())) { dut =>
       val mem = Array.fill(1 << 15)(0xffffffff)

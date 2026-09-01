@@ -15,7 +15,7 @@ import chisel3.util._
   *   [24]     shader entry PC (the draw's shader descriptor)
   *   [25]     kernarg buffer address
   *   [26..31] v0/v1/v2 texture u,v as unsigned Q16.16
-  *   [32]     optional depth/cull/texture state override
+  *   [32]     optional depth/cull/texture/blend state override
   *   [33]     signed integer LOD bias and minimum mip clamp
   *   [34]     optional two-bank kernarg byte stride
   *   [35..39] reserved
@@ -98,6 +98,7 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
   decodedDraw.texEnable := words(32)(10)
   decodedDraw.texWrapClamp := words(32)(11)
   decodedDraw.texMaxLevel := words(32)(15, 12)
+  decodedDraw.blendEnable := words(32)(16)
   decodedDraw.texLodBias := words(33)(4, 0).asSInt
   decodedDraw.texMinLevel := words(33)(11, 8)
   decodedDraw.kernargBankStride := words(34)

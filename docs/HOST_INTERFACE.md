@@ -155,7 +155,7 @@ or queue configuration changes therefore cannot affect an in-flight draw.
 | 24 | shader entry PC (kernel address) |
 | 25 | kernarg buffer address |
 | 26–31 | v0/v1/v2 texture `(u,v)`, unsigned Q16.16 |
-| 32 | state override: bit 0 valid, bit 1 depth test, bits 6:4 depth function, bit 7 depth write, bits 9:8 cull, bit 10 texture enable, bit 11 clamp, bits 15:12 max mip |
+| 32 | state override: bit 0 valid, bit 1 depth test, bits 6:4 depth function, bit 7 depth write, bits 9:8 cull, bit 10 texture enable, bit 11 clamp, bits 15:12 max mip, bit 16 source-over blend |
 | 33 | core sampler controls: bits 4:0 signed integer LOD bias, bits 11:8 inclusive minimum mip clamp |
 | 34 | optional kernarg bank stride in bytes; zero selects legacy single-bank operation |
 | 35–39 | reserved; must be zero |
@@ -326,7 +326,9 @@ character device first, DRM display client next, per the roadmap):
   optional binary `in_syncobj`/`out_syncobj` handles; input and GEM
   dependencies are resolved before launch, while the scheduler finished fence
   is installed in the output syncobj and every written/read reservation
-  object. This is DRM interface version 1.3.
+  object. DRM interface version 1.4 extends the per-draw state word with the
+  source-over blend-enable bit; all 1.3 synchronization semantics remain
+  unchanged.
 - **implicit display synchronization**: the KMS plane extracts the reservation
   fence and DRM atomic helpers wait before programming the scanout bank.
 - **flip pacing**: a 60 Hz software vblank source delivers

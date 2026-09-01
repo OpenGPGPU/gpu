@@ -160,4 +160,60 @@ class TexSampleUnitSpec extends AnyFlatSpec {
         dut.io.vectorCommit.bits.writeback.data(lane).expect(blue.U)
     }
   }
+
+  it should "derive a log2 fractional LOD and trilinearly mix adjacent mips" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new TexSampleUnit(config)) { dut =>
+      val pending = mutable.Queue.empty[Long]
+      val green = texel(0, 255, 0)
+      val red = texel(255, 0, 0)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.texBase.poke(0x2000.U)
+      dut.io.texWidth.poke(4.U); dut.io.texHeight.poke(4.U)
+      dut.io.wrapClamp.poke(true.B); dut.io.texMaxLevel.poke(2.U)
+      dut.io.lodBias.poke(0.S); dut.io.minLevel.poke(0.U)
+      dut.io.in.valid.poke(false.B); dut.io.commit.ready.poke(true.B)
+      dut.io.vectorIn.valid.poke(true.B)
+      dut.io.vectorIn.bits.poke(0.U.asTypeOf(dut.io.vectorIn.bits))
+      dut.io.vectorIn.bits.issued.decode.activeMask.poke(0xf.U)
+      dut.io.vectorIn.bits.issued.decode.instruction.poke("h062081ab".U)
+      dut.io.vectorIn.bits.executionMask.poke(0xf.U)
+      // 0.375 UV/pixel * 4 texels = rho 1.5.  Thus integer LOD is zero
+      // and the Q0.8 weight is floor(256 * log2(1.5)) = 149.
+      val u = Seq(0, 0x6000, 0, 0x6000)
+      val v = Seq(0, 0, 0, 0)
+      for (lane <- 0 until 4) {
+        dut.io.vectorIn.bits.issued.vs1Data(lane).poke(u(lane).U)
+        dut.io.vectorIn.bits.issued.vs2Data(lane).poke(v(lane).U)
+      }
+      dut.io.vectorCommit.ready.poke(false.B)
+      dut.io.mem.req.ready.poke(true.B)
+      dut.io.mem.resp.valid.poke(false.B)
+      dut.io.mem.resp.bits.poke(0.U.asTypeOf(dut.io.mem.resp.bits))
+      dut.clock.step(); dut.io.vectorIn.valid.poke(false.B)
+
+      var guard = 0
+      while (!dut.io.vectorCommit.valid.peek().litToBoolean && guard < 700) {
+        if (pending.nonEmpty) {
+          val addr = pending.front
+          dut.io.mem.resp.valid.poke(true.B)
+          // Level 0 is 4x4 at [0x2000,0x2040); level 1 begins at 0x2040.
+          dut.io.mem.resp.bits.data.poke((if (addr < 0x2040L) green else red).U)
+          dut.io.mem.resp.bits.write.poke(false.B)
+          if (dut.io.mem.resp.ready.peek().litToBoolean) pending.dequeue()
+        } else dut.io.mem.resp.valid.poke(false.B)
+        if (dut.io.mem.req.valid.peek().litToBoolean &&
+          dut.io.mem.req.ready.peek().litToBoolean)
+          pending.enqueue(dut.io.mem.req.bits.addr.peek().litValue.toLong)
+        dut.clock.step(); guard += 1
+      }
+      assert(dut.io.vectorCommit.valid.peek().litToBoolean,
+        "fractional-LOD vector sample did not complete")
+      // Channel values use the sampler's truncating Q0.8 multiply:
+      // red=floor(255*149/256)=148, green=floor(255*107/256)=106.
+      val expected = texel(148, 106, 0)
+      for (lane <- 0 until 4)
+        dut.io.vectorCommit.bits.writeback.data(lane).expect(expected.U)
+    }
+  }
 }

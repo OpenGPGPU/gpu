@@ -205,6 +205,7 @@ class KernelFragStage(
   io.out.bits.color.r := outWords(indexIdx)(31, 24)
   io.out.bits.color.g := outWords(indexIdx)(23, 16)
   io.out.bits.color.b := outWords(indexIdx)(15, 8)
+  io.out.bits.alpha := outWords(indexIdx)(7, 0)
 
   wordValid := (state === sWrite || state === sRead) && !wordPending
   wordBits.write := state === sWrite

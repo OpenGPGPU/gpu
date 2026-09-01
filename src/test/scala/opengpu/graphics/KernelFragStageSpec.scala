@@ -75,6 +75,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
         assert(pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean),
           "banked fragment batch did not complete")
         dut.io.out.bits.color.r.expect(red.U)
+        dut.io.out.bits.alpha.expect(0xff.U)
         dut.clock.step()
         assert(pump(dut, mem, () => dut.io.drained.peek().litToBoolean),
           "banked fragment batch did not drain")
@@ -306,6 +307,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.out.bits.color.r.expect(0xab.U)
       dut.io.out.bits.color.g.expect(0xcd.U)
       dut.io.out.bits.color.b.expect(0xf0.U)
+      dut.io.out.bits.alpha.expect(0xff.U)
     }
   }
 

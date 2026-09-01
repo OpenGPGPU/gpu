@@ -27,6 +27,7 @@ class DrawContextFifoSpec extends AnyFlatSpec {
     dut.io.enq.bits.depthTestEnable.poke((tag & 1).B)
     dut.io.enq.bits.depthFunc.poke((tag & 7).U)
     dut.io.enq.bits.depthWriteEnable.poke((tag & 1).B)
+    dut.io.enq.bits.blendEnable.poke(((tag >> 1) & 1).B)
   }
 
   it should "preserve the complete context at head and tail" in {
@@ -46,6 +47,7 @@ class DrawContextFifoSpec extends AnyFlatSpec {
       dut.io.head.colorBase.expect(0x8001.U)
       dut.io.head.depthBase.expect(0x9001.U)
       dut.io.head.texLodBias.expect((-1).S)
+      dut.io.head.blendEnable.expect(false.B)
       dut.io.tail.shaderPc.expect(0x1001.U)
     }
   }

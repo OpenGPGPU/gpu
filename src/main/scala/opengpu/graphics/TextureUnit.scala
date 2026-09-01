@@ -7,7 +7,8 @@ import chisel3.util._
   * over the unit square ([0,1) maps the texture extent; larger values reach
   * the wrap/clamp machinery).
   *
-  * `mipLevel` selects the desired mip level (0 = base).  The unit walks the
+  * `mipLevel` selects the desired mip level (0 = base). `lodFrac` is the
+  * Q0.8 weight of the following level for trilinear filtering. The unit walks the
   * chain at most min(mipLevel, texMaxLevel) levels deep, so a level-0 request
   * behaves exactly as before mip support existed.
   */
@@ -15,6 +16,7 @@ class TexSampleRequest extends Bundle {
   val u = UInt(32.W)
   val v = UInt(32.W)
   val mipLevel = UInt(4.W)
+  val lodFrac = UInt(8.W)
 }
 
 /** Wrap behaviour applied independently to both axes.
@@ -71,10 +73,12 @@ object TexWrap {
   * current level's byte size into the base, halve the dims (floored at 1) --
   * up to min(mipLevel, texMaxLevel) steps, then decodes and fetches from the
   * resolved level.  Zero steps leaves base/dims untouched, so level 0 is
-  * bit-identical to the pre-mip unit; there is no trilinear blend (the
-  * requester rounds to the nearest level).  The byte offsets stay natural
+  * bit-identical to the pre-mip unit when `lodFrac` is zero. The byte offsets stay natural
   * width: a 2^14 x 2^14 RGBA8888 level is 2^30 bytes and the whole chain
-  * fits under 2^32, so no fixed-size slicing is needed.  The REPEAT
+  * fits under 2^32, so no fixed-size slicing is needed. When `lodFrac` is
+  * non-zero and a following level exists, the unit filters both selected
+  * levels and mixes their RGB values with weights `256-lodFrac` and
+  * `lodFrac`; a request at the final level remains a single-level fetch. The REPEAT
   * power-of-two assert stays on the level-0 dims (halving a power of two
   * keeps it a power of two until the floor at 1 takes over).
   *
@@ -124,6 +128,9 @@ class TextureUnit(
   private val levelW = RegInit(1.U(14.W))
   private val levelH = RegInit(1.U(14.W))
   private val levelSteps = RegInit(0.U(4.W))
+  private val baseMipLevel = RegInit(0.U(4.W))
+  private val lodFracReg = RegInit(0.U(8.W))
+  private val secondLevel = RegInit(false.B)
 
   // Tap geometry latched at accept time so the memory latency window touches
   // no live multiplies: clamped/wrapped corner indices and 8-bit fractions.
@@ -140,6 +147,7 @@ class TextureUnit(
 
   // Blended result held until result.fire.
   private val resultReg = RegInit(0.U(32.W))
+  private val firstLevelResult = RegInit(0.U(32.W))
 
   io.sample.ready := state === sIdle
 
@@ -238,6 +246,14 @@ class TextureUnit(
     0xff.U(8.W)
   )
 
+  private def trilinearChannel(shift: Int): UInt = {
+    val first = firstLevelResult(shift + 7, shift)
+    val second = blended(shift + 7, shift)
+    (((first * (256.U - lodFracReg)) + second * lodFracReg) >> 8)(7, 0)
+  }
+  private val trilinear = Cat(
+    trilinearChannel(24), trilinearChannel(16), trilinearChannel(8), 0xff.U(8.W))
+
   io.result.valid := state === sDone
   io.result.bits := resultReg
 
@@ -258,8 +274,15 @@ class TextureUnit(
         levelBase := io.texBase
         levelW := io.texWidth
         levelH := io.texHeight
-        levelSteps := Mux(io.sample.bits.mipLevel > io.texMaxLevel,
+        val selectedLevel = Mux(io.sample.bits.mipLevel > io.texMaxLevel,
           io.texMaxLevel, io.sample.bits.mipLevel)
+        levelSteps := selectedLevel
+        baseMipLevel := selectedLevel
+        // There is no next level at the upper clamp, so suppress the second
+        // four-tap fetch rather than blending a level with itself.
+        lodFracReg := Mux(selectedLevel < io.texMaxLevel,
+          io.sample.bits.lodFrac, 0.U)
+        secondLevel := false.B
         tapIdx := 0.U
         state := sLevel
       }
@@ -295,8 +318,22 @@ class TextureUnit(
       }
     }
     is(sBlend) {
-      resultReg := blended
-      state := sDone
+      when(!secondLevel && lodFracReg =/= 0.U) {
+        // Fetch level N+1 from a freshly rewound packed-chain walk. Keeping
+        // the two bilinear passes serial preserves the one-word memory-port
+        // contract and all response backpressure behaviour.
+        firstLevelResult := blended
+        levelBase := io.texBase
+        levelW := io.texWidth
+        levelH := io.texHeight
+        levelSteps := baseMipLevel + 1.U
+        tapIdx := 0.U
+        secondLevel := true.B
+        state := sLevel
+      }.otherwise {
+        resultReg := Mux(secondLevel, trilinear, blended)
+        state := sDone
+      }
     }
     is(sDone) {
       when(io.result.fire) { state := sIdle }

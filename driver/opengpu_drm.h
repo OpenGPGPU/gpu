@@ -40,7 +40,8 @@ struct drm_opengpu_draw {
 #define OPENGPU_DRAW_STATE_TEX_CLAMP      (1u << 11)
 #define OPENGPU_DRAW_STATE_MAX_MIP_SHIFT  12u
 #define OPENGPU_DRAW_STATE_MAX_MIP_MASK   (0xfu << 12)
-#define OPENGPU_DRAW_STATE_VALID_MASK     0xffffu
+#define OPENGPU_DRAW_STATE_BLEND_ENABLE   (1u << 16)
+#define OPENGPU_DRAW_STATE_VALID_MASK     0x1ffffu
 
 /* Signed integer LOD bias plus an inclusive minimum-level clamp. */
 #define OPENGPU_DRAW_SAMPLER_LOD_BIAS_MASK 0x1fu

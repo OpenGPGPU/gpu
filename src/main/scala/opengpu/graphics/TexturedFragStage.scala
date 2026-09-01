@@ -131,6 +131,7 @@ class TexturedFragStage(
   private val heldY = RegInit(0.S(gfxConfig.coordWidth.W))
   private val heldDepth = RegInit(0.S(32.W))
   private val heldCovered = RegInit(false.B)
+  private val heldAlpha = RegInit(0xff.U(8.W))
   private val heldColor = Reg(Vec(3, UInt(8.W))) // fragment colour
   private val texelWord = RegInit(0.U(32.W))
   private val heldE = Seq(RegInit(0.S(gfxConfig.edgeWidth.W)),
@@ -144,6 +145,8 @@ class TexturedFragStage(
   sampler.io.sample.bits.u := uvInterp.io.uvPx.u
   sampler.io.sample.bits.v := uvInterp.io.uvPx.v
   sampler.io.sample.bits.mipLevel := 0.U
+  // This compatibility path has no quad-gradient LOD calculation.
+  sampler.io.sample.bits.lodFrac := 0.U
 
   io.out.valid := state === sOut
   io.out.bits.x := heldX
@@ -156,6 +159,7 @@ class TexturedFragStage(
   io.out.bits.color.r := modulate(heldColor(0), texelWord(31, 24))
   io.out.bits.color.g := modulate(heldColor(1), texelWord(23, 16))
   io.out.bits.color.b := modulate(heldColor(2), texelWord(15, 8))
+  io.out.bits.alpha := heldAlpha
 
   // Payload latch happens on the accept edge; the sampler completes several
   // cycles later, so its result is observed on its own when -- independent of
@@ -167,6 +171,7 @@ class TexturedFragStage(
         heldY := io.fragIn.bits.y
         heldDepth := io.fragIn.bits.depth
         heldCovered := io.fragIn.bits.covered
+        heldAlpha := io.fragIn.bits.alpha
         heldE(0) := io.fragIn.bits.e0
         heldE(1) := io.fragIn.bits.e1
         heldE(2) := io.fragIn.bits.e2

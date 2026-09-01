@@ -21,6 +21,7 @@ class DrawContext extends Bundle {
   val depthTestEnable = Bool()
   val depthFunc = UInt(3.W)
   val depthWriteEnable = Bool()
+  val blendEnable = Bool()
 }
 
 /**

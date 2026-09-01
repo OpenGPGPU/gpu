@@ -188,8 +188,9 @@ Hardware:
   path). Backpressure: rasterizer stalls when the OM queue is full; this
   path must be deadlock-free against the L2's own queueing (assert in
   simulation).
-- Blending: out of scope for M3c; the OM interface leaves a `blendEnable`
-  hook for later.
+- Blending was deferred from M3c; source-over RGBA8888 blending through the
+  per-draw `blendEnable` state is now complete (see the 2026-09-01 status
+  below).
 
 Software / host:
 - Driver/host allocates color + depth regions and programs the OM
@@ -327,7 +328,8 @@ Hardware:
   a base register).
 - Texture unit: format decode (RGBA8888 first), bilinear sampling, LOD
   selection from quad derivatives, small tag/data cache backed by the
-  shared memory hierarchy. Trilinear later.
+  shared memory hierarchy. The later trilinear extension is now complete
+  (see the 2026-09-01 status below).
 - Long-latency handling: texture and FPU div/sqrt latencies are hidden by
   warp occupancy; define the stall/scoreboard behavior explicitly (this
   replaces the previous vague "multicycle fixup").
@@ -893,9 +895,18 @@ Status (virtual display and DRM handoff, 2026-08-29):
   state infrastructure the M5 overlap step builds on, verified by
   `DrawContextFifoSpec`, a `drawRetired` pulse spec, and a two-draw
   core-backed end-to-end regression in `RenderCoreSpec`.
-- Next: optional trilinear blending. Hardware-side
+- **Trilinear mip blending complete (2026-09-01).** `TextureUnit` now accepts
+  an 8-bit fractional LOD and serially bilinear-filters the selected pair of
+  packed mip levels before exact Q0.8 RGB mixing. `TexSampleUnit` derives an
+  8-bit `log2` fractional weight from the quad gradient; scalar samples retain
+  their exact integer-level behaviour. Hardware-side
   per-draw overlap/double buffering remains the separate M5 throughput
   milestone.
+- **Source-over output blending complete (2026-09-01).** `OutputMerger`
+  serially reads a passing fragment's destination colour and applies exact
+  rounded RGBA8888 source-over composition. Draw record word 32 bit 16 enables
+  it only when the per-draw state override is valid; legacy draws remain
+  unblended. The additive UAPI extension advances the DRM interface to 1.4.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

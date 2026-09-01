@@ -64,6 +64,8 @@ class RasterFragment(config: GraphicsConfig) extends Bundle {
   val x = SInt(config.coordWidth.W)
   val y = SInt(config.coordWidth.W)
   val color = new Varyings
+  /** Alpha is kept separately because legacy vertex varyings are RGB-only. */
+  val alpha = UInt(8.W)
   val depth = SInt(32.W)
   val e0 = SInt(config.edgeWidth.W)
   val e1 = SInt(config.edgeWidth.W)
@@ -108,6 +110,7 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
   io.pixel.bits.x := raster.io.pixel.bits.x
   io.pixel.bits.y := raster.io.pixel.bits.y
   io.pixel.bits.color := interp.io.color
+  io.pixel.bits.alpha := 0xff.U
   io.pixel.bits.depth := interp.io.depth
   io.pixel.bits.e0 := raster.io.pixel.bits.e0
   io.pixel.bits.e1 := raster.io.pixel.bits.e1

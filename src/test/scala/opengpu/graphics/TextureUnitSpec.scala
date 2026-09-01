@@ -126,6 +126,7 @@ class TextureUnitSpec extends AnyFlatSpec {
     u: Long,
     v: Long,
     mipLevel: Int = 0,
+    lodFrac: Int = 0,
     stallCycles: Int = 0,
     maxCycles: Int = 400
   ): Int = {
@@ -133,6 +134,7 @@ class TextureUnitSpec extends AnyFlatSpec {
     dut.io.sample.bits.u.poke(u.U)
     dut.io.sample.bits.v.poke(v.U)
     dut.io.sample.bits.mipLevel.poke(mipLevel.U)
+    dut.io.sample.bits.lodFrac.poke(lodFrac.U)
     var pendingAddr = -1L
     var accepted = false
     var seenValue = false
@@ -270,6 +272,28 @@ class TextureUnitSpec extends AnyFlatSpec {
       assert(runSample(dut, mem, q(0.5), q(0.5), mipLevel = 7) == colors(3),
         "requested mip must clamp to texMaxLevel")
       assert(mem.oobReads == 0, "mip walk fetched outside the packed chain")
+    }
+  }
+
+  it should "trilinearly blend adjacent packed mip levels and clamp at the last level" in {
+    val mem = new TexMem(0x4000L, width = 4, height = 4, levels = 3)
+    val green = texel(0, 255, 0)
+    val red = texel(255, 0, 0)
+    val blue = texel(0, 0, 255)
+    simulate(new TextureUnit()) { dut =>
+      attach(dut, mem, wrapClamp = true, maxLevel = 2)
+      for ((color, level) <- Seq(green, red, blue).zipWithIndex) {
+        val (_, w, h) = mem.levelInfo(level)
+        for (y <- 0 until h; x <- 0 until w) mem.putLevel(level, x, y, color)
+      }
+      // 128 is an exact 50/50 Q0.8 level blend; channels truncate exactly.
+      assert(runSample(dut, mem, q(0.5), q(0.5), mipLevel = 0, lodFrac = 128) ==
+        texel(127, 127, 0), "level 0/1 trilinear blend was wrong")
+      assert(runSample(dut, mem, q(0.5), q(0.5), mipLevel = 1, lodFrac = 64) ==
+        texel(191, 0, 63), "level 1/2 trilinear blend was wrong")
+      assert(runSample(dut, mem, q(0.5), q(0.5), mipLevel = 2, lodFrac = 128) == blue,
+        "last mip must not attempt an out-of-range next-level blend")
+      assert(mem.oobReads == 0, "trilinear fetch walked outside the packed chain")
     }
   }
 

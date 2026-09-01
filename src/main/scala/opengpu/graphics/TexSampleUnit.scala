@@ -78,11 +78,13 @@ class TexSampleUnit(
   private val uReg = RegInit(0.U(32.W))
   private val vReg = RegInit(0.U(32.W))
   private val mipLevelReg = RegInit(0.U(4.W))
+  private val mipFracReg = RegInit(0.U(8.W))
 
   /** One nearest mip per quad. UV differences remain Q16.16; multiplying by
     * the base extent converts them to texels-per-pixel in Q16.16. */
   private def absDiff(a: UInt, b: UInt): UInt = Mux(a >= b, a - b, b - a)
   private val automaticMip = WireDefault(0.U(4.W))
+  private val rho = WireDefault(0.U(46.W))
   if (config.lanes >= 4) {
     val u = io.vectorIn.bits.issued.vs1Data
     val v = io.vectorIn.bits.issued.vs2Data
@@ -95,7 +97,7 @@ class TexSampleUnit(
       absDiff(v(3), v(2)) * io.texHeight,
       absDiff(v(2), v(0)) * io.texHeight,
       absDiff(v(3), v(1)) * io.texHeight)
-    val rho = gradients.reduce((a, b) => Mux(a >= b, a, b))
+    rho := gradients.reduce((a, b) => Mux(a >= b, a, b))
     for (level <- 1 until 16) {
       when(rho >= (BigInt(1) << (16 + level)).U) {
         automaticMip := level.U
@@ -106,6 +108,22 @@ class TexSampleUnit(
   private val clampedMip = Mux(biasedMip < io.minLevel.zext,
     io.minLevel, Mux(biasedMip > io.texMaxLevel.zext,
       io.texMaxLevel, biasedMip.asUInt(3, 0)))
+  // The sampler consumes an 8-bit trilinear weight.  Normalise rho into
+  // [1,2), then look up frac(log2(rho)) from the top eight fractional bits.
+  // This is a 256-entry constant mux (not a divider or iterative logarithm),
+  // and keeps the LOD error below one Q0.8 step plus input quantisation.
+  // Clamp endpoints intentionally have no fractional blend, matching a
+  // saturated LOD.
+  private val rhoNormal = rho >> automaticMip
+  private val log2FracLut = VecInit(Seq.tabulate(256) { i =>
+    math.floor(math.log(1.0 + i.toDouble / 256.0) / math.log(2.0) * 256.0)
+      .toInt.U(8.W)
+  })
+  private val automaticFrac = Mux(rhoNormal > (1 << 16).U,
+    log2FracLut(rhoNormal(15, 8)), 0.U)
+  private val lodIsClamped = biasedMip < io.minLevel.zext ||
+    biasedMip > io.texMaxLevel.zext
+  private val clampedFrac = Mux(lodIsClamped, 0.U, automaticFrac)
 
   // Alternate priority after every accepted instruction so independent scalar
   // and vector warps cannot starve one another at the shared physical sampler.
@@ -123,6 +141,7 @@ class TexSampleUnit(
   sampler.io.sample.bits.v :=
     Mux(vectorModeReg, vVectorReg(laneReg), vReg)
   sampler.io.sample.bits.mipLevel := mipLevelReg
+  sampler.io.sample.bits.lodFrac := mipFracReg
   sampler.io.result.ready :=
     state === sSample && (!vectorModeReg || vectorLaneActive)
 
@@ -158,6 +177,7 @@ class TexSampleUnit(
         uVectorReg := io.vectorIn.bits.issued.vs1Data
         vVectorReg := io.vectorIn.bits.issued.vs2Data
         mipLevelReg := clampedMip
+        mipFracReg := clampedFrac
         laneReg := 0.U
         preferVector := false.B
         state := sSample
@@ -173,6 +193,9 @@ class TexSampleUnit(
         mipLevelReg := Mux(scalarBiased < io.minLevel.zext,
           io.minLevel, Mux(scalarBiased > io.texMaxLevel.zext,
             io.texMaxLevel, scalarBiased.asUInt(3, 0)))
+        // Scalar tex.sample has no derivatives, hence it is an exact selected
+        // level sample even when a positive LOD bias chooses a higher mip.
+        mipFracReg := 0.U
         preferVector := true.B
         state := sSample
       }
