@@ -19,6 +19,10 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    env:
+      JAVA_OPTS: -Xms4G -Xmx4G -Xss6M -Dfile.encoding=UTF-8
+      JVM_OPTS: -Xms4G -Xmx4G -Xss6M -Dfile.encoding=UTF-8
+
     steps:
     - uses: actions/checkout@v4
       with:
