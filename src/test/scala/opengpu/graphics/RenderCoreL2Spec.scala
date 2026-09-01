@@ -141,16 +141,15 @@ class RenderCoreL2Spec extends AnyFlatSpec {
       // transaction slot on the request-fire edge, so a request committed this
       // cycle only becomes eligible for a response on the following cycle.
       //
-      // `done` fires when the OM accepts its final write REQUEST; the write
-      // itself is still in flight inside the L2 store queue (write-through to
-      // the off-chip port completes several cycles later).  Like a driver
-      // fencing on completion, the testbench keeps servicing the port until
-      // it has been quiet for 64 consecutive cycles before reading back.
+      // `done` now implies the store drain: it rises only once the shared L2
+      // reports no unfinished transaction (store queue empty, all lower
+      // writes acknowledged, no response awaiting consumption), so the
+      // framebuffer is complete in the off-chip memory the moment done is
+      // observed - no quiet-cycle fence required.
       val respQ = mutable.Queue.empty[(BigInt, BigInt)]
       var guard = 0
       var doneSeen = false
-      var quiet = 0
-      while ((!doneSeen || quiet < 64) && guard < 200000) {
+      while (!doneSeen && guard < 200000) {
         dut.io.memoryRequest.ready.poke(true.B)
         val hadPending = respQ.nonEmpty
         if (dut.io.memoryRequest.valid.peek().litToBoolean &&
@@ -178,13 +177,10 @@ class RenderCoreL2Spec extends AnyFlatSpec {
           dut.io.memoryResponse.valid.poke(false.B)
         }
         if (dut.io.done.peek().litToBoolean) doneSeen = true
-        val busy = dut.io.memoryRequest.valid.peek().litToBoolean || respQ.nonEmpty
-        quiet = if (busy || !doneSeen) 0 else quiet + 1
         dut.clock.step()
         guard += 1
       }
       assert(doneSeen, "core-backed renderer over the L2 did not drain")
-      assert(guard < 200000, "L2 off-chip port did not quiesce after done")
 
       def rgb(x: Int, y: Int): (Int, Int, Int) = {
         val c = m.word(colorBase + (y * 16 + x) * 4).toInt
@@ -284,8 +280,7 @@ class RenderCoreL2Spec extends AnyFlatSpec {
       val respQ = mutable.Queue.empty[(BigInt, BigInt)]
       var guard = 0
       var doneSeen = false
-      var quiet = 0
-      while ((!doneSeen || quiet < 64) && guard < 400000) {
+      while (!doneSeen && guard < 400000) {
         dut.io.memoryRequest.ready.poke(true.B)
         val hadPending = respQ.nonEmpty
         if (dut.io.memoryRequest.valid.peek().litToBoolean &&
@@ -310,13 +305,10 @@ class RenderCoreL2Spec extends AnyFlatSpec {
           if (dut.io.memoryResponse.ready.peek().litToBoolean) respQ.dequeue()
         } else dut.io.memoryResponse.valid.poke(false.B)
         if (dut.io.done.peek().litToBoolean) doneSeen = true
-        val busy = dut.io.memoryRequest.valid.peek().litToBoolean || respQ.nonEmpty
-        quiet = if (busy || !doneSeen) 0 else quiet + 1
         dut.clock.step()
         guard += 1
       }
       assert(doneSeen, "textured renderer did not drain")
-      assert(guard < 400000, "L2 off-chip port did not quiesce")
 
       def rgb(x: Int, y: Int): (Int, Int, Int) = {
         val c = m.word(colorBase + (y * 16 + x) * 4).toInt

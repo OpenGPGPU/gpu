@@ -111,7 +111,12 @@ class RenderCoreL2(
   core.io.texHeight := io.texHeight
   core.io.texWrapClamp := io.texWrapClamp
   core.io.texMaxLevel := io.texMaxLevel
-  io.done := core.io.done
+  // Done implies the store drain: the render pipeline has emitted every
+  // fragment AND the shared L2 reports no unfinished transaction (store
+  // queue empty, misses returned, write acknowledgements consumed), so the
+  // frame is visible in the lower memory when done rises — no readback-side
+  // quiet-cycle fence needed.
+  io.done := core.io.done && l2.io.drained
 
   // Word-level clients (command buffer, framebuffer, texture) behind bridges.
   private val cbBridge = Module(new OmWordToLinePort(

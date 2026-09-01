@@ -66,8 +66,8 @@ Current limitations that still drive the remaining roadmap:
    is a performance iteration after functional M5 completion.
 3. Per-draw overlap landed (2026-09-01): draw N+1's rasterization and
    kernarg staging accumulate in a second slot while batch N's kernel
-   executes on the SIMT lanes. Still open: a completion/fence contract that
-   already implies the final shared-L2 store drain (M6 work).
+   executes on the SIMT lanes, and `RenderCoreL2.io.done` now implies the
+   final shared-L2 store drain (see the store-drain completion entry below).
 
 ---
 
@@ -514,8 +514,8 @@ Status (implementation):
   OM. Full overlap/double buffering is still a throughput optimization.
   (Superseded 2026-09-01: admission is now gated only on raster-idle and
   producer-slot availability — see the per-draw overlap entry above.)
-- Remaining: completion contracts that include the final shared-L2 store
-  drain (the overlap/double-buffering half is complete, 2026-09-01).
+- Remaining: none — the store-drain completion contract landed 2026-09-01
+  (see the per-draw overlap entry above).
 
 Resolved — off-chip memory arbitration via `SharedL2Cache` (2026-08-26).
 `RenderCoreL2` (`src/main/scala/opengpu/graphics/RenderCoreL2.scala`) composes
@@ -560,7 +560,10 @@ verifying: `RenderCoreL2.io.done` fires when the OM accepts its final write
 request, while the write-through store is still in the L2's store queue — the
 readback side must fence (the spec now services the off-chip port until it
 has been quiet for 64 cycles).  A completion/fence signal that already
-implies store-drain belongs to the M6 host-interface work.  Regression:
+implies store-drain belongs to the M6 host-interface work.  (Resolved
+2026-09-01: `RenderCoreL2.io.done` now waits for the shared L2 to report
+`drained`, and the spec-side quiet-cycle fence is deleted — see the
+store-drain completion entry under M5 Phase D.)  Regression:
 `OutputMergerSpec` gains a model that releases write acks only while a later
 read is in flight, and `RenderCoreL2Spec` now runs the full depth test
 (`depthTestEnable = true`) through the shared L2, asserting every covered
@@ -910,8 +913,18 @@ Status (virtual display and DRM handoff, 2026-08-29):
   new `KernelFragStageSpec` overlap regression (draw 2 accepted and committed
   while batch 1 is in flight; outputs and retire events in submission order;
   alternating banks observed in memory) plus the full graphics suite and the
-  two-draw core-backed `RenderCoreSpec` regression. Still open: a
-  completion/fence that already implies the final shared-L2 store drain.
+  two-draw core-backed `RenderCoreSpec` regression.
+- **Store-drain completion contract complete (2026-09-01).** `SharedL2Cache`
+  gained a `drained` output: the request queues are empty, each slice FSM is
+  idle, no miss fill is in flight, and every store-table entry has been freed
+  (freed means its write-through transaction was acknowledged by the lower
+  memory).  `RenderCoreL2.io.done` now fires only once `core.io.done` holds
+  AND the L2 reports drained, so completion implies the frame is visible in
+  the off-chip memory — the readback-side "quiet for 64 cycles" fence hack in
+  `RenderCoreL2Spec` is deleted; both L2 tests now read the framebuffer the
+  moment `done` is observed.  This closes the M6 host-interface requirement
+  that the completion status/IRQ already imply store drain (the driver can
+  read the frame at DONE without a software fence).
 - **Draw-token/context FIFO complete (2026-09-01).** Each admitted draw now
   pushes one `DrawContextFifo` entry (`DrawContextFifo.scala`) binding its
   shader descriptor, sampler configuration and OM render-target state.

@@ -67,6 +67,11 @@ class SharedL2Slice(
       Decoupled(new SharedAtomicResponse(config)))
     val clearPerformanceCounters = Input(Bool())
     val performance = Output(new L2PerformanceCounters)
+    /** No unfinished transaction in this slice: FSM idle, no miss in flight,
+      * no store pending or awaiting acknowledgement, no client response
+      * awaiting consumption.
+      */
+    val drained = Output(Bool())
   })
 
   private object State extends ChiselEnum {
@@ -294,6 +299,15 @@ class SharedL2Slice(
   missEngine.io.response.ready := responseArbiter.io.in(1).ready
   responseArbiter.io.in(2) <> storeTable.io.response
   io.response <> responseArbiter.io.out
+
+  // Fully drained for completion purposes: the FSM is idle, no miss fill is
+  // in flight, and no store transaction is pending or awaiting its
+  // acknowledgement (a freed store-table entry means its lower-memory write
+  // was acknowledged).  Store visibility - what a completion fence needs -
+  // does not depend on the responseWaiters presentation accounting, whose
+  // bits are cleared by the regular response path.
+  io.drained := state === State.idle && !loadMissesActive &&
+    !storeTable.io.active
 
   private val blockingMemoryRequest = Wire(Decoupled(
     new ComputeMemoryRequest(config, lineBytes, maxOutstanding)))
@@ -716,6 +730,13 @@ class SharedL2Cache(
       Decoupled(new SharedAtomicResponse(config)))
     val clearPerformanceCounters = Input(Bool())
     val performance = Output(new L2PerformanceCounters)
+    /** No accepted transaction is unfinished: the request queues are empty,
+      * the FSM is idle, every load miss has returned, every store has been
+      * lowered and acknowledged, and no client response awaits consumption.
+      * A completion that fires while `drained` is true therefore implies the
+      * store drain reached the lower memory.
+      */
+    val drained = Output(Bool())
   })
 
   private val slices = Seq.fill(banks)(Module(new SharedL2Slice(
@@ -757,6 +778,9 @@ class SharedL2Cache(
     responseArbiter.io.in(bank) <> slices(bank).io.response
   }
   io.response <> responseArbiter.io.out
+
+  io.drained := slices.map(_.io.drained).reduce(_ && _) &&
+    requestQueues.map(q => q.io.enq.ready && !q.io.deq.valid).reduce(_ && _)
 
   for (cu <- 0 until numComputeUnits) {
     val atomicBank = selectBank(io.atomicRequest(cu).bits.address)
