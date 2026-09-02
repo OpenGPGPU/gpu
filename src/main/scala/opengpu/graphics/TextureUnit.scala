@@ -89,9 +89,10 @@ object TexWrap {
   * The four taps of one mip level are issued in consecutive cycles through
   * one `OmMemoryRequest` word port, with up to four reads outstanding.  The
   * response's echoed byte address routes out-of-order completions back to the
-  * matching tap; duplicate clamp addresses consume the first still-pending
-  * matching slot.  Trilinear sampling keeps the two four-tap level groups
-  * sequential, bounding the required downstream transaction capacity at four.
+  * matching tap. Duplicate clamp addresses are coalesced into one physical
+  * read and its response fills every matching logical tap. Trilinear sampling
+  * keeps the two four-tap level groups sequential, bounding the required
+  * downstream transaction capacity at four.
   */
 class TextureUnit(
   gfxConfig: GraphicsConfig = GraphicsConfig()
@@ -139,8 +140,9 @@ class TextureUnit(
   private val fxReg = RegInit(0.U(8.W))
   private val fyReg = RegInit(0.U(8.W))
 
-  // Four per-level reads. `tapIssued` makes request bits stable under memory
-  // backpressure; `tapReceived` allows responses to return in any order.
+  // Four logical per-level reads. `tapIssued` marks physical requests, which
+  // are coalesced when clamp addressing makes logical taps share an address.
+  // `tapReceived` tracks the four blend inputs independently.
   private val tapAddrs = Reg(Vec(4, UInt(32.W)))
   private val tapIssued = RegInit(0.U(4.W))
   private val tapReceived = RegInit(0.U(4.W))
@@ -213,7 +215,14 @@ class TextureUnit(
   private def tapAddr(xIdx: UInt, yIdx: UInt): UInt =
     levelBase + ((yIdx * levelW + xIdx) << 2)
 
-  private val unissued = ~tapIssued
+  // The first logical tap at an address owns its physical request. This keeps
+  // request selection deterministic even when a clamped corner maps all four
+  // bilinear taps onto one texel.
+  private val tapLeaders = VecInit((0 until 4).map { i =>
+    if (i == 0) true.B
+    else !VecInit((0 until i).map(j => tapAddrs(j) === tapAddrs(i))).asUInt.orR
+  })
+  private val unissued = ~tapIssued & tapLeaders.asUInt
   private val hasUnissued = unissued.orR
   private val issueIdx = PriorityEncoder(unissued)
   io.mem.req.valid := state === sFetch && hasUnissued
@@ -222,18 +231,20 @@ class TextureUnit(
   io.mem.req.bits.data := 0.U
   io.mem.resp.ready := state === sFetch
 
-  // An address may intentionally appear more than once at a clamped edge.
-  // Each response consumes exactly one issued, not-yet-received matching tap;
-  // identical responses can therefore arrive in any order without ambiguity.
+  // A response belongs to its issued leader, then fills every as-yet-empty
+  // logical tap at that address. This preserves all four blend inputs without
+  // making redundant memory transactions at clamped edges.
   private val responseMatches = VecInit((0 until 4).map { i =>
     tapIssued(i) && !tapReceived(i) &&
       tapAddrs(i) === io.mem.resp.bits.addr
   })
   private val responseMatchBits = responseMatches.asUInt
-  private val responseIdx = PriorityEncoder(responseMatchBits)
   private val responseAccepted = io.mem.resp.fire && !io.mem.resp.bits.write
+  private val responseFillBits = VecInit((0 until 4).map { i =>
+    !tapReceived(i) && tapAddrs(i) === io.mem.resp.bits.addr
+  }).asUInt
   private val receivedAfterResponse =
-    tapReceived | UIntToOH(responseIdx, 4)
+    tapReceived | responseFillBits
 
   // ---------------------------------------------------------------------
   // Blend: fixed-point weights summing to exactly 65536, truncated shift.
@@ -327,7 +338,9 @@ class TextureUnit(
           "texture response must match an issued, pending tap address")
       }
       when(responseAccepted && responseMatchBits.orR) {
-        tapWords(responseIdx) := io.mem.resp.bits.data
+        for (i <- 0 until 4) {
+          when(responseFillBits(i)) { tapWords(i) := io.mem.resp.bits.data }
+        }
         tapReceived := receivedAfterResponse
         when(receivedAfterResponse.andR) { state := sBlend }
       }

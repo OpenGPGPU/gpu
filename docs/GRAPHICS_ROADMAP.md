@@ -62,7 +62,8 @@ Current limitations that still drive the remaining roadmap:
 1. Rasterization still emits one fragment at a time; wider raster issue is a
    performance iteration after functional M5 completion. Physical texture
    taps are no longer serialized: each bilinear level keeps four reads
-   outstanding (see the 2026-09-02 status entry below). The earlier limitation
+   outstanding, coalescing duplicate clamped addresses (see the 2026-09-02
+   status entry below). The earlier limitation
    list item on 2×2-quad derivatives, mip LOD and discard is also resolved.
 2. Per-draw overlap landed (2026-09-01): draw N+1's rasterization and
    kernarg staging accumulate in a second slot while batch N's kernel
@@ -960,9 +961,10 @@ Status (virtual display and DRM handoff, 2026-08-29):
   level, `TextureUnit` now issues its four word reads in consecutive cycles and
   tracks issued/received taps independently. Address-tagged responses may
   return out of order; clamped taps that intentionally share one texel address
-  consume separate pending slots without ambiguity. Trilinear filtering keeps
-  the two mip groups sequential, so downstream capacity remains bounded at
-  four outstanding reads rather than eight. `TextureUnitSpec` proves
+  are coalesced into one request and fan their response out to every logical
+  tap. Trilinear filtering keeps the two mip groups sequential, so downstream
+  capacity remains bounded at four outstanding reads rather than eight.
+  `TextureUnitSpec` proves
   last-request-first completion, consecutive issue, repeated edge addresses,
   exact randomized filtering and result backpressure; `TexSampleUnitSpec`,
   `KernelFragStageSpec` and `RenderCoreL2Spec` cover the vector sampler and

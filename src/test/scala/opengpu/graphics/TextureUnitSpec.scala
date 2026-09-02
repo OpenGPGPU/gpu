@@ -280,6 +280,37 @@ class TextureUnitSpec extends AnyFlatSpec {
     }
   }
 
+  it should "coalesce duplicate clamped taps into one physical read" in {
+    val mem = new TexMem(0x4000L, width = 4, height = 4)
+    simulate(new TextureUnit()) { dut =>
+      attach(dut, mem, wrapClamp = true)
+      for (y <- 0 until 4; x <- 0 until 4)
+        mem.put(x, y, texel(x * 40, y * 40, 0))
+
+      // Both axes clamp to their final texel, so all four bilinear inputs are
+      // identical. The blend still needs four logical words, but only one
+      // memory response should supply them.
+      val stats = new SampleStats
+      val got = runSample(dut, mem, q(1.75), q(1.75), stats = Some(stats))
+      assert(got == mem.texel(3, 3),
+        f"coalesced edge sample got ${got.toHexString}")
+      assert(stats.requestAddrs == Seq(0x403cL),
+        s"expected one edge read, got ${stats.requestAddrs.mkString(",")}")
+      assert(stats.responseAddrs == stats.requestAddrs,
+        s"response did not match coalesced request: ${stats.responseAddrs.mkString(",")}")
+
+      // Clamping only X still leaves two distinct Y taps. Check that the
+      // coalescer neither loses a unique address nor aliases its response.
+      val partialStats = new SampleStats
+      val partial = runSample(dut, mem, q(1.75), q(0.5),
+        stats = Some(partialStats))
+      assert(partial == refSample(mem, clampMode = true, q(1.75), q(0.5)),
+        f"partially coalesced sample got ${partial.toHexString}")
+      assert(partialStats.requestAddrs == Seq(0x401cL, 0x402cL),
+        s"expected two unique edge reads, got ${partialStats.requestAddrs.mkString(",")}")
+    }
+  }
+
   it should "tile with REPEAT across the seam" in {
     val mem = new TexMem(0x4000L, width = 4, height = 4)
     simulate(new TextureUnit()) { dut =>

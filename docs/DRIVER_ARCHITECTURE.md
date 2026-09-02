@@ -107,7 +107,8 @@ binding's base, dimensions, wrap mode and validated packed mip count. The
 driver sums every advertised mip extent and rejects truncated chains. Vector
 sampling derives integer and fractional LOD from each quad's UV gradients,
 then performs trilinear filtering with four concurrent tap reads per mip
-level. Unmasked
+level. Duplicate clamped bilinear taps are coalesced into one physical read.
+Unmasked
 `vquad.dfdx/dfdy` are
 admitted after VL setup with a defined VGPR source. The core rasterizer supplies
 complete TL/TR/BL/BR groups; helpers execute but immutable coverage suppresses
