@@ -86,10 +86,12 @@ object TexWrap {
   *   w00=(256-fx)(256-fy) w10=fx(256-fy) w01=(256-fx)fy w11=fx*fy
   * whose sum is exactly 65536, then shifts right by 16 (truncate).
   *
-  * The four taps are fetched serially through one `OmMemoryRequest` word port
-  * (the same word-port contract the OutputMerger and kernarg bridge use), so
-  * the unit drops into any memory fabric that already serves graphics word
-  * clients; a wider coalesced-tap fetch is a later optimisation.
+  * The four taps of one mip level are issued in consecutive cycles through
+  * one `OmMemoryRequest` word port, with up to four reads outstanding.  The
+  * response's echoed byte address routes out-of-order completions back to the
+  * matching tap; duplicate clamp addresses consume the first still-pending
+  * matching slot.  Trilinear sampling keeps the two four-tap level groups
+  * sequential, bounding the required downstream transaction capacity at four.
   */
 class TextureUnit(
   gfxConfig: GraphicsConfig = GraphicsConfig()
@@ -110,12 +112,12 @@ class TextureUnit(
     }
   })
 
-  // sBlend exists so the final tap's write commits before the blend reads it
-  // (same-cycle read/write on tapWords would otherwise latch stale data).
+  // sBlend exists so the final response's tapWords write commits before the
+  // blend reads it (same-cycle write + blend-read would otherwise use stale
+  // data).
   // sLevel walks the mip chain between accept and tap decode (see the class
   // doc); level 0 takes one decode cycle without changing base or dimensions.
-  private val sIdle :: sLevel :: sReq :: sResp :: sBlend :: sDone :: Nil =
-    Enum(6)
+  private val sIdle :: sLevel :: sFetch :: sBlend :: sDone :: Nil = Enum(5)
   private val state = RegInit(sIdle)
 
   // Level-walk state latched at accept: the request pins are only stable
@@ -134,15 +136,14 @@ class TextureUnit(
 
   // Tap geometry latched at accept time so the memory latency window touches
   // no live multiplies: clamped/wrapped corner indices and 8-bit fractions.
-  private val x0Reg = RegInit(0.U(14.W))
-  private val x1Reg = RegInit(0.U(14.W))
-  private val y0Reg = RegInit(0.U(14.W))
-  private val y1Reg = RegInit(0.U(14.W))
   private val fxReg = RegInit(0.U(8.W))
   private val fyReg = RegInit(0.U(8.W))
-  private val tapIdx = RegInit(0.U(2.W))
 
-  // Four fetched texel words.
+  // Four per-level reads. `tapIssued` makes request bits stable under memory
+  // backpressure; `tapReceived` allows responses to return in any order.
+  private val tapAddrs = Reg(Vec(4, UInt(32.W)))
+  private val tapIssued = RegInit(0.U(4.W))
+  private val tapReceived = RegInit(0.U(4.W))
   private val tapWords = Reg(Vec(4, UInt(32.W)))
 
   // Blended result held until result.fire.
@@ -212,16 +213,27 @@ class TextureUnit(
   private def tapAddr(xIdx: UInt, yIdx: UInt): UInt =
     levelBase + ((yIdx * levelW + xIdx) << 2)
 
-  // Tap coordinates by lane bit: bit0 selects the +x column, bit1 the +y row.
-  private val selX = Mux(tapIdx(0), x1Reg, x0Reg)
-  private val selY = Mux(tapIdx(1), y1Reg, y0Reg)
-  private val tapAddrWire = WireDefault(tapAddr(selX, selY))
-
-  io.mem.req.valid := state === sReq
+  private val unissued = ~tapIssued
+  private val hasUnissued = unissued.orR
+  private val issueIdx = PriorityEncoder(unissued)
+  io.mem.req.valid := state === sFetch && hasUnissued
   io.mem.req.bits.write := false.B
-  io.mem.req.bits.addr := tapAddrWire
+  io.mem.req.bits.addr := tapAddrs(issueIdx)
   io.mem.req.bits.data := 0.U
-  io.mem.resp.ready := state === sResp
+  io.mem.resp.ready := state === sFetch
+
+  // An address may intentionally appear more than once at a clamped edge.
+  // Each response consumes exactly one issued, not-yet-received matching tap;
+  // identical responses can therefore arrive in any order without ambiguity.
+  private val responseMatches = VecInit((0 until 4).map { i =>
+    tapIssued(i) && !tapReceived(i) &&
+      tapAddrs(i) === io.mem.resp.bits.addr
+  })
+  private val responseMatchBits = responseMatches.asUInt
+  private val responseIdx = PriorityEncoder(responseMatchBits)
+  private val responseAccepted = io.mem.resp.fire && !io.mem.resp.bits.write
+  private val receivedAfterResponse =
+    tapReceived | UIntToOH(responseIdx, 4)
 
   // ---------------------------------------------------------------------
   // Blend: fixed-point weights summing to exactly 65536, truncated shift.
@@ -283,19 +295,20 @@ class TextureUnit(
         lodFracReg := Mux(selectedLevel < io.texMaxLevel,
           io.sample.bits.lodFrac, 0.U)
         secondLevel := false.B
-        tapIdx := 0.U
         state := sLevel
       }
     }
     is(sLevel) {
       when(levelSteps === 0.U) {
-        x0Reg := decX._1
-        x1Reg := decX._2
         fxReg := decX._3
-        y0Reg := decY._1
-        y1Reg := decY._2
         fyReg := decY._3
-        state := sReq
+        tapAddrs(0) := tapAddr(decX._1, decY._1)
+        tapAddrs(1) := tapAddr(decX._2, decY._1)
+        tapAddrs(2) := tapAddr(decX._1, decY._2)
+        tapAddrs(3) := tapAddr(decX._2, decY._2)
+        tapIssued := 0.U
+        tapReceived := 0.U
+        state := sFetch
       }.otherwise {
         levelBase := levelBase + ((levelW * levelH) << 2)
         levelW := Mux(levelW === 1.U, 1.U, levelW >> 1)
@@ -303,18 +316,20 @@ class TextureUnit(
         levelSteps := levelSteps - 1.U
       }
     }
-    is(sReq) {
-      when(io.mem.req.fire) { state := sResp }
-    }
-    is(sResp) {
+    is(sFetch) {
+      when(io.mem.req.fire) {
+        tapIssued := tapIssued | UIntToOH(issueIdx, 4)
+      }
       when(io.mem.resp.fire) {
-        tapWords(tapIdx) := io.mem.resp.bits.data
-        when(tapIdx === 3.U) {
-          state := sBlend
-        }.otherwise {
-          tapIdx := tapIdx + 1.U
-          state := sReq
-        }
+        assert(!io.mem.resp.bits.write,
+          "texture reads must not receive a write acknowledgement")
+        assert(responseMatchBits.orR,
+          "texture response must match an issued, pending tap address")
+      }
+      when(responseAccepted && responseMatchBits.orR) {
+        tapWords(responseIdx) := io.mem.resp.bits.data
+        tapReceived := receivedAfterResponse
+        when(receivedAfterResponse.andR) { state := sBlend }
       }
     }
     is(sBlend) {
@@ -327,7 +342,6 @@ class TextureUnit(
         levelW := io.texWidth
         levelH := io.texHeight
         levelSteps := baseMipLevel + 1.U
-        tapIdx := 0.U
         secondLevel := true.B
         state := sLevel
       }.otherwise {

@@ -105,7 +105,9 @@ only when its UV VGPRs are defined, it is unmasked, and the same submit carries
 a validated texture GEM; the hardware sampler derives all addresses from that
 binding's base, dimensions, wrap mode and validated packed mip count. The
 driver sums every advertised mip extent and rejects truncated chains. Vector
-sampling derives a nearest LOD from each quad's UV gradients. Unmasked
+sampling derives integer and fractional LOD from each quad's UV gradients,
+then performs trilinear filtering with four concurrent tap reads per mip
+level. Unmasked
 `vquad.dfdx/dfdy` are
 admitted after VL setup with a defined VGPR source. The core rasterizer supplies
 complete TL/TR/BL/BR groups; helpers execute but immutable coverage suppresses

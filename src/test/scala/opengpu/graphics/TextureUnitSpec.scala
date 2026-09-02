@@ -113,13 +113,20 @@ class TextureUnitSpec extends AnyFlatSpec {
   }
 
   /** One sample transaction driven through a single continuous service loop
-    * (the pattern proven by GpuHostAxiSpec): accept, answer the four word
-    * fetches with one-cycle latency each, consume the held result.
+    * (the pattern proven by GpuHostAxiSpec): accept, capture every fired word
+    * request, return address-tagged responses with at least one cycle of
+    * latency, and consume the held result.
     *
     * If `stallOnValid` cycles > 0 the consumer deliberately stalls once the
     * result appears; the returned value is what was visible DURING the stall,
     * which checks that the held result neither changes nor leaks.
     */
+  private class SampleStats {
+    val requestCycles = mutable.ArrayBuffer.empty[Int]
+    val requestAddrs = mutable.ArrayBuffer.empty[Long]
+    val responseAddrs = mutable.ArrayBuffer.empty[Long]
+  }
+
   private def runSample(
     dut: TextureUnit,
     mem: TexMem,
@@ -128,14 +135,18 @@ class TextureUnitSpec extends AnyFlatSpec {
     mipLevel: Int = 0,
     lodFrac: Int = 0,
     stallCycles: Int = 0,
-    maxCycles: Int = 400
+    maxCycles: Int = 400,
+    reverseResponses: Boolean = false,
+    stats: Option[SampleStats] = None
   ): Int = {
     dut.io.sample.valid.poke(true.B)
     dut.io.sample.bits.u.poke(u.U)
     dut.io.sample.bits.v.poke(v.U)
     dut.io.sample.bits.mipLevel.poke(mipLevel.U)
     dut.io.sample.bits.lodFrac.poke(lodFrac.U)
-    var pendingAddr = -1L
+    val pending = mutable.ArrayBuffer.empty[Long]
+    val captured = mutable.ArrayBuffer.empty[Long]
+    var releaseReverseBatch = !reverseResponses
     var accepted = false
     var seenValue = false
     var value = 0
@@ -148,18 +159,38 @@ class TextureUnitSpec extends AnyFlatSpec {
       else if (dut.io.sample.valid.peek().litToBoolean &&
         dut.io.sample.ready.peek().litToBoolean) accepted = true
 
-      // Response side: present the captured fetch one cycle late.
-      if (pendingAddr >= 0) {
+      // Requests captured last cycle become response candidates now. In the
+      // reverse-order mode, hold a complete four-tap level batch, then return
+      // it last-request-first to exercise address-based response routing.
+      pending ++= captured
+      captured.clear()
+      if (reverseResponses && !releaseReverseBatch && pending.size >= 4)
+        releaseReverseBatch = true
+      val responseIdx =
+        if (reverseResponses) pending.size - 1 else 0
+      if (pending.nonEmpty && releaseReverseBatch) {
+        val responseAddr = pending(responseIdx)
         dut.io.mem.resp.valid.poke(true.B)
         dut.io.mem.resp.bits.data.poke(
-          BigInt(mem.read(pendingAddr) & 0xffffffffL).U)
+          BigInt(mem.read(responseAddr) & 0xffffffffL).U)
         dut.io.mem.resp.bits.write.poke(false.B)
+        dut.io.mem.resp.bits.addr.poke(responseAddr.U)
         if (dut.io.mem.resp.valid.peek().litToBoolean &&
-          dut.io.mem.resp.ready.peek().litToBoolean) pendingAddr = -1L
+          dut.io.mem.resp.ready.peek().litToBoolean) {
+          stats.foreach(_.responseAddrs += responseAddr)
+          pending.remove(responseIdx)
+          if (reverseResponses && pending.isEmpty) releaseReverseBatch = false
+        }
       } else dut.io.mem.resp.valid.poke(false.B)
-      if (pendingAddr < 0 && dut.io.mem.req.valid.peek().litToBoolean &&
-        dut.io.mem.req.ready.peek().litToBoolean)
-        pendingAddr = dut.io.mem.req.bits.addr.peek().litValue.toLong
+      if (dut.io.mem.req.valid.peek().litToBoolean &&
+        dut.io.mem.req.ready.peek().litToBoolean) {
+        val requestAddr = dut.io.mem.req.bits.addr.peek().litValue.toLong
+        captured += requestAddr
+        stats.foreach { s =>
+          s.requestCycles += guard
+          s.requestAddrs += requestAddr
+        }
+      }
 
       // Result side: optionally stall first, then consume.
       dut.io.result.ready.poke(false.B)
@@ -204,6 +235,32 @@ class TextureUnitSpec extends AnyFlatSpec {
       val gotQuarter = runSample(dut, mem, q(0.25), q(0.25))
       assert(gotQuarter == expectQuarter,
         f"quarter-point hw=${gotQuarter.toHexString} ref=${expectQuarter.toHexString}")
+    }
+  }
+
+  it should "issue four taps consecutively and route reversed responses" in {
+    val mem = new TexMem(0x4000L, width = 2, height = 2)
+    simulate(new TextureUnit()) { dut =>
+      attach(dut, mem, wrapClamp = false)
+      mem.put(0, 0, texel(0x10, 0x20, 0x30))
+      mem.put(1, 0, texel(0x40, 0x50, 0x60))
+      mem.put(0, 1, texel(0x70, 0x80, 0x90))
+      mem.put(1, 1, texel(0xa0, 0xb0, 0xc0))
+
+      val stats = new SampleStats
+      val got = runSample(dut, mem, q(0.5), q(0.5),
+        reverseResponses = true, stats = Some(stats))
+      val expect = refSample(mem, clampMode = false, q(0.5), q(0.5))
+      assert(got == expect,
+        f"reversed completion hw=${got.toHexString} ref=${expect.toHexString}")
+      assert(stats.requestCycles.size == 4,
+        s"expected four tap requests, got ${stats.requestCycles.size}")
+      assert(stats.requestCycles.zip(stats.requestCycles.drop(1)).forall {
+        case (a, b) => b == a + 1
+      }, s"tap requests were not consecutive: ${stats.requestCycles.mkString(",")}")
+      assert(stats.responseAddrs == stats.requestAddrs.reverse,
+        s"responses were not reversed: req=${stats.requestAddrs.mkString(",")} " +
+          s"resp=${stats.responseAddrs.mkString(",")}")
     }
   }
 

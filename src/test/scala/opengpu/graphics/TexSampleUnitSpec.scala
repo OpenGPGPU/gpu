@@ -66,6 +66,7 @@ class TexSampleUnitSpec extends AnyFlatSpec {
           dut.io.mem.resp.valid.poke(true.B)
           dut.io.mem.resp.bits.data.poke(words(pending.front).U)
           dut.io.mem.resp.bits.write.poke(false.B)
+          dut.io.mem.resp.bits.addr.poke(pending.front.U)
           if (dut.io.mem.resp.ready.peek().litToBoolean) {
             pending.dequeue()
             responses += 1
@@ -146,6 +147,7 @@ class TexSampleUnitSpec extends AnyFlatSpec {
           dut.io.mem.resp.valid.poke(true.B)
           dut.io.mem.resp.bits.data.poke(word.U)
           dut.io.mem.resp.bits.write.poke(false.B)
+          dut.io.mem.resp.bits.addr.poke(addr.U)
           if (dut.io.mem.resp.ready.peek().litToBoolean) pending.dequeue()
         } else dut.io.mem.resp.valid.poke(false.B)
         if (dut.io.mem.req.valid.peek().litToBoolean &&
@@ -200,6 +202,7 @@ class TexSampleUnitSpec extends AnyFlatSpec {
           // Level 0 is 4x4 at [0x2000,0x2040); level 1 begins at 0x2040.
           dut.io.mem.resp.bits.data.poke((if (addr < 0x2040L) green else red).U)
           dut.io.mem.resp.bits.write.poke(false.B)
+          dut.io.mem.resp.bits.addr.poke(addr.U)
           if (dut.io.mem.resp.ready.peek().litToBoolean) pending.dequeue()
         } else dut.io.mem.resp.valid.poke(false.B)
         if (dut.io.mem.req.valid.peek().litToBoolean &&

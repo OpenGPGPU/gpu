@@ -59,10 +59,11 @@ ALU, register files, L1/L2 (SharedL2Slice), memory hierarchy with a standardized
 
 Current limitations that still drive the remaining roadmap:
 
-1. Rasterization and physical texture taps are serialized; wider issue/fetch
-   is a performance iteration after functional M5 completion.  (The earlier
-   limitation list item on 2×2-quad derivatives, mip LOD and discard is
-   resolved — see the M5/M7 status entries.)
+1. Rasterization still emits one fragment at a time; wider raster issue is a
+   performance iteration after functional M5 completion. Physical texture
+   taps are no longer serialized: each bilinear level keeps four reads
+   outstanding (see the 2026-09-02 status entry below). The earlier limitation
+   list item on 2×2-quad derivatives, mip LOD and discard is also resolved.
 2. Per-draw overlap landed (2026-09-01): draw N+1's rasterization and
    kernarg staging accumulate in a second slot while batch N's kernel
    executes on the SIMT lanes, and `RenderCoreL2.io.done` now implies the
@@ -955,6 +956,17 @@ Status (virtual display and DRM handoff, 2026-08-29):
   their exact integer-level behaviour. Hardware-side
   per-draw overlap/double buffering is complete (see the per-draw overlap
   entry above).
+- **Parallel texture-tap fetch complete (2026-09-02).** For each bilinear mip
+  level, `TextureUnit` now issues its four word reads in consecutive cycles and
+  tracks issued/received taps independently. Address-tagged responses may
+  return out of order; clamped taps that intentionally share one texel address
+  consume separate pending slots without ambiguity. Trilinear filtering keeps
+  the two mip groups sequential, so downstream capacity remains bounded at
+  four outstanding reads rather than eight. `TextureUnitSpec` proves
+  last-request-first completion, consecutive issue, repeated edge addresses,
+  exact randomized filtering and result backpressure; `TexSampleUnitSpec`,
+  `KernelFragStageSpec` and `RenderCoreL2Spec` cover the vector sampler and
+  shared-L2 integration paths.
 - **Source-over output blending complete (2026-09-01).** `OutputMerger`
   reads a passing fragment's destination colour and applies exact rounded
   RGBA8888 source-over composition. Each fragment serializes that read behind
