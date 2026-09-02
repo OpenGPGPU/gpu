@@ -35,6 +35,7 @@ class GpuHostAxi(
   config: GraphicsConfig = GraphicsConfig(),
   gpuConfig: GpuConfig = GpuConfig(),
   fragCore: Boolean = false,
+  vertCore: Boolean = false,
   deviceId: Int = 0x4755,
   version: Int = 0x0001
 ) extends Module {
@@ -90,8 +91,8 @@ class GpuHostAxi(
     }
     val kernelMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig))
     val kernelMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
-    val kernelWordMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig))
-    val kernelWordMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
+    val kernelWordMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig, 64, 8))
+    val kernelWordMemResp = Flipped(Decoupled(new ComputeMemoryResponse(64, 8)))
     val kernelL1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(gpuConfig)))
     val kernelL1InvalidateDone = Decoupled(new CacheLineInvalidate(gpuConfig))
     val kernelGlobalAtomicRequest = Decoupled(new SharedAtomicRequest(gpuConfig))
@@ -104,7 +105,7 @@ class GpuHostAxi(
   })
 
   withClockAndReset(clock, !io.s_axi_aresetn) {
-    val host = Module(new RenderHost(config, gpuConfig, fragCore, deviceId, version))
+    val host = Module(new RenderHost(config, gpuConfig, fragCore, vertCore, deviceId, version))
 
     io.m_irq := host.io.irq
     host.io.cbMem.req <> io.cbMem.req

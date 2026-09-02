@@ -1,9 +1,121 @@
 package opengpu.graphics
 
 import chisel3._
+import chisel3.util._
 import chisel3.simulator.EphemeralSimulator._
 import opengpu.config.GpuConfig
+import opengpu.core.memory.{
+  CacheLineInvalidate,
+  ComputeMemoryRequest,
+  ComputeMemoryResponse,
+  SharedAtomicRequest,
+  SharedAtomicResponse
+}
 import org.scalatest.flatspec.AnyFlatSpec
+
+/** Test wrapper that provides an external KernelShaderStage to the
+  * KernelFragStage, matching the pre-refactor behavior where the kernel was
+  * internal.
+  */
+class KernelFragStageWithKernel(
+  config: GpuConfig = GpuConfig(),
+  gfxConfig: GraphicsConfig = GraphicsConfig()
+) extends Module {
+  // Expose the pre-refactor IO (without the new kernel ports)
+  val io = IO(new Bundle {
+    val fragIn = Flipped(Decoupled(new FragmentQuad(gfxConfig)))
+    val fragUv = Input(Vec(4, new TexUV))
+    val out = Decoupled(new RasterFragment(gfxConfig))
+    val shaderPc = Input(UInt(32.W))
+    val kernargBase = Input(UInt(32.W))
+    val kernargBankStride = Input(UInt(32.W))
+    val texBase = Input(UInt(32.W))
+    val texWidth = Input(UInt(14.W))
+    val texHeight = Input(UInt(14.W))
+    val texWrapClamp = Input(Bool())
+    val texMaxLevel = Input(UInt(4.W))
+    val texLodBias = Input(SInt(5.W))
+    val texMinLevel = Input(UInt(4.W))
+    val flush = Input(Bool())
+    val drained = Output(Bool())
+    val drawRetire = Decoupled(Bool())
+    val memReq = Decoupled(new ComputeMemoryRequest(config))
+    val memResp = Flipped(Decoupled(new ComputeMemoryResponse()))
+    val wordMemReq = Decoupled(new ComputeMemoryRequest(config))
+    val wordMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
+    val l1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(config)))
+    val l1InvalidateDone = Decoupled(new CacheLineInvalidate(config))
+    val globalAtomicRequest = Decoupled(new SharedAtomicRequest(config))
+    val globalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(config)))
+  })
+
+  private val frag = Module(new KernelFragStage(config, gfxConfig))
+  private val kernel = Module(new KernelShaderStage(config))
+
+  // Connect wrapper IO to frag stage's non-kernel ports
+  io.fragIn <> frag.io.fragIn
+  io.fragUv <> frag.io.fragUv
+  frag.io.out <> io.out
+  frag.io.shaderPc := io.shaderPc
+  frag.io.kernargBase := io.kernargBase
+  frag.io.kernargBankStride := io.kernargBankStride
+  frag.io.texBase := io.texBase
+  frag.io.texWidth := io.texWidth
+  frag.io.texHeight := io.texHeight
+  frag.io.texWrapClamp := io.texWrapClamp
+  frag.io.texMaxLevel := io.texMaxLevel
+  frag.io.texLodBias := io.texLodBias
+  frag.io.texMinLevel := io.texMinLevel
+  frag.io.flush := io.flush
+  io.drained := frag.io.drained
+  io.drawRetire <> frag.io.drawRetire
+  io.wordMemReq <> frag.io.wordMemReq
+  frag.io.wordMemResp <> io.wordMemResp
+
+  // Connect kernel internally: frag's kernel ports <-> kernel's IO
+  kernel.io.launch.valid := frag.io.kernelLaunch.valid
+  kernel.io.launch.kernelPc := frag.io.kernelLaunch.kernelPc
+  kernel.io.launch.kernargAddress := frag.io.kernelLaunch.kernargAddress
+  kernel.io.launch.gridX := frag.io.kernelLaunch.gridX
+  kernel.io.launch.gridY := frag.io.kernelLaunch.gridY
+  kernel.io.launch.gridZ := frag.io.kernelLaunch.gridZ
+  kernel.io.launch.localX := frag.io.kernelLaunch.localX
+  kernel.io.launch.localY := frag.io.kernelLaunch.localY
+  kernel.io.launch.localZ := frag.io.kernelLaunch.localZ
+  frag.io.kernelLaunch.ready := kernel.io.launch.ready
+
+  kernel.io.completion <> frag.io.kernelCompletion
+  kernel.io.trap <> frag.io.kernelTrap
+  kernel.io.simtBranch.valid := false.B
+  kernel.io.simtBranch.bits := 0.U.asTypeOf(kernel.io.simtBranch.bits)
+  frag.io.kernelSimtBranch.valid := false.B
+  frag.io.kernelSimtBranch.bits := 0.U.asTypeOf(frag.io.kernelSimtBranch.bits)
+  kernel.io.texSample <> frag.io.kernelTexSample
+  frag.io.kernelTexWriteback <> kernel.io.texWriteback
+  kernel.io.vectorTexSample <> frag.io.kernelVectorTexSample
+  frag.io.kernelVectorTexWriteback <> kernel.io.vectorTexWriteback
+
+  // Memory ports: kernel's memory requests are exposed directly to wrapper IO.
+  // The frag stage's memReq/memResp are unused after externalizing the kernel.
+  io.memReq <> kernel.io.memoryRequest
+  kernel.io.memoryResponse <> io.memResp
+  frag.io.memReq.ready := false.B
+  frag.io.memResp.valid := false.B
+  frag.io.memResp.bits := 0.U.asTypeOf(frag.io.memResp.bits)
+
+  // L1 invalidate and global atomic: connect frag's ports to wrapper IO.
+  // The kernel's corresponding ports are unused in this configuration.
+  io.l1Invalidate <> frag.io.l1Invalidate
+  io.l1InvalidateDone <> frag.io.l1InvalidateDone
+  io.globalAtomicRequest <> frag.io.globalAtomicRequest
+  frag.io.globalAtomicResponse <> io.globalAtomicResponse
+  kernel.io.l1Invalidate.valid := false.B
+  kernel.io.l1Invalidate.bits := 0.U.asTypeOf(kernel.io.l1Invalidate.bits)
+  kernel.io.l1InvalidateDone.ready := false.B
+  kernel.io.globalAtomicRequest.ready := false.B
+  kernel.io.globalAtomicResponse.valid := false.B
+  kernel.io.globalAtomicResponse.bits := 0.U.asTypeOf(kernel.io.globalAtomicResponse.bits)
+}
 
 class KernelFragStageSpec extends AnyFlatSpec {
   behavior of "KernelFragStage"
@@ -50,7 +162,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
 
   it should "alternate complete kernarg banks at batch boundaries" in {
     val config = GpuConfig(lanes = 4, warps = 2)
-    simulate(new KernelFragStage(config)) { dut =>
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
       val mem = new MemModel
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       pokeDefaults(dut)
@@ -138,7 +250,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
   private val LineMask = (BigInt(1) << 512) - 1
 
   private def pump(
-    dut: KernelFragStage,
+    dut: KernelFragStageWithKernel,
     mem: MemModel,
     pred: () => Boolean,
     guard: Int = 400
@@ -195,7 +307,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
     hit
   }
 
-  private def pokeDefaults(dut: KernelFragStage): Unit = {
+  private def pokeDefaults(dut: KernelFragStageWithKernel): Unit = {
     dut.io.fragIn.valid.poke(false.B)
     for (k <- 0 until 4) {
       dut.io.fragIn.bits.lanes(k).covered.poke(false.B)
@@ -225,7 +337,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
 
   /** Pokes all four lanes of `fragIn` (TL/TR/BL/BR) and their UVs without
     * firing; lanes beyond `frags.length` become uncovered helpers. */
-  private def pokeQuadLanes(dut: KernelFragStage, frags: Seq[Frag],
+  private def pokeQuadLanes(dut: KernelFragStageWithKernel, frags: Seq[Frag],
     uvs: Seq[(Int, Int)] = Seq.fill(4)((0, 0))): Unit = {
     for (k <- 0 until 4) {
       val f = if (k < frags.length) frags(k)
@@ -243,7 +355,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
   }
 
   /** Fires exactly one quad beat. */
-  private def fireQuad(dut: KernelFragStage, frags: Seq[Frag],
+  private def fireQuad(dut: KernelFragStageWithKernel, frags: Seq[Frag],
     uvs: Seq[(Int, Int)] = Seq.fill(4)((0, 0))): Unit = {
     pokeQuadLanes(dut, frags, uvs)
     dut.io.fragIn.valid.poke(true.B)
@@ -253,7 +365,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
 
   it should "shade a single fragment via a batched pass-through kernel" in {
     val config = GpuConfig(lanes = 4, warps = 2)
-    simulate(new KernelFragStage(config)) { dut =>
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
       val mem = new MemModel
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       pokeDefaults(dut)
@@ -287,7 +399,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
 
   it should "shade a single fragment through a kernel adding a uniform" in {
     val config = GpuConfig(lanes = 4, warps = 2)
-    simulate(new KernelFragStage(config)) { dut =>
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
       val mem = new MemModel
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       pokeDefaults(dut)
@@ -326,7 +438,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
 
   it should "discard a fragment whose shader clears output-valid" in {
     val config = GpuConfig(lanes = 4, warps = 2)
-    simulate(new KernelFragStage(config)) { dut =>
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
       val mem = new MemModel
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       pokeDefaults(dut)
@@ -363,7 +475,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
     // and ordering of every batched fragment are the contract under test.
     val config = GpuConfig(lanes = 4, warps = 2)
     val count = 3
-    simulate(new KernelFragStage(config)) { dut =>
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
       val mem = new MemModel
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       pokeDefaults(dut)
@@ -470,7 +582,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
     // its own colour back, not lane 0's.
     val config = GpuConfig(lanes = 4, warps = 2)
     val count = 4
-    simulate(new KernelFragStage(config)) { dut =>
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
       val mem = new MemModel
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       pokeDefaults(dut)
@@ -595,7 +707,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
     // TextureUnit fetches over the shared word bridge -> scalar commit
     // writeback of the packed texel word.
     val config = GpuConfig(lanes = 4, warps = 2)
-    simulate(new KernelFragStage(config)) { dut =>
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
       val mem = new MemModel
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       pokeDefaults(dut)
@@ -648,7 +760,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
 
   it should "consume quad UVs and write a dFdx-derived depth" in {
     val config = GpuConfig(lanes = 4, warps = 2)
-    simulate(new KernelFragStage(config)) { dut =>
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
       val mem = new MemModel
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       pokeDefaults(dut)
@@ -727,7 +839,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
     // in flight (not drained), and both draws complete in submission order
     // with one retire event each.
     val config = GpuConfig(lanes = 4, warps = 2)
-    simulate(new KernelFragStage(config)) { dut =>
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
       val mem = new MemModel
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       pokeDefaults(dut)
@@ -848,7 +960,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
 
   it should "retire exactly one event per draw boundary, including empty draws" in {
     val config = GpuConfig(lanes = 4, warps = 2)
-    simulate(new KernelFragStage(config)) { dut =>
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
       val mem = new MemModel
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       pokeDefaults(dut)

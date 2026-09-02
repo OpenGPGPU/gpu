@@ -61,6 +61,7 @@
 
 #define GPU_CAP_FRAGMENT_CORE   (1u << 0)
 #define GPU_CAP_JOB_QUEUE       (1u << 1)
+#define GPU_CAP_VERTEX_CORE     (1u << 2)
 #define GPU_CAP_FRAGMENT_BATCH_SHIFT 8u
 #define GPU_CAP_FRAGMENT_BATCH_MASK  (0xffu << GPU_CAP_FRAGMENT_BATCH_SHIFT)
 
@@ -192,6 +193,98 @@ struct gpu_draw_record {
 #define GPU_KERNARG_UNIFORM_OFF(s)(9u * (s))
 #define GPU_KERNARG_BANKS          2u
 #define GPU_KERNARG_BANK_ALIGN     64u
+
+/* ---------------------------------------------------------------------------
+ * Vertex-core draw-call record (CommandBufferStage with vertCore=true),
+ * 40 32-bit words, little-endian.  Replaces the legacy triangle record when
+ * the GPU_CAP_VERTEX_CORE capability is present and the driver opts in.
+ *                                                                   word idx
+ *   vertex buffer base address                                         [0]
+ *   vertex count (must be multiple of 3)                               [1]
+ *   vertex stride in bytes (initially fixed at 32)                     [2]
+ *   vertex shader entry PC                                             [3]
+ *   vertex kernarg buffer address (64-byte aligned)                    [4]
+ *   vertex kernarg bank stride                                         [5]
+ *   vertex attribute format (0 = fixed layout)                         [6]
+ *   reserved, must be zero                                             [7..23]
+ *   fragment shader entry PC                                           [24]
+ *   fragment kernarg address                                           [25]
+ *   reserved                                                           [26..31]
+ *   state override flags (same encoding as legacy record)              [32]
+ *   LOD bias [4:0], minimum mip clamp [11:8]                          [33]
+ *   fragment kernarg bank stride                                       [34]
+ *   reserved                                                           [35..39]
+ *
+ * Vertex buffer layout (format=0, 32 bytes per vertex):
+ *   word 0-3: posX/Y/Z/W (Q16.16 signed)
+ *   word 4:   packed RGBA8888 colour
+ *   word 5:   depth (signed i32)
+ *   word 6:   texU (unsigned Q16.16)
+ *   word 7:   texV (unsigned Q16.16)
+ * ------------------------------------------------------------------------ */
+#define GPU_VERT_DRAW_WORDS 40u
+struct gpu_vert_draw_record {
+    u32 vert_buffer_base;
+    u32 vert_count;
+    u32 vert_stride;
+    u32 vert_shader_pc;
+    u32 vert_kernarg;
+    u32 vert_kernarg_bank_stride;
+    u32 vert_attr_format;
+    u32 reserved0[17];
+    u32 frag_shader_pc;
+    u32 frag_kernarg;
+    u32 reserved1[6];
+    u32 state;
+    u32 sampler;
+    u32 frag_kernarg_bank_stride;
+    u32 reserved2[5];
+};
+
+/* ---------------------------------------------------------------------------
+ * Vertex kernarg SoA ABI (core-backed vertex shading, batched).
+ * `stride = 4 * warps * lanes` (128 for default GpuConfig: warps=4, lanes=8).
+ *
+ * Inputs (hardware-staged from vertex buffer):
+ *   [0*stride, 1*stride)   pos_x (i32 Q16.16)
+ *   [1*stride, 2*stride)   pos_y (i32 Q16.16)
+ *   [2*stride, 3*stride)   pos_z (i32 Q16.16)
+ *   [3*stride, 4*stride)   pos_w (i32 Q16.16)
+ *   [4*stride, 5*stride)   colour (u32 RGBA8888)
+ *   [5*stride, 6*stride)   depth (i32)
+ *   [6*stride, 7*stride)   tex_u (u32 Q16.16)
+ *   [7*stride, 8*stride)   tex_v (u32 Q16.16)
+ *
+ * Outputs (kernel writes, hardware reads back):
+ *   [8*stride, 9*stride)   clip_x (i32 Q16.16)
+ *   [9*stride, 10*stride)  clip_y (i32 Q16.16)
+ *   [10*stride, 11*stride) clip_z (i32 Q16.16)
+ *   [11*stride, 12*stride) clip_w (i32 Q16.16)
+ *   [12*stride, 13*stride) out_colour (u32 RGBA8888)
+ *   [13*stride, 14*stride) out_depth (i32)
+ *   [14*stride, 15*stride) out_u (u32 Q16.16)
+ *   [15*stride, 16*stride) out_v (u32 Q16.16)
+ *
+ *   [16*stride, ...)       per-draw uniforms (MVP matrix etc.)
+ * ------------------------------------------------------------------------ */
+#define GPU_VERT_KERNARG_STRIDE(w, l)  (4u * (w) * (l))
+#define GPU_VERT_KERNARG_POS_X_OFF(s)  (0u * (s))
+#define GPU_VERT_KERNARG_POS_Y_OFF(s)  (1u * (s))
+#define GPU_VERT_KERNARG_POS_Z_OFF(s)  (2u * (s))
+#define GPU_VERT_KERNARG_POS_W_OFF(s)  (3u * (s))
+#define GPU_VERT_KERNARG_COLOR_OFF(s)  (4u * (s))
+#define GPU_VERT_KERNARG_DEPTH_OFF(s)  (5u * (s))
+#define GPU_VERT_KERNARG_TEX_U_OFF(s)  (6u * (s))
+#define GPU_VERT_KERNARG_TEX_V_OFF(s)  (7u * (s))
+#define GPU_VERT_KERNARG_CLIP_X_OFF(s) (8u * (s))
+#define GPU_VERT_KERNARG_CLIP_Y_OFF(s) (9u * (s))
+#define GPU_VERT_KERNARG_CLIP_Z_OFF(s) (10u * (s))
+#define GPU_VERT_KERNARG_CLIP_W_OFF(s) (11u * (s))
+#define GPU_VERT_KERNARG_OUT_COLOR_OFF(s) (12u * (s))
+#define GPU_VERT_KERNARG_OUT_DEPTH_OFF(s) (13u * (s))
+#define GPU_VERT_KERNARG_OUT_U_OFF(s)  (14u * (s))
+#define GPU_VERT_KERNARG_OUT_V_OFF(s)  (15u * (s))
+#define GPU_VERT_KERNARG_UNIFORM_OFF(s) (16u * (s))
 
 /* ---------------------------------------------------------------------------
  * Job ring descriptor (JobQueue), 16 32-bit words (64 bytes), little-endian.

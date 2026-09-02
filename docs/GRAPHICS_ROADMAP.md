@@ -518,6 +518,18 @@ Status (implementation):
   producer-slot availability — see the per-draw overlap entry above.)
 - Remaining: none — the store-drain completion contract landed 2026-09-01
   (see the per-draw overlap entry above).
+- **Shared vertex/fragment CU (2026-09-02).** `KernelVertStage` now exposes
+  the same external kernel-control interface as `KernelFragStage`; in
+  `RenderPipeline(vertCore = true)` both feed one `KernelShaderStage`.  A
+  launch-owner register routes completion and trap events to the issuing
+  stage. The vertex and fragment word bridges retain independent four-ID
+  ranges; the shared port prefixes each local ID with its stage, preserving
+  up to eight outstanding requests and routing responses without aliasing.
+  Vertex-command admission waits for the active vertex
+  draw to complete, preventing descriptor overwrite or dropped draws.
+  `RenderPipelineSpec` elaborates this combined configuration, and the
+  standalone vertex-stage regression remains available through its test-only
+  compatibility CU.
 
 Resolved — off-chip memory arbitration via `SharedL2Cache` (2026-08-26).
 `RenderCoreL2` (`src/main/scala/opengpu/graphics/RenderCoreL2.scala`) composes

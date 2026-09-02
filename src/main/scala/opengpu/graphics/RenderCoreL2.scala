@@ -41,6 +41,7 @@ class RenderCoreL2(
   gfxConfig: GraphicsConfig = GraphicsConfig(),
   gpuConfig: GpuConfig = GpuConfig(),
   fragCore: Boolean = false,
+  vertCore: Boolean = false,
   lineBytes: Int = 64,
   sets: Int = 8,
   ways: Int = 2,
@@ -49,7 +50,9 @@ class RenderCoreL2(
   useSramBlackBoxes: Boolean = false
 ) extends Module {
   require(lineBytes == 64, "current cache hierarchy uses 64-byte lines")
-  private val perClientOutstanding = 4
+  // The kernel word port multiplexes vertex and fragment bridges, each with
+  // four IDs, so every L2 client gets an eight-ID slice.
+  private val perClientOutstanding = 8
   private val numClients = 5
   private val totalOutstanding = perClientOutstanding * numClients
   private val txnWidth = math.max(1, log2Ceil(totalOutstanding))
@@ -88,7 +91,7 @@ class RenderCoreL2(
     val performance = Output(new L2PerformanceCounters)
   })
 
-  private val core = Module(new RenderCore(gfxConfig, gpuConfig, fragCore))
+  private val core = Module(new RenderCore(gfxConfig, gpuConfig, fragCore, vertCore))
   private val l2 = Module(new SharedL2Cache(
     gpuConfig, sets, ways, lineBytes, maxOutstanding = totalOutstanding,
     numComputeUnits = cuSlots, transactionsPerCu = perClientOutstanding,

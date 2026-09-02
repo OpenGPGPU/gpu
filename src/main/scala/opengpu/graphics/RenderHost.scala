@@ -126,6 +126,7 @@ class RenderHost(
   config: GraphicsConfig = GraphicsConfig(),
   gpuConfig: GpuConfig = GpuConfig(),
   fragCore: Boolean = false,
+  vertCore: Boolean = false,
   deviceId: Int = 0x4755, // 'GU'
   version: Int = 0x0001
 ) extends Module {
@@ -149,8 +150,8 @@ class RenderHost(
     }
     val kernelMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig))
     val kernelMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
-    val kernelWordMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig))
-    val kernelWordMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
+    val kernelWordMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig, 64, 8))
+    val kernelWordMemResp = Flipped(Decoupled(new ComputeMemoryResponse(64, 8)))
     val kernelL1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(gpuConfig)))
     val kernelL1InvalidateDone = Decoupled(new CacheLineInvalidate(gpuConfig))
     val kernelGlobalAtomicRequest = Decoupled(new SharedAtomicRequest(gpuConfig))
@@ -162,7 +163,7 @@ class RenderHost(
     }
   })
 
-  private val core = Module(new RenderCore(config, gpuConfig, fragCore))
+  private val core = Module(new RenderCore(config, gpuConfig, fragCore, vertCore))
 
   // ---------------------------------------------------------------------------
   // Registers (host-visible) and the shadow the engine runs from.
@@ -259,6 +260,7 @@ class RenderHost(
   private val scanoutStatusBits = Cat(0.U(31.W), scanoutActive)
   private val capabilityBits =
     ((if (fragCore) 1 else 0) | (1 << 1) |
+      (if (vertCore) (1 << 2) else 0) |
       (gpuConfig.warps * gpuConfig.lanes << 8)).U(32.W)
   private val jobStatusBits = Cat(
     0.U(22.W), jq.io.pendingValid, jq.io.running, 0.U(7.W), jqEnabled)

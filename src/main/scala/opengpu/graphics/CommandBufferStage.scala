@@ -25,7 +25,7 @@ import chisel3.util._
   * phase-D shader descriptor lets a draw select a compiled RV32 shader program
   * and point at it kernarg buffer.
   */
-class CommandBufferStage(config: GraphicsConfig) extends Module {
+class CommandBufferStage(config: GraphicsConfig, vertCore: Boolean = false) extends Module {
   private val wordsPerRecord = 40
 
   val io = IO(new Bundle {
@@ -36,7 +36,7 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
     }
-    val draw = Decoupled(new SceneTriangle(config))
+    val draw = if (vertCore) Decoupled(new VertexDrawCommand(config)) else Decoupled(new SceneTriangle(config))
     val done = Output(Bool())
   })
 
@@ -52,56 +52,90 @@ class CommandBufferStage(config: GraphicsConfig) extends Module {
     * previous draw, but the FIFO remains the ordering point for draw records.
     */
   private val drawFifo = Module(new Queue(
-    new SceneTriangle(config), config.drawFifoDepth))
+    if (vertCore) new VertexDrawCommand(config) else new SceneTriangle(config),
+    config.drawFifoDepth))
 
   private val wordAddr = io.base + ((record * wordsPerRecord.U) + word) * 4.U
 
-  private val decodedDraw = Wire(new SceneTriangle(config))
-  decodedDraw := 0.U.asTypeOf(new SceneTriangle(config))
-  decodedDraw.clip(0).x := words(0).asSInt
-  decodedDraw.clip(0).y := words(1).asSInt
-  decodedDraw.clip(0).z := words(2).asSInt
-  decodedDraw.clip(0).w := words(3).asSInt
-  decodedDraw.clip(1).x := words(4).asSInt
-  decodedDraw.clip(1).y := words(5).asSInt
-  decodedDraw.clip(1).z := words(6).asSInt
-  decodedDraw.clip(1).w := words(7).asSInt
-  decodedDraw.clip(2).x := words(8).asSInt
-  decodedDraw.clip(2).y := words(9).asSInt
-  decodedDraw.clip(2).z := words(10).asSInt
-  decodedDraw.clip(2).w := words(11).asSInt
-  decodedDraw.color(0).r := words(12)(7, 0)
-  decodedDraw.color(0).g := words(13)(7, 0)
-  decodedDraw.color(0).b := words(14)(7, 0)
-  decodedDraw.color(1).r := words(15)(7, 0)
-  decodedDraw.color(1).g := words(16)(7, 0)
-  decodedDraw.color(1).b := words(17)(7, 0)
-  decodedDraw.color(2).r := words(18)(7, 0)
-  decodedDraw.color(2).g := words(19)(7, 0)
-  decodedDraw.color(2).b := words(20)(7, 0)
-  decodedDraw.depth(0) := words(21).asSInt
-  decodedDraw.depth(1) := words(22).asSInt
-  decodedDraw.depth(2) := words(23).asSInt
-  decodedDraw.shaderPc := words(24)
-  decodedDraw.shaderKernarg := words(25)
-  decodedDraw.uv(0).u := words(26)
-  decodedDraw.uv(0).v := words(27)
-  decodedDraw.uv(1).u := words(28)
-  decodedDraw.uv(1).v := words(29)
-  decodedDraw.uv(2).u := words(30)
-  decodedDraw.uv(2).v := words(31)
-  decodedDraw.stateOverride := words(32)(0)
-  decodedDraw.depthTestEnable := words(32)(1)
-  decodedDraw.depthFunc := words(32)(6, 4)
-  decodedDraw.depthWriteEnable := words(32)(7)
-  decodedDraw.cullMode := words(32)(9, 8)
-  decodedDraw.texEnable := words(32)(10)
-  decodedDraw.texWrapClamp := words(32)(11)
-  decodedDraw.texMaxLevel := words(32)(15, 12)
-  decodedDraw.blendEnable := words(32)(16)
-  decodedDraw.texLodBias := words(33)(4, 0).asSInt
-  decodedDraw.texMinLevel := words(33)(11, 8)
-  decodedDraw.kernargBankStride := words(34)
+  private val decodedDraw = if (vertCore) {
+    val d = Wire(new VertexDrawCommand(config))
+    d := 0.U.asTypeOf(new VertexDrawCommand(config))
+    // New draw record format for vertCore:
+    // [0] vertex buffer base, [1] vertex count, [2] vertex stride
+    // [3] vertex shader PC, [4] vertex kernarg addr, [5] vertex kernarg bank stride
+    // [6] vertex attribute format, [7-23] reserved
+    // [24] fragment shader PC, [25] fragment kernarg addr, [26-31] reserved
+    // [32] state override flags, [33] LOD bias + min mip clamp, [34] frag kernarg bank stride
+    d.vertBufferBase := words(0)
+    d.vertCount := words(1)(15, 0)
+    d.vertStride := words(2)(15, 0)
+    d.vertShaderPc := words(3)
+    d.vertKernarg := words(4)
+    d.vertKernargBankStride := words(5)
+    d.fragShaderPc := words(24)
+    d.fragKernarg := words(25)
+    d.fragKernargBankStride := words(34)
+    d.stateOverride := words(32)(0)
+    d.depthTestEnable := words(32)(1)
+    d.depthFunc := words(32)(6, 4)
+    d.depthWriteEnable := words(32)(7)
+    d.blendEnable := words(32)(16)
+    d.cullMode := words(32)(9, 8)
+    d.texEnable := words(32)(10)
+    d.texWrapClamp := words(32)(11)
+    d.texMaxLevel := words(32)(15, 12)
+    d.texLodBias := words(33)(4, 0).asSInt
+    d.texMinLevel := words(33)(11, 8)
+    d
+  } else {
+    val d = Wire(new SceneTriangle(config))
+    d := 0.U.asTypeOf(new SceneTriangle(config))
+    d.clip(0).x := words(0).asSInt
+    d.clip(0).y := words(1).asSInt
+    d.clip(0).z := words(2).asSInt
+    d.clip(0).w := words(3).asSInt
+    d.clip(1).x := words(4).asSInt
+    d.clip(1).y := words(5).asSInt
+    d.clip(1).z := words(6).asSInt
+    d.clip(1).w := words(7).asSInt
+    d.clip(2).x := words(8).asSInt
+    d.clip(2).y := words(9).asSInt
+    d.clip(2).z := words(10).asSInt
+    d.clip(2).w := words(11).asSInt
+    d.color(0).r := words(12)(7, 0)
+    d.color(0).g := words(13)(7, 0)
+    d.color(0).b := words(14)(7, 0)
+    d.color(1).r := words(15)(7, 0)
+    d.color(1).g := words(16)(7, 0)
+    d.color(1).b := words(17)(7, 0)
+    d.color(2).r := words(18)(7, 0)
+    d.color(2).g := words(19)(7, 0)
+    d.color(2).b := words(20)(7, 0)
+    d.depth(0) := words(21).asSInt
+    d.depth(1) := words(22).asSInt
+    d.depth(2) := words(23).asSInt
+    d.shaderPc := words(24)
+    d.shaderKernarg := words(25)
+    d.uv(0).u := words(26)
+    d.uv(0).v := words(27)
+    d.uv(1).u := words(28)
+    d.uv(1).v := words(29)
+    d.uv(2).u := words(30)
+    d.uv(2).v := words(31)
+    d.stateOverride := words(32)(0)
+    d.depthTestEnable := words(32)(1)
+    d.depthFunc := words(32)(6, 4)
+    d.depthWriteEnable := words(32)(7)
+    d.cullMode := words(32)(9, 8)
+    d.texEnable := words(32)(10)
+    d.texWrapClamp := words(32)(11)
+    d.texMaxLevel := words(32)(15, 12)
+    d.blendEnable := words(32)(16)
+    d.texLodBias := words(33)(4, 0).asSInt
+    d.texMinLevel := words(33)(11, 8)
+    d.kernargBankStride := words(34)
+    d
+  }
 
   drawFifo.io.enq.valid := presenting
   drawFifo.io.enq.bits := decodedDraw

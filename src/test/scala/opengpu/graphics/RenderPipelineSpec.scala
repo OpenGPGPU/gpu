@@ -2,6 +2,7 @@ package opengpu.graphics
 
 import chisel3._
 import chisel3.simulator.EphemeralSimulator._
+import opengpu.config.GpuConfig
 import org.scalatest.flatspec.AnyFlatSpec
 
 import java.nio.file.{Files, Paths}
@@ -10,6 +11,15 @@ class RenderPipelineSpec extends AnyFlatSpec {
   behavior of "RenderPipeline"
 
   private def q(v: Double): Int = (v * (1 << 16)).toInt
+
+  it should "elaborate one shared CU for the vertex and fragment paths" in {
+    simulate(new RenderPipeline(
+      GraphicsConfig(screenWidth = 16, screenHeight = 16),
+      GpuConfig(lanes = 4, warps = 2), fragCore = true, vertCore = true)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+    }
+  }
 
   it should "render a triangle to a framebuffer and export a PPM image" in {
     val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
@@ -51,16 +61,17 @@ class RenderPipelineSpec extends AnyFlatSpec {
         (q(-1.0), q(1.0), q(1.0))
       )
       dut.io.draw.valid.poke(true.B)
-      dut.io.draw.bits.stateOverride.poke(false.B)
+      val drawBits = dut.io.draw.bits.asInstanceOf[SceneTriangle]
+      drawBits.stateOverride.poke(false.B)
       for (i <- 0 until 3) {
-        dut.io.draw.bits.clip(i).x.poke(clip(i)._1.S)
-        dut.io.draw.bits.clip(i).y.poke(clip(i)._2.S)
-        dut.io.draw.bits.clip(i).z.poke(0.S)
-        dut.io.draw.bits.clip(i).w.poke(clip(i)._3.S)
-        dut.io.draw.bits.color(i).r.poke(red._1.U)
-        dut.io.draw.bits.color(i).g.poke(red._2.U)
-        dut.io.draw.bits.color(i).b.poke(red._3.U)
-        dut.io.draw.bits.depth(i).poke(0x10.S)
+        drawBits.clip(i).x.poke(clip(i)._1.S)
+        drawBits.clip(i).y.poke(clip(i)._2.S)
+        drawBits.clip(i).z.poke(0.S)
+        drawBits.clip(i).w.poke(clip(i)._3.S)
+        drawBits.color(i).r.poke(red._1.U)
+        drawBits.color(i).g.poke(red._2.U)
+        drawBits.color(i).b.poke(red._3.U)
+        drawBits.depth(i).poke(0x10.S)
       }
       dut.clock.step()
       dut.io.draw.valid.poke(false.B)

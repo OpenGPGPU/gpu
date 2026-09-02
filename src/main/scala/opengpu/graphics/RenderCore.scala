@@ -33,7 +33,8 @@ import opengpu.core.memory.{
 class RenderCore(
   config: GraphicsConfig = GraphicsConfig(),
   gpuConfig: GpuConfig = GpuConfig(),
-  fragCore: Boolean = false
+  fragCore: Boolean = false,
+  vertCore: Boolean = false
 ) extends Module {
   val io = IO(new Bundle {
     val cmdBase = Input(UInt(32.W))
@@ -49,8 +50,8 @@ class RenderCore(
     }
     val kernelMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig))
     val kernelMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
-    val kernelWordMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig))
-    val kernelWordMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
+    val kernelWordMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig, 64, 8))
+    val kernelWordMemResp = Flipped(Decoupled(new ComputeMemoryResponse(64, 8)))
     val kernelL1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(gpuConfig)))
     val kernelL1InvalidateDone = Decoupled(new CacheLineInvalidate(gpuConfig))
     val kernelGlobalAtomicRequest = Decoupled(new SharedAtomicRequest(gpuConfig))
@@ -78,7 +79,7 @@ class RenderCore(
   })
 
   private val cb = Module(new CommandBufferStage(config))
-  private val rp = Module(new RenderPipeline(config, gpuConfig, fragCore))
+  private val rp = Module(new RenderPipeline(config, gpuConfig, fragCore, vertCore))
   // RenderHost snapshots the legacy registers and queue ownership on the
   // same edge that it presents start.  Delay the parser start one cycle so
   // the selected command configuration is visible at the parser boundary.

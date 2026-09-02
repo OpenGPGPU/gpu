@@ -3,6 +3,10 @@ package opengpu.graphics
 import chisel3._
 import chisel3.util._
 import opengpu.config.GpuConfig
+import opengpu.core.execute.control.SimtBranchRequest
+import opengpu.core.backend.issue.ScalarIssuedInstruction
+import opengpu.core.backend.writeback.ScalarCommitRequest
+import opengpu.core.backend.{VectorCommitRequest, VectorTextureRequest}
 import opengpu.core.memory.{
   CacheLineInvalidate,
   ComputeMemoryRequest,
@@ -10,6 +14,8 @@ import opengpu.core.memory.{
   SharedAtomicRequest,
   SharedAtomicResponse
 }
+import opengpu.core.trap.CoreTrapEvent
+import opengpu.dispatch.KernelCompletion
 
 /** Core-backed fragment shader stage (Phase D), batched quad dispatch with
   * per-draw overlap.
@@ -127,42 +133,73 @@ class KernelFragStage(
     val l1InvalidateDone = Decoupled(new CacheLineInvalidate(config))
     val globalAtomicRequest = Decoupled(new SharedAtomicRequest(config))
     val globalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(config)))
+    val kernelLaunch = new Bundle {
+      val valid = Output(Bool())
+      val ready = Input(Bool())
+      val kernelPc = Output(UInt(config.xLen.W))
+      val kernargAddress = Output(UInt(config.xLen.W))
+      val gridX = Output(UInt(32.W))
+      val gridY = Output(UInt(32.W))
+      val gridZ = Output(UInt(32.W))
+      val localX = Output(UInt(16.W))
+      val localY = Output(UInt(16.W))
+      val localZ = Output(UInt(16.W))
+    }
+    val kernelCompletion = Flipped(Decoupled(new KernelCompletion))
+    val kernelTrap = Flipped(Decoupled(new CoreTrapEvent(config)))
+    val kernelSimtBranch = Flipped(Decoupled(new SimtBranchRequest(config)))
+    val kernelTexSample = Flipped(Decoupled(new ScalarIssuedInstruction(config)))
+    val kernelTexWriteback = Decoupled(new ScalarCommitRequest(config))
+    val kernelVectorTexSample =
+      Flipped(Decoupled(new VectorTextureRequest(config)))
+    val kernelVectorTexWriteback =
+      Decoupled(new VectorCommitRequest(config))
   })
 
   // Word-client request/response interface to the bridge (driven by the FSM).
   private val wordValid = Wire(Bool())
   private val wordBits = Wire(new OmMemoryRequest)
 
-  private val kernel = Module(new KernelShaderStage(config))
   private val bridge = Module(new OmWordToLinePort(config))
   private val texBridge = Module(new OmWordToLinePort(config))
   private val texUnit = Module(new TexSampleUnit(config, gfxConfig))
 
-  kernel.io.texSample <> texUnit.io.in
-  texUnit.io.commit <> kernel.io.texWriteback
-  kernel.io.vectorTexSample <> texUnit.io.vectorIn
-  texUnit.io.vectorCommit <> kernel.io.vectorTexWriteback
+  texUnit.io.in.valid := io.kernelTexSample.valid
+  texUnit.io.in.bits := io.kernelTexSample.bits
+  io.kernelTexSample.ready := texUnit.io.in.ready
+  io.kernelTexWriteback.valid := texUnit.io.commit.valid
+  io.kernelTexWriteback.bits := texUnit.io.commit.bits
+  texUnit.io.commit.ready := io.kernelTexWriteback.ready
+  texUnit.io.vectorIn.valid := io.kernelVectorTexSample.valid
+  texUnit.io.vectorIn.bits := io.kernelVectorTexSample.bits
+  io.kernelVectorTexSample.ready := texUnit.io.vectorIn.ready
+  io.kernelVectorTexWriteback.valid := texUnit.io.vectorCommit.valid
+  io.kernelVectorTexWriteback.bits := texUnit.io.vectorCommit.bits
+  texUnit.io.vectorCommit.ready := io.kernelVectorTexWriteback.ready
   texBridge.io.in <> texUnit.io.mem.req
   texUnit.io.mem.resp <> texBridge.io.out
 
-  kernel.io.launch.kernelPc := 0.U
-  kernel.io.launch.kernargAddress := 0.U
-  kernel.io.launch.gridX := 1.U
-  kernel.io.launch.gridY := 1.U
-  kernel.io.launch.gridZ := 1.U
-  kernel.io.launch.localX := 1.U
-  kernel.io.launch.localY := 1.U
-  kernel.io.launch.localZ := 1.U
-  kernel.io.completion.ready := true.B
-  io.memReq <> kernel.io.memoryRequest
-  kernel.io.memoryResponse <> io.memResp
-  kernel.io.trap.ready := true.B
-  kernel.io.simtBranch.valid := false.B
-  kernel.io.simtBranch.bits := 0.U.asTypeOf(kernel.io.simtBranch.bits)
-  kernel.io.l1Invalidate <> io.l1Invalidate
-  io.l1InvalidateDone <> kernel.io.l1InvalidateDone
-  io.globalAtomicRequest <> kernel.io.globalAtomicRequest
-  kernel.io.globalAtomicResponse <> io.globalAtomicResponse
+  io.kernelLaunch.kernelPc := 0.U
+  io.kernelLaunch.kernargAddress := 0.U
+  io.kernelLaunch.gridX := 1.U
+  io.kernelLaunch.gridY := 1.U
+  io.kernelLaunch.gridZ := 1.U
+  io.kernelLaunch.localX := 1.U
+  io.kernelLaunch.localY := 1.U
+  io.kernelLaunch.localZ := 1.U
+  io.kernelCompletion.ready := true.B
+  io.kernelTrap.ready := true.B
+  io.kernelSimtBranch.ready := true.B
+
+  io.memReq.valid := false.B
+  io.memReq.bits := 0.U.asTypeOf(io.memReq.bits)
+  io.memResp.ready := false.B
+  io.l1Invalidate.ready := false.B
+  io.l1InvalidateDone.valid := false.B
+  io.l1InvalidateDone.bits := 0.U.asTypeOf(io.l1InvalidateDone.bits)
+  io.globalAtomicRequest.valid := false.B
+  io.globalAtomicRequest.bits := 0.U.asTypeOf(io.globalAtomicRequest.bits)
+  io.globalAtomicResponse.ready := false.B
 
   bridge.io.in.valid := wordValid
   bridge.io.in.bits := wordBits
@@ -415,7 +452,7 @@ class KernelFragStage(
     )
   )
 
-  kernel.io.launch.valid := state === sLaunch
+  io.kernelLaunch.valid := state === sLaunch
 
   io.out.valid := state === sEmit && outValid(indexIdx)
   io.out.bits.x := fragX(execSlot)(indexIdx)
@@ -453,13 +490,13 @@ class KernelFragStage(
       }
     }
     is(sLaunch) {
-      kernel.io.launch.kernelPc := slotShaderPc(execSlot)
-      kernel.io.launch.kernargAddress := slotKernarg(execSlot)
-      kernel.io.launch.localX := execCount
-      when(kernel.io.launch.ready) { state := sRun }
+      io.kernelLaunch.kernelPc := slotShaderPc(execSlot)
+      io.kernelLaunch.kernargAddress := slotKernarg(execSlot)
+      io.kernelLaunch.localX := execCount
+      when(io.kernelLaunch.ready) { state := sRun }
     }
     is(sRun) {
-      when(kernel.io.completion.valid) {
+      when(io.kernelCompletion.valid) {
         index := 0.U
         wordPending := false.B
         state := sRead
