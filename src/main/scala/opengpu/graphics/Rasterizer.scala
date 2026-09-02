@@ -72,6 +72,14 @@ class RasterPixel(config: GraphicsConfig) extends Bundle {
   val covered = Bool()
 }
 
+/** A full 2x2 quad emitted in one beat: lane 0=TL, 1=TR, 2=BL, 3=BR.  The
+  * per-lane `covered` flags are the helper-lane mask; uncovered lanes still
+  * carry valid edge values so downstream fragment quads can compute
+  * derivatives. */
+class RasterQuad(config: GraphicsConfig) extends Bundle {
+  val lanes = Vec(4, new RasterPixel(config))
+}
+
 /** Signed fixed-point helpers.
   *
   * `trim64` normalises any intermediate to the 64-bit interface width without
@@ -277,15 +285,17 @@ class QuadCoverage(config: GraphicsConfig) extends Module {
   * single-cycle 64x64 multiply bank reached only ~526 MHz.
   *
   * Four-lane 2x2 quad evaluation with pure additions is provided by
-  * [[QuadCoverage]]. `quadMode` emits complete TL/TR/BL/BR groups including
-  * uncovered helper lanes for fragment-core execution; the default mode keeps
-  * the fixed-function covered-only scalar contract.
+  * [[QuadCoverage]]. `quadMode` emits one complete TL/TR/BL/BR [[RasterQuad]]
+  * per cycle — including uncovered helper lanes — for fragment-core
+  * execution; the default mode keeps the fixed-function covered-only scalar
+  * contract on `pixel`.
   */
 class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) extends Module {
   val io = IO(new Bundle {
     val draw = Flipped(Decoupled(new TriangleVertices(config)))
     val cullMode = Input(UInt(2.W))
     val pixel = Decoupled(new RasterPixel(config))
+    val quad = Decoupled(new RasterQuad(config))
   })
 
   import FixedPointMath._
@@ -383,7 +393,6 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   private val areaReg = RegInit(0.S(config.edgeWidth.W))
   private val frontReg = RegInit(true.B)
   private val tlReg = Seq(RegInit(false.B), RegInit(false.B), RegInit(false.B))
-  private val quadLane = RegInit(0.U(2.W))
 
   // Stepped candidates: single adds off the current registers.
   private val edgeNextCol = VecInit((0 until 3).map(i =>
@@ -401,56 +410,68 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   private val curInside =
     laneInside(Seq(edgeReg.e(0), edgeReg.e(1), edgeReg.e(2)))
 
-  private val quad = Module(new QuadCoverage(config))
-  quad.io.base.zipWithIndex.foreach { case (e, i) => e := edgeReg.e(i) }
-  quad.io.dx.zipWithIndex.foreach { case (e, i) => e := dxReg.e(i) }
-  quad.io.dy.zipWithIndex.foreach { case (e, i) => e := dyReg.e(i) }
-  quad.io.front := frontReg
-  quad.io.topLeft.zipWithIndex.foreach { case (flag, i) => flag := tlReg(i) }
+  private val quadCov = Module(new QuadCoverage(config))
+  quadCov.io.base.zipWithIndex.foreach { case (e, i) => e := edgeReg.e(i) }
+  quadCov.io.dx.zipWithIndex.foreach { case (e, i) => e := dxReg.e(i) }
+  quadCov.io.dy.zipWithIndex.foreach { case (e, i) => e := dyReg.e(i) }
+  quadCov.io.front := frontReg
+  quadCov.io.topLeft.zipWithIndex.foreach { case (flag, i) => flag := tlReg(i) }
 
-  private val quadX = curX + quadLane(0)
-  private val quadY = curY + quadLane(1)
-  private val quadInsideScreen =
-    quadX < config.screenWidth.U && quadY < config.screenHeight.U
-  private val selectedInside = quad.io.inside(quadLane) && quadInsideScreen
-  private val selectedE = Seq(quad.io.e0(quadLane), quad.io.e1(quadLane),
-    quad.io.e2(quadLane))
+  if (quadMode) {
+    // Whole-quad emission: all four lanes of the current 2x2 group per beat,
+    // each with its own screen-bounds test as the helper-lane mask.
+    io.pixel.valid := false.B
+    io.pixel.bits := 0.U.asTypeOf(new RasterPixel(config))
 
-  io.pixel.valid := active && (if (quadMode) true.B else curInside)
-  io.pixel.bits.x := (if (quadMode) quadX else curX).asSInt
-  io.pixel.bits.y := (if (quadMode) quadY else curY).asSInt
-  io.pixel.bits.e0 := (if (quadMode) selectedE(0) else edgeReg.e(0))
-  io.pixel.bits.e1 := (if (quadMode) selectedE(1) else edgeReg.e(1))
-  io.pixel.bits.e2 := (if (quadMode) selectedE(2) else edgeReg.e(2))
-  io.pixel.bits.area := areaReg
-  io.pixel.bits.covered := (if (quadMode) selectedInside else curInside)
+    io.quad.valid := active
+    for (k <- 0 until 4) {
+      val laneX = curX + (k & 1).U
+      val laneY = curY + (k >> 1).U
+      io.quad.bits.lanes(k).x := laneX.asSInt
+      io.quad.bits.lanes(k).y := laneY.asSInt
+      io.quad.bits.lanes(k).e0 := quadCov.io.e0(k)
+      io.quad.bits.lanes(k).e1 := quadCov.io.e1(k)
+      io.quad.bits.lanes(k).e2 := quadCov.io.e2(k)
+      io.quad.bits.lanes(k).area := areaReg
+      io.quad.bits.lanes(k).covered := quadCov.io.inside(k) &&
+        laneX < config.screenWidth.U && laneY < config.screenHeight.U
+    }
+  } else {
+    io.quad.valid := false.B
+    io.quad.bits := 0.U.asTypeOf(new RasterQuad(config))
+
+    io.pixel.valid := active && curInside
+    io.pixel.bits.x := curX.asSInt
+    io.pixel.bits.y := curY.asSInt
+    io.pixel.bits.e0 := edgeReg.e(0)
+    io.pixel.bits.e1 := edgeReg.e(1)
+    io.pixel.bits.e2 := edgeReg.e(2)
+    io.pixel.bits.area := areaReg
+    io.pixel.bits.covered := curInside
+  }
 
   // ---------------------------------------------------------------------
   // Scan advance: column step or row wrap, both single-add per edge.
   // ---------------------------------------------------------------------
   if (quadMode) {
-    when(active && io.pixel.fire) {
-      when(quadLane =/= 3.U) {
-        quadLane := quadLane + 1.U
+    // One quad per beat: step two columns (or wrap two rows) per fire.
+    when(active && io.quad.fire) {
+      when(curX < maxX) {
+        curX := curX + 2.U
+        edgeReg.e.zipWithIndex.foreach { case (r, i) =>
+          r := FixedPointMath.trim64(edgeReg.e(i) + (dxReg.e(i) << 1)) }
       }.otherwise {
-        quadLane := 0.U
-        when(curX < maxX) {
-          curX := curX + 2.U
+        curX := minX
+        when(curY < maxY) {
+          curY := curY + 2.U
           edgeReg.e.zipWithIndex.foreach { case (r, i) =>
-            r := FixedPointMath.trim64(edgeReg.e(i) + (dxReg.e(i) << 1)) }
+            r := FixedPointMath.trim64(rowStartReg.e(i) +
+              (dyReg.e(i) << 1)) }
+          rowStartReg.e.zipWithIndex.foreach { case (r, i) =>
+            r := FixedPointMath.trim64(rowStartReg.e(i) +
+              (dyReg.e(i) << 1)) }
         }.otherwise {
-          curX := minX
-          when(curY < maxY) {
-            curY := curY + 2.U
-            edgeReg.e.zipWithIndex.foreach { case (r, i) =>
-              r := FixedPointMath.trim64(rowStartReg.e(i) +
-                (dyReg.e(i) << 1)) }
-            rowStartReg.e.zipWithIndex.foreach { case (r, i) =>
-              r := FixedPointMath.trim64(rowStartReg.e(i) +
-                (dyReg.e(i) << 1)) }
-          }.otherwise {
-            active := false.B
-          }
+          active := false.B
         }
       }
     }
@@ -551,7 +572,6 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
       active := false.B
     }.otherwise {
       active := true.B
-      quadLane := 0.U
       curX := minX
       curY := minY
       areaReg := signedAreaN

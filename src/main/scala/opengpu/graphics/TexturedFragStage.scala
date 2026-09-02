@@ -60,7 +60,8 @@ class TexUVInterpolator(gfxConfig: GraphicsConfig) extends Module {
   * single-source updated (learned twice the hard way in M4b/M5b).
   */
 class TexturedFragStage(
-  gfxConfig: GraphicsConfig = GraphicsConfig()
+  gfxConfig: GraphicsConfig = GraphicsConfig(),
+  quadUv: Boolean = false
 ) extends Module {
   val io = IO(new Bundle {
     val fragIn = Flipped(Decoupled(new RasterFragment(gfxConfig)))
@@ -69,6 +70,11 @@ class TexturedFragStage(
     val e0 = Input(SInt(gfxConfig.edgeWidth.W))
     val e1 = Input(SInt(gfxConfig.edgeWidth.W))
     val e2 = Input(SInt(gfxConfig.edgeWidth.W))
+    /** Per-lane edge values of the whole quad being presented on the
+      * core-backed path (lane 0=TL, 1=TR, 2=BL, 3=BR). */
+    val quadE0 = Input(Vec(4, SInt(gfxConfig.edgeWidth.W)))
+    val quadE1 = Input(Vec(4, SInt(gfxConfig.edgeWidth.W)))
+    val quadE2 = Input(Vec(4, SInt(gfxConfig.edgeWidth.W)))
     val invW0 = Input(SInt(32.W))
     val invW1 = Input(SInt(32.W))
     val invW2 = Input(SInt(32.W))
@@ -86,6 +92,9 @@ class TexturedFragStage(
     /** Current fragment's perspective-correct coordinates. The core-backed
       * path reuses this interpolation while bypassing the fixed sampler. */
     val interpolatedUv = Output(new TexUV)
+    /** Per-lane perspective-correct coordinates of the whole quad; generated
+      * only with `quadUv` (the core-backed path), tied to zero otherwise. */
+    val interpolatedUvQuad = Output(Vec(4, new TexUV))
 
     val out = Decoupled(new RasterFragment(gfxConfig))
     val mem = new Bundle {
@@ -119,6 +128,24 @@ class TexturedFragStage(
   uvInterp.io.uv1 := io.uv1
   uvInterp.io.uv2 := io.uv2
   io.interpolatedUv := uvInterp.io.uvPx
+
+  if (quadUv) {
+    val quadUvInterps = Seq.fill(4)(Module(new TexUVInterpolator(gfxConfig)))
+    for (k <- 0 until 4) {
+      quadUvInterps(k).io.e0 := io.quadE0(k)
+      quadUvInterps(k).io.e1 := io.quadE1(k)
+      quadUvInterps(k).io.e2 := io.quadE2(k)
+      quadUvInterps(k).io.invW0 := io.invW0
+      quadUvInterps(k).io.invW1 := io.invW1
+      quadUvInterps(k).io.invW2 := io.invW2
+      quadUvInterps(k).io.uv0 := io.uv0
+      quadUvInterps(k).io.uv1 := io.uv1
+      quadUvInterps(k).io.uv2 := io.uv2
+      io.interpolatedUvQuad(k) := quadUvInterps(k).io.uvPx
+    }
+  } else {
+    io.interpolatedUvQuad := 0.U.asTypeOf(Vec(4, new TexUV))
+  }
 
   private val sWait :: sOut :: Nil = Enum(2)
   private val state = RegInit(sWait)

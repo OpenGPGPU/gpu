@@ -149,12 +149,12 @@ class RasterizerSpec extends AnyFlatSpec {
     }
   }
 
-  it should "emit complete TL/TR/BL/BR quads and mark uncovered helper lanes" in {
+  it should "emit one complete TL/TR/BL/BR quad per cycle and mark uncovered helper lanes" in {
     val config = GraphicsConfig(screenWidth = 16, screenHeight = 16,
       subPixelBits = 8)
     simulate(new TriangleRasterizer(config, quadMode = true)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-      dut.io.pixel.ready.poke(true.B)
+      dut.io.quad.ready.poke(true.B)
       dut.io.cullMode.poke(0.U)
       dut.io.draw.valid.poke(true.B)
       val vertices = Seq((2, 2), (12, 2), (2, 12))
@@ -166,24 +166,27 @@ class RasterizerSpec extends AnyFlatSpec {
       dut.io.draw.bits.v2.y.poke(config.toFixed(vertices(2)._2).S)
       dut.clock.step(); dut.io.draw.valid.poke(false.B)
 
-      val emitted = collection.mutable.ArrayBuffer.empty[(Int, Int, Boolean)]
+      val quads = collection.mutable.ArrayBuffer.empty[Seq[(Int, Int, Boolean)]]
       var guard = 0
       while (!dut.io.draw.ready.peek().litToBoolean && guard < 2000) {
-        if (dut.io.pixel.valid.peek().litToBoolean) {
-          emitted += ((dut.io.pixel.bits.x.peek().litValue.toInt,
-            dut.io.pixel.bits.y.peek().litValue.toInt,
-            dut.io.pixel.bits.covered.peek().litToBoolean))
+        if (dut.io.quad.valid.peek().litToBoolean) {
+          quads += (0 until 4).map { k =>
+            (dut.io.quad.bits.lanes(k).x.peek().litValue.toInt,
+              dut.io.quad.bits.lanes(k).y.peek().litValue.toInt,
+              dut.io.quad.bits.lanes(k).covered.peek().litToBoolean)
+          }
         }
         dut.clock.step(); guard += 1
       }
-      assert(guard < 2000 && emitted.nonEmpty)
-      assert(emitted.size % 4 == 0)
-      emitted.grouped(4).foreach { lanes =>
+      assert(guard < 2000 && quads.nonEmpty)
+      // Every beat carries the full TL/TR/BL/BR group at an even origin.
+      quads.foreach { lanes =>
         val (x, y, _) = lanes.head
         assert((x & 1) == 0 && (y & 1) == 0)
         assert(lanes.map(p => (p._1, p._2)) ==
           Seq((x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)))
       }
+      val emitted = quads.flatten
       val covered = emitted.collect { case (x, y, true) => (x, y) }.toSet
       // This winding's top-left rule excludes x=2/y=2 and owns the diagonal.
       val expected = (3 until 12).flatMap { y => (3 until 12).collect {
@@ -191,6 +194,12 @@ class RasterizerSpec extends AnyFlatSpec {
       }}.toSet
       assert(covered == expected)
       assert(emitted.exists(!_._3), "edge quads must contain helper lanes")
+      // One quad per cycle: every active beat above fired exactly one quad.
+      // Quad origins run over the even-aligned bbox inclusive of maxX/maxY:
+      // x,y ∈ {2,4,6,8,10,12}.
+      val bboxQuads = 6 * 6
+      assert(quads.size == bboxQuads,
+        s"expected one beat per bbox quad ($bboxQuads), got ${quads.size}")
     }
   }
 

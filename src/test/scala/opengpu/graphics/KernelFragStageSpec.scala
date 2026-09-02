@@ -62,15 +62,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       mem.putWord(0x1000L, 2, cease)
 
       def runBatch(red: Int): Unit = {
-        dut.io.fragIn.bits.x.poke(red.S)
-        dut.io.fragIn.bits.y.poke(0.S)
-        dut.io.fragIn.bits.depth.poke(1.S)
-        dut.io.fragIn.bits.color.r.poke(red.U)
-        dut.io.fragIn.bits.color.g.poke(0.U)
-        dut.io.fragIn.bits.color.b.poke(0.U)
-        dut.io.fragIn.valid.poke(true.B)
-        dut.clock.step()
-        dut.io.fragIn.valid.poke(false.B)
+        fireQuad(dut, Seq(Frag(red, 0, 1, r = red, g = 0, b = 0)))
         dut.io.flush.poke(true.B); dut.clock.step(); dut.io.flush.poke(false.B)
         assert(pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean),
           "banked fragment batch did not complete")
@@ -205,9 +197,11 @@ class KernelFragStageSpec extends AnyFlatSpec {
 
   private def pokeDefaults(dut: KernelFragStage): Unit = {
     dut.io.fragIn.valid.poke(false.B)
-    dut.io.fragIn.bits.covered.poke(true.B)
-    dut.io.fragUv.u.poke(0.U)
-    dut.io.fragUv.v.poke(0.U)
+    for (k <- 0 until 4) {
+      dut.io.fragIn.bits.lanes(k).covered.poke(false.B)
+      dut.io.fragUv(k).u.poke(0.U)
+      dut.io.fragUv(k).v.poke(0.U)
+    }
     dut.io.out.ready.poke(true.B)
     dut.io.flush.poke(false.B)
     dut.io.drawRetire.ready.poke(true.B)
@@ -221,6 +215,40 @@ class KernelFragStageSpec extends AnyFlatSpec {
     dut.io.wordMemResp.bits.readData.poke(0.U)
     dut.io.wordMemResp.bits.fault.poke(false.B)
     dut.io.wordMemResp.bits.transactionId.poke(0.U)
+  }
+
+  /** One fragment lane of a quad under test; lanes not supplied to a poke
+    * default to uncovered helper lanes, which stage and execute but never
+    * reach the output stream. */
+  private case class Frag(x: Int, y: Int, depth: Int,
+    r: Int = 0xab, g: Int = 0xcd, b: Int = 0xef, covered: Boolean = true)
+
+  /** Pokes all four lanes of `fragIn` (TL/TR/BL/BR) and their UVs without
+    * firing; lanes beyond `frags.length` become uncovered helpers. */
+  private def pokeQuadLanes(dut: KernelFragStage, frags: Seq[Frag],
+    uvs: Seq[(Int, Int)] = Seq.fill(4)((0, 0))): Unit = {
+    for (k <- 0 until 4) {
+      val f = if (k < frags.length) frags(k)
+        else Frag(0, 0, 0, 0, 0, 0, covered = false)
+      dut.io.fragIn.bits.lanes(k).x.poke(f.x.S)
+      dut.io.fragIn.bits.lanes(k).y.poke(f.y.S)
+      dut.io.fragIn.bits.lanes(k).depth.poke(f.depth.S)
+      dut.io.fragIn.bits.lanes(k).covered.poke(f.covered.B)
+      dut.io.fragIn.bits.lanes(k).color.r.poke(f.r.U)
+      dut.io.fragIn.bits.lanes(k).color.g.poke(f.g.U)
+      dut.io.fragIn.bits.lanes(k).color.b.poke(f.b.U)
+      dut.io.fragUv(k).u.poke(uvs(k)._1.U)
+      dut.io.fragUv(k).v.poke(uvs(k)._2.U)
+    }
+  }
+
+  /** Fires exactly one quad beat. */
+  private def fireQuad(dut: KernelFragStage, frags: Seq[Frag],
+    uvs: Seq[(Int, Int)] = Seq.fill(4)((0, 0))): Unit = {
+    pokeQuadLanes(dut, frags, uvs)
+    dut.io.fragIn.valid.poke(true.B)
+    dut.clock.step()
+    dut.io.fragIn.valid.poke(false.B)
   }
 
   it should "shade a single fragment via a batched pass-through kernel" in {
@@ -239,15 +267,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       mem.putWord(0x1000L, 1, sw(10, 1, 192))
       mem.putWord(0x1000L, 2, cease)
 
-      dut.io.fragIn.bits.x.poke(3.S)
-      dut.io.fragIn.bits.y.poke(4.S)
-      dut.io.fragIn.bits.depth.poke(0x20.S)
-      dut.io.fragIn.bits.color.r.poke(0xab.U)
-      dut.io.fragIn.bits.color.g.poke(0xcd.U)
-      dut.io.fragIn.bits.color.b.poke(0xef.U)
-      dut.io.fragIn.valid.poke(true.B)
-      dut.clock.step()
-      dut.io.fragIn.valid.poke(false.B)
+      fireQuad(dut, Seq(Frag(3, 4, 0x20)))
 
       // Flush the (non-empty) batch: draw boundary.
       dut.io.flush.poke(true.B)
@@ -286,15 +306,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       // Uniform at kernarg+288 (line 0x8100, word 8): +1 blue.
       mem.putWord(0x8100L, 8, BigInt("00000100", 16))
 
-      dut.io.fragIn.bits.x.poke(3.S)
-      dut.io.fragIn.bits.y.poke(4.S)
-      dut.io.fragIn.bits.depth.poke(0x20.S)
-      dut.io.fragIn.bits.color.r.poke(0xab.U)
-      dut.io.fragIn.bits.color.g.poke(0xcd.U)
-      dut.io.fragIn.bits.color.b.poke(0xef.U)
-      dut.io.fragIn.valid.poke(true.B)
-      dut.clock.step()
-      dut.io.fragIn.valid.poke(false.B)
+      fireQuad(dut, Seq(Frag(3, 4, 0x20)))
 
       dut.io.flush.poke(true.B)
       dut.clock.step()
@@ -327,15 +339,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       mem.putWord(0x1000L, 0, sw(0, 1, 256))
       mem.putWord(0x1000L, 1, cease)
 
-      dut.io.fragIn.bits.x.poke(3.S)
-      dut.io.fragIn.bits.y.poke(4.S)
-      dut.io.fragIn.bits.depth.poke(0x20.S)
-      dut.io.fragIn.bits.color.r.poke(0xab.U)
-      dut.io.fragIn.bits.color.g.poke(0xcd.U)
-      dut.io.fragIn.bits.color.b.poke(0xef.U)
-      dut.io.fragIn.valid.poke(true.B)
-      dut.clock.step()
-      dut.io.fragIn.valid.poke(false.B)
+      fireQuad(dut, Seq(Frag(3, 4, 0x20)))
       dut.io.flush.poke(true.B); dut.clock.step()
       dut.io.flush.poke(false.B)
 
@@ -373,24 +377,15 @@ class KernelFragStageSpec extends AnyFlatSpec {
       mem.putWord(0x1000L, 1, sw(10, 1, 192))
       mem.putWord(0x1000L, 2, cease)
 
-      // Feed a batch of fragments with distinct x/y/depth.
+      // Feed one quad whose four lanes carry distinct x/y/depth; lane 1 is an
+      // uncovered helper.
       val inputs = Seq(
         (0, 10, 0x20, true),
         (1, 11, 0x30, false),
         (2, 12, 0x40, true)
       )
-      for ((x, y, d, covered) <- inputs) {
-        dut.io.fragIn.bits.x.poke(x.S)
-        dut.io.fragIn.bits.y.poke(y.S)
-        dut.io.fragIn.bits.depth.poke(d.S)
-        dut.io.fragIn.bits.covered.poke(covered.B)
-        dut.io.fragIn.bits.color.r.poke(0xab.U)
-        dut.io.fragIn.bits.color.g.poke(0xcd.U)
-        dut.io.fragIn.bits.color.b.poke(0xef.U)
-        dut.io.fragIn.valid.poke(true.B)
-        dut.clock.step()
-        dut.io.fragIn.valid.poke(false.B)
-      }
+      fireQuad(dut, inputs.map { case (x, y, d, c) =>
+        Frag(x, y, d, covered = c) })
 
       // The batch is not yet launched: no output is pending until flush.
       assert(!dut.io.out.valid.peek().litToBoolean,
@@ -505,24 +500,15 @@ class KernelFragStageSpec extends AnyFlatSpec {
       mem.putWord(0x1000L, 8, vse32(6, 4))
       mem.putWord(0x1000L, 9, cease)
 
-      // Feed a full-warp batch of fragments with distinct colours.
+      // Feed a full-warp batch as ONE quad beat with distinct per-lane colours.
       val colors = Seq(
         (0x10, 0x20, 0x30),
         (0x40, 0x50, 0x60),
         (0x70, 0x80, 0x90),
         (0xa0, 0xb0, 0xc0)
       )
-      for (i <- 0 until count) {
-        dut.io.fragIn.bits.x.poke(i.S)
-        dut.io.fragIn.bits.y.poke((10 + i).S)
-        dut.io.fragIn.bits.depth.poke(0x20.S)
-        dut.io.fragIn.bits.color.r.poke(colors(i)._1.U)
-        dut.io.fragIn.bits.color.g.poke(colors(i)._2.U)
-        dut.io.fragIn.bits.color.b.poke(colors(i)._3.U)
-        dut.io.fragIn.valid.poke(true.B)
-        dut.clock.step()
-        dut.io.fragIn.valid.poke(false.B)
-      }
+      fireQuad(dut, Seq.tabulate(count)(i =>
+        Frag(i, 10 + i, 0x20, colors(i)._1, colors(i)._2, colors(i)._3)))
 
       dut.io.flush.poke(true.B)
       dut.clock.step()
@@ -645,15 +631,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       mem.putWord(0x2000L, 2, 0x00ff00ff) // green
       mem.putWord(0x2000L, 3, 0xffff00ff) // yellow
 
-      dut.io.fragIn.bits.x.poke(3.S)
-      dut.io.fragIn.bits.y.poke(4.S)
-      dut.io.fragIn.bits.depth.poke(0x20.S)
-      dut.io.fragIn.bits.color.r.poke(0xab.U)
-      dut.io.fragIn.bits.color.g.poke(0xcd.U)
-      dut.io.fragIn.bits.color.b.poke(0xef.U)
-      dut.io.fragIn.valid.poke(true.B)
-      dut.clock.step()
-      dut.io.fragIn.valid.poke(false.B)
+      fireQuad(dut, Seq(Frag(3, 4, 0x20)))
 
       dut.io.flush.poke(true.B)
       dut.clock.step()
@@ -708,19 +686,8 @@ class KernelFragStageSpec extends AnyFlatSpec {
       mem.putWord(0x2000L, 2, 0x00ff00ff)
       mem.putWord(0x2000L, 3, 0xffff00ff)
 
-      for (lane <- 0 until 4) {
-        dut.io.fragUv.u.poke(u(lane).U)
-        dut.io.fragUv.v.poke(v(lane).U)
-        dut.io.fragIn.bits.x.poke(lane.S)
-        dut.io.fragIn.bits.y.poke((8 + lane).S)
-        dut.io.fragIn.bits.depth.poke(0x20.S)
-        dut.io.fragIn.bits.color.r.poke(0.U)
-        dut.io.fragIn.bits.color.g.poke(0.U)
-        dut.io.fragIn.bits.color.b.poke(0.U)
-        dut.io.fragIn.valid.poke(true.B)
-        dut.clock.step()
-        dut.io.fragIn.valid.poke(false.B)
-      }
+      fireQuad(dut, Seq.tabulate(4)(lane => Frag(lane, 8 + lane, 0x20,
+        r = 0, g = 0, b = 0)), uvs = u zip v)
       dut.io.flush.poke(true.B); dut.clock.step()
       dut.io.flush.poke(false.B)
 
@@ -774,17 +741,8 @@ class KernelFragStageSpec extends AnyFlatSpec {
       mem.putWord(0x1000L, 1, sw(10, 1, 192))
       mem.putWord(0x1000L, 2, cease)
 
-      def feed(x: Int, red: Int): Unit = {
-        dut.io.fragIn.bits.x.poke(x.S)
-        dut.io.fragIn.bits.y.poke(0.S)
-        dut.io.fragIn.bits.depth.poke(1.S)
-        dut.io.fragIn.bits.color.r.poke(red.U)
-        dut.io.fragIn.bits.color.g.poke(0.U)
-        dut.io.fragIn.bits.color.b.poke(0.U)
-        dut.io.fragIn.valid.poke(true.B)
-        dut.clock.step()
-        dut.io.fragIn.valid.poke(false.B)
-      }
+      def feed(x: Int, red: Int): Unit =
+        fireQuad(dut, Seq(Frag(x, 0, 1, r = red, g = 0, b = 0)))
 
       // Draw 1: one fragment, flush at the boundary.
       feed(1, 0x11)
@@ -811,12 +769,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
         // the parked slot (inject 2/3).
         inject match {
           case 0 =>
-            dut.io.fragIn.bits.x.poke(2.S)
-            dut.io.fragIn.bits.y.poke(0.S)
-            dut.io.fragIn.bits.depth.poke(1.S)
-            dut.io.fragIn.bits.color.r.poke(0x22.U)
-            dut.io.fragIn.bits.color.g.poke(0.U)
-            dut.io.fragIn.bits.color.b.poke(0.U)
+            pokeQuadLanes(dut, Seq(Frag(2, 0, 1, r = 0x22, g = 0, b = 0)))
             dut.io.fragIn.valid.poke(true.B)
             inject = 1
           case 1 =>
@@ -917,15 +870,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.flush.poke(false.B)
       dut.clock.step()
 
-      dut.io.fragIn.bits.x.poke(1.S)
-      dut.io.fragIn.bits.y.poke(2.S)
-      dut.io.fragIn.bits.depth.poke(0x20.S)
-      dut.io.fragIn.bits.color.r.poke(0xab.U)
-      dut.io.fragIn.bits.color.g.poke(0xcd.U)
-      dut.io.fragIn.bits.color.b.poke(0xef.U)
-      dut.io.fragIn.valid.poke(true.B)
-      dut.clock.step()
-      dut.io.fragIn.valid.poke(false.B)
+      fireQuad(dut, Seq(Frag(1, 2, 0x20)))
       dut.io.flush.poke(true.B)
       assert(pump(dut, mem, () => dut.io.drawRetire.valid.peek().litToBoolean),
         "flushed draw did not retire")

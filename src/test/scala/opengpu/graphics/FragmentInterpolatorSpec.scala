@@ -105,4 +105,77 @@ class FragmentInterpolatorSpec extends AnyFlatSpec {
       assert(nearV2.exists(c => maxChannel(c) == 2))
     }
   }
+
+  it should "shade a whole 2x2 quad per cycle in quad mode" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    simulate(new RasterShader(config, quadMode = true)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      // Full-colour triangle: v0 red, v1 green, v2 blue.
+      dut.io.colors(0).r.poke(255.U); dut.io.colors(0).g.poke(0.U); dut.io.colors(0).b.poke(0.U)
+      dut.io.colors(1).r.poke(0.U); dut.io.colors(1).g.poke(255.U); dut.io.colors(1).b.poke(0.U)
+      dut.io.colors(2).r.poke(0.U); dut.io.colors(2).g.poke(0.U); dut.io.colors(2).b.poke(255.U)
+
+      // Triangle: v0=(2,2) v1=(14,2) v2=(2,14)
+      dut.io.draw.valid.poke(true.B)
+      dut.io.draw.bits.v0.x.poke(config.toFixed(2).S)
+      dut.io.draw.bits.v0.y.poke(config.toFixed(2).S)
+      dut.io.draw.bits.v1.x.poke(config.toFixed(14).S)
+      dut.io.draw.bits.v1.y.poke(config.toFixed(2).S)
+      dut.io.draw.bits.v2.x.poke(config.toFixed(2).S)
+      dut.io.draw.bits.v2.y.poke(config.toFixed(14).S)
+      dut.io.quad.ready.poke(true.B)
+      dut.io.cullMode.poke(0.U)
+      dut.clock.step()
+      dut.io.draw.valid.poke(false.B)
+
+      val quads = collection.mutable.ArrayBuffer.empty[Seq[(Int, Int, Boolean, Int, Int, Int)]]
+      var guard = 0
+      while (!dut.io.done.peek().litToBoolean && guard < 2000) {
+        assert(!dut.io.pixel.valid.peek().litToBoolean,
+          "quad mode must not emit on the scalar port")
+        if (dut.io.quad.valid.peek().litToBoolean) {
+          quads += (0 until 4).map { k =>
+            (dut.io.quad.bits.lanes(k).x.peek().litValue.toInt,
+              dut.io.quad.bits.lanes(k).y.peek().litValue.toInt,
+              dut.io.quad.bits.lanes(k).covered.peek().litToBoolean,
+              dut.io.quad.bits.lanes(k).color.r.peek().litValue.toInt,
+              dut.io.quad.bits.lanes(k).color.g.peek().litValue.toInt,
+              dut.io.quad.bits.lanes(k).color.b.peek().litValue.toInt)
+          }
+        }
+        dut.clock.step(); guard += 1
+      }
+      assert(guard < 2000 && quads.nonEmpty)
+
+      // One beat per bbox quad, TL/TR/BL/BR at an even origin.
+      assert(quads.size == 7 * 7)
+      quads.foreach { lanes =>
+        val (x, y, _, _, _, _) = lanes.head
+        assert((x & 1) == 0 && (y & 1) == 0)
+        assert(lanes.map(p => (p._1, p._2)) ==
+          Seq((x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)))
+      }
+
+      // Same top-left coverage as the scalar path; helpers ride along.
+      val covered = quads.flatten.collect { case (x, y, true, _, _, _) => (x, y) }.toSet
+      val expected = (3 until 14).flatMap { y => (3 until 14).collect {
+        case x if x + y <= 16 => (x, y)
+      }}.toSet
+      assert(covered == expected)
+      assert(quads.flatten.exists(!_._3), "edge quads must contain helper lanes")
+
+      // Interpolation matches the scalar path's behaviour: each channel
+      // dominates near its own vertex.
+      val fb = quads.flatten.collect {
+        case (x, y, true, r, g, b) => (x, y) -> (r, g, b) }.toMap
+      def maxChannel(c: (Int, Int, Int)): Int =
+        if (c._1 >= c._2 && c._1 >= c._3) 0 else if (c._2 >= c._3) 1 else 2
+      assert(fb.get((3, 3)).exists(c => maxChannel(c) == 0))
+      assert(fb.get((12, 3)).exists(c => maxChannel(c) == 1))
+      assert(fb.get((3, 12)).exists(c => maxChannel(c) == 2))
+    }
+  }
 }

@@ -11,14 +11,16 @@ import opengpu.core.memory.{
   SharedAtomicResponse
 }
 
-/** Core-backed fragment shader stage (Phase D), batched dispatch with
+/** Core-backed fragment shader stage (Phase D), batched quad dispatch with
   * per-draw overlap.
   *
-  * Fragments are accumulated into a batch of up to `warps*lanes` and shaded by
+  * Fragments arrive as whole 2x2 quads (`fragIn`, one TL/TR/BL/BR group per
+  * beat with per-lane coverage as the helper-lane mask) and are accumulated
+  * four lanes per beat into a batch of up to `warps*lanes` and shaded by
   * ONE kernel launch on the compute unit's SIMT warps (lane = fragment):
-  *   1. accumulate: buffer the fragment's x/y/depth and write its x, y, depth
-  *      and packed colour into the per-fragment input arrays (through the
-  *      word->line bridge);
+  *   1. accumulate: buffer the quad lanes' x/y/depth and write their x, y,
+  *      depth and packed colour into the per-fragment input arrays (through
+  *      the word->line bridge);
   *   2. launch the shader kernel (entry `shaderPc`) with
   *      `localSize = (count,1,1)` — the dispatcher splits it into warps and the
   *      tail warp gets a partial active mask, so vector loads/stores touch
@@ -28,6 +30,10 @@ import opengpu.core.memory.{
   *      discard individual fragments;
   *   4. read the outputs and output-valid words back through the bridge and
   *      emit only live fragments in batch order.
+  *
+  * Batch counts are always multiples of four (every beat appends exactly one
+  * quad at the next 4-aligned index), so the lane%4 quad mapping the
+  * `vquad.dfdx/dfdy` derivative ops rely on is preserved end to end.
   *
   * kernarg ABI (byte offsets from the draw's kernarg base, which must be
   * 64-byte aligned; `stride = 4 * warps * lanes` is the per-array byte size):
@@ -87,13 +93,15 @@ class KernelFragStage(
   gfxConfig: GraphicsConfig = GraphicsConfig()
 ) extends Module {
   private val batchCap = config.warps * config.lanes
+  require(batchCap % 4 == 0, "fragment batches accumulate whole 2x2 quads")
   private val countWidth = math.max(1, log2Ceil(batchCap + 1))
   // Per-array byte stride of the SoA kernarg layout (see the class doc).
   private val arrayStride = 4 * batchCap
 
   val io = IO(new Bundle {
-    val fragIn = Flipped(Decoupled(new RasterFragment(gfxConfig)))
-    val fragUv = Input(new TexUV)
+    val fragIn = Flipped(Decoupled(new FragmentQuad(gfxConfig)))
+    /** Per-lane perspective-correct UVs of the presented quad. */
+    val fragUv = Input(Vec(4, new TexUV))
     val out = Decoupled(new RasterFragment(gfxConfig))
     val shaderPc = Input(UInt(32.W))
     val kernargBase = Input(UInt(32.W))
@@ -228,13 +236,15 @@ class KernelFragStage(
   private val field = RegInit(0.U(4.W))
 
   // ---------------------------------------------------------------------
-  // Producer: accumulate the next draw's fragments into slot prodSlot.
+  // Producer: accumulate the next draw's quads into slot prodSlot, four
+  // lanes per beat, so batch counts are always multiples of four and every
+  // fragment lands at the 4-aligned index the quad derivative ops expect.
   // ---------------------------------------------------------------------
   private val prodCount = slotCount(prodSlot)
   private val prodCountIdx = prodCount(countWidth - 2, 0)
-  // Count including a fragment accepted this cycle (commit-by-fullness takes
-  // the batch with the firing fragment; a flush commit has no fire).
-  private val prodCountNext = prodCount + Mux(io.fragIn.fire, 1.U, 0.U)
+  // Count including a quad accepted this cycle (commit-by-fullness takes
+  // the batch with the firing quad; a flush commit has no fire).
+  private val prodCountNext = prodCount + Mux(io.fragIn.fire, 4.U, 0.U)
 
   private val pendingValid = RegInit(false.B)
   private val pendingSlot = Reg(UInt(1.W))
@@ -267,28 +277,35 @@ class KernelFragStage(
   private val flushRise = io.flush && !prevFlush
 
   private val prodNonEmpty = prodCount =/= 0.U
-  private val commitFull = io.fragIn.fire && prodCount === (batchCap - 1).U
+  private val commitFull = io.fragIn.fire && prodCount === (batchCap - 4).U
   private val commitFlush = flushRise && prodNonEmpty
   private val commitAny = (commitFull || commitFlush) && !pendingValid
 
   when(flushRise) { assert(qCount =/= 2.U, "retire queue overflow") }
 
   // Producer accumulation (data always; count frozen on a take-commit).
+  // Each fire stages all four lanes of the presented quad at the next
+  // 4-aligned index range.
   when(io.fragIn.fire) {
-    fragX(prodSlot)(prodCountIdx) := io.fragIn.bits.x
-    fragY(prodSlot)(prodCountIdx) := io.fragIn.bits.y
-    fragDepth(prodSlot)(prodCountIdx) := io.fragIn.bits.depth
-    packedColor(prodSlot)(prodCountIdx) := Cat(
-      io.fragIn.bits.color.r,
-      io.fragIn.bits.color.g,
-      io.fragIn.bits.color.b,
-      0xff.U(8.W))
-    fragU(prodSlot)(prodCountIdx) := io.fragUv.u
-    fragV(prodSlot)(prodCountIdx) := io.fragUv.v
-    fragCovered(prodSlot)(prodCountIdx) := io.fragIn.bits.covered
-    fragE0(prodSlot)(prodCountIdx) := io.fragIn.bits.e0
-    fragE1(prodSlot)(prodCountIdx) := io.fragIn.bits.e1
-    fragE2(prodSlot)(prodCountIdx) := io.fragIn.bits.e2
+    for (k <- 0 until 4) {
+      // Fires only happen with prodCount <= batchCap-4, so the sum stays in
+      // range; the explicit truncation keeps the dynamic index at Vec width.
+      val laneIdx = (prodCountIdx + k.U)(countWidth - 2, 0)
+      fragX(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).x
+      fragY(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).y
+      fragDepth(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).depth
+      packedColor(prodSlot)(laneIdx) := Cat(
+        io.fragIn.bits.lanes(k).color.r,
+        io.fragIn.bits.lanes(k).color.g,
+        io.fragIn.bits.lanes(k).color.b,
+        0xff.U(8.W))
+      fragU(prodSlot)(laneIdx) := io.fragUv(k).u
+      fragV(prodSlot)(laneIdx) := io.fragUv(k).v
+      fragCovered(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).covered
+      fragE0(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).e0
+      fragE1(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).e1
+      fragE2(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).e2
+    }
     when(prodCount === 0.U) {
       slotShaderPc(prodSlot) := io.shaderPc
       slotKernarg(prodSlot) := bankedKernarg(prodSlot)

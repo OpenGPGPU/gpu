@@ -126,7 +126,7 @@ class RenderPipeline(
   private val shader = Module(new RasterShader(config, quadMode = fragCore))
   private val om = Module(new OutputMerger(config))
   private val textured =
-    Module(new TexturedFragStage(config))
+    Module(new TexturedFragStage(config, quadUv = fragCore))
 
   // The command FIFO is allowed to advance to the next draw as soon as this
   // module accepts the current one.  Keep every per-draw field stable until
@@ -193,6 +193,13 @@ class RenderPipeline(
   textured.io.e0 := shader.io.pixel.bits.e0
   textured.io.e1 := shader.io.pixel.bits.e1
   textured.io.e2 := shader.io.pixel.bits.e2
+  // Per-lane quad edge values for the core-backed path's parallel UV
+  // interpolation (tied-off zeros in the fixed-function configuration).
+  for (k <- 0 until 4) {
+    textured.io.quadE0(k) := shader.io.quad.bits.lanes(k).e0
+    textured.io.quadE1(k) := shader.io.quad.bits.lanes(k).e1
+    textured.io.quadE2(k) := shader.io.quad.bits.lanes(k).e2
+  }
   textured.io.invW0 := geo.io.out(0).invW
   textured.io.invW1 := geo.io.out(1).invW
   textured.io.invW2 := geo.io.out(2).invW
@@ -250,10 +257,11 @@ class RenderPipeline(
     // the ordered drawRetire handshake retires contexts in submission order.
     io.draw.ready := (!drawHoldValid || shader.io.draw.fire) &&
       shader.io.draw.ready && kernelFrag.io.fragIn.ready && ctxFifo.io.enq.ready
-    kernelFrag.io.fragIn.valid := shader.io.pixel.valid
-    kernelFrag.io.fragIn.bits := shader.io.pixel.bits
-    kernelFrag.io.fragUv := textured.io.interpolatedUv
-    shader.io.pixel.ready := kernelFrag.io.fragIn.ready
+    kernelFrag.io.fragIn.valid := shader.io.quad.valid
+    kernelFrag.io.fragIn.bits := shader.io.quad.bits
+    kernelFrag.io.fragUv := textured.io.interpolatedUvQuad
+    shader.io.quad.ready := kernelFrag.io.fragIn.ready
+    shader.io.pixel.ready := false.B // quad mode: scalar port is tied off
     kernelFrag.io.shaderPc := ctxFifo.io.tail.shaderPc
     kernelFrag.io.kernargBase := ctxFifo.io.tail.kernargBase
     kernelFrag.io.kernargBankStride := ctxFifo.io.tail.kernargBankStride
@@ -341,6 +349,7 @@ class RenderPipeline(
       textured.io.out.bits.depth, shader.io.pixel.bits.depth)(29, 0).asUInt
     shader.io.pixel.ready := Mux(drawState.texEnable, textured.io.fragIn.ready,
       om.io.fragIn.ready)
+    shader.io.quad.ready := false.B // scalar mode: quad port is tied off
 
     io.kernelMemReq.valid := false.B
     io.kernelMemReq.bits := 0.U.asTypeOf(io.kernelMemReq.bits)

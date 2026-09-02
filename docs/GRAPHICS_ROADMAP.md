@@ -930,6 +930,23 @@ Status (virtual display and DRM handoff, 2026-08-29):
   order. Directed tests cover four concurrent pixels, same-pixel ordering,
   concurrent source-over blends, delayed write acknowledgements and reversed
   line-response order.
+- **Quad-rate fragment dispatch complete (2026-09-02).** The core-backed
+  path now moves whole 2x2 quads per cycle instead of scalarizing them:
+  `TriangleRasterizer(quadMode = true)` emits a complete TL/TR/BL/BR
+  `RasterQuad` per beat (the per-lane `quadLane` stepping is gone; per-lane
+  screen-bounds tests form the helper-lane mask), `RasterShader` shades all
+  four lanes in parallel through four interpolators, and `KernelFragStage`'s
+  producer stages all four lanes of a presented quad per `fragIn` beat, so a
+  full `warps*lanes` batch accumulates in eight beats instead of 32. Batch
+  counts stay multiples of four, preserving the 4-aligned lane mapping the
+  `vquad.dfdx/dfdy` quad-derivative ops rely on; the kernarg SoA ABI, the
+  top-left coverage rule, the draw-boundary (`flush`/retire) contract and the
+  fixed-function path are all unchanged. `TexturedFragStage` gained a
+  `quadUv` configuration that interpolates per-lane perspective-correct UVs
+  for the presented quad. Tests cover one-quad-per-cycle raster emission
+  (beat count equals the even-aligned bbox quad count), quad-mode shading
+  against the scalar reference coverage, and the migrated
+  `KernelFragStageSpec` driving whole quads (helper lanes default uncovered).
 - **Store-drain completion contract complete (2026-09-01).** `SharedL2Cache`
   gained a `drained` output: the request queues are empty, each slice FSM is
   idle, no miss fill is in flight, and every store-table entry has been freed
