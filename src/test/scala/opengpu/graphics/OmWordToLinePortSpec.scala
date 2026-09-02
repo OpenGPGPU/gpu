@@ -39,6 +39,8 @@ class OmWordToLinePortSpec extends AnyFlatSpec {
       dut.io.in.valid.poke(false.B)
       dut.io.out.valid.expect(true.B)
       dut.io.out.bits.data.expect("hdeadbeef".U)
+      dut.io.out.bits.addr.expect(0x1028.U)
+      dut.io.out.bits.write.expect(false.B)
       dut.io.memoryResponse.ready.expect(true.B)
       dut.clock.step(); dut.io.memoryResponse.valid.poke(false.B)
     }
@@ -70,12 +72,14 @@ class OmWordToLinePortSpec extends AnyFlatSpec {
       val wrId = dut.io.memoryRequest.bits.transactionId.peek().litValue
       dut.clock.step(); dut.io.in.valid.poke(false.B)
 
-      // Acknowledge the write; the word port must present a response (the OM
-      // retires its RMW only on a write completion too).
+      // Acknowledge the write; the word port must preserve its metadata even
+      // though clients may treat the acknowledgement as fire-and-forget.
       dut.io.memoryResponse.valid.poke(true.B)
       dut.io.memoryResponse.bits.readData.poke(0.U)
       dut.io.memoryResponse.bits.transactionId.poke(wrId.U)
       dut.io.out.valid.expect(true.B)
+      dut.io.out.bits.addr.expect(0x300c.U)
+      dut.io.out.bits.write.expect(true.B)
       dut.io.memoryResponse.ready.expect(true.B)
       dut.clock.step(); dut.io.memoryResponse.valid.poke(false.B)
     }
@@ -122,6 +126,54 @@ class OmWordToLinePortSpec extends AnyFlatSpec {
       dut.io.in.bits.data.poke("h0000cafe".U)
       dut.io.memoryRequest.bits.transactionId.expect(wrId.U)
       dut.clock.step(); dut.io.in.valid.poke(false.B)
+    }
+  }
+
+  it should "restore word addresses on out-of-order line responses" in {
+    val config = GpuConfig(xLen = 32)
+    simulate(new OmWordToLinePort(config)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.in.valid.poke(false.B)
+      dut.io.memoryResponse.valid.poke(false.B)
+      dut.io.memoryResponse.bits.readData.poke(0.U)
+      dut.io.memoryResponse.bits.fault.poke(false.B)
+      dut.io.memoryResponse.bits.transactionId.poke(0.U)
+      dut.io.out.ready.poke(true.B)
+      dut.io.memoryRequest.ready.poke(true.B)
+
+      // Allocate two distinct transactions before either one responds.
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.write.poke(false.B)
+      dut.io.in.bits.addr.poke(0x1014.U) // line 0x1000, word 5
+      dut.io.in.bits.data.poke(0.U)
+      val firstId = dut.io.memoryRequest.bits.transactionId.peek().litValue
+      dut.clock.step()
+
+      dut.io.in.bits.addr.poke(0x2088.U) // line 0x2080, word 2
+      val secondId = dut.io.memoryRequest.bits.transactionId.peek().litValue
+      assert(secondId != firstId)
+      dut.clock.step(); dut.io.in.valid.poke(false.B)
+
+      // Return the second request first.  The word response must recover both
+      // the correct slice and the original byte address from its slot.
+      dut.io.memoryResponse.valid.poke(true.B)
+      dut.io.memoryResponse.bits.transactionId.poke(secondId.U)
+      dut.io.memoryResponse.bits.readData.poke(
+        (BigInt("22222222", 16) << (2 * 32)).U)
+      dut.io.out.valid.expect(true.B)
+      dut.io.out.bits.data.expect("h22222222".U)
+      dut.io.out.bits.addr.expect(0x2088.U)
+      dut.io.out.bits.write.expect(false.B)
+      dut.clock.step()
+
+      dut.io.memoryResponse.bits.transactionId.poke(firstId.U)
+      dut.io.memoryResponse.bits.readData.poke(
+        (BigInt("11111111", 16) << (5 * 32)).U)
+      dut.io.out.valid.expect(true.B)
+      dut.io.out.bits.data.expect("h11111111".U)
+      dut.io.out.bits.addr.expect(0x1014.U)
+      dut.io.out.bits.write.expect(false.B)
+      dut.clock.step(); dut.io.memoryResponse.valid.poke(false.B)
     }
   }
 }

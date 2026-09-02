@@ -63,7 +63,7 @@ Current limitations that still drive the remaining roadmap:
    is a performance iteration after functional M5 completion.  (The earlier
    limitation list item on 2×2-quad derivatives, mip LOD and discard is
    resolved — see the M5/M7 status entries.)
-3. Per-draw overlap landed (2026-09-01): draw N+1's rasterization and
+2. Per-draw overlap landed (2026-09-01): draw N+1's rasterization and
    kernarg staging accumulate in a second slot while batch N's kernel
    executes on the SIMT lanes, and `RenderCoreL2.io.done` now implies the
    final shared-L2 store drain (see the store-drain completion entry below).
@@ -904,9 +904,10 @@ Status (virtual display and DRM handoff, 2026-08-29):
   for the same input addresses, which is exactly the hazard the ABI removes).
   `drawRetired` became `drawRetire`, an ordered valid/ready handshake that
   presents one completion event per draw boundary (including empty draws,
-  which queue an immediately-done event) and holds it until the owner pops
-  the matching draw context once the OM is idle — so back-to-back retire
-  events can no longer be lost. `RenderPipeline`'s fragCore branch admits the
+  which queue an immediately-done event) and holds it until the owner accepts
+  and pops the matching draw context — so back-to-back retire events can no
+  longer be lost. Each OM entry now snapshots its draw context, so that pop
+  does not require the whole OM to become idle. `RenderPipeline`'s fragCore branch admits the
   next command-buffer record as soon as the rasterizer is idle and the
   producer slot can take fragments; per-draw state is carried by the context
   FIFO and the slot snapshots rather than by pipeline stalls. Verified by a
@@ -914,6 +915,19 @@ Status (virtual display and DRM handoff, 2026-08-29):
   while batch 1 is in flight; outputs and retire events in submission order;
   alternating banks observed in memory) plus the full graphics suite and the
   two-draw core-backed `RenderCoreSpec` regression.
+- **Parallel output merger complete (2026-09-02).** `OutputMerger` now keeps
+  four independent in-flight pixel entries and round-robins their depth reads,
+  optional destination-colour reads and colour/depth writes onto the word
+  memory port. Distinct pixels can therefore fill read latency with a new
+  transaction every cycle, while an address hazard stalls a later fragment of
+  the same pixel until the earlier RMW has issued its writes. Every entry
+  snapshots render-target addresses plus depth/blend state, allowing draw
+  contexts to retire while accepted fragments are still draining. Read
+  responses carry their original byte address; `OmWordToLinePort` restores it
+  from the transaction table even when shared-L2 responses return out of
+  order. Directed tests cover four concurrent pixels, same-pixel ordering,
+  concurrent source-over blends, delayed write acknowledgements and reversed
+  line-response order.
 - **Store-drain completion contract complete (2026-09-01).** `SharedL2Cache`
   gained a `drained` output: the request queues are empty, each slice FSM is
   idle, no miss fill is in flight, and every store-table entry has been freed
@@ -925,19 +939,15 @@ Status (virtual display and DRM handoff, 2026-08-29):
   moment `done` is observed.  This closes the M6 host-interface requirement
   that the completion status/IRQ already imply store drain (the driver can
   read the frame at DONE without a software fence).
-- **Draw-token/context FIFO complete (2026-09-01).** Each admitted draw now
-  pushes one `DrawContextFifo` entry (`DrawContextFifo.scala`) binding its
-  shader descriptor, sampler configuration and OM render-target state.
-  `KernelFragStage` snapshots the descriptor *and* the sampler configuration
-  per batch and pulses a new `drawRetired` output exactly once per draw
-  boundary (including empty draws) when the ended draw's last fragment has
-  been emitted; `RenderPipeline`'s fragCore branch feeds the OM from the FIFO
-  head and pops it only once the OM is idle after that pulse, so an in-flight
-  RMW can never be redirected to the next draw's render target.  Draw
-  admission is still fully serialized (no overlap yet); this is the tracked
-  state infrastructure the M5 overlap step builds on, verified by
-  `DrawContextFifoSpec`, a `drawRetired` pulse spec, and a two-draw
-  core-backed end-to-end regression in `RenderCoreSpec`.
+- **Draw-token/context FIFO foundation complete (2026-09-01).** Each admitted
+  draw pushes one `DrawContextFifo` entry (`DrawContextFifo.scala`) binding its
+  shader descriptor, sampler configuration and OM render-target state. This
+  was the state-tracking foundation for the per-draw overlap milestone above;
+  the original retirement pulse has since become the lossless ordered
+  `drawRetire` valid/ready handshake, and OM entries now snapshot the head
+  context before it retires. `DrawContextFifoSpec`, `KernelFragStageSpec` and
+  the two-draw core-backed `RenderCoreSpec` regression cover the resulting
+  ordering contract.
 - **Trilinear mip blending complete (2026-09-01).** `TextureUnit` now accepts
   an 8-bit fractional LOD and serially bilinear-filters the selected pair of
   packed mip levels before exact Q0.8 RGB mixing. `TexSampleUnit` derives an
@@ -946,10 +956,12 @@ Status (virtual display and DRM handoff, 2026-08-29):
   per-draw overlap/double buffering is complete (see the per-draw overlap
   entry above).
 - **Source-over output blending complete (2026-09-01).** `OutputMerger`
-  serially reads a passing fragment's destination colour and applies exact
-  rounded RGBA8888 source-over composition. Draw record word 32 bit 16 enables
-  it only when the per-draw state override is valid; legacy draws remain
-  unblended. The additive UAPI extension advances the DRM interface to 1.4.
+  reads a passing fragment's destination colour and applies exact rounded
+  RGBA8888 source-over composition. Each fragment serializes that read behind
+  its own depth result, while distinct pixels proceed concurrently through the
+  parallel OM above. Draw record word 32 bit 16 enables it only when the
+  per-draw state override is valid; legacy draws remain unblended. The
+  additive UAPI extension advances the DRM interface to 1.4.
 - Hardware scanout DMA, timing generation and board PHY work are explicitly
   outside this repository's GPU RTL boundary.
 

@@ -56,6 +56,7 @@ class OmWordToLinePort(
     RegInit(VecInit(Seq.fill(maxOutstanding)(false.B)))
   private val transactionWord = Reg(Vec(maxOutstanding, UInt(4.W)))
   private val transactionWrite = Reg(Vec(maxOutstanding, Bool()))
+  private val transactionAddr = Reg(Vec(maxOutstanding, UInt(32.W)))
   private val freeTransactions = ~transactionValid.asUInt
   private val hasFreeTransaction = freeTransactions.orR
   private val allocatedId = PriorityEncoder(freeTransactions)
@@ -75,6 +76,7 @@ class OmWordToLinePort(
     transactionValid(allocatedId) := true.B
     transactionWord(allocatedId) := wordIdx
     transactionWrite(allocatedId) := io.in.bits.write
+    transactionAddr(allocatedId) := io.in.bits.addr
   }
 
   private val responseId = io.memoryResponse.bits.transactionId
@@ -84,6 +86,7 @@ class OmWordToLinePort(
   io.out.bits.data :=
     (io.memoryResponse.bits.readData >> (transactionWord(responseId) * 32.U))(31, 0)
   io.out.bits.write := transactionWrite(responseId)
+  io.out.bits.addr := transactionAddr(responseId)
   io.memoryResponse.ready := responseIdValid && io.out.ready
   when(io.memoryResponse.fire) { transactionValid(responseId) := false.B }
   when(io.memoryResponse.valid) {

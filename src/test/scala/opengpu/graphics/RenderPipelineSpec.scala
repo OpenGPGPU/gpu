@@ -81,27 +81,30 @@ class RenderPipelineSpec extends AnyFlatSpec {
       dut.io.texWrapClamp.poke(true.B)
       dut.io.texMaxLevel.poke(2.U)
 
-      // Drain: service the OM memory port (1-cycle read latency) until done.
-      var lastReadValid = false
-      var lastReadData = 0L
+      // Drain: service the OM memory port until done.  Multi-outstanding
+      // model with one cycle of read latency: requests captured on fire
+      // become presentable the next cycle (the parallel output merger keeps
+      // several reads in flight, attributed by the echoed address).
+      val respQ = scala.collection.mutable.Queue.empty[(Boolean, Int, Long)]
+      val captured = scala.collection.mutable.Queue.empty[(Boolean, Int, Long)]
       var guard = 0
       while (!dut.io.done.peek().litToBoolean && guard < 4000) {
         dut.io.mem.req.ready.poke(true.B)
-        if (lastReadValid) {
-          dut.io.mem.resp.valid.poke(true.B)
-          dut.io.mem.resp.bits.data.poke(lastReadData.U)
-          lastReadValid = false
-        } else {
-          dut.io.mem.resp.valid.poke(false.B)
-          dut.io.mem.resp.bits.data.poke(0.U)
-        }
+        while (captured.nonEmpty) respQ.enqueue(captured.dequeue())
         if (dut.io.mem.req.valid.peek().litToBoolean) {
           val addr = dut.io.mem.req.bits.addr.peek().litValue.toInt
           val write = dut.io.mem.req.bits.write.peek().litToBoolean
           val data = dut.io.mem.req.bits.data.peek().litValue.toInt
           if (write) mem(addr / 4) = data
-          else { lastReadValid = true; lastReadData = mem(addr / 4) & 0xffffffffL }
+          else captured.enqueue((false, addr, mem(addr / 4) & 0xffffffffL))
         }
+        if (respQ.nonEmpty) {
+          val (isWrite, addr, data) = respQ.head
+          dut.io.mem.resp.valid.poke(true.B)
+          dut.io.mem.resp.bits.data.poke(data.U)
+          dut.io.mem.resp.bits.addr.poke(addr.U)
+          if (dut.io.mem.resp.ready.peek().litToBoolean) respQ.dequeue()
+        } else dut.io.mem.resp.valid.poke(false.B)
         dut.clock.step()
         guard += 1
       }

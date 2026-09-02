@@ -68,15 +68,18 @@ class RenderHostSpec extends AnyFlatSpec {
     * memory model until `until` holds (command-port writes, e.g. IH record
     * writes from the job queue, are acknowledged with a write response).  Once
     * `until` holds, `drainCycles` further serviced cycles run so in-flight
-    * responses and pointer updates settle before the caller inspects state. */
+    * responses and pointer updates settle before the caller inspects state.
+    * Both ports are multi-outstanding: requests are captured on fire and their
+    * address-tagged responses presented on a later cycle (the parallel output
+    * merger keeps several reads in flight). */
   private def serviceMem(
     dut: RenderHost,
     m: MemModel,
     maxCycles: Int,
     drainCycles: Int = 0
   )(until: => Boolean): Unit = {
-    var cbR = false; var cbD = 0L; var cbW = false
-    var fbR = false; var fbD = 0L
+    val cbQ = scala.collection.mutable.Queue.empty[(Boolean, Long, Long)]
+    val fbQ = scala.collection.mutable.Queue.empty[(Boolean, Long, Long)]
     var guard = 0
     var untilSeen = false
     var drained = 0
@@ -85,42 +88,41 @@ class RenderHostSpec extends AnyFlatSpec {
     dut.io.kernelWordMemReq.ready.poke(true.B)
     dut.io.kernelWordMemResp.valid.poke(false.B)
     while ((!untilSeen || drained < drainCycles) && guard < maxCycles) {
-      // Command-buffer port: respond to the previous read or write.
+      // Command-buffer port.
       dut.io.cbMem.req.ready.poke(true.B)
-      if (cbR) {
+      if (cbQ.nonEmpty) {
+        val (isWrite, a, d) = cbQ.head
         dut.io.cbMem.resp.valid.poke(true.B)
-        dut.io.cbMem.resp.bits.data.poke(cbD.U)
-        dut.io.cbMem.resp.bits.write.poke(false.B)
-        cbR = false
-      } else if (cbW) {
-        dut.io.cbMem.resp.valid.poke(true.B)
-        dut.io.cbMem.resp.bits.data.poke(0.U)
-        dut.io.cbMem.resp.bits.write.poke(true.B)
-        cbW = false
+        dut.io.cbMem.resp.bits.data.poke(d.U)
+        dut.io.cbMem.resp.bits.write.poke(isWrite.B)
+        dut.io.cbMem.resp.bits.addr.poke(a.U)
+        if (dut.io.cbMem.resp.ready.peek().litToBoolean) cbQ.dequeue()
       } else dut.io.cbMem.resp.valid.poke(false.B)
       if (dut.io.cbMem.req.valid.peek().litToBoolean &&
           dut.io.cbMem.req.ready.peek().litToBoolean) {
         val a = dut.io.cbMem.req.bits.addr.peek().litValue.toLong
         if (dut.io.cbMem.req.bits.write.peek().litToBoolean) {
           m.wwrite(a, dut.io.cbMem.req.bits.data.peek().litValue.toInt)
-          cbW = true
-        } else { cbR = true; cbD = m.word(a) }
+          cbQ.enqueue((true, a, 0L))
+        } else cbQ.enqueue((false, a, m.word(a)))
       }
 
       // Framebuffer port.
       dut.io.fbMem.req.ready.poke(true.B)
-      if (fbR) {
+      if (fbQ.nonEmpty) {
+        val (isWrite, a, d) = fbQ.head
         dut.io.fbMem.resp.valid.poke(true.B)
-        dut.io.fbMem.resp.bits.data.poke(fbD.U)
-        dut.io.fbMem.resp.bits.write.poke(false.B)
-        fbR = false
+        dut.io.fbMem.resp.bits.data.poke(d.U)
+        dut.io.fbMem.resp.bits.write.poke(isWrite.B)
+        dut.io.fbMem.resp.bits.addr.poke(a.U)
+        if (dut.io.fbMem.resp.ready.peek().litToBoolean) fbQ.dequeue()
       } else dut.io.fbMem.resp.valid.poke(false.B)
       if (dut.io.fbMem.req.valid.peek().litToBoolean &&
           dut.io.fbMem.req.ready.peek().litToBoolean) {
         val a = dut.io.fbMem.req.bits.addr.peek().litValue.toLong
         if (dut.io.fbMem.req.bits.write.peek().litToBoolean)
           m.wwrite(a, dut.io.fbMem.req.bits.data.peek().litValue.toInt)
-        else { fbR = true; fbD = m.word(a) }
+        else fbQ.enqueue((false, a, m.word(a)))
       }
 
       dut.clock.step()

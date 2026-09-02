@@ -235,8 +235,11 @@ class RenderPipeline(
     ctxFifo.io.enq.bits.depthWriteEnable := Mux(io.draw.bits.stateOverride, io.draw.bits.depthWriteEnable, io.depthWriteEnable)
     ctxFifo.io.enq.bits.blendEnable := io.draw.bits.stateOverride && io.draw.bits.blendEnable
     // Ordered retire handshake: the stage presents one completion event per
-    // draw boundary in submission order and holds it until the OM is idle;
-    // each accepted event pops the matching head context.
+    // draw boundary in submission order and holds it until the owner accepts
+    // it.  Every OM entry snapshots its render-target state at fragment
+    // acceptance, so the matching head context may pop once all of that
+    // draw's shader outputs have been handed to the OM; the OM itself need
+    // not be globally idle.
     ctxFifo.io.retire := kernelFrag.io.drawRetire.valid && om.io.fragIn.ready
     kernelFrag.io.drawRetire.ready := ctxFifo.io.retire
     // Per-draw overlap: the rasterizer is the only shared front-end resource,
@@ -298,11 +301,10 @@ class RenderPipeline(
     om.io.blendEnable := ctxFifo.io.head.blendEnable
 
     // Done only once every rasterized fragment has been flushed, shaded, and
-    // handed to the OM: the batch slots must be empty (drained) and every
-    // admitted draw retired, so an in-flight batch or an unpresented retire
-    // event is never mistaken for an idle pipeline at a draw boundary.
+    // handed to the OM AND the OM's in-flight entries have drained (their
+    // writes issued): fragIn.ready only reports slot availability.
     io.done := !drawHoldValid && shader.io.done && kernelFrag.io.drained &&
-      om.io.fragIn.ready && !ctxFifo.io.headValid
+      om.io.drained && !ctxFifo.io.headValid
   } else {
     om.io.colorBase := drawState.colorBase
     om.io.depthBase := drawState.depthBase
@@ -312,7 +314,8 @@ class RenderPipeline(
     om.io.depthWriteEnable := drawState.depthWriteEnable
     om.io.blendEnable := drawState.blendEnable
     // As in the core-backed path, wait for the final fragment's serialized
-    // depth/color RMW to retire before accepting the next draw.
+    // depth/color RMW to retire (in-flight entries drained) before declaring
+    // done; admission stays additionally gated on OM slot availability.
     io.draw.ready := (!drawHoldValid || shader.io.draw.fire) &&
       shader.io.draw.ready && shader.io.done &&
       om.io.fragIn.ready
@@ -353,6 +356,6 @@ class RenderPipeline(
     io.kernelGlobalAtomicRequest.bits :=
       0.U.asTypeOf(io.kernelGlobalAtomicRequest.bits)
     io.kernelGlobalAtomicResponse.ready := true.B
-    io.done := !drawHoldValid && shader.io.done && om.io.fragIn.ready
+    io.done := !drawHoldValid && shader.io.done && om.io.drained
   }
 }

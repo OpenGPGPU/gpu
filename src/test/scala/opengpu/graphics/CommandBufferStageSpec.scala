@@ -71,6 +71,7 @@ class CommandBufferStageSpec extends AnyFlatSpec {
         (Seq[Int], Seq[(Int, Int, Int)], Seq[Int], Int, Int, Int, Int, Int)]
       var lastReadValid = false
       var lastReadData = 0L
+      var lastReadAddr = 0
       var guard = 0
       dut.io.start.poke(true.B)
       dut.clock.step()
@@ -80,6 +81,7 @@ class CommandBufferStageSpec extends AnyFlatSpec {
         if (lastReadValid) {
           dut.io.mem.resp.valid.poke(true.B)
           dut.io.mem.resp.bits.data.poke(lastReadData.U)
+          dut.io.mem.resp.bits.addr.poke(lastReadAddr.U)
           lastReadValid = false
         } else {
           dut.io.mem.resp.valid.poke(false.B)
@@ -89,6 +91,7 @@ class CommandBufferStageSpec extends AnyFlatSpec {
           val addr = dut.io.mem.req.bits.addr.peek().litValue.toInt
           lastReadValid = true
           lastReadData = mem(addr / 4) & 0xffffffffL
+          lastReadAddr = addr
         }
         // Capture a presented draw.
         if (dut.io.draw.valid.peek().litToBoolean) {
@@ -172,6 +175,7 @@ class CommandBufferStageSpec extends AnyFlatSpec {
 
       var responsePending = false
       var responseData = 0L
+      var responseAddr = 0
       val reads = collection.mutable.ArrayBuffer.empty[Int]
       var guard = 0
       dut.io.start.poke(true.B)
@@ -185,6 +189,7 @@ class CommandBufferStageSpec extends AnyFlatSpec {
         if (responsePending) {
           dut.io.mem.resp.valid.poke(true.B)
           dut.io.mem.resp.bits.data.poke(responseData.U)
+          dut.io.mem.resp.bits.addr.poke(responseAddr.U)
           responsePending = false
         } else {
           dut.io.mem.resp.valid.poke(false.B)
@@ -195,6 +200,7 @@ class CommandBufferStageSpec extends AnyFlatSpec {
           reads += addr
           responsePending = true
           responseData = mem(addr / 4) & 0xffffffffL
+          responseAddr = addr
         }
         dut.clock.step()
         guard += 1
@@ -215,6 +221,7 @@ class CommandBufferStageSpec extends AnyFlatSpec {
         if (responsePending) {
           dut.io.mem.resp.valid.poke(true.B)
           dut.io.mem.resp.bits.data.poke(responseData.U)
+          dut.io.mem.resp.bits.addr.poke(responseAddr.U)
           responsePending = false
         } else {
           dut.io.mem.resp.valid.poke(false.B)
@@ -226,6 +233,7 @@ class CommandBufferStageSpec extends AnyFlatSpec {
           val addr = dut.io.mem.req.bits.addr.peek().litValue.toInt
           responsePending = true
           responseData = mem(addr / 4) & 0xffffffffL
+          responseAddr = addr
         }
         dut.clock.step()
         guard += 1

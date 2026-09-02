@@ -97,26 +97,39 @@ class RenderCoreSpec extends AnyFlatSpec {
       dut.clock.step()
       dut.io.start.poke(false.B)
 
-      var cbReadValid = false; var cbReadData = 0L
-      var fbReadValid = false; var fbReadData = 0L
+      // Multi-outstanding models: requests are captured on fire and their
+      // address-tagged responses presented on a later cycle (the parallel
+      // output merger keeps several reads in flight).
+      val cbQ = scala.collection.mutable.Queue.empty[(Int, Long)]
+      val fbQ = scala.collection.mutable.Queue.empty[(Int, Long)]
       var guard = 0
       while (!dut.io.done.peek().litToBoolean && guard < 20000) {
         dut.io.cbMem.req.ready.poke(true.B)
-        if (cbReadValid) { dut.io.cbMem.resp.valid.poke(true.B); dut.io.cbMem.resp.bits.data.poke(cbReadData.U); cbReadValid = false }
-        else dut.io.cbMem.resp.valid.poke(false.B)
-        if (dut.io.cbMem.req.valid.peek().litToBoolean) {
+        if (cbQ.nonEmpty) {
+          val (a, d) = cbQ.head
+          dut.io.cbMem.resp.valid.poke(true.B)
+          dut.io.cbMem.resp.bits.data.poke(d.U)
+          dut.io.cbMem.resp.bits.addr.poke(a.U)
+        } else dut.io.cbMem.resp.valid.poke(false.B)
+        if (cbQ.nonEmpty && dut.io.cbMem.resp.ready.peek().litToBoolean) cbQ.dequeue()
+        if (dut.io.cbMem.req.valid.peek().litToBoolean && dut.io.cbMem.req.ready.peek().litToBoolean) {
           val a = dut.io.cbMem.req.bits.addr.peek().litValue.toInt
-          cbReadValid = true; cbReadData = cbMem(a / 4) & 0xffffffffL
+          cbQ.enqueue((a, cbMem(a / 4) & 0xffffffffL))
         }
         dut.io.fbMem.req.ready.poke(true.B)
-        if (fbReadValid) { dut.io.fbMem.resp.valid.poke(true.B); dut.io.fbMem.resp.bits.data.poke(fbReadData.U); fbReadValid = false }
-        else dut.io.fbMem.resp.valid.poke(false.B)
-        if (dut.io.fbMem.req.valid.peek().litToBoolean) {
+        if (fbQ.nonEmpty) {
+          val (a, d) = fbQ.head
+          dut.io.fbMem.resp.valid.poke(true.B)
+          dut.io.fbMem.resp.bits.data.poke(d.U)
+          dut.io.fbMem.resp.bits.addr.poke(a.U)
+        } else dut.io.fbMem.resp.valid.poke(false.B)
+        if (fbQ.nonEmpty && dut.io.fbMem.resp.ready.peek().litToBoolean) fbQ.dequeue()
+        if (dut.io.fbMem.req.valid.peek().litToBoolean && dut.io.fbMem.req.ready.peek().litToBoolean) {
           val a = dut.io.fbMem.req.bits.addr.peek().litValue.toInt
           val write = dut.io.fbMem.req.bits.write.peek().litToBoolean
           val data = dut.io.fbMem.req.bits.data.peek().litValue.toInt
-          if (write) { fbMem(a / 4) = data }
-          else { fbReadValid = true; fbReadData = fbMem(a / 4) & 0xffffffffL }
+          if (write) fbMem(a / 4) = data
+          else fbQ.enqueue((a, fbMem(a / 4) & 0xffffffffL))
         }
         dut.clock.step()
         guard += 1
@@ -238,23 +251,40 @@ class RenderCoreSpec extends AnyFlatSpec {
       // hold its response until the DUT's memory port actually accepts it.
       val kuQ = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
       val wuQ = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
-      var cbR = false; var cbD = 0L; var fbR = false; var fbD = 0L
+      // Multi-outstanding models: requests captured on fire, address-tagged
+      // responses presented later (the parallel output merger keeps several
+      // reads in flight).
+      val cbQ = scala.collection.mutable.Queue.empty[(Long, Long)]
+      val fbQ = scala.collection.mutable.Queue.empty[(Long, Long)]
       var guard = 0
       while (!dut.io.done.peek().litToBoolean && guard < 60000) {
         dut.io.cbMem.req.ready.poke(true.B)
-        if (cbR) { dut.io.cbMem.resp.valid.poke(true.B); dut.io.cbMem.resp.bits.data.poke(cbD.U); cbR = false }
-        else dut.io.cbMem.resp.valid.poke(false.B)
+        if (cbQ.nonEmpty) {
+          val (a, d) = cbQ.head
+          dut.io.cbMem.resp.valid.poke(true.B)
+          dut.io.cbMem.resp.bits.data.poke(d.U)
+          dut.io.cbMem.resp.bits.addr.poke(a.U)
+        } else dut.io.cbMem.resp.valid.poke(false.B)
+        if (cbQ.nonEmpty && dut.io.cbMem.resp.ready.peek().litToBoolean) cbQ.dequeue()
         if (dut.io.cbMem.req.valid.peek().litToBoolean && dut.io.cbMem.req.ready.peek().litToBoolean)
-          if (!dut.io.cbMem.req.bits.write.peek().litToBoolean) { cbR = true; cbD = word(dut.io.cbMem.req.bits.addr.peek().litValue.toLong) }
+          if (!dut.io.cbMem.req.bits.write.peek().litToBoolean) {
+            cbQ.enqueue((dut.io.cbMem.req.bits.addr.peek().litValue.toLong,
+              word(dut.io.cbMem.req.bits.addr.peek().litValue.toLong)))
+          }
 
         dut.io.fbMem.req.ready.poke(true.B)
-        if (fbR) { dut.io.fbMem.resp.valid.poke(true.B); dut.io.fbMem.resp.bits.data.poke(fbD.U); fbR = false }
-        else dut.io.fbMem.resp.valid.poke(false.B)
+        if (fbQ.nonEmpty) {
+          val (a, d) = fbQ.head
+          dut.io.fbMem.resp.valid.poke(true.B)
+          dut.io.fbMem.resp.bits.data.poke(d.U)
+          dut.io.fbMem.resp.bits.addr.poke(a.U)
+        } else dut.io.fbMem.resp.valid.poke(false.B)
+        if (fbQ.nonEmpty && dut.io.fbMem.resp.ready.peek().litToBoolean) fbQ.dequeue()
         if (dut.io.fbMem.req.valid.peek().litToBoolean && dut.io.fbMem.req.ready.peek().litToBoolean) {
           val a = dut.io.fbMem.req.bits.addr.peek().litValue.toLong
           val w = dut.io.fbMem.req.bits.write.peek().litToBoolean
           if (w) wwrite(a, dut.io.fbMem.req.bits.data.peek().litValue.toInt)
-          else { fbR = true; fbD = word(a) }
+          else fbQ.enqueue((a, word(a)))
         }
 
         // compute-unit line port response
@@ -419,23 +449,40 @@ class RenderCoreSpec extends AnyFlatSpec {
 
       val kuQ = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
       val wuQ = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
-      var cbR = false; var cbD = 0L; var fbR = false; var fbD = 0L
+      // Multi-outstanding models: requests captured on fire, address-tagged
+      // responses presented later (the parallel output merger keeps several
+      // reads in flight).
+      val cbQ = scala.collection.mutable.Queue.empty[(Long, Long)]
+      val fbQ = scala.collection.mutable.Queue.empty[(Long, Long)]
       var guard = 0
       while (!dut.io.done.peek().litToBoolean && guard < 120000) {
         dut.io.cbMem.req.ready.poke(true.B)
-        if (cbR) { dut.io.cbMem.resp.valid.poke(true.B); dut.io.cbMem.resp.bits.data.poke(cbD.U); cbR = false }
-        else dut.io.cbMem.resp.valid.poke(false.B)
+        if (cbQ.nonEmpty) {
+          val (a, d) = cbQ.head
+          dut.io.cbMem.resp.valid.poke(true.B)
+          dut.io.cbMem.resp.bits.data.poke(d.U)
+          dut.io.cbMem.resp.bits.addr.poke(a.U)
+        } else dut.io.cbMem.resp.valid.poke(false.B)
+        if (cbQ.nonEmpty && dut.io.cbMem.resp.ready.peek().litToBoolean) cbQ.dequeue()
         if (dut.io.cbMem.req.valid.peek().litToBoolean && dut.io.cbMem.req.ready.peek().litToBoolean)
-          if (!dut.io.cbMem.req.bits.write.peek().litToBoolean) { cbR = true; cbD = word(dut.io.cbMem.req.bits.addr.peek().litValue.toLong) }
+          if (!dut.io.cbMem.req.bits.write.peek().litToBoolean) {
+            cbQ.enqueue((dut.io.cbMem.req.bits.addr.peek().litValue.toLong,
+              word(dut.io.cbMem.req.bits.addr.peek().litValue.toLong)))
+          }
 
         dut.io.fbMem.req.ready.poke(true.B)
-        if (fbR) { dut.io.fbMem.resp.valid.poke(true.B); dut.io.fbMem.resp.bits.data.poke(fbD.U); fbR = false }
-        else dut.io.fbMem.resp.valid.poke(false.B)
+        if (fbQ.nonEmpty) {
+          val (a, d) = fbQ.head
+          dut.io.fbMem.resp.valid.poke(true.B)
+          dut.io.fbMem.resp.bits.data.poke(d.U)
+          dut.io.fbMem.resp.bits.addr.poke(a.U)
+        } else dut.io.fbMem.resp.valid.poke(false.B)
+        if (fbQ.nonEmpty && dut.io.fbMem.resp.ready.peek().litToBoolean) fbQ.dequeue()
         if (dut.io.fbMem.req.valid.peek().litToBoolean && dut.io.fbMem.req.ready.peek().litToBoolean) {
           val a = dut.io.fbMem.req.bits.addr.peek().litValue.toLong
           val w = dut.io.fbMem.req.bits.write.peek().litToBoolean
           if (w) { wwrite(a, dut.io.fbMem.req.bits.data.peek().litValue.toInt) }
-          else { fbR = true; fbD = word(a) }
+          else { fbQ.enqueue((a, word(a))) }
         }
 
         if (kuQ.nonEmpty) {

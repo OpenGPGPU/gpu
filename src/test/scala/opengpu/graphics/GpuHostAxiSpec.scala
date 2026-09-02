@@ -256,45 +256,55 @@ class GpuHostAxiSpec extends AnyFlatSpec {
       // Kick the engine over the bus.
       axiWrite(dut, RenderHostRegs.CONTROL, 1)
 
-      // Robust request/response service: track the one outstanding read per
-      // port so a request that fired during the AXI CONTROL handshake is still
-      // answered even though its request beat has already been accepted.
-      var cbPend = -1L
-      var fbPend = -1L
+      // Robust request/response service: multi-outstanding queues of
+      // address-tagged read responses per port (the parallel output merger
+      // keeps several reads in flight), so a request that fired during the
+      // AXI CONTROL handshake is still answered even though its request beat
+      // has already been accepted.
+      val cbQ = scala.collection.mutable.Queue.empty[Long]
+      val fbQ = scala.collection.mutable.Queue.empty[Long]
+      // Reads captured this cycle become presentable the next one (one cycle
+      // of memory latency, matching the OM's sWaitDepth contract).
+      val cbCap = scala.collection.mutable.Queue.empty[Long]
+      val fbCap = scala.collection.mutable.Queue.empty[Long]
       var guard = 0
       while (!dut.io.m_irq.peek().litToBoolean && guard < 60000) {
         dut.io.cbMem.req.ready.poke(true.B)
-        if (cbPend >= 0) {
+        while (cbCap.nonEmpty) cbQ.enqueue(cbCap.dequeue())
+        while (fbCap.nonEmpty) fbQ.enqueue(fbCap.dequeue())
+        if (cbQ.nonEmpty) {
           dut.io.cbMem.resp.valid.poke(true.B)
-          dut.io.cbMem.resp.bits.data.poke(m.word(cbPend).U)
+          dut.io.cbMem.resp.bits.data.poke(m.word(cbQ.head).U)
           dut.io.cbMem.resp.bits.write.poke(false.B)
-          if (dut.io.cbMem.resp.ready.peek().litToBoolean) cbPend = -1L
+          dut.io.cbMem.resp.bits.addr.poke(cbQ.head.U)
+          if (dut.io.cbMem.resp.ready.peek().litToBoolean) cbQ.dequeue()
         } else dut.io.cbMem.resp.valid.poke(false.B)
         if (dut.io.cbMem.req.valid.peek().litToBoolean &&
             dut.io.cbMem.req.ready.peek().litToBoolean &&
             !dut.io.cbMem.req.bits.write.peek().litToBoolean)
-          cbPend = dut.io.cbMem.req.bits.addr.peek().litValue.toLong
+          cbCap.enqueue(dut.io.cbMem.req.bits.addr.peek().litValue.toLong)
 
         dut.io.fbMem.req.ready.poke(true.B)
-        if (fbPend >= 0) {
+        if (fbQ.nonEmpty) {
           dut.io.fbMem.resp.valid.poke(true.B)
-          dut.io.fbMem.resp.bits.data.poke(m.word(fbPend).U)
+          dut.io.fbMem.resp.bits.data.poke(m.word(fbQ.head).U)
           dut.io.fbMem.resp.bits.write.poke(false.B)
-          if (dut.io.fbMem.resp.ready.peek().litToBoolean) fbPend = -1L
+          dut.io.fbMem.resp.bits.addr.poke(fbQ.head.U)
+          if (dut.io.fbMem.resp.ready.peek().litToBoolean) fbQ.dequeue()
         } else dut.io.fbMem.resp.valid.poke(false.B)
         if (dut.io.fbMem.req.valid.peek().litToBoolean &&
             dut.io.fbMem.req.ready.peek().litToBoolean) {
           if (dut.io.fbMem.req.bits.write.peek().litToBoolean)
             m.wwrite(dut.io.fbMem.req.bits.addr.peek().litValue.toLong,
               dut.io.fbMem.req.bits.data.peek().litValue.toInt)
-          else fbPend = dut.io.fbMem.req.bits.addr.peek().litValue.toLong
+          else fbCap.enqueue(dut.io.fbMem.req.bits.addr.peek().litValue.toLong)
         }
 
         dut.clock.step()
         guard += 1
       }
       assert(guard < 60000,
-        s"AXI4-driven draw did not complete; cbPend=$cbPend fbPend=$fbPend status=${(axiRead(dut, RenderHostRegs.STATUS) & 3)}")
+        s"AXI4-driven draw did not complete; cbQ=${cbQ.size} fbQ=${fbQ.size} status=${(axiRead(dut, RenderHostRegs.STATUS) & 3)}")
 
       def rgb(x: Int, y: Int): (Int, Int, Int) = {
         val c = m.word(colorBase + (y * 16 + x) * 4).toInt
