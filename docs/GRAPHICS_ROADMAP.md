@@ -41,17 +41,19 @@ here is the same **unified-shader + separated-fixed-function** model:
 Numbering note: M2 (barycentric coordinate generation) was implemented
 together with M3a and is recorded above for completeness.
 
-**Status (2026-08-28):** M1 through M4 are complete and verified — the fixed
+**Status (2026-09-03):** M1 through M4 are complete and verified — the fixed
 function geometry front-end (MVP transform, near-plane clip, perspective
 divide/viewport), the rasterizer (top-left fill rule, culling), the
 interpolators (screen-space and perspective-correct colour + depth), the
 output merger (depth test / write to software colour+depth buffers), the
 command-buffer parser, and the composite `RenderPipeline`/`RenderCore` that
 renders a command-driven scene into an exported PPM image. M5 now has the
-production core-backed fragment path, batched per-lane RVV shading, the
-fixed-function texture sampler, and scalar plus per-lane texture instructions.
-Shaders run as kernels on `GpuComputeUnit`; the standalone shader cores were
-removed (2026-09-01) now that the core-backed path is the sole shading backend.
+production core-backed fragment path, quad-rate dispatch, parallel output
+merging and texture taps, batched per-lane RVV shading, the fixed-function
+texture sampler, and scalar plus per-lane texture instructions. Vertex and
+fragment shaders now share one `GpuComputeUnit`; the standalone shader cores
+were removed (2026-09-01) now that the core-backed path is the sole shading
+backend.
 
 Compute core already present: RV32 SIMT lanes + FPU (FMA/div/sqrt/est), RVV
 ALU, register files, L1/L2 (SharedL2Slice), memory hierarchy with a standardized
@@ -59,16 +61,14 @@ ALU, register files, L1/L2 (SharedL2Slice), memory hierarchy with a standardized
 
 Current limitations that still drive the remaining roadmap:
 
-1. Rasterization still emits one fragment at a time; wider raster issue is a
-   performance iteration after functional M5 completion. Physical texture
-   taps are no longer serialized: each bilinear level keeps four reads
-   outstanding, coalescing duplicate clamped addresses (see the 2026-09-02
-   status entry below). The earlier limitation
-   list item on 2×2-quad derivatives, mip LOD and discard is also resolved.
-2. Per-draw overlap landed (2026-09-01): draw N+1's rasterization and
-   kernarg staging accumulate in a second slot while batch N's kernel
-   executes on the SIMT lanes, and `RenderCoreL2.io.done` now implies the
-   final shared-L2 store drain (see the store-drain completion entry below).
+1. The fixed-function compatibility path (`fragCore = false`) intentionally
+   retains scalar fragment emission. The core-backed path uses aligned 2×2
+   quads and is the throughput path; texture taps and the output merger are
+   parallel there as well.
+2. Vertex-core execution is complete in RTL, including shared-CU plumbing and
+   the vertex command/kernarg ABI, but it is not yet exposed by the ARTI build
+   switch or Linux/DRM submission path. That integration is the next sizeable
+   milestone; fragment-core Linux execution remains complete.
 
 ---
 
@@ -526,7 +526,10 @@ Status (implementation):
   ranges; the shared port prefixes each local ID with its stage, preserving
   up to eight outstanding requests and routing responses without aliasing.
   Vertex-command admission waits for the active vertex
-  draw to complete, preventing descriptor overwrite or dropped draws.
+  draw to complete, preventing descriptor overwrite or dropped draws. The
+  command-buffer top level selects the vertex-record decoder in this mode,
+  and multi-batch vertex draws alternate their two kernarg banks so staging
+  writes cannot reuse private-L1 data from the preceding launch.
   `RenderPipelineSpec` elaborates this combined configuration, and the
   standalone vertex-stage regression remains available through its test-only
   compatibility CU.
@@ -657,7 +660,11 @@ Verification:
 - QEMU host + device model; driver submits a draw and reads the
   framebuffer back.
 
-Status (implementation, 2026-08-28):
+Status (implementation, 2026-09-03): The original M6 scope is complete. The
+MMIO register file, AXI control port, completion/interrupt path, QEMU/Linux
+integration, job queue/IH ring, and DRM-facing submission path are all covered
+by RTL and ARTI regressions. The historical implementation milestones remain
+listed below for traceability.
 - **Register file + engine control + completion interrupt (hardware).**
   `RenderHost` (`src/main/scala/opengpu/graphics/RenderHost.scala`) presents a
   software-programmable MMIO register file wrapping `RenderCore`: a device ID
@@ -674,10 +681,9 @@ Status (implementation, 2026-08-28):
   `RenderHostSpec` (register read/write, ID, status lifecycle, interrupt, an
   end-to-end draw driven purely through the register file) plus the 46 prior
   graphics tests.
-- A minimal AXI4/NoC bus attachment (the `aw`/`w`/`b`/`ar`/`r` channels) is the
-  remaining hardware piece; the word interface here is the register-file spine a
-  bus adapter can sit on.  The QEMU host model, Linux driver, and device-tree
-  binding are the software side and still open.
+- The AXI4/NoC attachment is implemented by `GpuHostAxi`; ARTI bridges its
+  standard channels into the QEMU SysBus model. The word-level register
+  interface remains available for simpler NoC adapters.
 
 Resolved — AXI4 host-control interface + Linux driver (2026-08-26).  `GpuHostAxi`
 (`src/main/scala/opengpu/graphics/GpuHostAxi.scala`) wraps `RenderHost` in a
@@ -782,9 +788,10 @@ Status (virtual display and DRM handoff, 2026-08-29):
   fence waits and page-flip vblank. DRM interface version is now 1.3.
 - **Fragment-core capability and shader sandbox complete (2026-08-30).** The
   read-only `CAPABILITIES` register reports fragment-core presence and batch
-  capacity; the emitted fixed-function top reports zero, while a 4-lane ×
-  2-warp fragment-core build reports `0x801`. The driver refuses shader slots
-  on incapable hardware. On capable hardware it snapshots a bounded,
+  capacity, while bit 2 reports the separately elaborated vertex-core path;
+  the emitted fixed-function top reports zero for both shader-core bits, while
+  a 4-lane × 2-warp fragment-core build reports `0x801`. The driver refuses
+  shader slots on incapable hardware. On capable hardware it snapshots a bounded,
   cache-line-aligned shader binding into private per-job DMA, then validates the
   exact executed bytes. Profile v1 permits terminating linear RV32I/M, preserves
   x1 as the kernarg base, bounds loads to kernarg and stores to the colour-output

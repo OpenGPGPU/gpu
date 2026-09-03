@@ -226,19 +226,28 @@ class RenderPipeline(
     drawState.stride := io.stride
     if (vertCore) {
       val cmd = vertDrawCmd.get
-      drawState.depthTestEnable := cmd.depthTestEnable
-      drawState.depthFunc := cmd.depthFunc
-      drawState.depthWriteEnable := cmd.depthWriteEnable
-      drawState.blendEnable := cmd.blendEnable
-      drawState.cullMode := cmd.cullMode
-      drawState.texEnable := cmd.texEnable
+      drawState.depthTestEnable := Mux(cmd.stateOverride,
+        cmd.depthTestEnable, io.depthTestEnable)
+      drawState.depthFunc := Mux(cmd.stateOverride,
+        cmd.depthFunc, io.depthFunc)
+      drawState.depthWriteEnable := Mux(cmd.stateOverride,
+        cmd.depthWriteEnable, io.depthWriteEnable)
+      drawState.blendEnable := cmd.stateOverride && cmd.blendEnable
+      drawState.cullMode := Mux(cmd.stateOverride,
+        cmd.cullMode, io.cullMode)
+      drawState.texEnable := Mux(cmd.stateOverride,
+        cmd.texEnable, io.texEnable)
       drawState.texBase := io.texBase
       drawState.texWidth := io.texWidth
       drawState.texHeight := io.texHeight
-      drawState.texWrapClamp := cmd.texWrapClamp
-      drawState.texMaxLevel := cmd.texMaxLevel
-      drawState.texLodBias := cmd.texLodBias
-      drawState.texMinLevel := cmd.texMinLevel
+      drawState.texWrapClamp := Mux(cmd.stateOverride,
+        cmd.texWrapClamp, io.texWrapClamp)
+      drawState.texMaxLevel := Mux(cmd.stateOverride,
+        cmd.texMaxLevel, io.texMaxLevel)
+      drawState.texLodBias := Mux(cmd.stateOverride,
+        cmd.texLodBias, 0.S)
+      drawState.texMinLevel := Mux(cmd.stateOverride,
+        cmd.texMinLevel, 0.U)
     } else {
       drawState.depthTestEnable := Mux(triSource.bits.stateOverride,
         triSource.bits.depthTestEnable, io.depthTestEnable)
@@ -411,17 +420,24 @@ class RenderPipeline(
       ctxFifo.io.enq.bits.texBase := io.texBase
       ctxFifo.io.enq.bits.texWidth := io.texWidth
       ctxFifo.io.enq.bits.texHeight := io.texHeight
-      ctxFifo.io.enq.bits.texWrapClamp := cmd.texWrapClamp
-      ctxFifo.io.enq.bits.texMaxLevel := cmd.texMaxLevel
-      ctxFifo.io.enq.bits.texLodBias := cmd.texLodBias
-      ctxFifo.io.enq.bits.texMinLevel := cmd.texMinLevel
+      ctxFifo.io.enq.bits.texWrapClamp := Mux(cmd.stateOverride,
+        cmd.texWrapClamp, io.texWrapClamp)
+      ctxFifo.io.enq.bits.texMaxLevel := Mux(cmd.stateOverride,
+        cmd.texMaxLevel, io.texMaxLevel)
+      ctxFifo.io.enq.bits.texLodBias := Mux(cmd.stateOverride,
+        cmd.texLodBias, 0.S)
+      ctxFifo.io.enq.bits.texMinLevel := Mux(cmd.stateOverride,
+        cmd.texMinLevel, 0.U)
       ctxFifo.io.enq.bits.colorBase := io.colorBase
       ctxFifo.io.enq.bits.depthBase := io.depthBase
       ctxFifo.io.enq.bits.stride := io.stride
-      ctxFifo.io.enq.bits.depthTestEnable := cmd.depthTestEnable
-      ctxFifo.io.enq.bits.depthFunc := cmd.depthFunc
-      ctxFifo.io.enq.bits.depthWriteEnable := cmd.depthWriteEnable
-      ctxFifo.io.enq.bits.blendEnable := cmd.blendEnable
+      ctxFifo.io.enq.bits.depthTestEnable := Mux(cmd.stateOverride,
+        cmd.depthTestEnable, io.depthTestEnable)
+      ctxFifo.io.enq.bits.depthFunc := Mux(cmd.stateOverride,
+        cmd.depthFunc, io.depthFunc)
+      ctxFifo.io.enq.bits.depthWriteEnable := Mux(cmd.stateOverride,
+        cmd.depthWriteEnable, io.depthWriteEnable)
+      ctxFifo.io.enq.bits.blendEnable := cmd.stateOverride && cmd.blendEnable
     } else {
       val drawBits = io.draw.bits.asInstanceOf[SceneTriangle]
       ctxFifo.io.enq.bits.shaderPc := drawBits.shaderPc

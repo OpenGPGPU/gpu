@@ -262,7 +262,10 @@ class KernelVertStage(
   private val snapVertBase = Reg(UInt(32.W))
   private val snapVertStride = Reg(UInt(16.W))
   private val snapShaderPc = Reg(UInt(32.W))
+  private val snapKernargBase = Reg(UInt(32.W))
+  private val snapKernargBankStride = Reg(UInt(32.W))
   private val snapKernarg = Reg(UInt(32.W))
+  private val kernargBank = RegInit(false.B)
   private val snapFragPc = Reg(UInt(32.W))
   private val snapFragKernarg = Reg(UInt(32.W))
   private val snapFragBankStride = Reg(UInt(32.W))
@@ -277,11 +280,6 @@ class KernelVertStage(
   private val snapTexMaxLevel = Reg(UInt(4.W))
   private val snapTexLodBias = Reg(SInt(5.W))
   private val snapTexMinLevel = Reg(UInt(4.W))
-
-  private def bankedKernarg: UInt = Mux(
-    io.kernargBankStride.orR,
-    io.kernargBase + io.kernargBankStride,
-    io.kernargBase)
 
   // -- Word bridge request generation --
   wordValid := (state === sReadVB || state === sWrite || state === sReadback) && !wordPending
@@ -348,7 +346,10 @@ class KernelVertStage(
         snapVertBase := io.vertBufferBase
         snapVertStride := io.vertStride
         snapShaderPc := io.shaderPc
-        snapKernarg := bankedKernarg
+        snapKernargBase := io.kernargBase
+        snapKernargBankStride := io.kernargBankStride
+        snapKernarg := io.kernargBase
+        kernargBank := false.B
         snapFragPc := io.fragShaderPc
         snapFragKernarg := io.fragKernarg
         snapFragBankStride := io.fragKernargBankStride
@@ -472,6 +473,12 @@ class KernelVertStage(
           remainingVerts := newRemaining
           drawVertBase := drawVertBase + batchVertCount
           when(newRemaining >= 3.U) {
+            // Alternate complete kernarg banks between batches.  Besides
+            // separating staging writes, this prevents a following batch
+            // from observing private-L1 lines left by the previous launch.
+            snapKernarg := Mux(snapKernargBankStride.orR && !kernargBank,
+              snapKernargBase + snapKernargBankStride, snapKernargBase)
+            kernargBank := !kernargBank
             val nextBatch = Mux(newRemaining >= batchEff.U,
               batchEff.U, (newRemaining / 3.U) * 3.U)
             batchVertCount := nextBatch

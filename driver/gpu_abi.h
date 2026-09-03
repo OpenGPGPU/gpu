@@ -204,7 +204,7 @@ struct gpu_draw_record {
  *   vertex stride in bytes (initially fixed at 32)                     [2]
  *   vertex shader entry PC                                             [3]
  *   vertex kernarg buffer address (64-byte aligned)                    [4]
- *   vertex kernarg bank stride                                         [5]
+ *   vertex kernarg bank stride (zero, or alternate-bank byte stride)   [5]
  *   vertex attribute format (0 = fixed layout)                         [6]
  *   reserved, must be zero                                             [7..23]
  *   fragment shader entry PC                                           [24]
@@ -242,7 +242,9 @@ struct gpu_vert_draw_record {
 };
 
 /* ---------------------------------------------------------------------------
- * Vertex kernarg SoA ABI (core-backed vertex shading, batched).
+ * Vertex kernarg SoA ABI (core-backed vertex shading, batched).  When the
+ * draw supplies a non-zero bank stride, successive batches alternate between
+ * `vert_kernarg` and `vert_kernarg + vert_kernarg_bank_stride`.
  * `stride = 4 * warps * lanes` (128 for default GpuConfig: warps=4, lanes=8).
  *
  * Inputs (hardware-staged from vertex buffer):

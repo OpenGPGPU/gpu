@@ -51,7 +51,8 @@ object RenderHostRegs {
   val SCANOUT_CONTROL   = 0x58
   /** bit0: active (enable && non-zero base/stride/size). */
   val SCANOUT_STATUS    = 0x5C
-  /** bit0: fragments execute on the shared SIMT core. */
+  /** bit0: fragment core; bit1: job queue; bit2: vertex core;
+    * bits 15:8: fragment batch capacity. */
   val CAPABILITIES      = 0x60
   /** Job submission ring (host memory): base byte address of the entries. */
   val JOB_RING_BASE     = 0x64

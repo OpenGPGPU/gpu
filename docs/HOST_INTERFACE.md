@@ -87,7 +87,7 @@ single source of truth exported to C in `driver/gpu_abi.h`.
 | 0x54 | SCANOUT_FORMAT | RW | 0 packed RGBA8888 |
 | 0x58 | SCANOUT_CONTROL | RW | bit0 ENABLE |
 | 0x5C | SCANOUT_STATUS | RO | bit0 ACTIVE |
-| 0x60 | CAPABILITIES | RO | bit0 fragment-core; bit1 job queue + IH; bits 15:8 fragment batch capacity |
+| 0x60 | CAPABILITIES | RO | bit0 fragment-core; bit1 job queue + IH; bit2 vertex-core; bits 15:8 fragment batch capacity |
 | 0x64 | JOB_RING_BASE | RW | job-ring physical (byte) address in host memory |
 | 0x68 | JOB_RING_SIZE | RW | job-ring entry count (power of two); 0 keeps the queue idle |
 | 0x6C | JOB_WPTR | RW | host doorbell: index of the next free ring entry |
@@ -176,6 +176,34 @@ checks that both banks fit the bound resource and validates shader accesses
 against one bank only, preventing a shader in batch N from reaching batch
 N+1. Hardware alternates banks only after a completed batch. Zero preserves
 the original single-bank behavior.
+
+When `CAPABILITIES` bit2 is present and vertex-core mode is selected at RTL
+elaboration, the same 40-word record uses a vertex-buffer layout instead of
+the legacy inline-triangle layout:
+
+| word(s) | field |
+|---|---|
+| 0 | vertex-buffer base address |
+| 1 | vertex count (a multiple of 3) |
+| 2 | vertex stride in bytes |
+| 3 | vertex shader entry PC |
+| 4 | vertex kernarg base address |
+| 5 | vertex kernarg bank stride (zero or 64-byte-aligned alternate bank) |
+| 6 | vertex attribute format (currently 0, fixed 32-byte layout) |
+| 7–23 | reserved |
+| 24 | fragment shader entry PC |
+| 25 | fragment kernarg base address |
+| 26–31 | reserved |
+| 32–34 | state, sampler and fragment bank controls, as above |
+| 35–39 | reserved |
+
+The fixed vertex-buffer format is eight little-endian words per vertex:
+`pos_x/pos_y/pos_z/pos_w` (signed Q16.16), packed RGBA8888 colour, signed
+depth, and unsigned Q16.16 `u/v`. Vertex kernargs use the SoA slices documented
+in `driver/gpu_abi.h`; successive batches alternate the two complete banks
+when a non-zero bank stride is supplied. The current Linux/DRM path advertises
+the capability for discovery but still gates vertex-core submission until its
+resource bindings and shader validation are implemented.
 
 ### 3.2 Kernarg SoA ABI (core-backed fragment shading)
 

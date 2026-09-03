@@ -37,6 +37,15 @@ class RenderCoreSpec extends AnyFlatSpec {
     (((c >> 24) & 0xff), ((c >> 16) & 0xff), ((c >> 8) & 0xff))
   }
 
+  it should "elaborate the vertex-core command path with the shared shader CU" in {
+    simulate(new RenderCore(
+      GraphicsConfig(screenWidth = 16, screenHeight = 16),
+      GpuConfig(lanes = 4, warps = 2), fragCore = true, vertCore = true)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+    }
+  }
+
   it should "apply independent per-draw state in one command buffer" in {
     val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
     val stride = 16 * 4

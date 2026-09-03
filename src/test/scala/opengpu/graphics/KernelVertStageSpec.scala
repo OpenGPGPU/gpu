@@ -270,4 +270,35 @@ class KernelVertStageSpec extends AnyFlatSpec {
       assert(dut.io.done.peek().litToBoolean, "must be idle for < 3 vertices")
     }
   }
+
+  it should "alternate complete kernarg banks between vertex batches" in {
+    val mem = new MemModel
+    putInstr(mem, 0, cease)
+    val bankStride = 0x1000
+    for (i <- 0 until 9)
+      loadVertex(mem, i, 0x10000 + i, 0, 0, 0x10000,
+        0xff0000ffL, i, 0, 0)
+
+    simulate(new KernelVertStage(smallConfig)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.shaderPc.poke(shaderPc.U)
+      dut.io.kernargBase.poke(kernargBase.U)
+      dut.io.kernargBankStride.poke(bankStride.U)
+      dut.io.vertBufferBase.poke(vbBase.U)
+      dut.io.vertCount.poke(9.U) // batchEff=6, followed by a 3-vertex batch
+      dut.io.vertStride.poke(vertStride.U)
+      dut.io.start.poke(true.B)
+      dut.clock.step()
+      dut.io.start.poke(false.B)
+
+      pump(dut, mem)
+
+      assert(dut.io.done.peek().litToBoolean, "stage must return to idle")
+      assert(mem.getWord(kernargBase) == BigInt(0x10000),
+        "first batch must use kernarg bank zero")
+      assert(mem.getWord(kernargBase + bankStride) == BigInt(0x10006),
+        "second batch must use kernarg bank one")
+    }
+  }
 }

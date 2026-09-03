@@ -202,6 +202,16 @@ class RenderHostSpec extends AnyFlatSpec {
     }
   }
 
+  it should "advertise the vertex-core capability when elaborated" in {
+    simulate(new RenderHost(
+      gpuConfig = GpuConfig(lanes = 4, warps = 2), fragCore = true,
+      vertCore = true)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x807L,
+        "shared vertex/fragment-core builds must advertise both shader stages")
+    }
+  }
+
   it should "drive a draw from the register file and raise done and the interrupt" in {
     val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
     val cfg = GpuConfig(lanes = 4, warps = 2)

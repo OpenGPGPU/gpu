@@ -28,7 +28,9 @@ import opengpu.core.memory.{
   *
   * A `start` pulse makes the command stage read `cmdCount` records starting at
   * `cmdBase` and, for each, render one triangle; `done` goes high once every
-  * record has been consumed and the last read-modify-write has retired.
+  * record has been consumed and the last read-modify-write has retired.  In
+  * vertex-core mode one record references a vertex buffer and may produce
+  * multiple triangles.
   */
 class RenderCore(
   config: GraphicsConfig = GraphicsConfig(),
@@ -78,7 +80,10 @@ class RenderCore(
     val done = Output(Bool())
   })
 
-  private val cb = Module(new CommandBufferStage(config))
+  // The command payload type must follow the selected front end.  In vertex
+  // core mode words 0..6 describe a vertex buffer and vertex shader rather
+  // than containing three inline clip-space vertices.
+  private val cb = Module(new CommandBufferStage(config, vertCore))
   private val rp = Module(new RenderPipeline(config, gpuConfig, fragCore, vertCore))
   // RenderHost snapshots the legacy registers and queue ownership on the
   // same edge that it presents start.  Delay the parser start one cycle so
