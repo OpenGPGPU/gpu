@@ -19,19 +19,27 @@ class FillCompletion(val descriptorIdWidth: Int) extends Bundle {
   val bytesFilled = UInt(32.W)
 }
 
-/** Full-cache-line fill engine with multiple writes in flight. */
+/** Full-cache-line fill engine with multiple writes in flight.
+  *
+  * `transactionIdBase` offsets the engine's transaction IDs on a shared line
+  * port so several clients can hold transactions simultaneously without ID
+  * aliasing; the owner routes responses back by subtracting the base.
+  */
 class FillEngine(
   config: GpuConfig = GpuConfig(),
   descriptorIdWidth: Int = 8,
   lineBytes: Int = 64,
   maxOutstanding: Int = 2,
   descriptorQueueDepth: Int = 4,
-  lineSlots: Int = 2
+  lineSlots: Int = 2,
+  transactionIdBase: Int = 0
 ) extends Module {
   require(lineBytes == 64 && isPow2(lineBytes))
   require(lineSlots > 0 && isPow2(lineSlots))
   require(maxOutstanding >= lineSlots)
   require(descriptorQueueDepth > 0)
+  require(transactionIdBase >= 0 && transactionIdBase + lineSlots <= maxOutstanding,
+    "transaction ID range must fit the port's outstanding space")
   private val offsetWidth = log2Ceil(lineBytes)
 
   val io = IO(new Bundle {
@@ -96,14 +104,15 @@ class FillEngine(
   io.memoryRequest.bits.sizeLog2 := offsetWidth.U
   io.memoryRequest.bits.cacheClient := false.B
   io.memoryRequest.bits.cacheResident := false.B
-  io.memoryRequest.bits.transactionId := requestSlot
+  io.memoryRequest.bits.transactionId := (transactionIdBase.U +
+    requestSlot).asUInt
   when(io.memoryRequest.fire) {
     pending(requestSlot) := true.B
     nextAddress := nextAddress + lineBytes.U
     remainingBytes := remainingBytes - lineBytes.U
   }
 
-  private val responseId = io.memoryResponse.bits.transactionId
+  private val responseId = io.memoryResponse.bits.transactionId - transactionIdBase.U
   private val responseInRange = responseId < lineSlots.U
   private val responseExpected = responseInRange && pending(responseId)
   io.memoryResponse.ready := active && responseExpected

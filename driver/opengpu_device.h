@@ -164,6 +164,8 @@ int opengpu_hw_submit_async(struct opengpu_device *gpu,
                             struct dma_fence **fence);
 void opengpu_hw_abort(struct opengpu_device *gpu, int error);
 void opengpu_hw_progress_tick(struct opengpu_device *gpu);
+int opengpu_hw_clear(struct opengpu_device *gpu, u32 base, u32 bytes,
+                     u32 pattern);
 int opengpu_hw_display_commit(struct opengpu_device *gpu,
                               const struct opengpu_scanout *scanout);
 

@@ -58,10 +58,18 @@
 #define GPU_REG_IH_SIZE         0x07c
 #define GPU_REG_IH_WPTR         0x080
 #define GPU_REG_IH_RPTR         0x084
+/* Hardware clear (FillEngine): 64-byte-aligned destination, byte count a
+ * multiple of 64, 32-bit fill pattern.  Write 1 to CLEAR_START to run one
+ * clear of the programmed range; STATUS.CLEAR_BUSY reports completion. */
+#define GPU_REG_CLEAR_BASE      0x088
+#define GPU_REG_CLEAR_BYTES     0x08c
+#define GPU_REG_CLEAR_PATTERN   0x090
+#define GPU_REG_CLEAR_START     0x094
 
 #define GPU_CAP_FRAGMENT_CORE   (1u << 0)
 #define GPU_CAP_JOB_QUEUE       (1u << 1)
 #define GPU_CAP_VERTEX_CORE     (1u << 2)
+#define GPU_CAP_CLEAR_ENGINE    (1u << 3)
 #define GPU_CAP_FRAGMENT_BATCH_SHIFT 8u
 #define GPU_CAP_FRAGMENT_BATCH_MASK  (0xffu << GPU_CAP_FRAGMENT_BATCH_SHIFT)
 
@@ -93,6 +101,7 @@
 #define GPU_STATUS_BUSY        (1u << 0)
 #define GPU_STATUS_DONE        (1u << 1)
 #define GPU_STATUS_ERROR       (1u << 2)
+#define GPU_STATUS_CLEAR_BUSY  (1u << 3)
 
 /* ---- IRQ (bit0 ENABLE, bit1 PENDING w1c) ------------------------------- */
 #define GPU_IRQ_ENABLE         (1u << 0)

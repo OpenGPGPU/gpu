@@ -3,6 +3,7 @@ package opengpu.graphics
 import chisel3._
 import chisel3.util._
 import opengpu.config.GpuConfig
+import opengpu.dma.FillEngine
 import opengpu.core.memory.{
   CacheLineInvalidate,
   ComputeMemoryRequest,
@@ -21,7 +22,7 @@ import opengpu.core.memory.{
   */
 object RenderHostRegs {
   /** First invalid byte offset (exclusive end of the register file). */
-  val END               = 0x88
+  val END               = 0x98
   val ID                = 0x00
   val CONTROL           = 0x04
   val STATUS            = 0x08
@@ -72,6 +73,13 @@ object RenderHostRegs {
   val IH_WPTR           = 0x80
   /** Host read pointer (RW, informational): next IH record to drain. */
   val IH_RPTR           = 0x84
+  /** Hardware clear (FillEngine): destination base, byte count (multiple of
+    * the 64-byte line) and the 32-bit fill pattern. */
+  val CLEAR_BASE        = 0x88
+  val CLEAR_BYTES       = 0x8C
+  val CLEAR_PATTERN     = 0x90
+  /** Write 1 to start one clear of the programmed range. */
+  val CLEAR_START       = 0x94
 }
 
 /** A host memory-mapped register access (read or write of one 32-bit word). */
@@ -166,6 +174,48 @@ class RenderHost(
 
   private val core = Module(new RenderCore(config, gpuConfig, fragCore, vertCore))
 
+  // Hardware clear engine shares the kernelWordMem line port with the core's
+  // staging/sampler bridge: a two-client round-robin arbiter fronts the port
+  // and the response is routed back by transaction-ID range (the core owns
+  // ids [0,4), the clear engine owns [4,6)).  The host must not start a clear
+  // while a draw is in flight (explicit-sync contract), but the RTL keeps
+  // both clients correct even if it does.
+  private val fill = Module(new FillEngine(gpuConfig, maxOutstanding = 8,
+    transactionIdBase = 4))
+  // Hardware clear (FillEngine) programming.
+  private val clearBaseReg = RegInit(0.U(32.W))
+  private val clearBytesReg = RegInit(0.U(32.W))
+  private val clearPatternReg = RegInit(0.U(32.W))
+  // The clear engine wins the shared port when it has work; the core's
+  // staging bridge waits (a stalled bridge cannot deadlock: its consumer is
+  // independent of the clear engine).
+  io.kernelWordMemReq.valid :=
+    fill.io.memoryRequest.valid || core.io.kernelWordMemReq.valid
+  io.kernelWordMemReq.bits := Mux(fill.io.memoryRequest.valid,
+    fill.io.memoryRequest.bits, core.io.kernelWordMemReq.bits)
+  fill.io.memoryRequest.ready :=
+    io.kernelWordMemReq.ready && fill.io.memoryRequest.valid
+  core.io.kernelWordMemReq.ready :=
+    io.kernelWordMemReq.ready && !fill.io.memoryRequest.valid
+
+  private val wordRespIsFill = io.kernelWordMemResp.bits.transactionId >= 4.U
+  // The response keeps the GLOBAL transaction id; the fill engine subtracts
+  // its own transactionIdBase to find its slot.
+  fill.io.memoryResponse.valid := io.kernelWordMemResp.valid && wordRespIsFill
+  fill.io.memoryResponse.bits := io.kernelWordMemResp.bits
+  core.io.kernelWordMemResp.valid :=
+    io.kernelWordMemResp.valid && !wordRespIsFill
+  core.io.kernelWordMemResp.bits := io.kernelWordMemResp.bits
+  io.kernelWordMemResp.ready :=
+    Mux(wordRespIsFill, fill.io.memoryResponse.ready,
+      core.io.kernelWordMemResp.ready)
+
+  fill.io.descriptor.bits.descriptorId := 0.U
+  fill.io.descriptor.bits.destinationAddress := clearBaseReg
+  fill.io.descriptor.bits.bytes := clearBytesReg
+  fill.io.descriptor.bits.pattern := clearPatternReg
+  fill.io.completion.ready := true.B
+
   // ---------------------------------------------------------------------------
   // Registers (host-visible) and the shadow the engine runs from.
   // ---------------------------------------------------------------------------
@@ -249,11 +299,15 @@ class RenderHost(
   private val startWrite =
     wFire && rAddr === RenderHostRegs.CONTROL.U && io.reg.req.bits.data(0)
 
+  private val clearStartWrite =
+    wFire && rAddr === RenderHostRegs.CLEAR_START.U && io.reg.req.bits.data(0)
+  fill.io.descriptor.valid := clearStartWrite
+
   // Queue launches are held off when a legacy START pulses the same cycle.
   jq.io.launchReady := !busy && !startWrite
 
   private val statusBits =
-    Cat(0.U(29.W), error, done, busy)
+    Cat(0.U(28.W), fill.io.busy, error, done, busy)
   private val irqBits = Cat(0.U(30.W), irqPending, irqEnable)
   private val scanoutActive = scanoutControlReg(0) &&
     scanoutBaseReg.orR && scanoutStrideReg.orR &&
@@ -261,7 +315,7 @@ class RenderHost(
   private val scanoutStatusBits = Cat(0.U(31.W), scanoutActive)
   private val capabilityBits =
     ((if (fragCore) 1 else 0) | (1 << 1) |
-      (if (vertCore) (1 << 2) else 0) |
+      (if (vertCore) (1 << 2) else 0) | (1 << 3) |
       (gpuConfig.warps * gpuConfig.lanes << 8)).U(32.W)
   private val jobStatusBits = Cat(
     0.U(22.W), jq.io.pendingValid, jq.io.running, 0.U(7.W), jqEnabled)
@@ -300,7 +354,10 @@ class RenderHost(
       RenderHostRegs.IH_BASE.U -> ihBaseReg,
       RenderHostRegs.IH_SIZE.U -> ihSizeReg,
       RenderHostRegs.IH_WPTR.U -> Cat(0.U(16.W), jq.io.ihWptr),
-      RenderHostRegs.IH_RPTR.U -> ihRptrReg
+      RenderHostRegs.IH_RPTR.U -> ihRptrReg,
+      RenderHostRegs.CLEAR_BASE.U -> clearBaseReg,
+      RenderHostRegs.CLEAR_BYTES.U -> clearBytesReg,
+      RenderHostRegs.CLEAR_PATTERN.U -> clearPatternReg
     ))
 
   // Merge a byte-masked write into a 32-bit register (partial-word writes with
@@ -405,6 +462,15 @@ class RenderHost(
       }
       is(RenderHostRegs.IH_RPTR.U) {
         ihRptrReg := merge(ihRptrReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.CLEAR_BASE.U) {
+        clearBaseReg := merge(clearBaseReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.CLEAR_BYTES.U) {
+        clearBytesReg := merge(clearBytesReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.CLEAR_PATTERN.U) {
+        clearPatternReg := merge(clearPatternReg, io.reg.req.bits.data, io.reg.req.bits.strb)
       }
     }
   }
@@ -539,8 +605,7 @@ class RenderHost(
   io.fbMem.resp <> core.io.fbMem.resp
   io.kernelMemReq <> core.io.kernelMemReq
   core.io.kernelMemResp <> io.kernelMemResp
-  io.kernelWordMemReq <> core.io.kernelWordMemReq
-  core.io.kernelWordMemResp <> io.kernelWordMemResp
+
   core.io.kernelL1Invalidate <> io.kernelL1Invalidate
   io.kernelL1InvalidateDone <> core.io.kernelL1InvalidateDone
   io.kernelGlobalAtomicRequest <> core.io.kernelGlobalAtomicRequest

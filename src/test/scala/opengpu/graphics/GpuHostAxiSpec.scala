@@ -160,8 +160,8 @@ class GpuHostAxiSpec extends AnyFlatSpec {
 
       assert(axiRead(dut, RenderHostRegs.ID) == 0x47550001L,
         "device ID must read back through AXI4")
-      assert(axiRead(dut, RenderHostRegs.CAPABILITIES) == 0x2002L,
-        "fixed-function builds must advertise the job queue but not fragment-core execution")
+      assert(axiRead(dut, RenderHostRegs.CAPABILITIES) == 0x200aL,
+        "fixed-function builds must advertise job queue + clear engine but not fragment-core execution")
 
       // Unaligned read -> SLVERR.
       axiRead(dut, 0x11)
@@ -317,6 +317,115 @@ class GpuHostAxiSpec extends AnyFlatSpec {
       // STATUS reads back DONE (busy cleared).
       assert((axiRead(dut, RenderHostRegs.STATUS) & 0x3) == 0x2L,
         "STATUS must report DONE after completion")
+    }
+  }
+
+  it should "clear a memory range through the hardware fill engine" in {
+    val m = new MemModel
+    simulate(new GpuHostAxi(deviceId = 0x4755, version = 0x0001)) { dut =>
+      dut.io.s_axi_aresetn.poke(true.B)
+      dut.io.s_axi_awvalid.poke(false.B)
+      dut.io.s_axi_wvalid.poke(false.B)
+      dut.io.s_axi_bready.poke(false.B)
+      dut.io.s_axi_arvalid.poke(false.B)
+      dut.io.s_axi_rready.poke(false.B)
+      dut.io.cbMem.req.ready.poke(true.B)
+      dut.io.cbMem.resp.valid.poke(false.B)
+      dut.io.fbMem.req.ready.poke(true.B)
+      dut.io.fbMem.resp.valid.poke(false.B)
+      dut.io.texMem.req.ready.poke(true.B)
+      dut.io.texMem.resp.valid.poke(false.B)
+      dut.io.kernelMemReq.ready.poke(true.B)
+      dut.io.kernelMemResp.valid.poke(false.B)
+      dut.io.kernelMemResp.bits.readData.poke(0.U)
+      dut.io.kernelMemResp.bits.fault.poke(false.B)
+      dut.io.kernelMemResp.bits.transactionId.poke(0.U)
+      dut.io.kernelWordMemReq.ready.poke(true.B)
+      dut.io.kernelWordMemResp.valid.poke(false.B)
+      dut.io.kernelWordMemResp.bits.readData.poke(0.U)
+      dut.io.kernelWordMemResp.bits.fault.poke(false.B)
+      dut.io.kernelWordMemResp.bits.transactionId.poke(0.U)
+      dut.io.s_axi_aresetn.poke(false.B)
+      dut.clock.step()
+      dut.io.s_axi_aresetn.poke(true.B)
+      dut.clock.step()
+
+      assert((axiRead(dut, RenderHostRegs.CAPABILITIES) & (1 << 3)) != 0L,
+        "CAPABILITIES must report the clear engine")
+
+      val base = 0x9000L
+      val bytes = 128 // two 64-byte lines
+      // Pre-poison the range and its neighbours so the test observes the
+      // clear and proves the engine did not overshoot.
+      for (w <- -1 until (bytes / 4 + 1).toInt)
+        m.wwrite(base + w * 4L, 0xdeadbeef)
+
+      axiWrite(dut, RenderHostRegs.CLEAR_BASE, base.toInt)
+      axiWrite(dut, RenderHostRegs.CLEAR_BYTES, bytes)
+      axiWrite(dut, RenderHostRegs.CLEAR_PATTERN, 0x12345678)
+      // Hold the line port closed across the START write so the engine's
+      // first request fires inside the serviced loop (no lost acknowledgement).
+      dut.io.kernelWordMemReq.ready.poke(false.B)
+      axiWrite(dut, RenderHostRegs.CLEAR_START, 1)
+
+      // Service the shared kernelWordMem line port while the engine runs:
+      // writes apply at fire (word-granular through the byte mask) and the
+      // acknowledgement echoes the request's transaction id, presented from
+      // the cycle after the fire (one cycle of memory latency).
+      val ackQ = mutable.Queue.empty[BigInt]
+      val ackPending = mutable.Queue.empty[BigInt]
+      val expectedLines = bytes / 64
+      var fires = 0
+      var guard = 0
+      while ((fires < expectedLines || ackQ.nonEmpty || ackPending.nonEmpty) &&
+        guard < 2000) {
+        dut.io.kernelWordMemReq.ready.poke(true.B)
+        // Responses are presented for ONE cycle only; re-presenting a stale
+        // acknowledgement across the STATUS read's clock step would feed the
+        // engine an already-consumed transaction id.
+        dut.io.kernelWordMemResp.valid.poke(false.B)
+        // Promote LAST cycle's captures before capturing this cycle's fire,
+        // so a response is presented no earlier than one cycle after its
+        // request fired (the fill only expects it from that cycle on).
+        while (ackPending.nonEmpty) ackQ.enqueue(ackPending.dequeue())
+        if (dut.io.kernelWordMemReq.valid.peek().litToBoolean &&
+            dut.io.kernelWordMemReq.ready.peek().litToBoolean) {
+          val a = dut.io.kernelWordMemReq.bits.address.peek().litValue.toLong
+          val wd = dut.io.kernelWordMemReq.bits.writeData.peek().litValue
+          val bm = dut.io.kernelWordMemReq.bits.byteMask.peek().litValue
+          for (w <- 0 until 16) {
+            if (((bm >> (w * 4)) & 0xfL) != 0L)
+              m.wwrite(a + w * 4L, ((wd >> (w * 32)) & 0xffffffffL).toInt)
+          }
+          ackPending.enqueue(dut.io.kernelWordMemReq.bits.transactionId.peek().litValue)
+          fires += 1
+        }
+        if (ackQ.nonEmpty) {
+          dut.io.kernelWordMemResp.valid.poke(true.B)
+          dut.io.kernelWordMemResp.bits.fault.poke(false.B)
+          dut.io.kernelWordMemResp.bits.transactionId.poke(ackQ.head.U)
+          if (dut.io.kernelWordMemResp.ready.peek().litToBoolean) ackQ.dequeue()
+        }
+        dut.clock.step()
+        dut.io.kernelWordMemResp.valid.poke(false.B)
+        dut.io.kernelWordMemReq.ready.poke(false.B)
+        guard += 1
+      }
+      assert(fires == expectedLines && ackQ.isEmpty && ackPending.isEmpty,
+        s"hardware clear did not drain: fires=$fires acks=${ackQ.size}")
+      dut.io.kernelWordMemReq.ready.poke(false.B)
+      // Let the fill engine retire its completion entry (busy falls one
+      // cycle after the last acknowledgement is consumed).
+      dut.clock.step(2)
+      assert((axiRead(dut, RenderHostRegs.STATUS) & (1 << 3)) == 0L,
+        "STATUS must report the clear engine idle after completion")
+
+      for (w <- 0 until (bytes / 4).toInt)
+        assert(m.word(base + w * 4L) == 0x12345678L,
+          f"clear left word $w as 0x${m.word(base + w * 4L)}%08x")
+      // Nothing outside the range may be touched.
+      assert(m.word(base - 4L) == 0xdeadbeefL, "clear under-ran the range")
+      assert(m.word(base + bytes) == 0xdeadbeefL, "clear over-ran the range")
     }
   }
 }

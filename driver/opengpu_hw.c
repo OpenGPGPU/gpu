@@ -597,6 +597,42 @@ int opengpu_hw_submit(struct opengpu_device *gpu,
     return ret;
 }
 
+/** Hardware clear through the FillEngine: program base/count/pattern, kick
+ * CLEAR_START and poll STATUS.CLEAR_BUSY.  The destination must be 64-byte
+ * aligned with a byte count that is a multiple of 64 (the engine rejects
+ * anything else; this helper returns -ERANGE for a misprogrammed range).
+ * The caller must guarantee no draw is in flight (explicit-sync contract). */
+int opengpu_hw_clear(struct opengpu_device *gpu, u32 base, u32 bytes,
+                     u32 pattern)
+{
+    unsigned long timeout;
+    int ret = 0;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE))
+        return -EOPNOTSUPP;
+    if ((base & 63u) || !bytes || (bytes & 63u))
+        return -ERANGE;
+
+    opengpu_reg_write(gpu, GPU_REG_CLEAR_BASE, base);
+    opengpu_reg_write(gpu, GPU_REG_CLEAR_BYTES, bytes);
+    opengpu_reg_write(gpu, GPU_REG_CLEAR_PATTERN, pattern);
+    opengpu_reg_write(gpu, GPU_REG_CLEAR_START, 1u);
+
+    /* The emulated model only advances while the host touches device
+     * registers, so poll through opengpu_hw_progress_tick() like the fence
+     * waiters do. */
+    timeout = jiffies + msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS);
+    while (opengpu_reg_read(gpu, GPU_REG_STATUS) & GPU_STATUS_CLEAR_BUSY) {
+        if (time_after(jiffies, timeout)) {
+            ret = -ETIMEDOUT;
+            break;
+        }
+        opengpu_hw_progress_tick(gpu);
+        cond_resched();
+    }
+    return ret;
+}
+
 int opengpu_hw_display_commit(struct opengpu_device *gpu,
                               const struct opengpu_scanout *scanout)
 {

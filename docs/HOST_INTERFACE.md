@@ -65,7 +65,7 @@ single source of truth exported to C in `driver/gpu_abi.h`.
 |---|---|---|---|
 | 0x00 | ID | RO | `device_id << 16 \| version` (0x4755_0001) |
 | 0x04 | CONTROL | W1P | bit0 START (write-1 pulses a launch) |
-| 0x08 | STATUS | RO + W1C | bit0 BUSY, bit1 DONE, bit2 ERROR; write-1 clears DONE/ERROR |
+| 0x08 | STATUS | RO + W1C | bit0 BUSY, bit1 DONE, bit2 ERROR, bit3 CLEAR_BUSY; write-1 clears DONE/ERROR |
 | 0x0C | IRQ | RW | bit0 ENABLE, bit1 PENDING (W1C) |
 | 0x10 | CMD_BASE | RW | command-buffer physical (byte) address |
 | 0x14 | CMD_COUNT | RW | number of draw records |
@@ -87,7 +87,7 @@ single source of truth exported to C in `driver/gpu_abi.h`.
 | 0x54 | SCANOUT_FORMAT | RW | 0 packed RGBA8888 |
 | 0x58 | SCANOUT_CONTROL | RW | bit0 ENABLE |
 | 0x5C | SCANOUT_STATUS | RO | bit0 ACTIVE |
-| 0x60 | CAPABILITIES | RO | bit0 fragment-core; bit1 job queue + IH; bit2 vertex-core; bits 15:8 fragment batch capacity |
+| 0x60 | CAPABILITIES | RO | bit0 fragment-core; bit1 job queue + IH; bit2 vertex-core; bit3 clear engine; bits 15:8 fragment batch capacity |
 | 0x64 | JOB_RING_BASE | RW | job-ring physical (byte) address in host memory |
 | 0x68 | JOB_RING_SIZE | RW | job-ring entry count (power of two); 0 keeps the queue idle |
 | 0x6C | JOB_WPTR | RW | host doorbell: index of the next free ring entry |
@@ -97,6 +97,10 @@ single source of truth exported to C in `driver/gpu_abi.h`.
 | 0x7C | IH_SIZE | RW | IH record count (power of two) |
 | 0x80 | IH_WPTR | RO | device write pointer (next IH record to write) |
 | 0x84 | IH_RPTR | RW | host read pointer (next IH record to drain) |
+| 0x88 | CLEAR_BASE | RW | hardware clear destination (64-byte aligned) |
+| 0x8C | CLEAR_BYTES | RW | clear byte count (multiple of 64) |
+| 0x90 | CLEAR_PATTERN | RW | 32-bit fill pattern |
+| 0x94 | CLEAR_START | W1P | write 1 to run one clear of the programmed range |
 
 At START the engine snapshots the configuration so the host can program the
 next frame while the current one is in flight (a minimal double-buffered

@@ -66,7 +66,14 @@ static void opengpu_fill_test_command(struct opengpu_device *gpu)
     BUILD_BUG_ON(sizeof(*r) != GPU_DRAW_WORDS * sizeof(u32));
 
     memset(gpu->compute.cmd.cpu, 0, sizeof(*r));
-    memset(gpu->compute.depth.cpu, 0xff, gpu->compute.depth.size);
+    /* Prefer the hardware clear engine for the depth plane; the CPU memset
+     * stays as the fallback for engines without GPU_CAP_CLEAR_ENGINE or with
+     * a misaligned self-test buffer.  The caller guarantees no draw is in
+     * flight, matching the explicit-sync contract. */
+    if (opengpu_hw_clear(gpu,
+                         lower_32_bits(gpu->compute.depth.dma),
+                         (u32)gpu->compute.depth.size, 0xffffffffu))
+        memset(gpu->compute.depth.cpu, 0xff, gpu->compute.depth.size);
     if (gpu->compute.kernarg.cpu)
         memset(gpu->compute.kernarg.cpu, 0, gpu->compute.kernarg.size);
 

@@ -140,7 +140,7 @@ class RenderHostSpec extends AnyFlatSpec {
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       assert(regRead(dut, RenderHostRegs.ID) == 0x47550001L,
         "device ID register must report device<<16 | version")
-      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x803L,
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x80bL,
          "fragment-core builds must advertise support, batch capacity and the job queue")
 
       // An unmapped address yields ok=false.
@@ -207,7 +207,7 @@ class RenderHostSpec extends AnyFlatSpec {
       gpuConfig = GpuConfig(lanes = 4, warps = 2), fragCore = true,
       vertCore = true)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x807L,
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x80fL,
         "shared vertex/fragment-core builds must advertise both shader stages")
     }
   }
