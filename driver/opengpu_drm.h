@@ -28,6 +28,27 @@ struct drm_opengpu_draw {
     __u32 reserved[5];
 };
 
+/* Vertex-core form of the same 40-word command record. All addresses are
+ * offsets into the matching submission bindings and are relocated only after
+ * validation. Vertex format 0 is the fixed 32-byte layout in gpu_abi.h. */
+struct drm_opengpu_vertex_draw {
+    __u32 vertex_buffer;
+    __u32 vertex_count;
+    __u32 vertex_stride;
+    __u32 vertex_shader_pc;
+    __u32 vertex_kernarg;
+    __u32 vertex_kernarg_bank_stride;
+    __u32 vertex_format;
+    __u32 reserved0[17];
+    __u32 fragment_shader_pc;
+    __u32 fragment_kernarg;
+    __u32 reserved1[6];
+    __u32 state;
+    __u32 sampler;
+    __u32 fragment_kernarg_bank_stride;
+    __u32 reserved2[5];
+};
+
 /* Per-draw state override. Resource addresses and extents remain job-owned. */
 #define OPENGPU_DRAW_STATE_OVERRIDE       (1u << 0)
 #define OPENGPU_DRAW_STATE_DEPTH_TEST     (1u << 1)
@@ -71,6 +92,9 @@ enum drm_opengpu_resource_type {
     OPENGPU_RESOURCE_SHADER = 1,
     OPENGPU_RESOURCE_KERNARG = 2,
     OPENGPU_RESOURCE_TEXTURE = 3,
+    OPENGPU_RESOURCE_VERTEX_BUFFER = 4,
+    OPENGPU_RESOURCE_VERTEX_SHADER = 5,
+    OPENGPU_RESOURCE_VERTEX_KERNARG = 6,
 };
 
 struct drm_opengpu_resource {
@@ -105,6 +129,9 @@ struct drm_opengpu_submit {
     __u32 texture_slot;
     __u32 in_syncobj;
     __u32 out_syncobj;
+    __u32 vertex_buffer_slot;
+    __u32 vertex_shader_slot;
+    __u32 vertex_kernarg_slot;
     __u32 pad;
 };
 
@@ -113,6 +140,7 @@ struct drm_opengpu_submit {
 /* Verification-only: defer fence signaling after hardware completion so the
  * KMS implicit-sync wait is deterministically exercised under QEMU. */
 #define OPENGPU_SUBMIT_TEST_FENCE_DELAY (1u << 0)
+#define OPENGPU_SUBMIT_VERTEX_CORE      (1u << 1)
 
 #define DRM_OPENGPU_SUBMIT 0x00
 #define DRM_OPENGPU_CONTEXT_CREATE 0x01

@@ -8,23 +8,17 @@ GPU_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ARTI_DIR="${ARTI_DIR:-$GPU_DIR/../arti}"
 INTEGRATION_CONFIG="${INTEGRATION_CONFIG:-$GPU_DIR/driver/gpu_integration.yaml}"
 LINUX_BUILD="${LINUX_BUILD:-/tmp/arti-linux-build}"
-LINUX_SRC="${LINUX_SRC:-/tmp/linux-src}"
 LINUX_HEADERS="${LINUX_HEADERS:-/tmp/arti-linux-headers}"
 DRIVER_OUTPUT="${DRIVER_OUTPUT:-/tmp/opengpu-arti-driver}"
 QEMU_TOOLS="${QEMU_TOOLS:-/tmp/qemu-build-tools}"
 QEMU_DISPLAY="${QEMU_DISPLAY:-none}"
 GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}"
+GPU_VERT_CORE="${GPU_VERT_CORE:-0}"
 ARTI_GPU_DRAW_WAIT_MS="${ARTI_GPU_DRAW_WAIT_MS:-60000}"
-
-if [ -z "${QEMU_SRC:-}" ]; then
-    for qemu_candidate in /tmp/qemu-src /tmp/qemu-src/qemu-11.1.0; do
-        if [ -f "$qemu_candidate/configure" ]; then
-            QEMU_SRC="$qemu_candidate"
-            break
-        fi
-    done
-    QEMU_SRC="${QEMU_SRC:-/tmp/qemu-src}"
-fi
+QEMU_VERSION="${QEMU_VERSION:-11.1.0}"
+LINUX_VERSION="${LINUX_VERSION:-7.2}"
+BUSYBOX_DIR="${BUSYBOX_DIR:-/tmp/busybox-1.36.1}"
+SLIRP_INSTALL="${SLIRP_INSTALL:-/tmp/slirp-install}"
 
 if [ "$QEMU_DISPLAY" = "none" ]; then
     HOLD_AFTER_TEST="${HOLD_AFTER_TEST:-1}"
@@ -42,6 +36,12 @@ fail() {
     fail "ARTI Linux setup script not found under $ARTI_DIR"
 [ -f "$INTEGRATION_CONFIG" ] || fail "integration profile not found: $INTEGRATION_CONFIG"
 command -v sbt >/dev/null 2>&1 || fail "sbt is required to emit GpuHostAxi RTL"
+[ "$GPU_FRAG_CORE" = "0" ] || [ "$GPU_FRAG_CORE" = "1" ] || \
+    fail "GPU_FRAG_CORE must be 0 or 1"
+[ "$GPU_VERT_CORE" = "0" ] || [ "$GPU_VERT_CORE" = "1" ] || \
+    fail "GPU_VERT_CORE must be 0 or 1"
+[ "$GPU_VERT_CORE" = "0" ] || [ "$GPU_FRAG_CORE" = "1" ] || \
+    fail "GPU_VERT_CORE=1 requires GPU_FRAG_CORE=1"
 
 # ARTI supports an isolated Ninja install under QEMU_TOOLS. Prefer the system
 # executable when one is already available; this avoids an unnecessary pip
@@ -52,8 +52,76 @@ if [ ! -f "$QEMU_TOOLS/bin/ninja" ] && command -v ninja >/dev/null 2>&1; then
     ln -s "$(command -v ninja)" "$QEMU_TOOLS/bin/ninja"
 fi
 
+# ---------------------------------------------------------------------------
+# Dependency cache validation
+#
+# Cached artifacts are validated with real markers (configure script,
+# top-level Makefile) instead of plain directory existence, so a mangled or
+# partial extraction no longer passes a `-d` check yet still forces a fresh
+# download on every run. Downloads extract into a temporary directory first
+# and only move into place once complete, so an interrupted fetch never
+# poisons the canonical cache path.
+# ---------------------------------------------------------------------------
+qemu_src_valid() {
+    [ -n "$1" ] && [ -f "$1/configure" ] && [ -f "$1/meson.build" ]
+}
+
+if [ -z "${QEMU_SRC:-}" ]; then
+    for qemu_candidate in "/tmp/qemu-${QEMU_VERSION}" \
+                          "/tmp/qemu-src/qemu-${QEMU_VERSION}" \
+                          "/tmp/qemu-src"; do
+        if qemu_src_valid "$qemu_candidate"; then
+            QEMU_SRC="$qemu_candidate"
+            break
+        fi
+    done
+    QEMU_SRC="${QEMU_SRC:-/tmp/qemu-${QEMU_VERSION}}"
+fi
+if ! qemu_src_valid "$QEMU_SRC"; then
+    command -v curl >/dev/null 2>&1 || fail "curl is required to download the QEMU source"
+    echo "=== 0/4 Downloading QEMU v$QEMU_VERSION source (missing or invalid at $QEMU_SRC) ==="
+    QEMU_DL_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/arti-qemu-dl.XXXXXX")"
+    curl -sSL "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" | tar xJ -C "$QEMU_DL_STAGE"
+    qemu_src_valid "$QEMU_DL_STAGE/qemu-${QEMU_VERSION}" || fail "QEMU source download failed"
+    rm -rf "$QEMU_SRC"
+    mv "$QEMU_DL_STAGE/qemu-${QEMU_VERSION}" "$QEMU_SRC"
+    rm -rf "$QEMU_DL_STAGE"
+fi
+echo "QEMU source : $QEMU_SRC (valid)"
+
+linux_src_valid() {
+    [ -n "$1" ] && [ -f "$1/Makefile" ]
+}
+
+if [ -z "${LINUX_SRC:-}" ]; then
+    for linux_candidate in "/tmp/linux-src/linux-${LINUX_VERSION}" \
+                           "/tmp/linux-src"; do
+        if linux_src_valid "$linux_candidate"; then
+            LINUX_SRC="$linux_candidate"
+            break
+        fi
+    done
+    LINUX_SRC="${LINUX_SRC:-/tmp/linux-src/linux-${LINUX_VERSION}}"
+fi
+if ! linux_src_valid "$LINUX_SRC"; then
+    command -v curl >/dev/null 2>&1 || fail "curl is required to download the Linux source"
+    echo "=== 0/4 Downloading Linux v$LINUX_VERSION source (missing or invalid at $LINUX_SRC) ==="
+    LINUX_DL_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/arti-linux-dl.XXXXXX")"
+    curl -sSL "https://cdn.kernel.org/pub/linux/kernel/v${LINUX_VERSION%%.*}.x/linux-${LINUX_VERSION}.tar.xz" \
+        | tar xJ -C "$LINUX_DL_STAGE"
+    linux_src_valid "$LINUX_DL_STAGE/linux-${LINUX_VERSION}" || fail "Linux source download failed"
+    rm -rf "$LINUX_SRC"
+    mv "$LINUX_DL_STAGE/linux-${LINUX_VERSION}" "$LINUX_SRC"
+    rm -rf "$LINUX_DL_STAGE"
+fi
+echo "Linux source: $LINUX_SRC (valid)"
+
 echo "=== 1/4 Emit GpuHostAxi RTL ==="
-if [ "$GPU_FRAG_CORE" = "1" ]; then
+if [ "$GPU_VERT_CORE" = "1" ]; then
+    (cd "$GPU_DIR" && \
+        sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host --frag-core --vert-core")
+    TIMEOUT="${TIMEOUT:-120}"
+elif [ "$GPU_FRAG_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
         sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host --frag-core")
     TIMEOUT="${TIMEOUT:-120}"
@@ -84,6 +152,9 @@ echo "=== 2/4 Prepare ARTI, QEMU and Linux ==="
 INTEGRATION_CONFIG="$INTEGRATION_CONFIG" \
 ARTI_DIR="$ARTI_DIR" \
 LINUX_BUILD="$LINUX_BUILD" \
+LINUX_SRC="$LINUX_SRC" \
+BUSYBOX_DIR="$BUSYBOX_DIR" \
+SLIRP_INSTALL="$SLIRP_INSTALL" \
 QEMU_TOOLS="$QEMU_TOOLS" \
 QEMU_SRC="$QEMU_SRC" \
 ARTI_RTL_SOURCE_LIST="$ARTI_RTL_SOURCE_LIST" \
@@ -113,7 +184,8 @@ DRIVER_MANIFEST="$DRIVER_OUTPUT/gpu_drv.deps"
 [ -f "$DRIVER_KO" ] || fail "driver build did not produce $DRIVER_KO"
 
 echo "=== 4/4 Build the guest DRM test and boot Linux ==="
-[ -d "$LINUX_SRC" ] || fail "Linux source not found at $LINUX_SRC"
+linux_src_valid "$LINUX_SRC" || \
+    fail "Linux source not found (no Makefile) at $LINUX_SRC"
 HOST_CC="${HOST_CC:-cc}"
 command -v "$HOST_CC" >/dev/null 2>&1 || \
     fail "host C compiler is required for the shader validator test"
@@ -123,7 +195,11 @@ VALIDATOR_TEST="$DRIVER_OUTPUT/opengpu_shader_validator_test"
     "$GPU_DIR/driver/tests/opengpu_shader_validator_test.c"
 "$VALIDATOR_TEST"
 if [ ! -f "$LINUX_HEADERS/include/drm/drm.h" ]; then
-    PATH="/opt/homebrew/bin:$PATH" gmake -s -C "$LINUX_SRC" ARCH=arm64 \
+    HEADER_TOOLS_PATH="/opt/homebrew/bin:$PATH"
+    if [ -x /opt/homebrew/opt/gnu-sed/libexec/gnubin/sed ]; then
+        HEADER_TOOLS_PATH="/opt/homebrew/opt/gnu-sed/libexec/gnubin:$HEADER_TOOLS_PATH"
+    fi
+    PATH="$HEADER_TOOLS_PATH" gmake -s -C "$LINUX_SRC" ARCH=arm64 \
         INSTALL_HDR_PATH="$LINUX_HEADERS" headers_install
 fi
 
@@ -167,4 +243,5 @@ cp "$GPU_DIR/driver/tests/arti-linux-init.c" "$HARNESS_STAGE/arti-linux-init.c"
 
 export ARTI_DIR INTEGRATION_CONFIG LINUX_BUILD DRIVER_KO DRIVER_MANIFEST WORK
 export QEMU_DISPLAY HOLD_AFTER_TEST TIMEOUT
+export QEMU_SRC QEMU_FW_DIR="$QEMU_SRC/pc-bios"
 "$HARNESS_STAGE/run_linux_test.sh"

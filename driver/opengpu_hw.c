@@ -55,6 +55,14 @@ static void opengpu_reg_write(struct opengpu_device *gpu, u32 offset, u32 value)
     iowrite32(value, gpu->hw.regs + offset);
 }
 
+void opengpu_hw_progress_tick(struct opengpu_device *gpu)
+{
+    /* Heartbeat read: RO register, no side effects. Emulated hardware
+     * models only advance while the host touches device registers, so
+     * fence waiters poll this to keep their draw moving. */
+    opengpu_reg_read(gpu, GPU_REG_IH_WPTR);
+}
+
 static void opengpu_hw_complete(struct opengpu_device *gpu, int error)
 {
     struct dma_fence *fence;
@@ -138,6 +146,8 @@ static void opengpu_ih_drain(struct opengpu_device *gpu)
                 p->fence = NULL;
                 p->delay_ms = 0;
                 gpu->hw.job_done++;
+                dev_info(gpu->dev, "OPENGPU ih defer: id=%u slot=%u\n",
+                         p->id, rec->slot & gpu->hw.job_mask);
             } else {
                 dma_fence_signal_locked(p->fence);
                 finished[n++] = p->fence;
@@ -145,12 +155,19 @@ static void opengpu_ih_drain(struct opengpu_device *gpu)
                 p->delay_ms = 0;
                 gpu->hw.job_done++;
             }
+        } else {
+            dev_info(gpu->dev,
+                     "OPENGPU ih skip: hdr=%08x slot=%u fence=%d id=%u\n",
+                     rec->header, rec->slot & gpu->hw.job_mask,
+                     !!p->fence, p->id);
         }
         gpu->hw.ih_rptr = (gpu->hw.ih_rptr + 1) & 0xffff;
     }
     spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
 
     opengpu_reg_write(gpu, GPU_REG_IH_RPTR, gpu->hw.ih_rptr);
+    dev_info(gpu->dev, "OPENGPU drain: dev_wptr=%u rptr=%u->%u retired=%u\n",
+             wptr_dev, (unsigned)(gpu->hw.ih_rptr - n), gpu->hw.ih_rptr, n);
 
     for (i = 0; i < n; i++)
         dma_fence_put(finished[i]);
@@ -168,6 +185,7 @@ static void opengpu_ih_drain(struct opengpu_device *gpu)
 void opengpu_hw_abort(struct opengpu_device *gpu, int error)
 {
     cancel_delayed_work_sync(&gpu->hw.timeout_work);
+    cancel_delayed_work_sync(&gpu->hw.poll_work);
     opengpu_reg_write(gpu, GPU_REG_IRQ, 0);
 
     if (gpu->hw.queue_ready) {
@@ -272,6 +290,32 @@ static void opengpu_timeout_work(struct work_struct *work)
     }
 }
 
+/* Completion poll interval. The register read doubles as a watchdog: it
+ * drains IH records that raced the interrupt, and emulated hardware models
+ * only advance while the host touches device registers, so a polling read
+ * keeps slow-clocked models moving toward completion. */
+#define OPENGPU_HW_POLL_INTERVAL_MS 5
+
+static void opengpu_poll_work(struct work_struct *work)
+{
+    struct opengpu_hw *hw;
+    struct opengpu_device *gpu;
+
+    hw = container_of(to_delayed_work(work), struct opengpu_hw, poll_work);
+    gpu = container_of(hw, struct opengpu_device, hw);
+
+    if (!gpu->hw.queue_ready)
+        return;
+    if (gpu->hw.job_wptr == gpu->hw.job_done)
+        return;
+    dev_info(gpu->dev, "OPENGPU poll: wptr=%u done=%u\n",
+             gpu->hw.job_wptr, gpu->hw.job_done);
+    opengpu_ih_drain(gpu);
+    if (gpu->hw.job_wptr != gpu->hw.job_done)
+        mod_delayed_work(system_dfl_wq, &gpu->hw.poll_work,
+                         msecs_to_jiffies(OPENGPU_HW_POLL_INTERVAL_MS));
+}
+
 static irqreturn_t opengpu_irq_handler(int irq, void *data)
 {
     struct opengpu_device *gpu = data;
@@ -285,6 +329,8 @@ static irqreturn_t opengpu_irq_handler(int irq, void *data)
                       GPU_IRQ_ENABLE | GPU_IRQ_PENDING);
     opengpu_reg_write(gpu, GPU_REG_IRQ, GPU_IRQ_ENABLE);
 
+    dev_info(gpu->dev, "OPENGPU irq: status=%08x wptr=%u done=%u\n",
+             status, gpu->hw.job_wptr, gpu->hw.job_done);
     if (gpu->hw.queue_ready) {
         opengpu_ih_drain(gpu);
         return IRQ_HANDLED;
@@ -297,6 +343,7 @@ static irqreturn_t opengpu_irq_handler(int irq, void *data)
         return IRQ_HANDLED;
     }
     cancel_delayed_work(&gpu->hw.timeout_work);
+    cancel_delayed_work(&gpu->hw.poll_work);
     opengpu_hw_complete(gpu, status & GPU_STATUS_ERROR ? -EIO : 0);
     return IRQ_HANDLED;
 }
@@ -311,6 +358,7 @@ int opengpu_hw_init(struct opengpu_device *gpu, struct platform_device *pdev)
     spin_lock_init(&gpu->hw.fence_lock);
     gpu->hw.fence_context = dma_fence_context_alloc(1);
     INIT_DELAYED_WORK(&gpu->hw.timeout_work, opengpu_timeout_work);
+    INIT_DELAYED_WORK(&gpu->hw.poll_work, opengpu_poll_work);
 
     ret = dma_set_mask_and_coherent(gpu->dev, DMA_BIT_MASK(32));
     if (ret)
@@ -446,6 +494,8 @@ static int opengpu_hw_submit_queue(struct opengpu_device *gpu,
     opengpu_reg_write(gpu, GPU_REG_JOB_WPTR, gpu->hw.job_wptr & 0xffff);
     mod_delayed_work(system_dfl_wq, &gpu->hw.timeout_work,
                      msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS));
+    mod_delayed_work(system_dfl_wq, &gpu->hw.poll_work,
+                     msecs_to_jiffies(OPENGPU_HW_POLL_INTERVAL_MS));
 
 out_unlock:
     mutex_unlock(&gpu->hw.submit_lock);

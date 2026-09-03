@@ -91,11 +91,9 @@ static inline bool opengpu_shader_queue_branch(
 static inline bool opengpu_shader_vector_access_valid(
     const struct opengpu_shader_value *base, opengpu_shader_u32 vl,
     bool store, opengpu_shader_u64 kernarg_size,
-    opengpu_shader_u32 batch_capacity)
+    opengpu_shader_u32 batch_capacity, opengpu_shader_u64 output_start,
+    opengpu_shader_u64 output_end)
 {
-    opengpu_shader_u64 stride = 4ull * batch_capacity;
-    opengpu_shader_u64 output_start = 6ull * stride;
-    opengpu_shader_u64 output_end = 9ull * stride;
     opengpu_shader_u64 start, bytes, end;
 
     if (!vl || base->offset < 0 || (base->offset & 3))
@@ -151,9 +149,11 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * fragment. The bounded vector texture sample requires a validated
  * texture binding. Backward branches, jumps, atomics and all other custom
  * instructions remain rejected. */
-static inline bool opengpu_shader_validate_words_with_texture(
+static inline bool opengpu_shader_validate_words_profile(
     const opengpu_shader_u32 *words, opengpu_shader_u32 word_count,
     opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity,
+    opengpu_shader_u32 output_start_slice,
+    opengpu_shader_u32 output_end_slice, bool fragment_ops_enabled,
     bool texture_enabled)
 {
     opengpu_shader_u64 stride, output_start, output_end;
@@ -169,9 +169,10 @@ static inline bool opengpu_shader_validate_words_with_texture(
     if (!words || !word_count || !batch_capacity || batch_capacity > 64)
         return false;
     stride = 4ull * batch_capacity;
-    output_start = 6ull * stride;
-    output_end = 9ull * stride;
-    if (kernarg_size < 9ull * stride)
+    output_start = output_start_slice * stride;
+    output_end = output_end_slice * stride;
+    if (output_start_slice >= output_end_slice ||
+        kernarg_size < output_end)
         return false;
     if (word_count > OPENGPU_SHADER_MAX_INSTRUCTIONS)
         word_count = OPENGPU_SHADER_MAX_INSTRUCTIONS;
@@ -324,7 +325,7 @@ static inline bool opengpu_shader_validate_words_with_texture(
                 !scalar_defined[rs1] ||
                 !opengpu_shader_vector_access_valid(
                     &values[rs1], state.vector_length, false, kernarg_size,
-                    batch_capacity))
+                    batch_capacity, output_start, output_end))
                 return false;
             vector_defined[rd] = true;
             break;
@@ -333,7 +334,7 @@ static inline bool opengpu_shader_validate_words_with_texture(
                 !scalar_defined[rs1] || !vector_defined[rd] ||
                 !opengpu_shader_vector_access_valid(
                     &values[rs1], state.vector_length, true, kernarg_size,
-                    batch_capacity))
+                    batch_capacity, output_start, output_end))
                 return false;
             break;
         case 0x63: { /* bounded forward scalar conditional branch */
@@ -356,7 +357,9 @@ static inline bool opengpu_shader_validate_words_with_texture(
             break;
         }
         case 0x2b: /* OpenGPU texture and fragment-quad operations */
-            if ((insn & 0xfe00707fu) == 0x0600002bu) {
+            if (!fragment_ops_enabled) {
+                return false;
+            } else if ((insn & 0xfe00707fu) == 0x0600002bu) {
                 if (!texture_enabled || !state.vector_length ||
                     !vector_defined[rs1] || !vector_defined[rs2])
                     return false;
@@ -377,12 +380,34 @@ static inline bool opengpu_shader_validate_words_with_texture(
     return false;
 }
 
+static inline bool opengpu_shader_validate_words_with_texture(
+    const opengpu_shader_u32 *words, opengpu_shader_u32 word_count,
+    opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity,
+    bool texture_enabled)
+{
+    return opengpu_shader_validate_words_profile(
+        words, word_count, kernarg_size, batch_capacity,
+        6, 9, true, texture_enabled);
+}
+
 static inline bool opengpu_shader_validate_words(
     const opengpu_shader_u32 *words, opengpu_shader_u32 word_count,
     opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity)
 {
     return opengpu_shader_validate_words_with_texture(
         words, word_count, kernarg_size, batch_capacity, false);
+}
+
+/* Vertex profile: the fixed-function stage owns input slices 0..7 and reads
+ * transformed attributes from slices 8..15. Fragment-only texture and quad
+ * derivative instructions are not meaningful during a vertex launch. */
+static inline bool opengpu_vertex_shader_validate_words(
+    const opengpu_shader_u32 *words, opengpu_shader_u32 word_count,
+    opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity)
+{
+    return opengpu_shader_validate_words_profile(
+        words, word_count, kernarg_size, batch_capacity,
+        8, 16, false, false);
 }
 
 #endif /* OPENGPU_SHADER_VALIDATOR_H */

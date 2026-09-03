@@ -223,6 +223,7 @@ struct gpu_draw_record {
  *   word 7:   texV (unsigned Q16.16)
  * ------------------------------------------------------------------------ */
 #define GPU_VERT_DRAW_WORDS 40u
+#define GPU_VERTEX_STRIDE_BYTES 32u
 struct gpu_vert_draw_record {
     u32 vert_buffer_base;
     u32 vert_count;

@@ -264,6 +264,11 @@ class KernelFragStage(
   // comparison, so they keep the wider width and are narrowed when used to
   // index a Vec.
   private val indexIdx = index(countWidth - 2, 0)
+  // Select the lane inside each statically addressed slot before muxing the
+  // scalar values.  Muxing the outer Vec first creates a packed-array mux
+  // that firtool cannot lower with ARTI's disallowPackedArrays setting.
+  private def execLane[T <: Data](slots: Vec[Vec[T]]): T =
+    Mux(execSlot.asBool, slots(1)(indexIdx), slots(0)(indexIdx))
   // One bridge transaction at a time keeps the staging FSM simple; the bridge
   // itself supports more outstanding transactions for other clients.
   private val wordPending = RegInit(false.B)
@@ -440,28 +445,28 @@ class KernelFragStage(
     slotKernarg(execSlot) + writeSlice * arrayStride.U + (index << 2),
     slotKernarg(execSlot) + ((6.U + field) * arrayStride.U) + (index << 2)
   )
-  wordBits.data := MuxLookup(field, fragCovered(execSlot)(indexIdx).asUInt)(
+  wordBits.data := MuxLookup(field, execLane(fragCovered).asUInt)(
     Seq(
-      0.U -> fragX(execSlot)(indexIdx).pad(32).asUInt,
-      1.U -> fragY(execSlot)(indexIdx).pad(32).asUInt,
-      2.U -> fragDepth(execSlot)(indexIdx).asUInt,
-      3.U -> packedColor(execSlot)(indexIdx),
-      4.U -> fragU(execSlot)(indexIdx),
-      5.U -> fragV(execSlot)(indexIdx),
-      6.U -> fragDepth(execSlot)(indexIdx).asUInt
+      0.U -> execLane(fragX).pad(32).asUInt,
+      1.U -> execLane(fragY).pad(32).asUInt,
+      2.U -> execLane(fragDepth).asUInt,
+      3.U -> execLane(packedColor),
+      4.U -> execLane(fragU),
+      5.U -> execLane(fragV),
+      6.U -> execLane(fragDepth).asUInt
     )
   )
 
   io.kernelLaunch.valid := state === sLaunch
 
   io.out.valid := state === sEmit && outValid(indexIdx)
-  io.out.bits.x := fragX(execSlot)(indexIdx)
-  io.out.bits.y := fragY(execSlot)(indexIdx)
+  io.out.bits.x := execLane(fragX)
+  io.out.bits.y := execLane(fragY)
   io.out.bits.depth := outDepth(indexIdx)
-  io.out.bits.e0 := fragE0(execSlot)(indexIdx)
-  io.out.bits.e1 := fragE1(execSlot)(indexIdx)
-  io.out.bits.e2 := fragE2(execSlot)(indexIdx)
-  io.out.bits.covered := fragCovered(execSlot)(indexIdx)
+  io.out.bits.e0 := execLane(fragE0)
+  io.out.bits.e1 := execLane(fragE1)
+  io.out.bits.e2 := execLane(fragE2)
+  io.out.bits.covered := execLane(fragCovered)
   io.out.bits.color.r := outWords(indexIdx)(31, 24)
   io.out.bits.color.g := outWords(indexIdx)(23, 16)
   io.out.bits.color.b := outWords(indexIdx)(15, 8)
@@ -516,7 +521,7 @@ class KernelFragStage(
           // Helper lanes execute the shader and may participate in quad
           // derivatives, but no shader store can promote one into an OM write.
           outValid(indexIdx) := bridge.io.out.bits.data =/= 0.U &&
-            fragCovered(execSlot)(indexIdx)
+            execLane(fragCovered)
           field := 0.U
           when(index === execCount - 1.U) {
             index := 0.U

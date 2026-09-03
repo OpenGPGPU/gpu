@@ -137,13 +137,50 @@ int main(void)
         { 0x0b, 0 }, { 0x0b, 3 },
     };
     const unsigned int branch_forms[] = { 0, 1, 4, 5, 6, 7 };
-    uint32_t program[32];
+    uint32_t program[64];
     unsigned int i;
 
     assert(opengpu_shader_validate_words(valid, 4, 288, 8));
     assert(opengpu_shader_validate_words(vector_valid, 10, 288, 8));
     assert(opengpu_shader_validate_words_with_texture(
         discard_valid, 21, 288, 8, true));
+
+    /* Vertex stores target transformed attribute slices 8..15. */
+    program[0] = lw(10, 0);
+    program[1] = sw(10, 320);
+    program[2] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_vertex_shader_validate_words(program, 3, 512, 8));
+    assert(!opengpu_shader_validate_words(program, 3, 512, 8));
+    program[1] = sw(10, 224); /* vertex input slice 7 is read-only */
+    assert(!opengpu_vertex_shader_validate_words(program, 3, 512, 8));
+    program[1] = sw(10, 508); /* final word in output slice 15 */
+    assert(opengpu_vertex_shader_validate_words(program, 3, 512, 8));
+    assert(!opengpu_vertex_shader_validate_words(program, 3, 511, 8));
+    program[0] = vsetivli(4);
+    program[1] = addi(5, 1, 320);
+    program[2] = vse32(1, 5);
+    program[3] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_vertex_shader_validate_words(program, 4, 512, 8));
+    program[1] = addi(5, 1, 240); /* vector crosses read-only slice 7 */
+    assert(!opengpu_vertex_shader_validate_words(program, 4, 512, 8));
+    program[0] = vsetivli(4);
+    program[1] = vquad(0x0c, 2, 1);
+    program[2] = OPENGPU_SHADER_CEASE;
+    assert(!opengpu_vertex_shader_validate_words(program, 3, 512, 8));
+
+    /* Guest end-to-end passthrough: copy all eight four-lane input slices to
+     * transformed output slices 8..15 for both warps. */
+    program[0] = 0x00241293u; /* slli x5,x8,2 */
+    program[1] = 0x005082b3u; /* add x5,x1,x5 */
+    program[2] = vsetivli(4);
+    for (i = 0; i < 8; i++) {
+        program[3 + i * 4] = (i * 32u << 20) | 0x00028313u;
+        program[4 + i * 4] = 0x02036087u;
+        program[5 + i * 4] = ((8u + i) * 32u << 20) | 0x00028313u;
+        program[6 + i * 4] = 0x020360a7u;
+    }
+    program[35] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_vertex_shader_validate_words(program, 36, 512, 8));
 
     program[0] = vsetivli(4);
     program[1] = vtexsample(2, 1, 1);

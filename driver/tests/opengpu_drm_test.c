@@ -46,11 +46,21 @@ struct command_buffer {
     struct drm_opengpu_draw *map;
 };
 
+struct vertex_data {
+    int32_t x, y, z, w;
+    uint32_t color;
+    int32_t depth;
+    uint32_t u, v;
+};
+
 struct resource_buffer {
     uint32_t handle;
     uint64_t size;
     void *map;
 };
+
+static int create_resource_buffer(int fd, uint32_t bytes,
+                                  struct resource_buffer *buffer);
 
 static int set_client_cap(int fd, uint64_t capability)
 {
@@ -287,6 +297,41 @@ static int create_command_buffer(int fd, struct command_buffer *commands)
     return 0;
 }
 
+static void convert_to_vertex_command(struct command_buffer *commands)
+{
+    struct drm_opengpu_vertex_draw *draw =
+        (struct drm_opengpu_vertex_draw *)commands->map;
+
+    memset(draw, 0, sizeof(*draw));
+    draw->vertex_count = 3;
+    draw->vertex_stride = sizeof(struct vertex_data);
+    draw->fragment_kernarg_bank_stride = 320;
+    draw->state = OPENGPU_DRAW_STATE_OVERRIDE |
+        OPENGPU_DRAW_STATE_DEPTH_TEST |
+        (0u << OPENGPU_DRAW_STATE_DEPTH_FUNC_SHIFT) |
+        OPENGPU_DRAW_STATE_DEPTH_WRITE |
+        OPENGPU_DRAW_STATE_TEX_ENABLE |
+        OPENGPU_DRAW_STATE_TEX_CLAMP |
+        (2u << OPENGPU_DRAW_STATE_MAX_MIP_SHIFT);
+}
+
+static int create_vertex_buffer(int fd, struct resource_buffer *buffer)
+{
+    static const struct vertex_data vertices[] = {
+        { -0x10000, -0x10000, 0, 0x10000,
+          0x101010ffu, 0x10, 0,       0 },
+        {  0x10000, -0x10000, 0, 0x10000,
+          0x202020ffu, 0x10, 0x80000, 0 },
+        { -0x10000,  0x10000, 0, 0x10000,
+          0x303030ffu, 0x10, 0,       0x80000 },
+    };
+
+    if (create_resource_buffer(fd, sizeof(vertices), buffer) < 0)
+        return -1;
+    memcpy(buffer->map, vertices, sizeof(vertices));
+    return 0;
+}
+
 static int create_texture_buffer(int fd, struct resource_buffer *texture)
 {
     struct drm_mode_create_dumb create = {
@@ -449,6 +494,54 @@ static int submit_render(int fd, uint32_t context_id,
     };
 
     return ioctl(fd, DRM_IOCTL_OPENGPU_SUBMIT, &submit);
+}
+
+static int submit_vertex_render(
+    int fd, uint32_t context_id, const struct command_buffer *commands,
+    const struct dumb_fb *fb, uint32_t texture_slot,
+    uint32_t fragment_shader_slot, uint32_t fragment_kernarg_slot,
+    uint32_t vertex_buffer_slot, uint32_t vertex_shader_slot,
+    uint32_t vertex_kernarg_slot, uint32_t in_syncobj,
+    uint32_t out_syncobj)
+{
+    struct drm_opengpu_submit submit = {
+        .context_id = context_id,
+        .command_handle = commands->handle,
+        .color_handle = fb->handle,
+        .stride = fb->pitch,
+        .command_count = 1,
+        .flags = OPENGPU_SUBMIT_TEST_FENCE_DELAY |
+                 OPENGPU_SUBMIT_VERTEX_CORE,
+        .texture_slot = texture_slot,
+        .shader_slot = fragment_shader_slot,
+        .kernarg_slot = fragment_kernarg_slot,
+        .in_syncobj = in_syncobj,
+        .out_syncobj = out_syncobj,
+        .vertex_buffer_slot = vertex_buffer_slot,
+        .vertex_shader_slot = vertex_shader_slot,
+        .vertex_kernarg_slot = vertex_kernarg_slot,
+    };
+
+    return ioctl(fd, DRM_IOCTL_OPENGPU_SUBMIT, &submit);
+}
+
+static int submit_selected_render(
+    int fd, bool vertex_core, uint32_t context_id,
+    const struct command_buffer *commands, const struct dumb_fb *fb,
+    uint32_t texture_slot, uint32_t fragment_shader_slot,
+    uint32_t fragment_kernarg_slot, uint32_t vertex_buffer_slot,
+    uint32_t vertex_shader_slot, uint32_t vertex_kernarg_slot,
+    uint32_t in_syncobj, uint32_t out_syncobj)
+{
+    if (vertex_core)
+        return submit_vertex_render(
+            fd, context_id, commands, fb, texture_slot,
+            fragment_shader_slot, fragment_kernarg_slot,
+            vertex_buffer_slot, vertex_shader_slot, vertex_kernarg_slot,
+            in_syncobj, out_syncobj);
+    return submit_render(fd, context_id, commands, fb, texture_slot,
+                         fragment_shader_slot, fragment_kernarg_slot,
+                         in_syncobj, out_syncobj);
 }
 
 static int reject_unsafe_command(int fd, uint32_t context_id,
@@ -695,6 +788,29 @@ static void write_vector_shader(void *mapping)
     program[20] = 0x30500073u; /* cease live warp */
 }
 
+static void write_vertex_shader(void *mapping)
+{
+    uint32_t *program = mapping;
+    uint32_t pc = 0;
+    uint32_t field;
+
+    /* x8 is the first local invocation represented by this four-lane warp.
+     * Copy all eight input SoA slices to their transformed-output slices. */
+    program[pc++] = 0x00241293u; /* slli x5,x8,2 */
+    program[pc++] = 0x005082b3u; /* add x5,x1,x5 */
+    program[pc++] = 0xc1027057u; /* vsetivli x0,4,e32,m1,ta,ma */
+    for (field = 0; field < 8; field++) {
+        uint32_t input_offset = field * 32;
+        uint32_t output_offset = (8 + field) * 32;
+
+        program[pc++] = (input_offset << 20) | 0x00028313u;
+        program[pc++] = 0x02036087u; /* vle32.v v1,(x6) */
+        program[pc++] = (output_offset << 20) | 0x00028313u;
+        program[pc++] = 0x020360a7u; /* vse32.v v1,(x6) */
+    }
+    program[pc] = 0x30500073u; /* cease */
+}
+
 static int create_syncobj(int fd, uint32_t *handle)
 {
     struct drm_syncobj_create create = { 0 };
@@ -737,14 +853,18 @@ int main(void)
     struct command_buffer commands = { 0 };
     struct resource_buffer texture = { 0 };
     struct resource_buffer shader = { 0 }, kernarg = { 0 };
+    struct resource_buffer vertex_buffer = { 0 };
+    struct resource_buffer vertex_shader = { 0 }, vertex_kernarg = { 0 };
     struct drm_event_vblank event = { 0 };
     uint32_t syncobjs[3] = { 0 };
     uint32_t output_syncobjs[2];
     uint64_t capabilities;
     uint32_t batch_capacity;
     uint32_t texture_slot, shader_slot, kernarg_slot;
+    uint32_t vertex_buffer_slot = 0, vertex_shader_slot = 0;
+    uint32_t vertex_kernarg_slot = 0;
     uint32_t expected_pixel, alternate_pixel = 0;
-    bool frag_core;
+    bool frag_core, vert_core;
     uint64_t start;
     uint32_t context_id;
     int fd;
@@ -765,6 +885,7 @@ int main(void)
     CHECK(set_client_cap(fd, DRM_CLIENT_CAP_ATOMIC), "atomic capability");
     CHECK(get_capabilities(fd, &capabilities), "query GPU capabilities");
     frag_core = capabilities & OPENGPU_CAP_FRAGMENT_CORE;
+    vert_core = capabilities & OPENGPU_CAP_VERTEX_CORE;
     batch_capacity = (capabilities & OPENGPU_CAP_FRAGMENT_BATCH_MASK) >>
                      OPENGPU_CAP_FRAGMENT_BATCH_SHIFT;
     if (frag_core && batch_capacity != 8) {
@@ -772,11 +893,18 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL fragment batch capacity");
         return 1;
     }
+    if (vert_core && !frag_core) {
+        errno = EPROTO;
+        perror("OPENGPU USERSPACE DRM FAIL vertex core without shared CU");
+        return 1;
+    }
     CHECK(find_kms_objects(fd, &ids), "resource discovery");
     CHECK(create_fb(fd, 0x000000ffu, &first), "first dumb buffer");
     CHECK(create_fb(fd, 0x000000ffu, &second), "second dumb buffer");
     CHECK(create_command_buffer(fd, &commands), "command buffer");
-    if (frag_core) {
+    if (vert_core)
+        convert_to_vertex_command(&commands);
+    if (frag_core && !vert_core) {
         uint32_t i;
 
         commands.map->kernarg_bank_stride = 320;
@@ -791,6 +919,14 @@ int main(void)
     CHECK(create_resource_buffer(fd, 128, &shader), "shader buffer");
     CHECK(create_resource_buffer(fd, 640, &kernarg), "kernarg buffer");
     write_vector_shader(shader.map);
+    if (vert_core) {
+        CHECK(create_vertex_buffer(fd, &vertex_buffer), "vertex buffer");
+        CHECK(create_resource_buffer(fd, 256, &vertex_shader),
+              "vertex shader buffer");
+        CHECK(create_resource_buffer(fd, 512, &vertex_kernarg),
+              "vertex kernarg buffer");
+        write_vertex_shader(vertex_shader.map);
+    }
     CHECK(create_context(fd, &context_id), "create render context");
     CHECK(reject_truncated_mip_chain(fd, context_id, 1, &texture),
           "reject truncated mip chain");
@@ -799,15 +935,32 @@ int main(void)
                         OPENGPU_RESOURCE_SHADER, 128), "bind shader");
     CHECK(bind_resource(fd, context_id, 3, &kernarg,
                         OPENGPU_RESOURCE_KERNARG, 640), "bind kernarg");
+    if (vert_core) {
+        CHECK(bind_resource(fd, context_id, 4, &vertex_buffer,
+                            OPENGPU_RESOURCE_VERTEX_BUFFER,
+                            3 * sizeof(struct vertex_data)),
+              "bind vertex buffer");
+        CHECK(bind_resource(fd, context_id, 5, &vertex_shader,
+                            OPENGPU_RESOURCE_VERTEX_SHADER, 256),
+              "bind vertex shader");
+        CHECK(bind_resource(fd, context_id, 6, &vertex_kernarg,
+                            OPENGPU_RESOURCE_VERTEX_KERNARG, 512),
+              "bind vertex kernarg");
+        vertex_buffer_slot = 4;
+        vertex_shader_slot = 5;
+        vertex_kernarg_slot = 6;
+    }
     if (frag_core) {
-        CHECK(reject_shader_submit(fd, context_id, &commands, &first, 0,
-                                   EINVAL),
-              "require texture for vtex.sample");
-        ((uint32_t *)shader.map)[19] = 0x0200e127u; /* vse32.v v2,(x1) */
-        CHECK(reject_shader_submit(fd, context_id, &commands, &first, 1,
-                                   EINVAL),
-              "reject unsafe vector fragment shader");
-        write_vector_shader(shader.map);
+        if (!vert_core) {
+            CHECK(reject_shader_submit(fd, context_id, &commands, &first, 0,
+                                       EINVAL),
+                  "require texture for vtex.sample");
+            ((uint32_t *)shader.map)[19] = 0x0200e127u; /* vse32.v v2,(x1) */
+            CHECK(reject_shader_submit(fd, context_id, &commands, &first, 1,
+                                       EINVAL),
+                  "reject unsafe vector fragment shader");
+            write_vector_shader(shader.map);
+        }
         texture_slot = 1;
         shader_slot = 2;
         kernarg_slot = 3;
@@ -826,11 +979,16 @@ int main(void)
     }
     CHECK(create_syncobj(fd, &syncobjs[1]), "create first output syncobj");
     CHECK(create_syncobj(fd, &syncobjs[2]), "create second output syncobj");
-    CHECK(submit_render(fd, context_id, &commands, &first, texture_slot,
-                        shader_slot, kernarg_slot, 0, syncobjs[1]),
+    CHECK(submit_selected_render(
+              fd, vert_core, context_id, &commands, &first, texture_slot,
+              shader_slot, kernarg_slot, vertex_buffer_slot,
+              vertex_shader_slot, vertex_kernarg_slot, 0, syncobjs[1]),
           "queue first buffer");
-    CHECK(submit_render(fd, context_id, &commands, &second, texture_slot,
-                        shader_slot, kernarg_slot, syncobjs[1], syncobjs[2]),
+    CHECK(submit_selected_render(
+              fd, vert_core, context_id, &commands, &second, texture_slot,
+              shader_slot, kernarg_slot, vertex_buffer_slot,
+              vertex_shader_slot, vertex_kernarg_slot,
+              syncobjs[1], syncobjs[2]),
           "queue second buffer");
     output_syncobjs[0] = syncobjs[1];
     output_syncobjs[1] = syncobjs[2];
@@ -873,22 +1031,28 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL queued texture result");
         return 1;
     }
-    if (frag_core)
+    if (vert_core)
+        CHECK(unbind_resource(fd, context_id, 5), "unbind vertex shader");
+    else if (frag_core)
         CHECK(unbind_resource(fd, context_id, 2), "unbind shader");
     else
         CHECK(unbind_resource(fd, context_id, 1), "unbind texture");
     errno = 0;
-    if (submit_render(fd, context_id, &commands, &second, texture_slot,
-                      shader_slot, kernarg_slot, 0, 0) != -1 ||
+    if (submit_selected_render(
+            fd, vert_core, context_id, &commands, &second, texture_slot,
+            shader_slot, kernarg_slot, vertex_buffer_slot,
+            vertex_shader_slot, vertex_kernarg_slot, 0, 0) != -1 ||
         errno != EINVAL) {
         errno = EPROTO;
-        perror("OPENGPU USERSPACE DRM FAIL unbound texture accepted");
+        perror("OPENGPU USERSPACE DRM FAIL unbound resource accepted");
         return 1;
     }
     CHECK(destroy_context(fd, context_id), "destroy render context");
     errno = 0;
-    if (submit_render(fd, context_id, &commands, &second, texture_slot,
-                      shader_slot, kernarg_slot, 0, 0) != -1 ||
+    if (submit_selected_render(
+            fd, vert_core, context_id, &commands, &second, texture_slot,
+            shader_slot, kernarg_slot, vertex_buffer_slot,
+            vertex_shader_slot, vertex_kernarg_slot, 0, 0) != -1 ||
         errno != ENOENT) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL destroyed context accepted");
@@ -900,7 +1064,9 @@ int main(void)
            "syncobj + %s sandbox + "
            "validated context + "
            "vblank flip event sequence=%u\n",
+           vert_core ? "vertex+fragment-core-backed" :
            frag_core ? "core-backed" : "texture",
+           vert_core ? "validated vertex passthrough + vtex/quad-derivative/discard" :
            frag_core ? "validated vtex/quad-derivative/discard" :
                        "fixed-function texture",
            event.sequence);

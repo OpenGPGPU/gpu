@@ -47,8 +47,9 @@ struct opengpu_sched_job {
     struct opengpu_job hw;
     struct opengpu_buffer commands;
     struct opengpu_buffer shader;
+    struct opengpu_buffer vertex_shader;
     struct opengpu_buffer depth;
-    struct drm_gem_object *objects[3];
+    struct drm_gem_object *objects[5];
     u32 object_count;
 };
 
@@ -145,29 +146,53 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
         .cull_mode = GPU_CULL_NONE,
     };
 
+    if (gpu->hw.capabilities & GPU_CAP_VERTEX_CORE)
+        return -EOPNOTSUPP;
     opengpu_fill_test_command(gpu);
     return opengpu_hw_submit(gpu, &job);
 }
 
-static int opengpu_wait_fence(struct dma_fence **fence, bool interruptible);
+static int opengpu_wait_fence(struct opengpu_device *gpu,
+                              struct dma_fence **fence, bool interruptible);
 
-static int opengpu_wait_fence(struct dma_fence **fence, bool interruptible)
+static int opengpu_wait_fence(struct opengpu_device *gpu,
+                              struct dma_fence **fence, bool interruptible)
 {
     long timeout;
     int ret;
 
     if (!*fence)
         return 0;
-    timeout = dma_fence_wait_timeout(*fence, interruptible,
-                                     msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS +
-                                                      100));
-    if (timeout <= 0)
-        ret = timeout < 0 ? timeout : -ETIMEDOUT;
-    else {
-        ret = dma_fence_get_status(*fence);
-        if (ret > 0)
-            ret = 0;
+    /* Wait in slices and touch a status register between slices: on emulated
+     * hardware the model only advances while the guest accesses device
+     * registers, so a pure sleep would starve the draw it waits for. */
+    timeout = msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS + 100);
+    while (!dma_fence_is_signaled(*fence)) {
+        long waited = dma_fence_wait_timeout(*fence, interruptible,
+                                             min(timeout,
+                                                 msecs_to_jiffies(4)));
+        if (waited > 0)
+            timeout -= waited;
+        else if (waited == 0)
+            timeout -= msecs_to_jiffies(4);
+        else {
+            ret = waited;
+            goto out;
+        }
+        if (timeout <= 0) {
+            ret = -ETIMEDOUT;
+            goto out;
+        }
+        opengpu_hw_progress_tick(gpu);
+        if (signal_pending_state(interruptible, current)) {
+            ret = -ERESTARTSYS;
+            goto out;
+        }
     }
+    ret = dma_fence_get_status(*fence);
+    if (ret > 0)
+        ret = 0;
+out:
     dma_fence_put(*fence);
     *fence = NULL;
     return ret;
@@ -179,7 +204,7 @@ static void opengpu_context_free(struct opengpu_file *render_file,
     u32 i;
 
     drm_sched_entity_destroy(&context->entity);
-    opengpu_wait_fence(&context->last_fence, false);
+    opengpu_wait_fence(render_file->gpu, &context->last_fence, false);
     for (i = 0; i < ARRAY_SIZE(context->bindings); i++) {
         if (!context->bindings[i])
             continue;
@@ -202,7 +227,7 @@ static int opengpu_context_quiesce(struct opengpu_file *render_file,
 {
     int ret;
 
-    ret = opengpu_wait_fence(&context->last_fence, true);
+    ret = opengpu_wait_fence(render_file->gpu, &context->last_fence, true);
     return ret;
 }
 
@@ -329,16 +354,28 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
     u32 mip_level, mip_width, mip_height, level;
     int ret;
 
+    BUILD_BUG_ON(sizeof(struct drm_opengpu_vertex_draw) !=
+                 sizeof(struct gpu_vert_draw_record));
+
     if (!args->context_id || !args->slot ||
         args->slot > OPENGPU_MAX_RESOURCE_SLOTS || !args->handle ||
         args->type < OPENGPU_RESOURCE_SHADER ||
-        args->type > OPENGPU_RESOURCE_TEXTURE || !args->size ||
+        args->type > OPENGPU_RESOURCE_VERTEX_KERNARG || !args->size ||
         (args->offset & 3) || args->pad ||
         check_add_overflow(args->offset, args->size, &end))
         return -EINVAL;
-    if (args->type == OPENGPU_RESOURCE_SHADER &&
+    if ((args->type == OPENGPU_RESOURCE_SHADER ||
+         args->type == OPENGPU_RESOURCE_VERTEX_SHADER) &&
         ((args->offset & 63) || (args->size & 63) ||
          args->size > OPENGPU_SHADER_MAX_INSTRUCTIONS * sizeof(u32)))
+        return -EINVAL;
+    if ((args->type == OPENGPU_RESOURCE_KERNARG ||
+         args->type == OPENGPU_RESOURCE_VERTEX_KERNARG) &&
+        ((args->offset & (GPU_KERNARG_BANK_ALIGN - 1)) ||
+         (args->size & (GPU_KERNARG_BANK_ALIGN - 1))))
+        return -EINVAL;
+    if (args->type == OPENGPU_RESOURCE_VERTEX_BUFFER &&
+        args->size < GPU_VERTEX_STRIDE_BYTES)
         return -EINVAL;
     if (args->type == OPENGPU_RESOURCE_TEXTURE) {
         mip_level = (args->flags & OPENGPU_RESOURCE_TEXTURE_MAX_MIP_MASK) >>
@@ -484,8 +521,13 @@ static int opengpu_resolve_bindings(
     const struct drm_opengpu_submit *args,
     struct opengpu_resource_binding **shader,
     struct opengpu_resource_binding **kernarg,
-    struct opengpu_resource_binding **texture)
+    struct opengpu_resource_binding **texture,
+    struct opengpu_resource_binding **vertex_buffer,
+    struct opengpu_resource_binding **vertex_shader,
+    struct opengpu_resource_binding **vertex_kernarg)
 {
+    bool vertex_submit = args->flags & OPENGPU_SUBMIT_VERTEX_CORE;
+
     if (!!args->shader_slot != !!args->kernarg_slot)
         return -EINVAL;
     if (args->shader_slot &&
@@ -494,6 +536,17 @@ static int opengpu_resolve_bindings(
     if (!args->shader_slot &&
         (gpu->hw.capabilities & GPU_CAP_FRAGMENT_CORE))
         return -EOPNOTSUPP;
+    if (vertex_submit !=
+        !!(gpu->hw.capabilities & GPU_CAP_VERTEX_CORE))
+        return -EOPNOTSUPP;
+    if (vertex_submit &&
+        (!args->vertex_buffer_slot || !args->vertex_shader_slot ||
+         !args->vertex_kernarg_slot))
+        return -EINVAL;
+    if (!vertex_submit &&
+        (args->vertex_buffer_slot || args->vertex_shader_slot ||
+         args->vertex_kernarg_slot))
+        return -EINVAL;
     *shader = args->shader_slot ?
         opengpu_binding_lookup(context, args->shader_slot,
                                OPENGPU_RESOURCE_SHADER) : NULL;
@@ -503,8 +556,19 @@ static int opengpu_resolve_bindings(
     *texture = args->texture_slot ?
         opengpu_binding_lookup(context, args->texture_slot,
                                OPENGPU_RESOURCE_TEXTURE) : NULL;
+    *vertex_buffer = args->vertex_buffer_slot ?
+        opengpu_binding_lookup(context, args->vertex_buffer_slot,
+                               OPENGPU_RESOURCE_VERTEX_BUFFER) : NULL;
+    *vertex_shader = args->vertex_shader_slot ?
+        opengpu_binding_lookup(context, args->vertex_shader_slot,
+                               OPENGPU_RESOURCE_VERTEX_SHADER) : NULL;
+    *vertex_kernarg = args->vertex_kernarg_slot ?
+        opengpu_binding_lookup(context, args->vertex_kernarg_slot,
+                               OPENGPU_RESOURCE_VERTEX_KERNARG) : NULL;
     if ((args->shader_slot && (!*shader || !*kernarg)) ||
-        (args->texture_slot && !*texture))
+        (args->texture_slot && !*texture) ||
+        (vertex_submit &&
+         (!*vertex_buffer || !*vertex_shader || !*vertex_kernarg)))
         return -EINVAL;
     return 0;
 }
@@ -534,6 +598,59 @@ static bool opengpu_validate_shader(
         opengpu_fragment_batch_capacity(gpu), texture_enabled);
 }
 
+static bool opengpu_validate_vertex_shader(
+    struct opengpu_device *gpu, struct opengpu_buffer *shader,
+    u64 kernarg_size, u32 entry)
+{
+    const u32 *program;
+    u64 available;
+    u32 words;
+
+    if ((entry & 3) || entry >= shader->size)
+        return false;
+    available = shader->size - entry;
+    words = min_t(u64, available / sizeof(u32),
+                  OPENGPU_SHADER_MAX_INSTRUCTIONS);
+    program = (const u32 *)((const u8 *)shader->cpu + entry);
+    return opengpu_vertex_shader_validate_words(
+        program, words, kernarg_size,
+        opengpu_fragment_batch_capacity(gpu));
+}
+
+static bool opengpu_validate_kernarg_binding(
+    struct opengpu_device *gpu, struct opengpu_buffer *shader,
+    struct opengpu_resource_binding *kernarg, u32 entry, u32 offset,
+    u32 bank_stride, u32 slices, bool vertex, bool texture_enabled)
+{
+    u64 address, minimum, span, shader_kernarg_size;
+
+    minimum = (u64)slices * 4ull *
+              opengpu_fragment_batch_capacity(gpu);
+    if (!minimum || offset > kernarg->size)
+        return false;
+    span = minimum;
+    shader_kernarg_size = kernarg->size - offset;
+    if (bank_stride) {
+        if ((offset & (GPU_KERNARG_BANK_ALIGN - 1)) ||
+            (bank_stride & (GPU_KERNARG_BANK_ALIGN - 1)) ||
+            bank_stride < minimum ||
+            check_mul_overflow((u64)bank_stride,
+                               (u64)GPU_KERNARG_BANKS, &span))
+            return false;
+        shader_kernarg_size = bank_stride;
+    }
+    if (check_add_overflow((u64)entry, 4ull, &address) ||
+        address > shader->size ||
+        check_add_overflow((u64)offset, span, &address) ||
+        address > kernarg->size)
+        return false;
+    return vertex ?
+        opengpu_validate_vertex_shader(gpu, shader,
+                                       shader_kernarg_size, entry) :
+        opengpu_validate_shader(gpu, shader, shader_kernarg_size,
+                                entry, texture_enabled);
+}
+
 static int opengpu_validate_commands(struct opengpu_device *gpu,
                                      struct opengpu_buffer *commands,
                                      const struct drm_opengpu_submit *args,
@@ -542,7 +659,6 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
                                      struct opengpu_resource_binding *texture)
 {
     struct gpu_draw_record *records = commands->cpu;
-    u64 address, kernarg_min, kernarg_span, shader_kernarg_size;
     u32 i, j;
 
     BUILD_BUG_ON(sizeof(struct drm_opengpu_draw) !=
@@ -598,32 +714,102 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
                 return -EINVAL;
             continue;
         }
-        kernarg_min = 9ull * 4ull * opengpu_fragment_batch_capacity(gpu);
-        kernarg_span = kernarg_min;
-        shader_kernarg_size = kernarg->size - record->kernarg;
-        if (record->kernarg_bank_stride) {
-            if ((record->kernarg & (GPU_KERNARG_BANK_ALIGN - 1)) ||
-                (record->kernarg_bank_stride &
-                 (GPU_KERNARG_BANK_ALIGN - 1)) ||
-                record->kernarg_bank_stride < kernarg_min ||
-                check_mul_overflow((u64)record->kernarg_bank_stride,
-                                   (u64)GPU_KERNARG_BANKS,
-                                   &kernarg_span))
-                return -EINVAL;
-            shader_kernarg_size = record->kernarg_bank_stride;
-        }
-        if (!kernarg_min ||
-            check_add_overflow((u64)record->shader_pc, 4ull, &address) ||
-            address > shader->size ||
-            check_add_overflow((u64)record->kernarg,
-                               kernarg_span, &address) ||
-            address > kernarg->size ||
-            !opengpu_validate_shader(gpu, shader,
-                                     shader_kernarg_size,
-                                     record->shader_pc, texture != NULL))
+        if (!opengpu_validate_kernarg_binding(
+                gpu, shader, kernarg, record->shader_pc, record->kernarg,
+                record->kernarg_bank_stride, 9, false, texture != NULL))
             return -EINVAL;
         record->shader_pc += lower_32_bits(shader->dma);
         record->kernarg += lower_32_bits(kernarg->dma);
+    }
+    return 0;
+}
+
+static int opengpu_validate_vertex_commands(
+    struct opengpu_device *gpu, struct opengpu_buffer *commands,
+    const struct drm_opengpu_submit *args,
+    struct opengpu_resource_binding *vertex_buffer,
+    struct opengpu_buffer *vertex_shader,
+    struct opengpu_resource_binding *vertex_kernarg,
+    struct opengpu_buffer *fragment_shader,
+    struct opengpu_resource_binding *fragment_kernarg,
+    struct opengpu_resource_binding *texture)
+{
+    struct gpu_vert_draw_record *records = commands->cpu;
+    u32 i, j;
+
+    BUILD_BUG_ON(sizeof(struct drm_opengpu_vertex_draw) !=
+                 sizeof(struct gpu_vert_draw_record));
+    for (i = 0; i < args->command_count; i++) {
+        struct gpu_vert_draw_record *record = &records[i];
+        u64 address, bytes;
+
+        if (record->vert_count < 3 || record->vert_count % 3 ||
+            record->vert_stride != GPU_VERTEX_STRIDE_BYTES ||
+            record->vert_attr_format)
+            return -EINVAL;
+        for (j = 0; j < ARRAY_SIZE(record->reserved0); j++)
+            if (record->reserved0[j])
+                return -EINVAL;
+        for (j = 0; j < ARRAY_SIZE(record->reserved1); j++)
+            if (record->reserved1[j])
+                return -EINVAL;
+        for (j = 0; j < ARRAY_SIZE(record->reserved2); j++)
+            if (record->reserved2[j])
+                return -EINVAL;
+        if (record->state & ~OPENGPU_DRAW_STATE_VALID_MASK ||
+            record->sampler & ~OPENGPU_DRAW_SAMPLER_VALID_MASK)
+            return -EINVAL;
+        if (!(record->state & OPENGPU_DRAW_STATE_OVERRIDE)) {
+            if (record->state || record->sampler)
+                return -EINVAL;
+        } else {
+            u32 depth_func = (record->state &
+                OPENGPU_DRAW_STATE_DEPTH_FUNC_MASK) >>
+                OPENGPU_DRAW_STATE_DEPTH_FUNC_SHIFT;
+            u32 cull = (record->state & OPENGPU_DRAW_STATE_CULL_MASK) >>
+                OPENGPU_DRAW_STATE_CULL_SHIFT;
+            u32 max_mip = (record->state &
+                OPENGPU_DRAW_STATE_MAX_MIP_MASK) >>
+                OPENGPU_DRAW_STATE_MAX_MIP_SHIFT;
+            u32 bound_max_mip = texture ?
+                (texture->flags & OPENGPU_RESOURCE_TEXTURE_MAX_MIP_MASK) >>
+                OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT : 0;
+            u32 min_mip = (record->sampler &
+                OPENGPU_DRAW_SAMPLER_MIN_LOD_MASK) >>
+                OPENGPU_DRAW_SAMPLER_MIN_LOD_SHIFT;
+
+            if (depth_func > GPU_DEPTH_FUNC_ALWAYS ||
+                cull > GPU_CULL_FRONT ||
+                ((record->state & OPENGPU_DRAW_STATE_TEX_ENABLE) &&
+                 !texture) ||
+                (record->sampler && !texture) ||
+                max_mip > bound_max_mip || min_mip > max_mip)
+                return -EINVAL;
+        }
+        if (check_mul_overflow((u64)(record->vert_count - 1),
+                               (u64)record->vert_stride, &bytes) ||
+            check_add_overflow(bytes, (u64)GPU_VERTEX_STRIDE_BYTES,
+                               &bytes) ||
+            check_add_overflow((u64)record->vert_buffer_base, bytes,
+                               &address) ||
+            address > vertex_buffer->size)
+            return -EINVAL;
+        if (!opengpu_validate_kernarg_binding(
+                gpu, vertex_shader, vertex_kernarg,
+                record->vert_shader_pc, record->vert_kernarg,
+                record->vert_kernarg_bank_stride, 16, true, false))
+            return -EINVAL;
+        if (!opengpu_validate_kernarg_binding(
+                gpu, fragment_shader, fragment_kernarg,
+                record->frag_shader_pc, record->frag_kernarg,
+                record->frag_kernarg_bank_stride, 9, false,
+                texture != NULL))
+            return -EINVAL;
+        record->vert_buffer_base += lower_32_bits(vertex_buffer->dma);
+        record->vert_shader_pc += lower_32_bits(vertex_shader->dma);
+        record->vert_kernarg += lower_32_bits(vertex_kernarg->dma);
+        record->frag_shader_pc += lower_32_bits(fragment_shader->dma);
+        record->frag_kernarg += lower_32_bits(fragment_kernarg->dma);
     }
     return 0;
 }
@@ -633,7 +819,10 @@ static int opengpu_prepare_submit_objects(
     struct drm_gem_object *color,
     struct opengpu_resource_binding *shader,
     struct opengpu_resource_binding *kernarg,
-    struct opengpu_resource_binding *texture)
+    struct opengpu_resource_binding *texture,
+    struct opengpu_resource_binding *vertex_buffer,
+    struct opengpu_resource_binding *vertex_shader,
+    struct opengpu_resource_binding *vertex_kernarg)
 {
     int ret;
 
@@ -647,6 +836,12 @@ static int opengpu_prepare_submit_objects(
             ret = drm_exec_prepare_obj(exec, kernarg->object, 1);
         if (!ret && texture)
             ret = drm_exec_prepare_obj(exec, texture->object, 1);
+        if (!ret && vertex_buffer)
+            ret = drm_exec_prepare_obj(exec, vertex_buffer->object, 1);
+        if (!ret && vertex_shader)
+            ret = drm_exec_prepare_obj(exec, vertex_shader->object, 1);
+        if (!ret && vertex_kernarg)
+            ret = drm_exec_prepare_obj(exec, vertex_kernarg->object, 1);
         drm_exec_retry_on_contention(exec);
         if (ret)
             return ret;
@@ -705,6 +900,7 @@ static void opengpu_sched_free_job(struct drm_sched_job *base)
     for (i = 0; i < job->object_count; i++)
         drm_gem_object_put(job->objects[i]);
     opengpu_buffer_free(job->gpu, &job->depth);
+    opengpu_buffer_free(job->gpu, &job->vertex_shader);
     opengpu_buffer_free(job->gpu, &job->shader);
     opengpu_buffer_free(job->gpu, &job->commands);
     kfree(job);
@@ -728,6 +924,9 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     struct drm_gem_dma_object *command_dma;
     struct drm_gem_dma_object *color_dma;
     struct opengpu_resource_binding *shader, *kernarg, *texture;
+    struct opengpu_resource_binding *vertex_buffer, *vertex_shader;
+    struct opengpu_resource_binding *vertex_kernarg;
+    struct opengpu_resource_binding *resources[6];
     struct opengpu_sched_job *sched_job = NULL;
     struct drm_syncobj *out_sync = NULL;
     struct drm_exec exec;
@@ -736,9 +935,11 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     size_t command_bytes;
     size_t color_required;
     bool sched_initialized = false;
+    u32 i, j;
     int ret;
 
-    if ((args->flags & ~OPENGPU_SUBMIT_TEST_FENCE_DELAY) ||
+    if ((args->flags & ~(OPENGPU_SUBMIT_TEST_FENCE_DELAY |
+                         OPENGPU_SUBMIT_VERTEX_CORE)) ||
         !args->context_id || !args->command_handle || !args->color_handle ||
         args->command_handle == args->color_handle ||
         !args->command_count || args->command_count > OPENGPU_MAX_COMMANDS ||
@@ -746,6 +947,9 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         args->shader_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
         args->kernarg_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
         args->texture_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
+        args->vertex_buffer_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
+        args->vertex_shader_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
+        args->vertex_kernarg_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
         args->stride != gpu->stride ||
         check_mul_overflow((size_t)args->stride, (size_t)gpu->height,
                            &color_required) ||
@@ -788,28 +992,44 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         ret = -ENOENT;
         goto out_file;
     }
-    ret = opengpu_resolve_bindings(gpu, context, args, &shader, &kernarg,
-                                   &texture);
+    ret = opengpu_resolve_bindings(
+        gpu, context, args, &shader, &kernarg, &texture,
+        &vertex_buffer, &vertex_shader, &vertex_kernarg);
     if (ret)
         goto out_file;
-    if (command_object == color_object ||
-        (shader && (shader->object == command_object ||
-                    shader->object == color_object)) ||
-        (kernarg && (kernarg->object == command_object ||
-                     kernarg->object == color_object ||
-                     (shader && kernarg->object == shader->object))) ||
-        (texture && (texture->object == command_object ||
-                     texture->object == color_object ||
-                     (shader && texture->object == shader->object) ||
-                     (kernarg && texture->object == kernarg->object)))) {
+    resources[0] = shader;
+    resources[1] = kernarg;
+    resources[2] = texture;
+    resources[3] = vertex_buffer;
+    resources[4] = vertex_shader;
+    resources[5] = vertex_kernarg;
+    if (command_object == color_object) {
         ret = -EINVAL;
         goto out_file;
+    }
+    for (i = 0; i < ARRAY_SIZE(resources); i++) {
+        if (!resources[i])
+            continue;
+        if (resources[i]->object == command_object ||
+            resources[i]->object == color_object) {
+            ret = -EINVAL;
+            goto out_file;
+        }
+        for (j = 0; j < i; j++) {
+            if (resources[j] &&
+                resources[i]->object == resources[j]->object) {
+                ret = -EINVAL;
+                goto out_file;
+            }
+        }
     }
 
     drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
                          DRM_EXEC_IGNORE_DUPLICATES, 0);
     ret = opengpu_prepare_submit_objects(&exec, command_object, color_object,
-                                         shader, kernarg, texture);
+                                         shader, kernarg, texture,
+                                         vertex_buffer, vertex_shader,
+                                         vertex_kernarg);
     if (ret)
         goto out_exec;
     /* Commands are snapshotted by the CPU, so a previous writer must finish
@@ -817,6 +1037,9 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     ret = opengpu_wait_reservation(command_object, DMA_RESV_USAGE_WRITE);
     if (!ret && shader)
         ret = opengpu_wait_reservation(shader->object,
+                                       DMA_RESV_USAGE_WRITE);
+    if (!ret && vertex_shader)
+        ret = opengpu_wait_reservation(vertex_shader->object,
                                        DMA_RESV_USAGE_WRITE);
     if (ret)
         goto out_exec;
@@ -845,6 +1068,23 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
                (const u8 *)shader_dma->vaddr + shader->offset,
                shader->size);
     }
+    if (vertex_shader) {
+        struct drm_gem_dma_object *vertex_shader_dma;
+
+        vertex_shader_dma = to_drm_gem_dma_obj(vertex_shader->object);
+        if (!vertex_shader_dma->vaddr) {
+            ret = -EINVAL;
+            goto out_job;
+        }
+        ret = opengpu_buffer_alloc(gpu, &sched_job->vertex_shader,
+                                   vertex_shader->size);
+        if (ret)
+            goto out_job;
+        memcpy(sched_job->vertex_shader.cpu,
+               (const u8 *)vertex_shader_dma->vaddr +
+                   vertex_shader->offset,
+               vertex_shader->size);
+    }
     ret = opengpu_buffer_alloc(gpu, &sched_job->depth,
                                (size_t)gpu->stride * gpu->height);
     if (ret)
@@ -853,9 +1093,15 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     memcpy(sched_job->commands.cpu,
            (u8 *)command_dma->vaddr + args->command_offset,
            command_bytes);
-    ret = opengpu_validate_commands(gpu, &sched_job->commands, args,
-                                    shader ? &sched_job->shader : NULL,
-                                    kernarg, texture);
+    if (args->flags & OPENGPU_SUBMIT_VERTEX_CORE)
+        ret = opengpu_validate_vertex_commands(
+            gpu, &sched_job->commands, args, vertex_buffer,
+            &sched_job->vertex_shader, vertex_kernarg,
+            &sched_job->shader, kernarg, texture);
+    else
+        ret = opengpu_validate_commands(
+            gpu, &sched_job->commands, args,
+            shader ? &sched_job->shader : NULL, kernarg, texture);
     if (ret)
         goto out_job;
     memset(sched_job->depth.cpu, 0xff, sched_job->depth.size);
@@ -902,6 +1148,14 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
                                                    texture->object->resv,
                                                    DMA_RESV_USAGE_WRITE);
+    if (!ret && vertex_buffer)
+        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
+                                                   vertex_buffer->object->resv,
+                                                   DMA_RESV_USAGE_WRITE);
+    if (!ret && vertex_kernarg)
+        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
+                                                   vertex_kernarg->object->resv,
+                                                   DMA_RESV_USAGE_READ);
     if (ret)
         goto out_job;
 
@@ -915,6 +1169,16 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         drm_gem_object_get(texture->object);
         sched_job->objects[sched_job->object_count++] = texture->object;
     }
+    if (vertex_buffer) {
+        drm_gem_object_get(vertex_buffer->object);
+        sched_job->objects[sched_job->object_count++] =
+            vertex_buffer->object;
+    }
+    if (vertex_kernarg) {
+        drm_gem_object_get(vertex_kernarg->object);
+        sched_job->objects[sched_job->object_count++] =
+            vertex_kernarg->object;
+    }
 
     drm_sched_job_arm(&sched_job->base);
     fence = dma_fence_get(&sched_job->base.s_fence->finished);
@@ -927,6 +1191,12 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     if (texture)
         dma_resv_add_fence(texture->object->resv, fence,
                            DMA_RESV_USAGE_READ);
+    if (vertex_buffer)
+        dma_resv_add_fence(vertex_buffer->object->resv, fence,
+                           DMA_RESV_USAGE_READ);
+    if (vertex_kernarg)
+        dma_resv_add_fence(vertex_kernarg->object->resv, fence,
+                           DMA_RESV_USAGE_WRITE);
     if (out_sync)
         drm_syncobj_replace_fence(out_sync, fence);
     drm_sched_entity_push_job(&sched_job->base);
@@ -945,6 +1215,7 @@ out_job:
         drm_sched_job_cleanup(&sched_job->base);
     if (sched_job) {
         opengpu_buffer_free(gpu, &sched_job->depth);
+        opengpu_buffer_free(gpu, &sched_job->vertex_shader);
         opengpu_buffer_free(gpu, &sched_job->shader);
         opengpu_buffer_free(gpu, &sched_job->commands);
         kfree(sched_job);
@@ -1079,9 +1350,14 @@ int opengpu_compute_init(struct opengpu_device *gpu)
             goto err_depth;
     }
 
-    ret = opengpu_self_test(gpu);
-    if (ret)
-        goto err_shader;
+    if (gpu->hw.capabilities & GPU_CAP_VERTEX_CORE) {
+        dev_info(gpu->dev,
+                 "vertex-core present; legacy triangle self-test disabled\n");
+    } else {
+        ret = opengpu_self_test(gpu);
+        if (ret)
+            goto err_shader;
+    }
     ret = drm_sched_init(&compute->scheduler, &sched_args);
     if (ret)
         goto err_shader;

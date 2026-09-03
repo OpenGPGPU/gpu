@@ -61,6 +61,7 @@ struct opengpu_hw {
     spinlock_t fence_lock;
     struct dma_fence *active_fence;
     struct delayed_work timeout_work;
+    struct delayed_work poll_work;
     u32 active_completion_delay_ms;
     u64 fence_context;
     u64 fence_seqno;
@@ -152,6 +153,7 @@ int opengpu_hw_submit_async(struct opengpu_device *gpu,
                             const struct opengpu_job *job,
                             struct dma_fence **fence);
 void opengpu_hw_abort(struct opengpu_device *gpu, int error);
+void opengpu_hw_progress_tick(struct opengpu_device *gpu);
 int opengpu_hw_display_commit(struct opengpu_device *gpu,
                               const struct opengpu_scanout *scanout);
 
