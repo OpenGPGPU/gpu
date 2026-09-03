@@ -31,7 +31,7 @@ here is the same **unified-shader + separated-fixed-function** model:
 | M3b correct coverage | `9806680` | Top-left fill rule (winding-independent), cull mode (none/back/front), degenerate-triangle rejection, integer pixel coords at the fragment interface |
 | M3c output merger | `2bd1224` | `OutputMerger` serialized depth read-modify-write: programmable colour/depth base, stride, depth func, depth-write enable; writes through the shared memory port |
 | M4a viewport/perspective | `93291e8` | `GeometryStage`: clip (Q16.16) -> fixed-point screen space + per-vertex `1/w` (perspective divide) |
-| M4b near-plane clip | `d6e3086` | `NearClipStage`: 4-cycle Sutherland-Hodgman clip against `w >= wNear`, interpolating position/depth/varyings, emitting up to two triangles |
+| M4b frustum clip | `d6e3086` + current | `NearClipStage`: sequential Sutherland-Hodgman clip against a positive-w guard and all six homogeneous frustum planes, interpolating position/colour/depth/UV and emitting a fan of up to eight triangles |
 | MVP transform | `a60ada7` | `MatrixTransform`: programmable row-major 4x4 matrix (Q16.16) applied to a vertex (retired by M5) |
 | perspective correction | `9508b19` | `PerspectiveInterpolator`: correct `1/w`-weighted interpolation of varyings |
 | render pipeline | `aaa6e41` | `RenderPipeline` (composite Geometry -> RasterShader -> OutputMerger) + PPM export |
@@ -42,7 +42,7 @@ Numbering note: M2 (barycentric coordinate generation) was implemented
 together with M3a and is recorded above for completeness.
 
 **Status (2026-09-03):** M1 through M4 are complete and verified — the fixed
-function geometry front-end (MVP transform, near-plane clip, perspective
+function geometry front-end (MVP transform, full-frustum clip, perspective
 divide/viewport), the rasterizer (top-left fill rule, culling), the
 interpolators (screen-space and perspective-correct colour + depth), the
 output merger (depth test / write to software colour+depth buffers), the
@@ -65,10 +65,14 @@ Current limitations that still drive the remaining roadmap:
    retains scalar fragment emission. The core-backed path uses aligned 2×2
    quads and is the throughput path; texture taps and the output merger are
    parallel there as well.
-2. Vertex-core execution is complete in RTL, including shared-CU plumbing and
-   the vertex command/kernarg ABI, but it is not yet exposed by the ARTI build
-   switch or Linux/DRM submission path. That integration is the next sizeable
-   milestone; fragment-core Linux execution remains complete.
+2. Vertex-core execution is complete through RTL, Linux/DRM and ARTI/QEMU. The
+   adaptive guest submits a validated vertex-buffer draw, runs vertex and
+   fragment shaders on the shared CU, checks both synchronized framebuffers,
+   and completes KMS modeset/page flip/vblank.
+3. The full-frustum clipper is now integrated ahead of projection and
+   rasterization. Resolution remains fixed at 16x16 in the full-system emitter,
+   making resolution parameterization and performance budgeting the next
+   graphics-system milestone.
 
 ---
 
@@ -235,6 +239,18 @@ Verification:
   rasterizer reference (Python/PIL), including the clipped case and a
   perspective-textured-color gradient that fails without perspective
   correction.
+
+Status (full-frustum completion, 2026-09-03):
+- `NearClipStage` first enforces `w >= 1/1024`, then clips sequentially against
+  `-w <= x,y,z <= w`. Its bounded ten-vertex polygon store supports a fan of
+  up to eight output triangles.
+- Intersection vertices interpolate clip position, colour, depth and UV. The
+  ten fields are processed sequentially through one exact signed divider rather
+  than a parallel divider array. The selected fan triangle remains stable for
+  the entire raster pass, then the pipeline advances it while preserving
+  per-triangle shader/render context.
+- Tests cross each canonical plane, reject a wholly off-screen triangle, and
+  render both halves of a side-clipped quad through the framebuffer path.
 
 ---
 
@@ -808,6 +824,22 @@ Status (virtual display and DRM handoff, 2026-08-29):
   validated program from immutable per-job storage, queues two explicitly
   synchronized draws, and completes KMS modeset/page flip/vblank. Both fixed
   and core-backed Linux boots pass end to end.
+- **Vertex-core build selection (2026-09-03).** The RTL emitter also accepts
+  `--vert-core`, while `GPU_FRAG_CORE=1 GPU_VERT_CORE=1` selects it in the ARTI
+  runner. The runner rejects vertex-only configurations because both stages
+  share the shader CU. The native shader validator now also has a vertex
+  profile: kernarg input slices 0–7 remain read-only, stores are confined to
+  transformed-output slices 8–15, and fragment texture/quad operations are
+  rejected. The DRM UAPI defines distinct vertex-buffer, vertex-shader and
+  vertex-kernarg bindings with alignment, size and 32-bit DMA-range checks.
+  Vertex builds reject legacy-format submissions without the vertex flag and
+  skip the incompatible probe self-test. DRM interface version 1.5 adds the
+  three vertex slots to `drm_opengpu_submit`; the scheduler snapshots both
+  shaders, relocates the command records, retains data resources and adds
+  read/write fences matching each resource's GPU access. The ARTI guest now
+  binds a three-vertex buffer, a validated RVV passthrough vertex shader and a
+  dedicated vertex kernarg, queues two explicitly synchronized draws, verifies
+  both framebuffers, and completes KMS modeset/page flip/vblank end to end.
 - **Validated per-lane RVV output complete (2026-08-30).** Sandbox profile v2
   adds fixed e32/m1 `vsetivli` and unmasked unit-stride `vle32`/`vse32`.
   Abstract interpretation recognizes the trusted warp address form `x1 +

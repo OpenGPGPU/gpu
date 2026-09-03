@@ -206,6 +206,9 @@ perspective-correct UV inputs, shader-generated depth and full per-lane
 framebuffer output and 2x2-quad neighbor/derivative support are complete as
 well. Gradient-derived LOD, packed mip selection, integer LOD bias/clamps and
 trilinear filtering are also complete (2026-09-01).
+Stage-specific vertex-buffer, vertex-shader and vertex-kernarg bindings,
+relocation, lifetime/fence tracking, dual-shader validation and the complete
+vertex-core ARTI/QEMU/Linux draw/display path are complete (2026-09-03).
 
 ## RTL boundary
 

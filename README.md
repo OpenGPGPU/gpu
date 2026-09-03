@@ -21,7 +21,7 @@ package that is incrementally verifiable.
 
 ## Quick start
 
-1. Install Java 26 and sbt.
+1. Install JDK 11 or newer and sbt.
 2. Run:
    - `sbt compile`
    - `sbt test`
@@ -82,7 +82,10 @@ pipeline on the unified-shader + separated-fixed-function model:
 driven by `CommandBufferStage` (reads draw-call records from host memory) and
 composed in `RenderPipeline` / `RenderCore`. The framebuffer, depth buffer and
 command buffer are all software-allocated shared memory; hardware only computes
-addresses and issues reads/writes. See `docs/GRAPHICS_ROADMAP.md`.
+addresses and issues reads/writes. Core-backed vertex and fragment shaders share
+one SIMT compute unit. The Linux DRM/KMS driver exposes validated resource
+bindings, queued fence-aware submission, vertex/fragment shader sandboxes and
+ARTI/QEMU end-to-end display tests. See `docs/GRAPHICS_ROADMAP.md`.
 
 Current development continues on RVV execution coverage, CSR/trap semantics,
 host/software integration, unified (SIMT) shading, and full-system physical

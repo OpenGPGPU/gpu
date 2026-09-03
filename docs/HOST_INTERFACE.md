@@ -201,9 +201,25 @@ The fixed vertex-buffer format is eight little-endian words per vertex:
 `pos_x/pos_y/pos_z/pos_w` (signed Q16.16), packed RGBA8888 colour, signed
 depth, and unsigned Q16.16 `u/v`. Vertex kernargs use the SoA slices documented
 in `driver/gpu_abi.h`; successive batches alternate the two complete banks
-when a non-zero bank stride is supplied. The current Linux/DRM path advertises
-the capability for discovery but still gates vertex-core submission until its
-resource bindings and shader validation are implemented.
+when a non-zero bank stride is supplied. The Linux/DRM path advertises the
+capability and accepts vertex-core submission through the stage-specific
+bindings described below.
+
+DRM interface version 1.5 defines distinct `VERTEX_BUFFER`, `VERTEX_SHADER`, and
+`VERTEX_KERNARG` resource types so stage-specific validation cannot confuse a
+fragment binding with a vertex binding. Shader and kernarg bindings are
+64-byte aligned; a vertex-buffer binding must contain at least one complete
+32-byte format-0 vertex. `drm_opengpu_submit` carries three corresponding
+slots and requires `OPENGPU_SUBMIT_VERTEX_CORE`; the flag must match capability
+bit2. The driver snapshots and validates both shaders, relocates all five
+binding-relative addresses, retains the vertex buffer and both kernargs for the
+job lifetime, and attaches read/write fences according to GPU access.
+
+The probe-time inline-triangle self-test remains disabled on a vertex-core top
+because that top consumes vertex-buffer records. The adaptive ARTI guest instead
+binds vertex data, a validated RVV passthrough vertex shader and its kernarg,
+then queues two synchronized vertex draws and verifies both framebuffers before
+the KMS page flip/vblank checks.
 
 ### 3.2 Kernarg SoA ABI (core-backed fragment shading)
 
@@ -385,12 +401,15 @@ then boots the end-to-end draw/display test:
 ```bash
 ./scripts/run_arti_gpu.sh
 GPU_FRAG_CORE=1 ./scripts/run_arti_gpu.sh
+GPU_FRAG_CORE=1 GPU_VERT_CORE=1 ./scripts/run_arti_gpu.sh
 ```
 
 The first command emits and tests the fixed-function texture top. The second
 emits the 4-lane, 2-warp fragment-core top, runs the trusted shader/kernarg
-bring-up draw and executes the validated per-lane RVV shader from the DRM guest. Its
-default boot timeout is 180 seconds; set `TIMEOUT` explicitly to override it.
+bring-up draw and executes the validated per-lane RVV shader from the DRM guest.
+The third additionally selects vertex-buffer draw records and the shared vertex
+shader front end. `GPU_VERT_CORE=1` requires `GPU_FRAG_CORE=1`. The default boot
+timeout is 180 seconds; set `TIMEOUT` explicitly to override it.
 
 ARTI defaults to the sibling repository `../arti`; override `ARTI_DIR` when it
 lives elsewhere. To keep the rendered self-test visible in a macOS window:
