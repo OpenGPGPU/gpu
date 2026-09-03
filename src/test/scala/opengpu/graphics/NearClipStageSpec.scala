@@ -9,7 +9,7 @@ class NearClipStageSpec extends AnyFlatSpec {
 
   private def q(v: Double): Int = (v * (1 << 16)).toInt
 
-  // poke a ClipVertexColor vertex and run the 4-phase clip.
+  // Poke a ClipVertexColor vertex and run the sequential seven-plane clip.
   private def clip(
     dut: NearClipStage,
     verts: Seq[(Int, Int, Int, Int, (Int, Int, Int))], // x,y,z,w, rgb
@@ -27,13 +27,17 @@ class NearClipStageSpec extends AnyFlatSpec {
       dut.io.tri(i).color.r.poke(verts(i)._5._1.U)
       dut.io.tri(i).color.g.poke(verts(i)._5._2.U)
       dut.io.tri(i).color.b.poke(verts(i)._5._3.U)
+      dut.io.tri(i).depth.poke((i * 100).S)
+      dut.io.tri(i).uv.u.poke((i * q(0.25)).U)
+      dut.io.tri(i).uv.v.poke((i * q(0.125)).U)
     }
     dut.io.start.poke(true.B)
     dut.clock.step()
     dut.io.start.poke(false.B)
-    // run through the 4 phases
+    // Run through all plane/edge phases.
     var i = 0
-    while (dut.io.busy.peek().litToBoolean && i < 8) { dut.clock.step(); i += 1 }
+    while (dut.io.busy.peek().litToBoolean && i < 200) { dut.clock.step(); i += 1 }
+    assert(i < 200, "clipper did not complete")
     dut.clock.step()
   }
 
@@ -97,6 +101,48 @@ class NearClipStageSpec extends AnyFlatSpec {
         dut.io.out(i).color.r.peek().litValue.toInt == 255
       }
       assert(hasV0)
+    }
+  }
+
+  it should "clip against every canonical frustum plane" in {
+    val wNear = q(0.001)
+    val outside = Seq(
+      (-q(2.0), 0, 0), (q(2.0), 0, 0),
+      (0, -q(2.0), 0), (0, q(2.0), 0),
+      (0, 0, -q(2.0)), (0, 0, q(2.0)))
+
+    for (((x, y, z), plane) <- outside.zipWithIndex) {
+      simulate(new NearClipStage(GraphicsConfig())) { dut =>
+        val verts = Seq(
+          (x, y, z, q(1.0), (255, 0, 0)),
+          (q(0.25), -q(0.25), 0, q(1.0), (0, 255, 0)),
+          (-q(0.25), q(0.25), 0, q(1.0), (0, 0, 255)))
+        clip(dut, verts, wNear)
+        val triangleCount = dut.io.outValid.peek().litValue.toInt
+        assert(triangleCount == 2,
+          s"plane $plane should turn one-outside triangle into a quad")
+        for (i <- 0 until triangleCount * 3) {
+          val ox = dut.io.out(i).x.peek().litValue.toInt
+          val oy = dut.io.out(i).y.peek().litValue.toInt
+          val oz = dut.io.out(i).z.peek().litValue.toInt
+          val ow = dut.io.out(i).w.peek().litValue.toInt
+          assert(ow >= wNear && ox >= -ow && ox <= ow &&
+            oy >= -ow && oy <= ow && oz >= -ow && oz <= ow,
+            s"plane $plane emitted an out-of-frustum vertex")
+        }
+      }
+    }
+  }
+
+  it should "reject a triangle wholly beyond a side plane" in {
+    val wNear = q(0.001)
+    simulate(new NearClipStage(GraphicsConfig())) { dut =>
+      val verts = Seq(
+        (q(1.5), -q(0.5), 0, q(1.0), (255, 0, 0)),
+        (q(2.0), q(0.0), 0, q(1.0), (0, 255, 0)),
+        (q(1.5), q(0.5), 0, q(1.0), (0, 0, 255)))
+      clip(dut, verts, wNear)
+      assert(dut.io.outValid.peek().litValue.toInt == 0)
     }
   }
 }

@@ -211,6 +211,21 @@ class RenderPipeline(
     def fire = triSourceFire
   }
 
+  private val clipper = Module(new NearClipStage(config))
+  private val clipEmitIndex = RegInit(0.U(log2Ceil(NearClipStage.MaxTriangles).W))
+  private val clipTriangleActive = RegInit(false.B)
+  clipper.io.start := triSource.fire
+  clipper.io.wNear := 64.U // Q16.16 1/1024: keep the perspective divide finite.
+  for (i <- 0 until 3) {
+    clipper.io.tri(i).x := triSource.bits.clip(i).x
+    clipper.io.tri(i).y := triSource.bits.clip(i).y
+    clipper.io.tri(i).z := triSource.bits.clip(i).z
+    clipper.io.tri(i).w := triSource.bits.clip(i).w
+    clipper.io.tri(i).color := triSource.bits.color(i)
+    clipper.io.tri(i).depth := triSource.bits.depth(i)
+    clipper.io.tri(i).uv := triSource.bits.uv(i)
+  }
+
   // The command FIFO is allowed to advance to the next draw as soon as this
   // module accepts the current one.  Keep every per-draw field stable until
   // RasterShader has captured the draw; otherwise the next FIFO entry could
@@ -221,6 +236,8 @@ class RenderPipeline(
   when(triSource.fire) {
     drawHold := triSource.bits
     drawHoldValid := true.B
+    clipEmitIndex := 0.U
+    clipTriangleActive := false.B
     drawState.colorBase := io.colorBase
     drawState.depthBase := io.depthBase
     drawState.stride := io.stride
@@ -275,30 +292,53 @@ class RenderPipeline(
         triSource.bits.texMinLevel, 0.U)
     }
   }
-  when(shader.io.draw.fire && !triSource.fire) {
+  when(drawHoldValid && clipper.io.done && clipper.io.outValid === 0.U) {
     drawHoldValid := false.B
+  }
+  when(shader.io.draw.fire) {
+    clipTriangleActive := true.B
+  }
+  // RasterShader consumes edge coordinates at draw acceptance but reads
+  // varyings throughout rasterization. Keep the selected fan triangle stable
+  // until the rasterizer returns to idle, then advance to the next one.
+  when(clipTriangleActive && shader.io.done) {
+    clipTriangleActive := false.B
+    when(clipEmitIndex + 1.U >= clipper.io.outValid) {
+      drawHoldValid := false.B
+    }.otherwise {
+      clipEmitIndex := clipEmitIndex + 1.U
+    }
   }
 
   // Geometry: clip-space -> fixed-point screen-space vertices.
-  geo.io.clip := drawHold.clip
-  geo.io.color := drawHold.color
+  private val clippedVertices = Wire(Vec(3, new ClipVertexColor(config)))
+  for (i <- 0 until 3) {
+    clippedVertices(i) := clipper.io.out(clipEmitIndex * 3.U + i.U)
+    geo.io.clip(i).x := clippedVertices(i).x
+    geo.io.clip(i).y := clippedVertices(i).y
+    geo.io.clip(i).z := clippedVertices(i).z
+    geo.io.clip(i).w := clippedVertices(i).w
+    geo.io.color(i) := clippedVertices(i).color
+  }
   geo.io.screenW := config.screenWidth.U
   geo.io.screenH := config.screenHeight.U
 
   // Shader consumes the screen-space triangle (sub-pixel fixed-point) directly.
-  shader.io.draw.valid := drawHoldValid
   shader.io.draw.bits.v0.x := geo.io.out(0).sx(31, 0).asSInt
   shader.io.draw.bits.v0.y := geo.io.out(0).sy(31, 0).asSInt
   shader.io.draw.bits.v1.x := geo.io.out(1).sx(31, 0).asSInt
   shader.io.draw.bits.v1.y := geo.io.out(1).sy(31, 0).asSInt
   shader.io.draw.bits.v2.x := geo.io.out(2).sx(31, 0).asSInt
   shader.io.draw.bits.v2.y := geo.io.out(2).sy(31, 0).asSInt
-  shader.io.colors := drawHold.color
-  shader.io.depths := drawHold.depth
+  for (i <- 0 until 3) {
+    shader.io.colors(i) := clippedVertices(i).color
+    shader.io.depths(i) := clippedVertices(i).depth
+  }
   shader.io.cullMode := drawState.cullMode
 
-  // Drive triSourceReady based on consumer ability to accept
-  triSourceReady := !drawHoldValid && shader.io.draw.ready
+  // The source remains stopped until every triangle in the clipped fan has
+  // entered rasterization. This also keeps the source metadata snapshot stable.
+  triSourceReady := !drawHoldValid && !clipper.io.busy && shader.io.draw.ready
 
   // Texture sampling configuration + word port (sampler owns its fetches).
   textured.io.e0 := shader.io.pixel.bits.e0
@@ -314,9 +354,9 @@ class RenderPipeline(
   textured.io.invW0 := geo.io.out(0).invW
   textured.io.invW1 := geo.io.out(1).invW
   textured.io.invW2 := geo.io.out(2).invW
-  textured.io.uv0 := drawHold.uv(0)
-  textured.io.uv1 := drawHold.uv(1)
-  textured.io.uv2 := drawHold.uv(2)
+  textured.io.uv0 := clippedVertices(0).uv
+  textured.io.uv1 := clippedVertices(1).uv
+  textured.io.uv2 := clippedVertices(2).uv
   textured.io.texBase := drawState.texBase
   textured.io.texWidth := drawState.texWidth
   textured.io.texHeight := drawState.texHeight
@@ -411,53 +451,27 @@ class RenderPipeline(
     kernelShader.io.globalAtomicResponse <> io.kernelGlobalAtomicResponse
 
     val ctxFifo = Module(new DrawContextFifo(2))
-    ctxFifo.io.enq.valid := triSource.fire
-    if (vertCore) {
-      val cmd = vertDrawCmd.get
-      ctxFifo.io.enq.bits.shaderPc := cmd.fragShaderPc
-      ctxFifo.io.enq.bits.kernargBase := cmd.fragKernarg
-      ctxFifo.io.enq.bits.kernargBankStride := cmd.fragKernargBankStride
-      ctxFifo.io.enq.bits.texBase := io.texBase
-      ctxFifo.io.enq.bits.texWidth := io.texWidth
-      ctxFifo.io.enq.bits.texHeight := io.texHeight
-      ctxFifo.io.enq.bits.texWrapClamp := Mux(cmd.stateOverride,
-        cmd.texWrapClamp, io.texWrapClamp)
-      ctxFifo.io.enq.bits.texMaxLevel := Mux(cmd.stateOverride,
-        cmd.texMaxLevel, io.texMaxLevel)
-      ctxFifo.io.enq.bits.texLodBias := Mux(cmd.stateOverride,
-        cmd.texLodBias, 0.S)
-      ctxFifo.io.enq.bits.texMinLevel := Mux(cmd.stateOverride,
-        cmd.texMinLevel, 0.U)
-      ctxFifo.io.enq.bits.colorBase := io.colorBase
-      ctxFifo.io.enq.bits.depthBase := io.depthBase
-      ctxFifo.io.enq.bits.stride := io.stride
-      ctxFifo.io.enq.bits.depthTestEnable := Mux(cmd.stateOverride,
-        cmd.depthTestEnable, io.depthTestEnable)
-      ctxFifo.io.enq.bits.depthFunc := Mux(cmd.stateOverride,
-        cmd.depthFunc, io.depthFunc)
-      ctxFifo.io.enq.bits.depthWriteEnable := Mux(cmd.stateOverride,
-        cmd.depthWriteEnable, io.depthWriteEnable)
-      ctxFifo.io.enq.bits.blendEnable := cmd.stateOverride && cmd.blendEnable
-    } else {
-      val drawBits = io.draw.bits.asInstanceOf[SceneTriangle]
-      ctxFifo.io.enq.bits.shaderPc := drawBits.shaderPc
-      ctxFifo.io.enq.bits.kernargBase := drawBits.shaderKernarg
-      ctxFifo.io.enq.bits.kernargBankStride := drawBits.kernargBankStride
-      ctxFifo.io.enq.bits.texBase := io.texBase
-      ctxFifo.io.enq.bits.texWidth := io.texWidth
-      ctxFifo.io.enq.bits.texHeight := io.texHeight
-      ctxFifo.io.enq.bits.texWrapClamp := Mux(drawBits.stateOverride, drawBits.texWrapClamp, io.texWrapClamp)
-      ctxFifo.io.enq.bits.texMaxLevel := Mux(drawBits.stateOverride, drawBits.texMaxLevel, io.texMaxLevel)
-      ctxFifo.io.enq.bits.texLodBias := Mux(drawBits.stateOverride, drawBits.texLodBias, 0.S)
-      ctxFifo.io.enq.bits.texMinLevel := Mux(drawBits.stateOverride, drawBits.texMinLevel, 0.U)
-      ctxFifo.io.enq.bits.colorBase := io.colorBase
-      ctxFifo.io.enq.bits.depthBase := io.depthBase
-      ctxFifo.io.enq.bits.stride := io.stride
-      ctxFifo.io.enq.bits.depthTestEnable := Mux(drawBits.stateOverride, drawBits.depthTestEnable, io.depthTestEnable)
-      ctxFifo.io.enq.bits.depthFunc := Mux(drawBits.stateOverride, drawBits.depthFunc, io.depthFunc)
-      ctxFifo.io.enq.bits.depthWriteEnable := Mux(drawBits.stateOverride, drawBits.depthWriteEnable, io.depthWriteEnable)
-      ctxFifo.io.enq.bits.blendEnable := drawBits.stateOverride && drawBits.blendEnable
-    }
+    val clippedDrawValid = drawHoldValid && !clipTriangleActive && clipper.io.done &&
+      clipEmitIndex < clipper.io.outValid
+    shader.io.draw.valid := clippedDrawValid && ctxFifo.io.enq.ready
+    ctxFifo.io.enq.valid := shader.io.draw.fire
+    ctxFifo.io.enq.bits.shaderPc := drawHold.shaderPc
+    ctxFifo.io.enq.bits.kernargBase := drawHold.shaderKernarg
+    ctxFifo.io.enq.bits.kernargBankStride := drawHold.kernargBankStride
+    ctxFifo.io.enq.bits.texBase := drawState.texBase
+    ctxFifo.io.enq.bits.texWidth := drawState.texWidth
+    ctxFifo.io.enq.bits.texHeight := drawState.texHeight
+    ctxFifo.io.enq.bits.texWrapClamp := drawState.texWrapClamp
+    ctxFifo.io.enq.bits.texMaxLevel := drawState.texMaxLevel
+    ctxFifo.io.enq.bits.texLodBias := drawState.texLodBias
+    ctxFifo.io.enq.bits.texMinLevel := drawState.texMinLevel
+    ctxFifo.io.enq.bits.colorBase := drawState.colorBase
+    ctxFifo.io.enq.bits.depthBase := drawState.depthBase
+    ctxFifo.io.enq.bits.stride := drawState.stride
+    ctxFifo.io.enq.bits.depthTestEnable := drawState.depthTestEnable
+    ctxFifo.io.enq.bits.depthFunc := drawState.depthFunc
+    ctxFifo.io.enq.bits.depthWriteEnable := drawState.depthWriteEnable
+    ctxFifo.io.enq.bits.blendEnable := drawState.blendEnable
     // Ordered retire handshake: the stage presents one completion event per
     // draw boundary in submission order and holds it until the owner accepts
     // it.  Every OM entry snapshots its render-target state at fragment
@@ -472,8 +486,8 @@ class RenderPipeline(
     // (and later executes) while batch N's kernel is still running; per-draw
     // state is carried by the context FIFO and the dual staging slots, and
     // the ordered drawRetire handshake retires contexts in submission order.
-    io.draw.ready := (!drawHoldValid || shader.io.draw.fire) &&
-      triSource.ready && shader.io.draw.ready && kernelFrag.io.fragIn.ready && ctxFifo.io.enq.ready &&
+    io.draw.ready := triSource.ready && kernelFrag.io.fragIn.ready &&
+      ctxFifo.io.enq.ready &&
       kernelVert.map(_.io.done).getOrElse(true.B)
     kernelFrag.io.fragIn.valid := shader.io.quad.valid
     kernelFrag.io.fragIn.bits := shader.io.quad.bits
@@ -568,6 +582,8 @@ class RenderPipeline(
     io.done := !drawHoldValid && shader.io.done && kernelFrag.io.drained &&
       om.io.fragIn.ready && !ctxFifo.io.headValid
   } else {
+    shader.io.draw.valid := drawHoldValid && !clipTriangleActive && clipper.io.done &&
+      clipEmitIndex < clipper.io.outValid
     om.io.colorBase := drawState.colorBase
     om.io.depthBase := drawState.depthBase
     om.io.stride := drawState.stride
@@ -578,8 +594,7 @@ class RenderPipeline(
     // As in the core-backed path, wait for the final fragment's serialized
     // depth/color RMW to retire (in-flight entries drained) before declaring
     // done; admission stays additionally gated on OM slot availability.
-    io.draw.ready := (!drawHoldValid || shader.io.draw.fire) &&
-      triSource.ready && shader.io.draw.ready && shader.io.done &&
+    io.draw.ready := triSource.ready && shader.io.draw.ready && shader.io.done &&
       om.io.fragIn.ready
     // Fragment stream: sampled-and-modulated when texturing is enabled, else
     // straight from the interpolator.  The bypass path keeps disabled draws

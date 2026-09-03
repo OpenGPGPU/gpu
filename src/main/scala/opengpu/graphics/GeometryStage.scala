@@ -31,8 +31,9 @@ class ScreenVertex(config: GraphicsConfig) extends Bundle {
   *   sy = ((y + w) * screenH * 2^subPixel) / (2*w)
   *   invW = 2^32 / |w|            (Q16.16 reciprocal)
   *
-  * The per-vertex varyings pass through unchanged.  Near-plane clipping is a
-  * later slice; for now every vertex must have w > 0 (in front of the camera).
+  * The per-vertex varyings pass through unchanged. `RenderPipeline` clips the
+  * complete homogeneous view volume before presenting vertices here, so every
+  * accepted vertex has a finite positive w.
   *
   * This is the durable, non-throwaway part of the geometry front-end — the
   * programmable 4x4 MVP transform is a separate, temporary block that M5

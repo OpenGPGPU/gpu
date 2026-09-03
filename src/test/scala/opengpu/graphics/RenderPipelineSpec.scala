@@ -147,4 +147,135 @@ class RenderPipelineSpec extends AnyFlatSpec {
       assert(rgb(13, 13) == (0, 0, 0), s"outside (13,13) should be black, got ${rgb(13, 13)}")
     }
   }
+
+  it should "discard a triangle wholly outside a side clip plane" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+
+    simulate(new RenderPipeline(config)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.colorBase.poke(0x1000.U)
+      dut.io.depthBase.poke(0x2000.U)
+      dut.io.stride.poke(64.U)
+      dut.io.depthTestEnable.poke(false.B)
+      dut.io.depthFunc.poke(0.U)
+      dut.io.depthWriteEnable.poke(false.B)
+      dut.io.cullMode.poke(0.U)
+      dut.io.texEnable.poke(false.B)
+      dut.io.texBase.poke(0.U)
+      dut.io.texWidth.poke(0.U)
+      dut.io.texHeight.poke(0.U)
+      dut.io.texWrapClamp.poke(false.B)
+      dut.io.texMaxLevel.poke(0.U)
+      dut.io.texMem.req.ready.poke(true.B)
+      dut.io.texMem.resp.valid.poke(false.B)
+      dut.io.mem.req.ready.poke(true.B)
+      dut.io.mem.resp.valid.poke(false.B)
+
+      val draw = dut.io.draw.bits.asInstanceOf[SceneTriangle]
+      draw.poke(0.U.asTypeOf(new SceneTriangle(config)))
+      draw.stateOverride.poke(false.B)
+      for (i <- 0 until 3) {
+        draw.clip(i).x.poke(q(1.5 + i * 0.25).S)
+        draw.clip(i).y.poke(q(-0.5 + i * 0.5).S)
+        draw.clip(i).z.poke(0.S)
+        draw.clip(i).w.poke(q(1.0).S)
+        draw.color(i).r.poke(255.U)
+        draw.depth(i).poke(0x10.S)
+      }
+      assert(dut.io.draw.ready.peek().litToBoolean)
+      dut.io.draw.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.draw.valid.poke(false.B)
+
+      var requests = 0
+      var cycles = 0
+      while (!dut.io.done.peek().litToBoolean && cycles < 200) {
+        if (dut.io.mem.req.valid.peek().litToBoolean) requests += 1
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(cycles < 200, "pipeline did not retire a clipped-away draw")
+      assert(requests == 0, s"clipped-away draw issued $requests memory requests")
+    }
+  }
+
+  it should "rasterize both triangles produced by a side-plane clip" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val colorBase = 0x1000
+    val mem = Array.fill(1 << 14)(0)
+
+    simulate(new RenderPipeline(config)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.colorBase.poke(colorBase.U)
+      dut.io.depthBase.poke(0x2000.U)
+      dut.io.stride.poke(64.U)
+      dut.io.depthTestEnable.poke(false.B)
+      dut.io.depthFunc.poke(0.U)
+      dut.io.depthWriteEnable.poke(false.B)
+      dut.io.cullMode.poke(0.U)
+      dut.io.texEnable.poke(false.B)
+      dut.io.texBase.poke(0.U)
+      dut.io.texWidth.poke(0.U)
+      dut.io.texHeight.poke(0.U)
+      dut.io.texWrapClamp.poke(false.B)
+      dut.io.texMaxLevel.poke(0.U)
+      dut.io.texMem.req.ready.poke(true.B)
+      dut.io.texMem.resp.valid.poke(false.B)
+      dut.io.mem.req.ready.poke(true.B)
+      dut.io.mem.resp.valid.poke(false.B)
+
+      val draw = dut.io.draw.bits.asInstanceOf[SceneTriangle]
+      draw.poke(0.U.asTypeOf(new SceneTriangle(config)))
+      val vertices = Seq((-1.0, -1.0), (2.0, -1.0), (-1.0, 1.0))
+      for (i <- 0 until 3) {
+        draw.clip(i).x.poke(q(vertices(i)._1).S)
+        draw.clip(i).y.poke(q(vertices(i)._2).S)
+        draw.clip(i).z.poke(0.S)
+        draw.clip(i).w.poke(q(1.0).S)
+        draw.color(i).r.poke(255.U)
+        draw.depth(i).poke(0x10.S)
+      }
+      dut.io.draw.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.draw.valid.poke(false.B)
+
+      val responses = scala.collection.mutable.Queue.empty[(Int, Long)]
+      val captured = scala.collection.mutable.Queue.empty[(Int, Long)]
+      var cycles = 0
+      while (!dut.io.done.peek().litToBoolean && cycles < 4000) {
+        while (captured.nonEmpty) responses.enqueue(captured.dequeue())
+        if (dut.io.mem.req.valid.peek().litToBoolean) {
+          val address = dut.io.mem.req.bits.addr.peek().litValue.toInt
+          if (dut.io.mem.req.bits.write.peek().litToBoolean) {
+            mem(address / 4) = dut.io.mem.req.bits.data.peek().litValue.toInt
+          } else {
+            captured.enqueue((address, mem(address / 4) & 0xffffffffL))
+          }
+        }
+        if (responses.nonEmpty) {
+          val (address, data) = responses.head
+          dut.io.mem.resp.valid.poke(true.B)
+          dut.io.mem.resp.bits.addr.poke(address.U)
+          dut.io.mem.resp.bits.data.poke(data.U)
+          if (dut.io.mem.resp.ready.peek().litToBoolean) responses.dequeue()
+        } else {
+          dut.io.mem.resp.valid.poke(false.B)
+        }
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(cycles < 4000, "side-clipped fan did not drain")
+      def pixel(x: Int, y: Int): Int = mem(colorBase / 4 + y * 16 + x)
+      assert(pixel(14, 2) == 0xff0000ff,
+        f"first fan region was not rendered: 0x${pixel(14, 2)}%08x")
+      assert(pixel(2, 10) == 0xff0000ff,
+        f"second fan region was not rendered: 0x${pixel(2, 10)}%08x")
+      assert(pixel(14, 12) == 0,
+        f"pixel outside the clipped polygon changed: 0x${pixel(14, 12)}%08x")
+    }
+  }
 }
