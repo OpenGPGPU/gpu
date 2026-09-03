@@ -70,9 +70,12 @@ Current limitations that still drive the remaining roadmap:
    fragment shaders on the shared CU, checks both synchronized framebuffers,
    and completes KMS modeset/page flip/vblank.
 3. The full-frustum clipper is now integrated ahead of projection and
-   rasterization. Resolution remains fixed at 16x16 in the full-system emitter,
-   making resolution parameterization and performance budgeting the next
-   graphics-system milestone.
+   rasterization. Resolution parameterization landed (2026-09-03):
+   `EmitGpuHostAxi --width/--height` elaborates any power-of-two target
+   (>= 16x16), and the ARTI runner threads one `GPU_WIDTH`/`GPU_HEIGHT` knob
+   through the emitter, the driver's boot-mode fallbacks and the guest test,
+   scaling the draw watchdog with the pixel count.  Per-resolution performance
+   budgeting on the emulated full-system path is the follow-up.
 
 ---
 

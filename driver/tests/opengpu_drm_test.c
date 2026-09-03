@@ -20,8 +20,18 @@
 #include "opengpu_drm.h"
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+/* Overridable so the ARTI runner can compile the guest test for the same
+ * resolution the RTL was elaborated with (-DTEST_WIDTH/-DTEST_HEIGHT). */
+#ifndef TEST_WIDTH
 #define TEST_WIDTH 16
+#endif
+#ifndef TEST_HEIGHT
 #define TEST_HEIGHT 16
+#endif
+#if (TEST_WIDTH & (TEST_WIDTH - 1)) != 0 || (TEST_HEIGHT & (TEST_HEIGHT - 1)) != 0 || \
+    TEST_WIDTH < 16 || TEST_HEIGHT < 16
+#error "TEST_WIDTH/TEST_HEIGHT must be powers of two and at least 16"
+#endif
 #define MIN_FENCE_WAIT_MS 30
 #define FLIP_EVENT_COOKIE UINT64_C(0x4f50454e475055)
 

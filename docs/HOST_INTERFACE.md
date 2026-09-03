@@ -300,6 +300,13 @@ gpu@b000000 {
 };
 ```
 
+The boot-time mode must match the elaborated RTL resolution
+(`EmitGpuHostAxi --width/--height`, default 16x16).  The ARTI-generated node
+omits these properties, so the driver falls back to its
+`OPENGPU_DEFAULT_WIDTH/HEIGHT` compile-time defaults; the ARTI runner passes
+`GPU_WIDTH`/`GPU_HEIGHT` to both the emitter and the driver build so the two
+always agree, and scales the draw watchdog with the pixel count.
+
 ## 5. Linux driver
 
 The layered driver under `driver/` binds to `riscv-simt,opengpu` (execution
@@ -457,7 +464,8 @@ With `display.source: guest-memory`, ARTI watches the display-domain
 through QEMU's guest address space, converts packed RGBA8888 words to the QEMU
 surface, and refreshes the graphics console. Render-target programming remains
 independent in `COLOR_BASE`/`STRIDE`. The integration profile enables a 16x16
-scanout matching the current driver self-test. Run it on macOS with:
+scanout by default; `GPU_WIDTH`/`GPU_HEIGHT` on `scripts/run_arti_gpu.sh`
+elaborates and boots a larger matching mode. Run it on macOS with:
 
 ```bash
 INTEGRATION_CONFIG=/Users/duckdonald/workspace/gpu/driver/gpu_integration.yaml \

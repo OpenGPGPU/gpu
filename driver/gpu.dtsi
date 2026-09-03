@@ -15,7 +15,10 @@
         reg-names = "ctrl";
         interrupts = <180>;                 /* completion (wired by ARTI) */
         interrupt-parent = <&intc>;
-        /* Optional boot-time mode used by the self-test draw. */
+        /* Optional boot-time mode used by the self-test draw.  It must match
+         * the elaborated RTL resolution (EmitGpuHostAxi --width/--height);
+         * the ARTI-generated node omits these and the driver then falls back
+         * to its OPENGPU_DEFAULT_WIDTH/HEIGHT compile-time defaults. */
         opengpu,width = <16>;
         opengpu,height = <16>;
         opengpu,stride = <0x40>;                /* 16 * 4 */

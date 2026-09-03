@@ -14,7 +14,11 @@ QEMU_TOOLS="${QEMU_TOOLS:-/tmp/qemu-build-tools}"
 QEMU_DISPLAY="${QEMU_DISPLAY:-none}"
 GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}"
 GPU_VERT_CORE="${GPU_VERT_CORE:-0}"
-ARTI_GPU_DRAW_WAIT_MS="${ARTI_GPU_DRAW_WAIT_MS:-60000}"
+GPU_WIDTH="${GPU_WIDTH:-16}"
+GPU_HEIGHT="${GPU_HEIGHT:-16}"
+# Emulated quad shading is roughly linear in covered+helper lanes, so scale
+# the draw watchdog with the pixel count (60 s at the 16x16 baseline).
+ARTI_GPU_DRAW_WAIT_MS="${ARTI_GPU_DRAW_WAIT_MS:-$((60000 * GPU_WIDTH * GPU_HEIGHT / 256))}"
 QEMU_VERSION="${QEMU_VERSION:-11.1.0}"
 LINUX_VERSION="${LINUX_VERSION:-7.2}"
 BUSYBOX_DIR="${BUSYBOX_DIR:-/tmp/busybox-1.36.1}"
@@ -42,6 +46,11 @@ command -v sbt >/dev/null 2>&1 || fail "sbt is required to emit GpuHostAxi RTL"
     fail "GPU_VERT_CORE must be 0 or 1"
 [ "$GPU_VERT_CORE" = "0" ] || [ "$GPU_FRAG_CORE" = "1" ] || \
     fail "GPU_VERT_CORE=1 requires GPU_FRAG_CORE=1"
+pow2() { [ "$1" -ge 1 ] && [ "$(($1 & ($1 - 1)))" = "0" ]; }
+pow2 "$GPU_WIDTH" && pow2 "$GPU_HEIGHT" || \
+    fail "GPU_WIDTH/GPU_HEIGHT must be powers of two"
+[ "$GPU_WIDTH" -ge 16 ] && [ "$GPU_HEIGHT" -ge 16 ] || \
+    fail "GPU_WIDTH/GPU_HEIGHT must be at least 16"
 
 # ARTI supports an isolated Ninja install under QEMU_TOOLS. Prefer the system
 # executable when one is already available; this avoids an unnecessary pip
@@ -119,15 +128,15 @@ echo "Linux source: $LINUX_SRC (valid)"
 echo "=== 1/4 Emit GpuHostAxi RTL ==="
 if [ "$GPU_VERT_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
-        sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host --frag-core --vert-core")
+        sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host --frag-core --vert-core --width $GPU_WIDTH --height $GPU_HEIGHT")
     TIMEOUT="${TIMEOUT:-120}"
 elif [ "$GPU_FRAG_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
-        sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host --frag-core")
+        sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host --frag-core --width $GPU_WIDTH --height $GPU_HEIGHT")
     TIMEOUT="${TIMEOUT:-120}"
 else
     (cd "$GPU_DIR" && \
-        sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host")
+        sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host --width $GPU_WIDTH --height $GPU_HEIGHT")
     TIMEOUT="${TIMEOUT:-180}"
 fi
 [ -f "$GPU_DIR/generated/host/GpuHostAxi.sv" ] || \
@@ -173,7 +182,8 @@ cp "$GPU_DIR/driver/Makefile" "$DRIVER_STAGE/"
 cp "$GPU_DIR"/driver/*.c "$GPU_DIR"/driver/*.h "$DRIVER_STAGE/"
 LINUX_BUILD="$LINUX_BUILD" \
 ARTI_DIR="$ARTI_DIR" \
-KCFLAGS="${KCFLAGS:-} -DOPENGPU_DRAW_WAIT_MS=$ARTI_GPU_DRAW_WAIT_MS" \
+KCFLAGS="${KCFLAGS:-} -DOPENGPU_DRAW_WAIT_MS=$ARTI_GPU_DRAW_WAIT_MS \
+    -DOPENGPU_DEFAULT_WIDTH=$GPU_WIDTH -DOPENGPU_DEFAULT_HEIGHT=$GPU_HEIGHT" \
     "$ARTI_DIR/examples/linux_arti_driver/build_driver.sh" \
         --dir "$DRIVER_STAGE" \
         --module gpu_drv \
@@ -224,6 +234,7 @@ fi
 GUEST_DRM_TEST="$DRIVER_OUTPUT/opengpu_drm_test"
 "$CROSS_GCC" -static -O2 -Wall -Wextra -Werror \
     -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" \
+    -DTEST_WIDTH="$GPU_WIDTH" -DTEST_HEIGHT="$GPU_HEIGHT" \
     -o "$GUEST_DRM_TEST" "$GPU_DIR/driver/tests/opengpu_drm_test.c"
 
 # ARTI's generic runner deliberately owns initramfs construction. Use a

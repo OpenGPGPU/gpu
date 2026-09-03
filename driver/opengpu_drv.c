@@ -20,9 +20,9 @@ static int opengpu_probe(struct platform_device *pdev)
     of_property_read_u32(pdev->dev.of_node, "opengpu,height", &gpu->height);
     of_property_read_u32(pdev->dev.of_node, "opengpu,stride", &gpu->stride);
     if (!gpu->width)
-        gpu->width = 16;
+        gpu->width = OPENGPU_DEFAULT_WIDTH;
     if (!gpu->height)
-        gpu->height = 16;
+        gpu->height = OPENGPU_DEFAULT_HEIGHT;
     if (!gpu->stride)
         gpu->stride = gpu->width * 4;
     if (gpu->stride < gpu->width * 4)

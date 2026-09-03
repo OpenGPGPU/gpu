@@ -31,6 +31,16 @@ struct opengpu_drm;
 #ifndef OPENGPU_DRAW_WAIT_MS
 #define OPENGPU_DRAW_WAIT_MS    30000
 #endif
+/* Boot-time render mode used when the device-tree node carries no
+ * opengpu,width/height/stride properties (the ARTI-generated node does not).
+ * Must match the elaborated RTL resolution; the runner passes
+ * -DOPENGPU_DEFAULT_WIDTH/HEIGHT to keep them in lockstep. */
+#ifndef OPENGPU_DEFAULT_WIDTH
+#define OPENGPU_DEFAULT_WIDTH   16
+#endif
+#ifndef OPENGPU_DEFAULT_HEIGHT
+#define OPENGPU_DEFAULT_HEIGHT  16
+#endif
 #define OPENGPU_IOCTL_SUBMIT    _IO('G', 0x01)
 
 struct opengpu_buffer {

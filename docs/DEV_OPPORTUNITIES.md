@@ -32,15 +32,24 @@ blocks.
   `HOST_INTERFACE.md`, `DRIVER_ARCHITECTURE.md`, the README and guest harness.
 - README now describes the Linux/DRM surface and uses CI's JDK 11 as its minimum.
 
+### 2. Parameterize the render resolution beyond 16×16
+
+- **Area:** Graphics system / integration · **Leverage:** High · **Effort:** M
+- `EmitGpuHostAxi --width/--height` elaborates any power-of-two target
+  (>= 16x16; verified the screen-bounds constants reach TriangleRasterizer and
+  GeometryStage SV while the top file stays invariant).
+- The ARTI runner threads one `GPU_WIDTH`/`GPU_HEIGHT` knob through the
+  emitter args, the driver's `OPENGPU_DEFAULT_WIDTH/HEIGHT` boot-mode
+  fallbacks, the guest test's `TEST_WIDTH/TEST_HEIGHT` (now overridable with a
+  static-assert guard), and scales `ARTI_GPU_DRAW_WAIT_MS` with the pixel
+  count (60 s baseline at 16x16).
+- Follow-up: measure per-resolution full-system runtimes and pick a default
+  the ARTI regression can afford; hardware clear via `FillEngine` pairs with
+  this (larger clears dominate CPU traffic).
+
 ---
 
 ## Do next
-
-### Parameterize and raise resolution beyond 16×16
-
-Full-system path is hard-coded (`EmitGpuHostAxi`, `gpu.dtsi`). QEMU already
-needs a ~30 s watchdog for helper-lane quad shading at 16×16. Product usefulness
-and performance work both need larger targets.
 
 ### Expose general compute + DMA through Linux
 
