@@ -62,11 +62,14 @@ Compute-first multi-CU system and graphics AXI host are parallel morphologies.
 A product SoC needs one coherent attach point (shared L2, IRQ/IH, DMA engines,
 graphics).
 
-### Wire `FillEngine` as hardware clear / blit
+### Wire `FillEngine` as hardware blit extensions
 
-Roadmap deferred clear to a driver fill; the driver still `memset`s depth.
-`FillEngine` exists in `GpuSystem` and would cut CPU traffic at larger
-resolutions.
+Hardware clear landed (2026-09-03): `RenderHost` drives the FillEngine
+through CLEAR_BASE/BYTES/PATTERN/START registers (STATUS.CLEAR_BUSY,
+CAPABILITIES bit3) and the driver's self-test depth plane already uses it
+with a memset fallback.  Remaining: route the DRM per-job depth clear
+through it (needs job-queue ordering) and add a colour-blit (source
+read + write) descriptor mode.
 
 ---
 
