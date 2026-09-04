@@ -34,7 +34,8 @@ class StridedCopyEngine(
   descriptorIdWidth: Int = 8,
   lineBytes: Int = 64,
   maxOutstanding: Int = 4,
-  descriptorQueueDepth: Int = 4
+  descriptorQueueDepth: Int = 4,
+  transactionIdBase: Int = 0
 ) extends Module {
   require(lineBytes == 64 && isPow2(lineBytes))
   require(maxOutstanding >= 4)
@@ -58,7 +59,8 @@ class StridedCopyEngine(
   descriptors.io.enq <> io.descriptor
   private val rowCopy = Module(new CopyEngine(
     config, descriptorIdWidth, lineBytes, maxOutstanding,
-    descriptorQueueDepth = 1, lineSlots = 2))
+    descriptorQueueDepth = 1, lineSlots = 2,
+    transactionIdBase = transactionIdBase))
   io.memoryRequest <> rowCopy.io.memoryRequest
   rowCopy.io.memoryResponse <> io.memoryResponse
 

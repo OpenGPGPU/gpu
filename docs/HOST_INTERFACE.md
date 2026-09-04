@@ -21,7 +21,7 @@ INCR bursts, one read or write transaction at a time.
 |---|---|---|---|
 | 0x00 | ID | RO | `device_id << 16 \| version` |
 | 0x04 | CONTROL | W1P | bit 0 START |
-| 0x08 | STATUS | RO/W1C | BUSY, DONE, ERROR, CLEAR_BUSY, BLIT_BUSY |
+| 0x08 | STATUS | RO/W1C | BUSY, DONE, ERROR and DMA-engine busy bits |
 | 0x0C | IRQ | RW | ENABLE and PENDING |
 | 0x10 | CMD_BASE | RW | command-buffer byte address |
 | 0x14 | CMD_COUNT | RW | draw-record count |
@@ -43,7 +43,7 @@ INCR bursts, one read or write transaction at a time.
 | 0x54 | SCANOUT_FORMAT | RW | 0 = RGBA8888 |
 | 0x58 | SCANOUT_CONTROL | RW | bit 0 ENABLE |
 | 0x5C | SCANOUT_STATUS | RO | bit 0 ACTIVE |
-| 0x60 | CAPABILITIES | RO | fragment core, job/IH rings, vertex core, clear/blit engines and batch capacity |
+| 0x60 | CAPABILITIES | RO | fragment core, job/IH rings, vertex core, clear/blit/strided engines and batch capacity |
 | 0x64 | JOB_RING_BASE | RW | job-ring byte address |
 | 0x68 | JOB_RING_SIZE | RW | power-of-two entry count |
 | 0x6C | JOB_WPTR | RW | host producer pointer/doorbell |
@@ -61,6 +61,13 @@ INCR bursts, one read or write transaction at a time.
 | 0x9C | BLIT_DST_BASE | RW | 64-byte-aligned copy destination |
 | 0xA0 | BLIT_BYTES | RW | copy size, multiple of 64 |
 | 0xA4 | BLIT_START | W1P | start non-overlapping copy |
+| 0xA8 | STRIDED_SRC_BASE | RW | 64-byte-aligned 2D-copy source |
+| 0xAC | STRIDED_DST_BASE | RW | 64-byte-aligned 2D-copy destination |
+| 0xB0 | STRIDED_WIDTH | RW | bytes copied per row, multiple of 64 |
+| 0xB4 | STRIDED_HEIGHT | RW | row count |
+| 0xB8 | STRIDED_SRC_STRIDE | RW | source row stride, aligned and at least width |
+| 0xBC | STRIDED_DST_STRIDE | RW | destination row stride, aligned and at least width |
+| 0xC0 | STRIDED_START | W1P | start non-overlapping 2D copy |
 
 START snapshots the programmed job state. On queue-capable hardware, the host
 writes a 64-byte descriptor to the job ring and advances `JOB_WPTR`. Jobs
@@ -166,14 +173,16 @@ memory. In silicon, the same clients attach to the SoC L2/DRAM fabric.
   reservation fences and optional input/output sync objects.
 - Scheduler-ordered patterned GEM fills using the same validation and
   synchronization model.
+- Scheduler-ordered strided GEM copies with independently validated source and
+  destination row layouts.
 - Separate render-target and KMS scanout programming.
 - ARTI-generated QEMU/Linux device, shared guest-memory access and end-to-end
   DRM/KMS execution.
 
 ## Next
 
-- Add general compute and strided-DMA descriptor types to the shared queue;
-  migrate the current ordered fill/blit jobs onto that common descriptor path.
+- Add general compute descriptors to the shared queue; migrate the current
+  ordered fill/blit/strided-copy jobs onto that common descriptor path.
 - Define ABI-visible fault codes, reset recovery and timeout behavior.
 - Expand shader profiles and resource types only with matching hardware and
   validation.

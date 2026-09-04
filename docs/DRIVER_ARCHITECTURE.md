@@ -69,6 +69,8 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
   fences, destination write fences and syncobj chaining.
 - Ordered hardware patterned fills with validated destination ranges and the
   same destination-fence and syncobj contracts.
+- Ordered strided copies with validated two-dimensional source/destination
+  ranges and the same reservation-fence contracts.
 - Fragment and vertex core submissions using the shared SIMT compute unit.
 - Texture sampling, shader depth output, discard, quad derivatives, mipmapping
   and source-over blending in the validated graphics path.
@@ -79,8 +81,8 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
 
 - Add general-compute and DMA job payloads without duplicating queue, memory or
   fence machinery.
-- Generalize the queue payload for compute and strided-DMA jobs; migrate
-  ordered fill/blit operations onto that common hardware queue.
+- Generalize the queue payload for compute jobs; migrate ordered
+  fill/blit/strided-copy operations onto that common hardware queue.
 - Define precise reset, timeout recovery and host-visible fault reporting.
 - Grow the admitted shader ISA only with matching RTL, validator and ABI rules.
 - Add runtime power management when required by the SoC integration.

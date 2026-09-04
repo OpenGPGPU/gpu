@@ -28,6 +28,7 @@ Priority order:
 - Scheduler-ordered hardware colour blits with GEM validation and implicit or
   explicit synchronization.
 - Scheduler-ordered hardware patterned fills for validated GEM ranges.
+- Scheduler-ordered strided copies for validated two-dimensional GEM ranges.
 - ARTI/QEMU/Linux end-to-end execution for fixed-function, fragment-core and
   vertex-core configurations.
 - Power-of-two render resolutions of at least 16x16, selected consistently by
@@ -42,8 +43,8 @@ Priority order:
   default.
 - Unify `GpuSystem` and `GpuHostAxi` so graphics, multi-CU compute and DMA share
   one host attachment, memory hierarchy, queue and interrupt model.
-- Expose general compute and strided-DMA jobs through Linux, and migrate the
-  existing fill/blit ioctls onto the unified queue payload.
+- Expose general compute jobs through Linux, and migrate the existing
+  fill/blit/strided-copy ioctls onto the unified queue payload.
 
 ### Mid term
 

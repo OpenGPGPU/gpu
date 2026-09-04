@@ -594,6 +594,34 @@ static int submit_fill(int fd, uint32_t context_id,
     return ioctl(fd, DRM_IOCTL_OPENGPU_FILL, &fill);
 }
 
+static int submit_strided_blit(int fd, uint32_t context_id,
+                               const struct dumb_fb *source,
+                               const struct dumb_fb *destination,
+                               uint64_t source_offset,
+                               uint64_t destination_offset,
+                               uint32_t width_bytes, uint32_t height,
+                               uint32_t source_stride,
+                               uint32_t destination_stride,
+                               uint32_t in_syncobj,
+                               uint32_t out_syncobj)
+{
+    struct drm_opengpu_strided_blit blit = {
+        .context_id = context_id,
+        .source_handle = source->handle,
+        .destination_handle = destination->handle,
+        .source_offset = source_offset,
+        .destination_offset = destination_offset,
+        .width_bytes = width_bytes,
+        .height = height,
+        .source_stride = source_stride,
+        .destination_stride = destination_stride,
+        .in_syncobj = in_syncobj,
+        .out_syncobj = out_syncobj,
+    };
+
+    return ioctl(fd, DRM_IOCTL_OPENGPU_STRIDED_BLIT, &blit);
+}
+
 static int reject_unsafe_command(int fd, uint32_t context_id,
                                  struct command_buffer *commands,
                                  const struct dumb_fb *fb)
@@ -906,7 +934,7 @@ int main(void)
     struct resource_buffer vertex_buffer = { 0 };
     struct resource_buffer vertex_shader = { 0 }, vertex_kernarg = { 0 };
     struct drm_event_vblank event = { 0 };
-    uint32_t syncobjs[5] = { 0 };
+    uint32_t syncobjs[6] = { 0 };
     uint32_t output_syncobjs[2];
     uint64_t capabilities;
     uint32_t batch_capacity;
@@ -1031,6 +1059,8 @@ int main(void)
     CHECK(create_syncobj(fd, &syncobjs[2]), "create second output syncobj");
     CHECK(create_syncobj(fd, &syncobjs[3]), "create blit output syncobj");
     CHECK(create_syncobj(fd, &syncobjs[4]), "create fill output syncobj");
+    CHECK(create_syncobj(fd, &syncobjs[5]),
+          "create strided blit output syncobj");
     CHECK(submit_selected_render(
               fd, vert_core, context_id, &commands, &first, texture_slot,
               shader_slot, kernarg_slot, vertex_buffer_slot,
@@ -1128,6 +1158,56 @@ int main(void)
             return 1;
         }
     }
+    if (!(capabilities & OPENGPU_CAP_STRIDED_ENGINE)) {
+        errno = EOPNOTSUPP;
+        perror("OPENGPU USERSPACE DRM FAIL strided blit capability");
+        return 1;
+    }
+    memset(second.map, 0x5a, second.size);
+    for (uint32_t row = 0; row < 4; row++)
+        for (uint32_t word = 0; word < 16; word++)
+            ((uint32_t *)((uint8_t *)first.map + row * 128))[word] =
+                0x10203040u + row * 0x100u + word;
+    errno = 0;
+    if (submit_strided_blit(fd, context_id, &first, &second, 0, 0,
+                            32, 4, 128, 192, syncobjs[4], syncobjs[5]) != -1 ||
+        errno != EINVAL) {
+        errno = EPROTO;
+        perror("OPENGPU USERSPACE DRM FAIL unaligned strided blit accepted");
+        return 1;
+    }
+    errno = 0;
+    if (submit_strided_blit(fd, context_id, &first, &second, 0, 0,
+                            64, 4, 0, 192, syncobjs[4], syncobjs[5]) != -1 ||
+        errno != EINVAL) {
+        errno = EPROTO;
+        perror("OPENGPU USERSPACE DRM FAIL short strided pitch accepted");
+        return 1;
+    }
+    errno = 0;
+    if (submit_strided_blit(fd, context_id, &first, &second, 0, second.size,
+                            64, 1, 64, 64,
+                            syncobjs[4], syncobjs[5]) != -1 ||
+        errno != EINVAL) {
+        errno = EPROTO;
+        perror("OPENGPU USERSPACE DRM FAIL out-of-range strided blit accepted");
+        return 1;
+    }
+    CHECK(submit_strided_blit(fd, context_id, &first, &second, 0, 0,
+                              64, 4, 128, 192,
+                              syncobjs[4], syncobjs[5]),
+          "queue ordered strided blit");
+    CHECK(wait_syncobjs(fd, &syncobjs[5], 1),
+          "wait strided blit syncobj");
+    for (uint32_t row = 0; row < 4; row++) {
+        if (memcmp((uint8_t *)first.map + row * 128,
+                   (uint8_t *)second.map + row * 192, 64) ||
+            ((uint8_t *)second.map)[row * 192 + 64] != 0x5a) {
+            errno = EIO;
+            perror("OPENGPU USERSPACE DRM FAIL strided blit result");
+            return 1;
+        }
+    }
     if (vert_core)
         CHECK(unbind_resource(fd, context_id, 5), "unbind vertex shader");
     else if (frag_core)
@@ -1159,7 +1239,7 @@ int main(void)
 
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
            "syncobj + %s sandbox + "
-           "validated context + ordered colour blit/fill + "
+           "validated context + ordered colour blit/fill/strided blit + "
            "vblank flip event sequence=%u\n",
            vert_core ? "vertex+fragment-core-backed" :
            frag_core ? "core-backed" : "texture",

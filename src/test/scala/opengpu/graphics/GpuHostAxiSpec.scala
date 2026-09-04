@@ -160,8 +160,8 @@ class GpuHostAxiSpec extends AnyFlatSpec {
 
       assert(axiRead(dut, RenderHostRegs.ID) == 0x47550001L,
         "device ID must read back through AXI4")
-      assert(axiRead(dut, RenderHostRegs.CAPABILITIES) == 0x200aL,
-        "fixed-function builds must advertise job queue + clear engine but not fragment-core execution")
+      assert(axiRead(dut, RenderHostRegs.CAPABILITIES) == 0x203aL,
+        "fixed-function builds must advertise the job queue and DMA engines but not fragment-core execution")
 
       // Unaligned read -> SLVERR.
       axiRead(dut, 0x11)

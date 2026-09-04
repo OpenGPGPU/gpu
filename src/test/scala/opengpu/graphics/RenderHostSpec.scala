@@ -131,7 +131,7 @@ class RenderHostSpec extends AnyFlatSpec {
         else fbQ.enqueue((false, a, m.word(a)))
       }
 
-      // Shared line port used by core staging, hardware clear and blit.
+      // Shared line port used by core staging, fill, blit and strided copy.
       dut.io.kernelWordMemReq.ready.poke(true.B)
       if (kwQ.nonEmpty) {
         val (isWrite, a, d, id) = kwQ.head
@@ -168,7 +168,7 @@ class RenderHostSpec extends AnyFlatSpec {
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       assert(regRead(dut, RenderHostRegs.ID) == 0x47550001L,
         "device ID register must report device<<16 | version")
-      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x81bL,
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x83bL,
          "fragment-core builds must advertise support, batch capacity and the job queue")
 
       // An unmapped address yields ok=false.
@@ -235,7 +235,7 @@ class RenderHostSpec extends AnyFlatSpec {
       gpuConfig = GpuConfig(lanes = 4, warps = 2), fragCore = true,
       vertCore = true)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x81fL,
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x83fL,
         "shared vertex/fragment-core builds must advertise both shader stages")
     }
   }
@@ -266,6 +266,45 @@ class RenderHostSpec extends AnyFlatSpec {
       }
       assert((regRead(dut, RenderHostRegs.STATUS) & 0x14) == 0,
         "successful blit must clear BLIT_BUSY without setting ERROR")
+    }
+  }
+
+  it should "copy selected rows through the hardware strided engine" in {
+    val cfg = GpuConfig(lanes = 4, warps = 2)
+    val source = 0x1000
+    val destination = 0x4000
+    val sourceStride = 128
+    val destinationStride = 192
+    val m = new MemModel
+    for (row <- 0 until 2; i <- 0 until 16)
+      m.wwrite(source + row * sourceStride + i * 4,
+        0x10203040 + row * 0x100 + i)
+
+    simulate(new RenderHost(gpuConfig = cfg)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.cbMem.req.ready.poke(true.B)
+      dut.io.cbMem.resp.valid.poke(false.B)
+      dut.io.fbMem.req.ready.poke(true.B)
+      dut.io.fbMem.resp.valid.poke(false.B)
+      dut.io.kernelMemReq.ready.poke(true.B)
+      dut.io.kernelMemResp.valid.poke(false.B)
+
+      regWrite(dut, RenderHostRegs.STRIDED_SRC_BASE, source)
+      regWrite(dut, RenderHostRegs.STRIDED_DST_BASE, destination)
+      regWrite(dut, RenderHostRegs.STRIDED_WIDTH, 64)
+      regWrite(dut, RenderHostRegs.STRIDED_HEIGHT, 2)
+      regWrite(dut, RenderHostRegs.STRIDED_SRC_STRIDE, sourceStride)
+      regWrite(dut, RenderHostRegs.STRIDED_DST_STRIDE, destinationStride)
+      regWrite(dut, RenderHostRegs.STRIDED_START, 1)
+      serviceMem(dut, m, 200, drainCycles = 8) {
+        (0 until 2).forall(row => (0 until 16).forall(i =>
+          m.word(destination + row * destinationStride + i * 4) ==
+            m.word(source + row * sourceStride + i * 4)))
+      }
+      assert((regRead(dut, RenderHostRegs.STATUS) & 0x24) == 0,
+        "successful strided copy must clear STRIDED_BUSY without ERROR")
+      assert(m.word(destination + 64) == 0,
+        "strided copy must preserve the destination row gap")
     }
   }
 

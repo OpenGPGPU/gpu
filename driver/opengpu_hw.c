@@ -12,6 +12,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/overflow.h>
 #include <linux/slab.h>
 #include <linux/platform_device.h>
 
@@ -739,6 +740,71 @@ static int opengpu_hw_blit_locked(struct opengpu_device *gpu, u32 source,
     return status & GPU_STATUS_ERROR ? -EIO : 0;
 }
 
+static int opengpu_hw_strided_blit_locked(struct opengpu_device *gpu,
+                                          u32 source, u32 destination,
+                                          u32 width, u32 height,
+                                          u32 source_stride,
+                                          u32 destination_stride)
+{
+    u64 source_span, destination_span, source_end, destination_end;
+    unsigned long flags;
+    unsigned long timeout;
+    bool engine_busy;
+    u32 status;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_STRIDED_ENGINE))
+        return -EOPNOTSUPP;
+    if ((source & 63u) || (destination & 63u) || !width || !height ||
+        (width & 63u) || (source_stride & 63u) ||
+        (destination_stride & 63u) || source_stride < width ||
+        destination_stride < width)
+        return -ERANGE;
+    if (check_mul_overflow((u64)(height - 1), (u64)source_stride,
+                           &source_span) ||
+        check_mul_overflow((u64)(height - 1), (u64)destination_stride,
+                           &destination_span) ||
+        check_add_overflow((u64)source, source_span, &source_end) ||
+        check_add_overflow(source_end, (u64)width, &source_end) ||
+        check_add_overflow((u64)destination, destination_span,
+                           &destination_end) ||
+        check_add_overflow(destination_end, (u64)width, &destination_end) ||
+        source_end > (1ull << 32) || destination_end > (1ull << 32))
+        return -ERANGE;
+    if ((u64)source < destination_end &&
+        (u64)destination < source_end)
+        return -EINVAL;
+
+    spin_lock_irqsave(&gpu->hw.fence_lock, flags);
+    engine_busy = gpu->hw.queue_ready ?
+        gpu->hw.job_wptr != gpu->hw.job_done :
+        gpu->hw.active_fence != NULL;
+    spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
+    if (engine_busy)
+        return -EBUSY;
+
+    opengpu_reg_write(gpu, GPU_REG_STATUS, GPU_STATUS_ERROR);
+    opengpu_reg_write(gpu, GPU_REG_STRIDED_SRC_BASE, source);
+    opengpu_reg_write(gpu, GPU_REG_STRIDED_DST_BASE, destination);
+    opengpu_reg_write(gpu, GPU_REG_STRIDED_WIDTH, width);
+    opengpu_reg_write(gpu, GPU_REG_STRIDED_HEIGHT, height);
+    opengpu_reg_write(gpu, GPU_REG_STRIDED_SRC_STRIDE, source_stride);
+    opengpu_reg_write(gpu, GPU_REG_STRIDED_DST_STRIDE,
+                      destination_stride);
+    opengpu_reg_write(gpu, GPU_REG_STRIDED_START, 1u);
+
+    timeout = jiffies + msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS);
+    do {
+        status = opengpu_reg_read(gpu, GPU_REG_STATUS);
+        if (!(status & GPU_STATUS_STRIDED_BUSY))
+            break;
+        if (time_after(jiffies, timeout))
+            return -ETIMEDOUT;
+        opengpu_hw_progress_tick(gpu);
+        cond_resched();
+    } while (true);
+    return status & GPU_STATUS_ERROR ? -EIO : 0;
+}
+
 int opengpu_hw_clear(struct opengpu_device *gpu, u32 base, u32 bytes,
                      u32 pattern)
 {
@@ -757,6 +823,20 @@ int opengpu_hw_blit(struct opengpu_device *gpu, u32 source, u32 destination,
 
     mutex_lock(&gpu->hw.submit_lock);
     ret = opengpu_hw_blit_locked(gpu, source, destination, bytes);
+    mutex_unlock(&gpu->hw.submit_lock);
+    return ret;
+}
+
+int opengpu_hw_strided_blit(struct opengpu_device *gpu, u32 source,
+                            u32 destination, u32 width, u32 height,
+                            u32 source_stride, u32 destination_stride)
+{
+    int ret;
+
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_strided_blit_locked(gpu, source, destination, width,
+                                         height, source_stride,
+                                         destination_stride);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }

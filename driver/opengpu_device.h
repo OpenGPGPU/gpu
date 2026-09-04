@@ -174,6 +174,9 @@ int opengpu_hw_clear(struct opengpu_device *gpu, u32 base, u32 bytes,
                      u32 pattern);
 int opengpu_hw_blit(struct opengpu_device *gpu, u32 source, u32 destination,
                     u32 bytes);
+int opengpu_hw_strided_blit(struct opengpu_device *gpu, u32 source,
+                            u32 destination, u32 width, u32 height,
+                            u32 source_stride, u32 destination_stride);
 int opengpu_hw_display_commit(struct opengpu_device *gpu,
                               const struct opengpu_scanout *scanout);
 
@@ -203,6 +206,8 @@ int opengpu_compute_blit_ioctl(struct drm_device *drm, void *data,
                                struct drm_file *file);
 int opengpu_compute_fill_ioctl(struct drm_device *drm, void *data,
                                struct drm_file *file);
+int opengpu_compute_strided_blit_ioctl(struct drm_device *drm, void *data,
+                                       struct drm_file *file);
 
 int opengpu_display_init(struct opengpu_device *gpu,
                          const struct opengpu_buffer *boot_fb);

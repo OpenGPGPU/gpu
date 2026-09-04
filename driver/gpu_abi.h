@@ -72,12 +72,22 @@
 #define GPU_REG_BLIT_DST_BASE   0x09c
 #define GPU_REG_BLIT_BYTES      0x0a0
 #define GPU_REG_BLIT_START      0x0a4
+/* Hardware strided copy: each row copies WIDTH bytes, then advances source
+ * and destination by their independently programmed strides. */
+#define GPU_REG_STRIDED_SRC_BASE   0x0a8
+#define GPU_REG_STRIDED_DST_BASE   0x0ac
+#define GPU_REG_STRIDED_WIDTH      0x0b0
+#define GPU_REG_STRIDED_HEIGHT     0x0b4
+#define GPU_REG_STRIDED_SRC_STRIDE 0x0b8
+#define GPU_REG_STRIDED_DST_STRIDE 0x0bc
+#define GPU_REG_STRIDED_START      0x0c0
 
 #define GPU_CAP_FRAGMENT_CORE   (1u << 0)
 #define GPU_CAP_JOB_QUEUE       (1u << 1)
 #define GPU_CAP_VERTEX_CORE     (1u << 2)
 #define GPU_CAP_CLEAR_ENGINE    (1u << 3)
 #define GPU_CAP_BLIT_ENGINE     (1u << 4)
+#define GPU_CAP_STRIDED_ENGINE  (1u << 5)
 #define GPU_CAP_FRAGMENT_BATCH_SHIFT 8u
 #define GPU_CAP_FRAGMENT_BATCH_MASK  (0xffu << GPU_CAP_FRAGMENT_BATCH_SHIFT)
 
@@ -111,6 +121,7 @@
 #define GPU_STATUS_ERROR       (1u << 2)
 #define GPU_STATUS_CLEAR_BUSY  (1u << 3)
 #define GPU_STATUS_BLIT_BUSY   (1u << 4)
+#define GPU_STATUS_STRIDED_BUSY (1u << 5)
 
 /* ---- IRQ (bit0 ENABLE, bit1 PENDING w1c) ------------------------------- */
 #define GPU_IRQ_ENABLE         (1u << 0)

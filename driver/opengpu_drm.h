@@ -86,6 +86,7 @@ struct drm_opengpu_param {
 #define OPENGPU_CAP_VERTEX_CORE (1u << 2)
 #define OPENGPU_CAP_CLEAR_ENGINE (1u << 3)
 #define OPENGPU_CAP_BLIT_ENGINE (1u << 4)
+#define OPENGPU_CAP_STRIDED_ENGINE (1u << 5)
 #define OPENGPU_CAP_FRAGMENT_BATCH_SHIFT 8u
 #define OPENGPU_CAP_FRAGMENT_BATCH_MASK \
     (0xffu << OPENGPU_CAP_FRAGMENT_BATCH_SHIFT)
@@ -167,6 +168,25 @@ struct drm_opengpu_fill {
     __u32 pad[2];
 };
 
+/* Ordered two-dimensional cache-line copy. Width and both strides are
+ * multiples of 64; each stride is at least width. Source and destination
+ * bounding ranges must not overlap. */
+struct drm_opengpu_strided_blit {
+    __u32 context_id;
+    __u32 source_handle;
+    __u32 destination_handle;
+    __u32 flags;
+    __u64 source_offset;
+    __u64 destination_offset;
+    __u32 width_bytes;
+    __u32 height;
+    __u32 source_stride;
+    __u32 destination_stride;
+    __u32 in_syncobj;
+    __u32 out_syncobj;
+    __u32 pad[2];
+};
+
 #define OPENGPU_MAX_COMMANDS 64u
 
 /* Verification-only: defer fence signaling after hardware completion so the
@@ -182,6 +202,7 @@ struct drm_opengpu_fill {
 #define DRM_OPENGPU_GET_PARAM 0x05
 #define DRM_OPENGPU_BLIT 0x06
 #define DRM_OPENGPU_FILL 0x07
+#define DRM_OPENGPU_STRIDED_BLIT 0x08
 #define DRM_IOCTL_OPENGPU_SUBMIT \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_SUBMIT, \
              struct drm_opengpu_submit)
@@ -206,5 +227,8 @@ struct drm_opengpu_fill {
 #define DRM_IOCTL_OPENGPU_FILL \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_FILL, \
              struct drm_opengpu_fill)
+#define DRM_IOCTL_OPENGPU_STRIDED_BLIT \
+    DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_STRIDED_BLIT, \
+             struct drm_opengpu_strided_blit)
 
 #endif /* OPENGPU_DRM_H */
