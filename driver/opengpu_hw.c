@@ -687,6 +687,53 @@ static int opengpu_hw_clear_locked(struct opengpu_device *gpu, u32 base,
     return ret;
 }
 
+static int opengpu_hw_blit_locked(struct opengpu_device *gpu, u32 source,
+                                  u32 destination, u32 bytes)
+{
+    u64 source_end = (u64)source + bytes;
+    u64 destination_end = (u64)destination + bytes;
+    unsigned long flags;
+    unsigned long timeout;
+    bool engine_busy;
+    u32 status;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_BLIT_ENGINE))
+        return -EOPNOTSUPP;
+    if ((source & 63u) || (destination & 63u) || !bytes || (bytes & 63u))
+        return -ERANGE;
+    if (source_end > (1ull << 32) || destination_end > (1ull << 32))
+        return -ERANGE;
+    if ((u64)source < destination_end &&
+        (u64)destination < source_end)
+        return -EINVAL;
+
+    spin_lock_irqsave(&gpu->hw.fence_lock, flags);
+    engine_busy = gpu->hw.queue_ready ?
+        gpu->hw.job_wptr != gpu->hw.job_done :
+        gpu->hw.active_fence != NULL;
+    spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
+    if (engine_busy)
+        return -EBUSY;
+
+    opengpu_reg_write(gpu, GPU_REG_STATUS, GPU_STATUS_ERROR);
+    opengpu_reg_write(gpu, GPU_REG_BLIT_SRC_BASE, source);
+    opengpu_reg_write(gpu, GPU_REG_BLIT_DST_BASE, destination);
+    opengpu_reg_write(gpu, GPU_REG_BLIT_BYTES, bytes);
+    opengpu_reg_write(gpu, GPU_REG_BLIT_START, 1u);
+
+    timeout = jiffies + msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS);
+    do {
+        status = opengpu_reg_read(gpu, GPU_REG_STATUS);
+        if (!(status & GPU_STATUS_BLIT_BUSY))
+            break;
+        if (time_after(jiffies, timeout))
+            return -ETIMEDOUT;
+        opengpu_hw_progress_tick(gpu);
+        cond_resched();
+    } while (true);
+    return status & GPU_STATUS_ERROR ? -EIO : 0;
+}
+
 int opengpu_hw_clear(struct opengpu_device *gpu, u32 base, u32 bytes,
                      u32 pattern)
 {
@@ -694,6 +741,17 @@ int opengpu_hw_clear(struct opengpu_device *gpu, u32 base, u32 bytes,
 
     mutex_lock(&gpu->hw.submit_lock);
     ret = opengpu_hw_clear_locked(gpu, base, bytes, pattern);
+    mutex_unlock(&gpu->hw.submit_lock);
+    return ret;
+}
+
+int opengpu_hw_blit(struct opengpu_device *gpu, u32 source, u32 destination,
+                    u32 bytes)
+{
+    int ret;
+
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_blit_locked(gpu, source, destination, bytes);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }

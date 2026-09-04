@@ -66,6 +66,7 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 - Completion waits for store drain so host-visible DONE implies framebuffer
   visibility.
 - Hardware fill engine for aligned patterned clears.
+- Hardware copy engine for aligned, non-overlapping colour blits.
 - Scheduler-ordered hardware clearing of each DRM job's private depth plane,
   with a CPU fallback for devices without the fill engine.
 
@@ -75,6 +76,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 - Host-memory job queue, interrupt-history ring and ordered completion.
 - Linux DRM contexts, GEM bindings, immutable validated submissions, scheduler,
   fences and sync objects.
+- Ordered DRM blit jobs using the same context, reservation-fence and syncobj
+  model as rendering.
 - KMS scanout handoff, atomic modeset, page flip and virtual vblank.
 - ARTI/QEMU/Linux integration for fixed-function, fragment-core and vertex-core
   configurations.
@@ -86,9 +89,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 
 - Merge the graphics host top with multi-CU compute and DMA into one SoC-facing
   device.
-- Add Linux compute, copy, fill and strided-DMA submissions using the existing
-  queue and fence model.
-- Add colour blits as ordered jobs.
+- Add Linux general-compute, fill and strided-DMA submissions using the
+  existing queue and fence model; move blits to the common queue payload.
 - Establish practical resolution/performance budgets for full-system tests.
 
 ### Graphics capability

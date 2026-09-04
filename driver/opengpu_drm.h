@@ -84,6 +84,7 @@ struct drm_opengpu_param {
 #define OPENGPU_PARAM_CAPABILITIES 0u
 #define OPENGPU_CAP_FRAGMENT_CORE (1u << 0)
 #define OPENGPU_CAP_VERTEX_CORE (1u << 2)
+#define OPENGPU_CAP_BLIT_ENGINE (1u << 4)
 #define OPENGPU_CAP_FRAGMENT_BATCH_SHIFT 8u
 #define OPENGPU_CAP_FRAGMENT_BATCH_MASK \
     (0xffu << OPENGPU_CAP_FRAGMENT_BATCH_SHIFT)
@@ -135,6 +136,22 @@ struct drm_opengpu_submit {
     __u32 pad;
 };
 
+/* Ordered whole-cache-line copy. Source and destination ranges are validated
+ * GEM-relative offsets and must not overlap. Completion is represented by the
+ * same scheduler/syncobj fence model as rendering. */
+struct drm_opengpu_blit {
+    __u32 context_id;
+    __u32 source_handle;
+    __u32 destination_handle;
+    __u32 flags;
+    __u64 source_offset;
+    __u64 destination_offset;
+    __u64 bytes;
+    __u32 in_syncobj;
+    __u32 out_syncobj;
+    __u32 pad[2];
+};
+
 #define OPENGPU_MAX_COMMANDS 64u
 
 /* Verification-only: defer fence signaling after hardware completion so the
@@ -148,6 +165,7 @@ struct drm_opengpu_submit {
 #define DRM_OPENGPU_RESOURCE_BIND 0x03
 #define DRM_OPENGPU_RESOURCE_UNBIND 0x04
 #define DRM_OPENGPU_GET_PARAM 0x05
+#define DRM_OPENGPU_BLIT 0x06
 #define DRM_IOCTL_OPENGPU_SUBMIT \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_SUBMIT, \
              struct drm_opengpu_submit)
@@ -166,5 +184,8 @@ struct drm_opengpu_submit {
 #define DRM_IOCTL_OPENGPU_GET_PARAM \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_GET_PARAM, \
              struct drm_opengpu_param)
+#define DRM_IOCTL_OPENGPU_BLIT \
+    DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_BLIT, \
+             struct drm_opengpu_blit)
 
 #endif /* OPENGPU_DRM_H */

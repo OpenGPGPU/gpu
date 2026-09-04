@@ -3,7 +3,7 @@ package opengpu.graphics
 import chisel3._
 import chisel3.util._
 import opengpu.config.GpuConfig
-import opengpu.dma.FillEngine
+import opengpu.dma.{CopyEngine, FillEngine}
 import opengpu.core.memory.{
   CacheLineInvalidate,
   ComputeMemoryRequest,
@@ -22,7 +22,7 @@ import opengpu.core.memory.{
   */
 object RenderHostRegs {
   /** First invalid byte offset (exclusive end of the register file). */
-  val END               = 0x98
+  val END               = 0xA8
   val ID                = 0x00
   val CONTROL           = 0x04
   val STATUS            = 0x08
@@ -80,6 +80,13 @@ object RenderHostRegs {
   val CLEAR_PATTERN     = 0x90
   /** Write 1 to start one clear of the programmed range. */
   val CLEAR_START       = 0x94
+  /** Hardware colour blit (CopyEngine): 64-byte aligned, non-overlapping
+    * source/destination regions and a byte count that is a multiple of 64. */
+  val BLIT_SRC_BASE     = 0x98
+  val BLIT_DST_BASE     = 0x9C
+  val BLIT_BYTES        = 0xA0
+  /** Write 1 to start one blit of the programmed range. */
+  val BLIT_START        = 0xA4
 }
 
 /** A host memory-mapped register access (read or write of one 32-bit word). */
@@ -177,44 +184,65 @@ class RenderHost(
   // Hardware clear engine shares the kernelWordMem line port with the core's
   // staging/sampler bridge: a two-client round-robin arbiter fronts the port
   // and the response is routed back by transaction-ID range (the core owns
-  // ids [0,4), the clear engine owns [4,6)).  The host must not start a clear
-  // while a draw is in flight (explicit-sync contract), but the RTL keeps
-  // both clients correct even if it does.
+  // ids [0,4) belong to the core. Clear and blit share [4,8), but their
+  // descriptor admission below makes the two DMA engines mutually exclusive.
   private val fill = Module(new FillEngine(gpuConfig, maxOutstanding = 8,
     transactionIdBase = 4))
+  private val blit = Module(new CopyEngine(gpuConfig, maxOutstanding = 8,
+    lineSlots = 2, transactionIdBase = 4))
+  private val dmaIdle :: dmaFill :: dmaBlit :: Nil = Enum(3)
+  private val dmaOwner = RegInit(dmaIdle)
   // Hardware clear (FillEngine) programming.
   private val clearBaseReg = RegInit(0.U(32.W))
   private val clearBytesReg = RegInit(0.U(32.W))
   private val clearPatternReg = RegInit(0.U(32.W))
-  // The clear engine wins the shared port when it has work; the core's
-  // staging bridge waits (a stalled bridge cannot deadlock: its consumer is
-  // independent of the clear engine).
+  private val blitSrcBaseReg = RegInit(0.U(32.W))
+  private val blitDstBaseReg = RegInit(0.U(32.W))
+  private val blitBytesReg = RegInit(0.U(32.W))
+  // DMA engines win the shared port when they have work; the core's staging
+  // bridge waits. Fill has priority over blit if unsafe software starts both.
   io.kernelWordMemReq.valid :=
-    fill.io.memoryRequest.valid || core.io.kernelWordMemReq.valid
+    fill.io.memoryRequest.valid || blit.io.memoryRequest.valid ||
+      core.io.kernelWordMemReq.valid
   io.kernelWordMemReq.bits := Mux(fill.io.memoryRequest.valid,
-    fill.io.memoryRequest.bits, core.io.kernelWordMemReq.bits)
+    fill.io.memoryRequest.bits, Mux(blit.io.memoryRequest.valid,
+      blit.io.memoryRequest.bits, core.io.kernelWordMemReq.bits))
   fill.io.memoryRequest.ready :=
     io.kernelWordMemReq.ready && fill.io.memoryRequest.valid
+  blit.io.memoryRequest.ready :=
+    io.kernelWordMemReq.ready && !fill.io.memoryRequest.valid &&
+      blit.io.memoryRequest.valid
   core.io.kernelWordMemReq.ready :=
-    io.kernelWordMemReq.ready && !fill.io.memoryRequest.valid
+    io.kernelWordMemReq.ready && !fill.io.memoryRequest.valid &&
+      !blit.io.memoryRequest.valid
 
-  private val wordRespIsFill = io.kernelWordMemResp.bits.transactionId >= 4.U
-  // The response keeps the GLOBAL transaction id; the fill engine subtracts
-  // its own transactionIdBase to find its slot.
+  private val wordRespIsDma = io.kernelWordMemResp.bits.transactionId >= 4.U
+  private val wordRespIsBlit = wordRespIsDma && dmaOwner === dmaBlit
+  private val wordRespIsFill = wordRespIsDma && dmaOwner === dmaFill
+  // Responses keep the global transaction ID; each DMA engine subtracts its
+  // transactionIdBase to recover its local slot.
   fill.io.memoryResponse.valid := io.kernelWordMemResp.valid && wordRespIsFill
   fill.io.memoryResponse.bits := io.kernelWordMemResp.bits
+  blit.io.memoryResponse.valid := io.kernelWordMemResp.valid && wordRespIsBlit
+  blit.io.memoryResponse.bits := io.kernelWordMemResp.bits
   core.io.kernelWordMemResp.valid :=
-    io.kernelWordMemResp.valid && !wordRespIsFill
+    io.kernelWordMemResp.valid && !wordRespIsFill && !wordRespIsBlit
   core.io.kernelWordMemResp.bits := io.kernelWordMemResp.bits
   io.kernelWordMemResp.ready :=
-    Mux(wordRespIsFill, fill.io.memoryResponse.ready,
-      core.io.kernelWordMemResp.ready)
+    Mux(wordRespIsBlit, blit.io.memoryResponse.ready,
+      Mux(wordRespIsFill, fill.io.memoryResponse.ready,
+        core.io.kernelWordMemResp.ready))
 
   fill.io.descriptor.bits.descriptorId := 0.U
   fill.io.descriptor.bits.destinationAddress := clearBaseReg
   fill.io.descriptor.bits.bytes := clearBytesReg
   fill.io.descriptor.bits.pattern := clearPatternReg
   fill.io.completion.ready := true.B
+  blit.io.descriptor.bits.descriptorId := 0.U
+  blit.io.descriptor.bits.sourceAddress := blitSrcBaseReg
+  blit.io.descriptor.bits.destinationAddress := blitDstBaseReg
+  blit.io.descriptor.bits.bytes := blitBytesReg
+  blit.io.completion.ready := true.B
 
   // ---------------------------------------------------------------------------
   // Registers (host-visible) and the shadow the engine runs from.
@@ -301,13 +329,23 @@ class RenderHost(
 
   private val clearStartWrite =
     wFire && rAddr === RenderHostRegs.CLEAR_START.U && io.reg.req.bits.data(0)
-  fill.io.descriptor.valid := clearStartWrite
+  private val blitStartWrite =
+    wFire && rAddr === RenderHostRegs.BLIT_START.U && io.reg.req.bits.data(0)
+  fill.io.descriptor.valid := clearStartWrite && dmaOwner === dmaIdle &&
+    !blitStartWrite
+  blit.io.descriptor.valid := blitStartWrite && dmaOwner === dmaIdle &&
+    !clearStartWrite
+  when(fill.io.descriptor.fire) { dmaOwner := dmaFill }
+  when(blit.io.descriptor.fire) { dmaOwner := dmaBlit }
+  when(fill.io.completion.fire || blit.io.completion.fire) {
+    dmaOwner := dmaIdle
+  }
 
   // Queue launches are held off when a legacy START pulses the same cycle.
   jq.io.launchReady := !busy && !startWrite
 
   private val statusBits =
-    Cat(0.U(28.W), fill.io.busy, error, done, busy)
+    Cat(0.U(27.W), blit.io.busy, fill.io.busy, error, done, busy)
   private val irqBits = Cat(0.U(30.W), irqPending, irqEnable)
   private val scanoutActive = scanoutControlReg(0) &&
     scanoutBaseReg.orR && scanoutStrideReg.orR &&
@@ -316,6 +354,7 @@ class RenderHost(
   private val capabilityBits =
     ((if (fragCore) 1 else 0) | (1 << 1) |
       (if (vertCore) (1 << 2) else 0) | (1 << 3) |
+      (1 << 4) |
       (gpuConfig.warps * gpuConfig.lanes << 8)).U(32.W)
   private val jobStatusBits = Cat(
     0.U(22.W), jq.io.pendingValid, jq.io.running, 0.U(7.W), jqEnabled)
@@ -357,7 +396,10 @@ class RenderHost(
       RenderHostRegs.IH_RPTR.U -> ihRptrReg,
       RenderHostRegs.CLEAR_BASE.U -> clearBaseReg,
       RenderHostRegs.CLEAR_BYTES.U -> clearBytesReg,
-      RenderHostRegs.CLEAR_PATTERN.U -> clearPatternReg
+      RenderHostRegs.CLEAR_PATTERN.U -> clearPatternReg,
+      RenderHostRegs.BLIT_SRC_BASE.U -> blitSrcBaseReg,
+      RenderHostRegs.BLIT_DST_BASE.U -> blitDstBaseReg,
+      RenderHostRegs.BLIT_BYTES.U -> blitBytesReg
     ))
 
   // Merge a byte-masked write into a 32-bit register (partial-word writes with
@@ -472,6 +514,18 @@ class RenderHost(
       is(RenderHostRegs.CLEAR_PATTERN.U) {
         clearPatternReg := merge(clearPatternReg, io.reg.req.bits.data, io.reg.req.bits.strb)
       }
+      is(RenderHostRegs.BLIT_SRC_BASE.U) {
+        blitSrcBaseReg := merge(blitSrcBaseReg,
+          io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.BLIT_DST_BASE.U) {
+        blitDstBaseReg := merge(blitDstBaseReg,
+          io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.BLIT_BYTES.U) {
+        blitBytesReg := merge(blitBytesReg,
+          io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
     }
   }
 
@@ -483,6 +537,19 @@ class RenderHost(
   }
 
   private val launch = startWrite && !busy
+
+  when(blitStartWrite && (dmaOwner =/= dmaIdle || clearStartWrite)) {
+    error := true.B
+  }
+  when(clearStartWrite && (dmaOwner =/= dmaIdle || blitStartWrite)) {
+    error := true.B
+  }
+  when(blit.io.completion.fire && !blit.io.completion.bits.success) {
+    error := true.B
+  }
+  when(fill.io.completion.fire && !fill.io.completion.bits.success) {
+    error := true.B
+  }
 
   when(startWrite) {
     when(!busy) {

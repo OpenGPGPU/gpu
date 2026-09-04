@@ -44,12 +44,16 @@ class CopyEngine(
   lineBytes: Int = 64,
   maxOutstanding: Int = 4,
   descriptorQueueDepth: Int = 4,
-  lineSlots: Int = 2
+  lineSlots: Int = 2,
+  transactionIdBase: Int = 0
 ) extends Module {
   require(lineBytes == 64 && isPow2(lineBytes))
   require(lineSlots > 0 && isPow2(lineSlots))
   require(maxOutstanding >= 2 * lineSlots)
   require(descriptorQueueDepth > 0)
+  require(transactionIdBase >= 0 &&
+    transactionIdBase + 2 * lineSlots <= maxOutstanding,
+    "transaction ID range must fit the port's outstanding space")
   private val offsetWidth = log2Ceil(lineBytes)
   private val slotWidth = math.max(1, log2Ceil(lineSlots))
 
@@ -144,7 +148,7 @@ class CopyEngine(
   io.memoryRequest.bits.sizeLog2 := offsetWidth.U
   io.memoryRequest.bits.cacheClient := false.B
   io.memoryRequest.bits.cacheResident := false.B
-  io.memoryRequest.bits.transactionId := Mux(issueWrite,
+  io.memoryRequest.bits.transactionId := transactionIdBase.U + Mux(issueWrite,
     writeSlot + lineSlots.U, readSlot)
 
   when(io.memoryRequest.fire) {
@@ -159,7 +163,8 @@ class CopyEngine(
     }
   }
 
-  private val responseId = io.memoryResponse.bits.transactionId
+  private val responseId =
+    io.memoryResponse.bits.transactionId - transactionIdBase.U
   private val responseIsRead = responseId < lineSlots.U
   private val responseInRange = responseId < (2 * lineSlots).U
   private val responseSlot = Mux(responseIsRead, responseId,

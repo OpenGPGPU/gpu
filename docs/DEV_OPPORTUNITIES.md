@@ -25,6 +25,8 @@ Priority order:
   memory fill.
 - Linux DRM contexts, GEM bindings, scheduling, fences, sync objects, KMS,
   page flips and virtual vblank.
+- Scheduler-ordered hardware colour blits with GEM validation and implicit or
+  explicit synchronization.
 - ARTI/QEMU/Linux end-to-end execution for fixed-function, fragment-core and
   vertex-core configurations.
 - Power-of-two render resolutions of at least 16x16, selected consistently by
@@ -37,10 +39,10 @@ Priority order:
 
 - Measure full-system cost by resolution and select a practical regression
   default.
-- Add a colour-copy/blit mode to the DMA path.
 - Unify `GpuSystem` and `GpuHostAxi` so graphics, multi-CU compute and DMA share
   one host attachment, memory hierarchy, queue and interrupt model.
-- Expose general compute and DMA jobs through Linux.
+- Expose general compute, fill and strided-DMA jobs through Linux, and migrate
+  the existing blit ioctl onto the unified queue payload.
 
 ### Mid term
 

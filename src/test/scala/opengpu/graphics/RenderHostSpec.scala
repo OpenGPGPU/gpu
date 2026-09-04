@@ -21,6 +21,12 @@ class RenderHostSpec extends AnyFlatSpec {
     val words = mutable.LongMap[Int]()
     def word(a: Long): Long = words.getOrElse(a, 0) & 0xffffffffL
     def wwrite(a: Long, d: Int): Unit = words(a) = d & 0xffffffff
+    def line(a: Long): BigInt = (0 until 16).foldLeft(BigInt(0)) {
+      case (value, i) => value | (BigInt(word(a + i * 4)) << (i * 32))
+    }
+    def lwrite(a: Long, d: BigInt): Unit =
+      for (i <- 0 until 16)
+        wwrite(a + i * 4, (d >> (i * 32)).toInt)
   }
 
   private def encode(
@@ -80,13 +86,13 @@ class RenderHostSpec extends AnyFlatSpec {
   )(until: => Boolean): Unit = {
     val cbQ = scala.collection.mutable.Queue.empty[(Boolean, Long, Long)]
     val fbQ = scala.collection.mutable.Queue.empty[(Boolean, Long, Long)]
+    val kwQ = scala.collection.mutable.Queue.empty[(Boolean, Long, BigInt, BigInt)]
     var guard = 0
     var untilSeen = false
     var drained = 0
     dut.io.kernelMemReq.ready.poke(true.B)
     dut.io.kernelMemResp.valid.poke(false.B)
     dut.io.kernelWordMemReq.ready.poke(true.B)
-    dut.io.kernelWordMemResp.valid.poke(false.B)
     while ((!untilSeen || drained < drainCycles) && guard < maxCycles) {
       // Command-buffer port.
       dut.io.cbMem.req.ready.poke(true.B)
@@ -125,6 +131,28 @@ class RenderHostSpec extends AnyFlatSpec {
         else fbQ.enqueue((false, a, m.word(a)))
       }
 
+      // Shared line port used by core staging, hardware clear and blit.
+      dut.io.kernelWordMemReq.ready.poke(true.B)
+      if (kwQ.nonEmpty) {
+        val (isWrite, a, d, id) = kwQ.head
+        dut.io.kernelWordMemResp.valid.poke(true.B)
+        dut.io.kernelWordMemResp.bits.readData.poke(d.U)
+        dut.io.kernelWordMemResp.bits.transactionId.poke(id.U)
+        dut.io.kernelWordMemResp.bits.fault.poke(false.B)
+        if (dut.io.kernelWordMemResp.ready.peek().litToBoolean) kwQ.dequeue()
+      } else dut.io.kernelWordMemResp.valid.poke(false.B)
+      if (dut.io.kernelWordMemReq.valid.peek().litToBoolean &&
+          dut.io.kernelWordMemReq.ready.peek().litToBoolean) {
+        val a = dut.io.kernelWordMemReq.bits.address.peek().litValue.toLong
+        val id = dut.io.kernelWordMemReq.bits.transactionId.peek().litValue
+        val isWrite = dut.io.kernelWordMemReq.bits.isWrite.peek().litToBoolean
+        if (isWrite) {
+          val d = dut.io.kernelWordMemReq.bits.writeData.peek().litValue
+          m.lwrite(a, d)
+          kwQ.enqueue((true, a, 0, id))
+        } else kwQ.enqueue((false, a, m.line(a), id))
+      }
+
       dut.clock.step()
       guard += 1
       if (!untilSeen && until) { untilSeen = true; drained = 0 }
@@ -140,7 +168,7 @@ class RenderHostSpec extends AnyFlatSpec {
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       assert(regRead(dut, RenderHostRegs.ID) == 0x47550001L,
         "device ID register must report device<<16 | version")
-      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x80bL,
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x81bL,
          "fragment-core builds must advertise support, batch capacity and the job queue")
 
       // An unmapped address yields ok=false.
@@ -207,8 +235,37 @@ class RenderHostSpec extends AnyFlatSpec {
       gpuConfig = GpuConfig(lanes = 4, warps = 2), fragCore = true,
       vertCore = true)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x80fL,
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x81fL,
         "shared vertex/fragment-core builds must advertise both shader stages")
+    }
+  }
+
+  it should "copy an aligned colour region through the hardware blit engine" in {
+    val cfg = GpuConfig(lanes = 4, warps = 2)
+    val source = 0x1000
+    val destination = 0x2000
+    val m = new MemModel
+    for (i <- 0 until 16) m.wwrite(source + i * 4, 0x10203040 + i)
+
+    simulate(new RenderHost(gpuConfig = cfg)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.cbMem.req.ready.poke(true.B)
+      dut.io.cbMem.resp.valid.poke(false.B)
+      dut.io.fbMem.req.ready.poke(true.B)
+      dut.io.fbMem.resp.valid.poke(false.B)
+      dut.io.kernelMemReq.ready.poke(true.B)
+      dut.io.kernelMemResp.valid.poke(false.B)
+
+      regWrite(dut, RenderHostRegs.BLIT_SRC_BASE, source)
+      regWrite(dut, RenderHostRegs.BLIT_DST_BASE, destination)
+      regWrite(dut, RenderHostRegs.BLIT_BYTES, 64)
+      regWrite(dut, RenderHostRegs.BLIT_START, 1)
+      serviceMem(dut, m, 100, drainCycles = 8) {
+        (0 until 16).forall(i =>
+          m.word(destination + i * 4) == m.word(source + i * 4))
+      }
+      assert((regRead(dut, RenderHostRegs.STATUS) & 0x14) == 0,
+        "successful blit must clear BLIT_BUSY without setting ERROR")
     }
   }
 

@@ -65,11 +65,19 @@
 #define GPU_REG_CLEAR_BYTES     0x08c
 #define GPU_REG_CLEAR_PATTERN   0x090
 #define GPU_REG_CLEAR_START     0x094
+/* Hardware blit (CopyEngine): source, destination, and byte count follow the
+ * same 64-byte alignment rules as clear. Ranges must not overlap. Write 1 to
+ * BLIT_START; STATUS.BLIT_BUSY reports completion. */
+#define GPU_REG_BLIT_SRC_BASE   0x098
+#define GPU_REG_BLIT_DST_BASE   0x09c
+#define GPU_REG_BLIT_BYTES      0x0a0
+#define GPU_REG_BLIT_START      0x0a4
 
 #define GPU_CAP_FRAGMENT_CORE   (1u << 0)
 #define GPU_CAP_JOB_QUEUE       (1u << 1)
 #define GPU_CAP_VERTEX_CORE     (1u << 2)
 #define GPU_CAP_CLEAR_ENGINE    (1u << 3)
+#define GPU_CAP_BLIT_ENGINE     (1u << 4)
 #define GPU_CAP_FRAGMENT_BATCH_SHIFT 8u
 #define GPU_CAP_FRAGMENT_BATCH_MASK  (0xffu << GPU_CAP_FRAGMENT_BATCH_SHIFT)
 
@@ -97,11 +105,12 @@
 /* ---- CONTROL (write-1 pulse on START) --------------------------------- */
 #define GPU_CTRL_START         (1u << 0)
 
-/* ---- STATUS (bit0 BUSY, bit1 DONE, bit2 ERROR; w1c on DONE/ERROR) ------ */
+/* ---- STATUS (draw + DMA state; DONE/ERROR are w1c) -------------------- */
 #define GPU_STATUS_BUSY        (1u << 0)
 #define GPU_STATUS_DONE        (1u << 1)
 #define GPU_STATUS_ERROR       (1u << 2)
 #define GPU_STATUS_CLEAR_BUSY  (1u << 3)
+#define GPU_STATUS_BLIT_BUSY   (1u << 4)
 
 /* ---- IRQ (bit0 ENABLE, bit1 PENDING w1c) ------------------------------- */
 #define GPU_IRQ_ENABLE         (1u << 0)

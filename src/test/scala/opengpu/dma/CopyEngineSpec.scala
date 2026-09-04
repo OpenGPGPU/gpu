@@ -159,4 +159,21 @@ class CopyEngineSpec extends AnyFlatSpec {
       dut.io.completion.valid.expect(false.B)
     }
   }
+
+  it should "offset transaction IDs when sharing a memory port" in {
+    simulate(new CopyEngine(GpuConfig(lanes = 4), descriptorIdWidth = 4,
+      maxOutstanding = 8, lineSlots = 2, transactionIdBase = 4)) { dut =>
+      initialize(dut)
+      submit(dut, id = 7, source = 0x9000, destination = 0xa000,
+        bytes = 64)
+      val readId = request(dut, 0x9000, write = false)
+      assert(readId == 4)
+      response(dut, readId, 0x1234)
+      val writeId = request(dut, 0xa000, write = true, 0x1234)
+      assert(writeId == 6)
+      response(dut, writeId)
+      waitForCompletion(dut)
+      dut.io.completion.bits.status.expect(CopyStatus.success)
+    }
+  }
 }
