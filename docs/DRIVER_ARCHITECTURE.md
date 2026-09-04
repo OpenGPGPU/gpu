@@ -1,232 +1,81 @@
 # Linux Driver Architecture
 
-The OpenGPU Linux driver follows the ownership boundaries used by modern DRM
-drivers without copying their scale. Nova is the reference for keeping the
-core device, DRM client, per-file state, and GEM objects separate. AMDGPU is
-the reference for a shared device container with independently initialized
-hardware/IP, memory, execution, and display blocks.
+## Plan
 
-The implementation remains C for now because the out-of-tree AArch64 build and
-DRM/KMS helpers are already validated in that environment. The interfaces are
-language-neutral enough that an individual client can move to Rust later.
-
-## Layering
+The driver uses a layered DRM architecture with downward-only dependencies:
 
 ```text
-platform probe / device lifetime
-              |
-       hardware services
-   MMIO, IRQ, reset, job launch
-              |
-      shared memory services
-       DMA now, GEM later
-          /           \
- execution client    display client
- render/compute       DRM/KMS scanout
- queues + fences      modeset + page flip
+platform/device lifetime
+        |
+hardware services: MMIO, IRQ, reset, queues
+        |
+memory services: DMA and GEM
+       / \
+execution client     display client
+render/compute       DRM/KMS scanout
 ```
 
-Dependencies only point downward. Display must not call execution internals,
-and execution must not own the scanout state. Cross-engine synchronization is
-expressed with shared buffer objects and fences rather than direct callbacks.
+- `opengpu_drv.c` owns probe/remove, the root device and subsystem lifetime.
+- `opengpu_hw.c` owns register access, interrupts, typed job launch and bounded
+  engine waits. Reset, recovery and power management belong here.
+- `opengpu_memory.c` owns coherent DMA storage and GEM object services.
+- `opengpu_compute.c` owns contexts, resource validation, scheduling,
+  submissions and completion fences.
+- `opengpu_display.c` owns the virtual connector, display pipe, atomic modeset,
+  scanout programming, page flips and vblank.
 
-### Core/platform
+Display and execution remain independent. They synchronize through GEM
+reservation fences; display never calls execution internals. `SCANOUT_*`
+registers are separate from render-target registers.
 
-`opengpu_drv.c` owns platform probe/remove, the root `opengpu_device`, device
-tree resources, and subsystem initialization order. It contains no register
-programming, command construction, userspace ABI, or KMS policy.
+Each DRM file owns render contexts. A context owns a scheduler entity, a
+resource-binding table and its latest fence. Submission snapshots command and
+shader data into private DMA storage, validates binding-relative accesses and
+retains all referenced GEM objects until completion. The scheduler resolves
+GEM and sync-object dependencies, submits jobs through the hardware ring and
+signals fences from interrupt-history records.
 
-### Hardware layer
+The shader sandbox admits only explicitly validated RV32IMF+V operations.
+Scalar and vector memory accesses are proven to stay within the relevant
+kernarg slices; defined-register tracking prevents stale-register disclosure;
+bounded forward control flow must terminate. Texture and quad instructions are
+allowed only with the required validated resources and lane configuration.
 
-`opengpu_hw.c` owns register access, device identification, interrupt handling,
-and bounded engine waits. Upper layers submit typed hardware descriptors; they
-do not issue arbitrary MMIO writes. Reset, timeout recovery, and runtime power
-management belong here when implemented.
+The display client uses GEM DMA framebuffers in native RGBA8888. Atomic helpers
+wait for render fences before switching `SCANOUT_BASE`. A software 60 Hz vblank
+source provides simulation pacing; physical scanout belongs to external SoC
+display hardware.
 
-The register ABI is divided into domains:
+Initialization order is platform, hardware, memory, execution, display. Teardown
+unwinds the same sequence in reverse, and each layer frees only what it owns.
 
-- common: identity, capabilities, global interrupt status;
-- execution: command queues, render/compute targets, texture and kernel state;
-- display: scanout base, pitch, size, format, enable and flip status.
+### Scope boundaries
 
-ARTI watches the dedicated `SCANOUT_BASE`/`SCANOUT_STRIDE` display registers;
-execution continues to own `COLOR_BASE`/`STRIDE`. Rendering to an off-screen
-target therefore cannot accidentally change the visible framebuffer.
+- Raw MMIO is not a stable userspace ABI.
+- AMDGPU-scale firmware, VM, TTM and ASIC discovery are deferred until the
+  hardware requires them.
+- Scanout DMA, display timing, hotplug/EDID and HDMI/DP/eDP PHY stay outside GPU
+  RTL.
 
-### Memory layer
+## Implemented
 
-The first implementation uses coherent DMA buffers. DRM introduces GEM DMA
-objects without changing hardware submission interfaces. Buffer ownership,
-mapping, pinning and dma-buf sharing belong to this layer, not to display or
-execution code.
+- Split platform, hardware, memory, execution and display modules.
+- Dedicated scanout register bank and independent render/display ownership.
+- DRM device, render node, GEM DMA buffers, contexts and typed bindings.
+- Immutable command/shader snapshots, shader validation and relocation.
+- Shared DRM scheduler, job and IH rings, implicit GEM synchronization and
+  explicit binary sync objects.
+- Fragment and vertex core submissions using the shared SIMT compute unit.
+- Texture sampling, shader depth output, discard, quad derivatives, mipmapping
+  and source-over blending in the validated graphics path.
+- Atomic modeset, render-fence-aware page flip and virtual vblank events.
+- Fixed-function and shader-backed probe paths selected from capabilities.
 
-### Execution client
+## Next
 
-`opengpu_compute.c` owns render/compute submissions, per-file state, validation,
-queue serialization and completion fences. The existing misc device is a
-bring-up ABI and remains isolated here; it can later become a DRM render node
-without changing platform or MMIO code.
-
-Each DRM file owns an IDR of explicit render contexts. A context owns a DRM
-scheduler entity, its binding table and latest completion fence. Every submit
-allocates private DMA command/depth staging for that job, copies up to 64 draw
-records from the command GEM and validates the immutable snapshot. Queued jobs
-therefore cannot overwrite one another, and context destroy/close drains the
-entity before releasing bindings.
-
-Each context also owns a 16-slot GEM resource-binding table. Bindings retain
-the GEM object and expose only a validated subrange; submit selects slots, not
-DMA addresses. `drm_exec` locks command, target and resource objects as one
-transaction. Texture reads receive read fences, while color/kernarg writes
-receive write fences. The current fixed-function `GpuHostAxi` uses the
-texture binding to program `TEX_*`, and the guest test verifies a sampled pixel
-through the real RTL memory port. A read-only capability register advertises
-fragment-core presence and batch capacity. Without it shader submissions return
-`EOPNOTSUPP`. With it, the driver snapshots a bounded, cache-line-aligned shader
-binding into per-job DMA and validates the snapshot before relocation, removing
-the writable-GEM validate/execute race. Sandbox profile v8 accepts terminating
-RV32I/M+V with an immutable x1 kernarg base. Scalar loads stay inside kernarg
-and stores stay inside its colour-output, depth-output or output-valid slice. The vector subset is
-fixed e32/m1 `vsetivli`, unmasked unit-stride `vle32`/`vse32`, and lane-local
-`vadd/vsub/vrsub/vand/vor/vxor` vv/vi forms. Abstract interpretation tracks the
-trusted `x1 + 4*x8 + constant` per-warp address form and proves all active lanes
-remain in their SoA input/output arrays. Defined-register tracking requires
-every SGPR/VGPR source to come from the launch ABI, an admitted instruction or
-a validated load, preventing stale cross-task register disclosure. More complex
-control flow begins with up to four unreconverged forward conditional branches.
-At every target, the validator intersects defined registers, preserves only
-identical address provenance and invalidates differing VL. Paths may reconverge
-or terminate independently in `CEASE`; every reachable path must terminate.
-The RTL stages perspective-correct UV inputs, initializes depth outputs from
-interpolated depth and output-valid words to one. A validated shader may
-override depth, while a zero validity store discards before output merging. The custom vector
-`vtex.sample` is accepted
-only when its UV VGPRs are defined, it is unmasked, and the same submit carries
-a validated texture GEM; the hardware sampler derives all addresses from that
-binding's base, dimensions, wrap mode and validated packed mip count. The
-driver sums every advertised mip extent and rejects truncated chains. Vector
-sampling derives integer and fractional LOD from each quad's UV gradients,
-then performs trilinear filtering with four concurrent tap reads per mip
-level. Duplicate clamped bilinear taps are coalesced into one physical read.
-Unmasked
-`vquad.dfdx/dfdy` are
-admitted after VL setup with a defined VGPR source. The core rasterizer supplies
-complete TL/TR/BL/BR groups; helpers execute but immutable coverage suppresses
-their OM output. Backward edges, jumps, masked/strided/gather memory, atomics
-and other custom instructions require future validator profiles.
-Core-backed draws may expose two identical kernarg banks through a validated
-64-byte-aligned bank stride. Both banks must fit the binding, while shader
-validation is deliberately limited to one bank so adjacent in-flight scratch
-state cannot alias.
-`DRM_IOCTL_OPENGPU_GET_PARAM` reports the capability word to userspace. The
-trusted probe self-test follows the same split: fixed hardware uses the texture
-pipeline, while capable hardware allocates private shader/kernarg buffers and
-executes a pass-through fragment program before DRM registration.
-
-The shared DRM GPU scheduler has a fair runqueue across context entities. It
-resolves GEM reservation and input-syncobj dependencies without blocking
-submit, then publishes each job as a descriptor in the host-memory job ring
-and rings the doorbell (devices without the job-queue capability fall back to
-single-job register programming). The device fetches descriptors while the
-previous job renders, runs jobs strictly in order, and records every
-completion — job id, ring slot, status — in the host-memory IH ring before
-raising the interrupt, AMDGPU-style; the IRQ handler drains IH records and
-signals the `dma_fence` named by each job id (or the timeout worker retires
-it on error). The scheduler's finished fence is published to all referenced
-GEM reservations and to the optional output syncobj. Jobs retain their GEM
-objects and DMA snapshots until that fence completes.
-
-Graphics draws and general-compute kernels may use different job payloads, but
-share queue, memory and fence machinery. Display is not an execution job.
-
-### Display client
-
-`opengpu_display.c` owns display state and the display-facing hardware API. Its
-bring-up path performs an explicit scanout-buffer handoff, then registers a DRM
-device with a virtual connector, a simple display pipe, atomic modesetting and
-GEM DMA framebuffer objects. The fixed mode is currently 16x16 and the native
-DRM format is `RGBA8888`; its 32-bit channel layout matches the renderer's
-`0xRRGGBBAA` words without a conversion pass.
-
-The DRM atomic commit programs only the dedicated `SCANOUT_*` control bank.
-ARTI/QEMU consumes that control state and reads the selected guest-memory GEM
-buffer for presentation. On a physical SoC the same register contract is
-consumed by an external display subsystem or SoC display IP.
-
-The simple display pipe uses `drm_gem_plane_helper_prepare_fb()` to extract the
-target GEM reservation fence. DRM atomic helpers wait for render completion
-before the pipe updates `SCANOUT_BASE`, so display never observes a partially
-rendered buffer. There is no display-to-execution callback. A Linux hrtimer
-provides the virtual CRTC's 60 Hz vblank source; nonblocking atomic page flips
-arm `DRM_EVENT_FLIP_COMPLETE` only after the new scanout address is committed,
-so userspace pacing observes both render-fence completion and the following
-refresh boundary. This is simulation/driver timing and does not add a timing
-generator to the GPU RTL.
-
-Nova currently provides the cleaner reference for DRM device/file/GEM
-ownership, while AMDGPU provides the reference for keeping display state out of
-the graphics execution block.
-
-## Initialization and teardown
-
-Initialization is ordered and unwound in reverse:
-
-1. platform resources and root device;
-2. hardware/MMIO and IRQ;
-3. memory manager;
-4. execution client;
-5. display client.
-
-Each block exposes `init`/`fini` entry points and owns everything it allocates.
-No block frees another block's objects.
-
-## Display implementation phases
-
-1. Refactor the existing bring-up driver into core, hardware, memory, execution,
-   and display modules without changing its userspace ABI or ARTI PASS marker.
-   **Complete (2026-08-29).**
-2. Add dedicated scanout registers to RTL/ABI and point ARTI guest scanout at
-   those registers. **Complete (2026-08-29).**
-3. Add DRM device registration, GEM DMA dumb buffers and a fixed KMS mode.
-   **Complete (2026-08-29).**
-4. Add a guest userspace test for GEM dumb-buffer allocation/mmap, atomic
-   modeset and framebuffer page flip. **Complete (2026-08-29).**
-5. Synchronize scanout flips to render-completion fences.
-   **Complete (2026-08-29).**
-6. Add optional virtual-vblank events when applications require paced flips.
-   **Complete (2026-08-29).**
-
-Validated command submission, per-file render contexts, GEM resource bindings,
-queued DRM scheduling and explicit binary syncobjs are complete (2026-08-30).
-Capability discovery, immutable shader validation and core-backed shader
-execution through ARTI/QEMU/Linux are also complete (2026-08-30). Proven
-unit-stride vector memory, lane-local integer arithmetic, bounded forward
-control flow, core-backed texture sampling, structured early exit/discard,
-perspective-correct UV inputs, shader-generated depth and full per-lane
-framebuffer output and 2x2-quad neighbor/derivative support are complete as
-well. Gradient-derived LOD, packed mip selection, integer LOD bias/clamps and
-trilinear filtering are also complete (2026-09-01).
-Stage-specific vertex-buffer, vertex-shader and vertex-kernarg bindings,
-relocation, lifetime/fence tracking, dual-shader validation and the complete
-vertex-core ARTI/QEMU/Linux draw/display path are complete (2026-09-03).
-
-## RTL boundary
-
-OpenGPU RTL ends at rendering plus the display-control register interface. It
-owns render-target production and publishes scanout base, pitch, dimensions,
-format, enable and status. It does not fetch a continuous pixel stream or
-generate an electrical display signal.
-
-Consequently, scanout DMA, video timing, hotplug/EDID and HDMI/DP/eDP PHY are
-not OpenGPU RTL milestones. In simulation they belong to ARTI/QEMU; in silicon
-they belong to a separate SoC display controller or licensed board-specific IP.
-This keeps the render GPU reusable across headless compute, virtual display and
-different physical display subsystems.
-
-## Non-goals
-
-- Reproducing AMDGPU's ASIC discovery, firmware, VM, TTM, power-management, or
-  dozens of IP blocks before the hardware needs them.
-- Coupling the display lifetime to the bring-up self-test framebuffer.
-- Exposing raw register writes as a stable userspace ABI.
-- Implementing scanout DMA, video timing or a video PHY inside the GPU RTL.
+- Add general-compute and DMA job payloads without duplicating queue, memory or
+  fence machinery.
+- Route ordered per-job clears and blits through the hardware DMA engines.
+- Define precise reset, timeout recovery and host-visible fault reporting.
+- Grow the admitted shader ISA only with matching RTL, validator and ABI rules.
+- Add runtime power management when required by the SoC integration.
