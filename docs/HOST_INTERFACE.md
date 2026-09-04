@@ -156,6 +156,8 @@ memory. In silicon, the same clients attach to the SoC L2/DRAM fabric.
 - Fixed-function, fragment-core and vertex-core draw ABIs.
 - Validated shader, kernarg, texture and vertex-buffer bindings.
 - Hardware clears, texture mip chains, shader depth/discard and blending state.
+- Scheduler-ordered per-job depth clears using the hardware fill engine, with
+  a CPU fallback when the capability is absent.
 - Separate render-target and KMS scanout programming.
 - ARTI-generated QEMU/Linux device, shared guest-memory access and end-to-end
   DRM/KMS execution.
@@ -163,7 +165,7 @@ memory. In silicon, the same clients attach to the SoC L2/DRAM fabric.
 ## Next
 
 - Add compute, copy, fill and strided-DMA descriptor types to the shared queue.
-- Use queued `FillEngine` work for per-job depth clears and add colour blits.
+- Add ordered colour blits using the DMA engines.
 - Define ABI-visible fault codes, reset recovery and timeout behavior.
 - Expand shader profiles and resource types only with matching hardware and
   validation.

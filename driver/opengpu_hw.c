@@ -172,19 +172,21 @@ static void opengpu_ih_drain(struct opengpu_device *gpu)
     for (i = 0; i < n; i++)
         dma_fence_put(finished[i]);
 
-    if (have_delayed) {
-        mod_delayed_work(system_dfl_wq, &gpu->hw.timeout_work,
+    if (have_delayed)
+        mod_delayed_work(system_dfl_wq, &gpu->hw.completion_work,
                          msecs_to_jiffies(delayed_ms));
-    } else if (gpu->hw.job_wptr != gpu->hw.job_done) {
+    if (gpu->hw.job_wptr != gpu->hw.job_done) {
         /* Watchdog restarts for the jobs still in flight. */
         mod_delayed_work(system_dfl_wq, &gpu->hw.timeout_work,
                          msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS));
-    }
+    } else
+        cancel_delayed_work(&gpu->hw.timeout_work);
 }
 
 void opengpu_hw_abort(struct opengpu_device *gpu, int error)
 {
     cancel_delayed_work_sync(&gpu->hw.timeout_work);
+    cancel_delayed_work_sync(&gpu->hw.completion_work);
     cancel_delayed_work_sync(&gpu->hw.poll_work);
     opengpu_reg_write(gpu, GPU_REG_IRQ, 0);
 
@@ -241,7 +243,6 @@ static void opengpu_timeout_work(struct work_struct *work)
     struct opengpu_device *gpu;
     unsigned long flags;
     struct dma_fence *fence = NULL;
-    int error = -ETIMEDOUT;
 
     hw = container_of(to_delayed_work(work), struct opengpu_hw,
                       timeout_work);
@@ -249,13 +250,7 @@ static void opengpu_timeout_work(struct work_struct *work)
 
     if (gpu->hw.queue_ready) {
         spin_lock_irqsave(&gpu->hw.fence_lock, flags);
-        if (gpu->hw.delayed_fence) {
-            /* Simulated slow completion (test hook): the IH record said the
-             * job completed, so retire it successfully. */
-            fence = gpu->hw.delayed_fence;
-            gpu->hw.delayed_fence = NULL;
-            error = 0;
-        } else {
+        {
             struct opengpu_pending_job *p =
                 &gpu->hw.pending[gpu->hw.job_done & gpu->hw.job_mask];
 
@@ -266,8 +261,8 @@ static void opengpu_timeout_work(struct work_struct *work)
                 gpu->hw.job_done++;
             }
         }
-        if (fence && error)
-            dma_fence_set_error(fence, error);
+        if (fence)
+            dma_fence_set_error(fence, -ETIMEDOUT);
         if (fence)
             dma_fence_signal_locked(fence);
         spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
@@ -288,6 +283,31 @@ static void opengpu_timeout_work(struct work_struct *work)
         else
             opengpu_hw_complete(gpu, -ETIMEDOUT);
     }
+}
+
+static void opengpu_completion_work(struct work_struct *work)
+{
+    struct opengpu_hw *hw;
+    struct opengpu_device *gpu;
+    struct dma_fence *fence = NULL;
+    unsigned long flags;
+
+    hw = container_of(to_delayed_work(work), struct opengpu_hw,
+                      completion_work);
+    gpu = container_of(hw, struct opengpu_device, hw);
+    if (!gpu->hw.queue_ready) {
+        opengpu_hw_complete(gpu, 0);
+        return;
+    }
+
+    spin_lock_irqsave(&gpu->hw.fence_lock, flags);
+    fence = gpu->hw.delayed_fence;
+    gpu->hw.delayed_fence = NULL;
+    if (fence)
+        dma_fence_signal_locked(fence);
+    spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
+    if (fence)
+        dma_fence_put(fence);
 }
 
 /* Completion poll interval. The register read doubles as a watchdog: it
@@ -337,7 +357,8 @@ static irqreturn_t opengpu_irq_handler(int irq, void *data)
     }
 
     if (gpu->hw.active_completion_delay_ms) {
-        mod_delayed_work(system_dfl_wq, &gpu->hw.timeout_work,
+        cancel_delayed_work(&gpu->hw.timeout_work);
+        mod_delayed_work(system_dfl_wq, &gpu->hw.completion_work,
                          msecs_to_jiffies(
                              gpu->hw.active_completion_delay_ms));
         return IRQ_HANDLED;
@@ -358,6 +379,7 @@ int opengpu_hw_init(struct opengpu_device *gpu, struct platform_device *pdev)
     spin_lock_init(&gpu->hw.fence_lock);
     gpu->hw.fence_context = dma_fence_context_alloc(1);
     INIT_DELAYED_WORK(&gpu->hw.timeout_work, opengpu_timeout_work);
+    INIT_DELAYED_WORK(&gpu->hw.completion_work, opengpu_completion_work);
     INIT_DELAYED_WORK(&gpu->hw.poll_work, opengpu_poll_work);
 
     ret = dma_set_mask_and_coherent(gpu->dev, DMA_BIT_MASK(32));
@@ -450,9 +472,9 @@ void opengpu_hw_fini(struct opengpu_device *gpu)
 /* Queue submission: publish a descriptor into the host-memory job ring and
  * ring the doorbell.  Several jobs may be in flight; the device runs them
  * strictly in order and records each completion in the IH ring. */
-static int opengpu_hw_submit_queue(struct opengpu_device *gpu,
-                                   const struct opengpu_job *job,
-                                   struct dma_fence **out_fence)
+static int opengpu_hw_submit_queue_locked(struct opengpu_device *gpu,
+                                          const struct opengpu_job *job,
+                                          struct dma_fence **out_fence)
 {
     struct opengpu_fence *fence;
     struct gpu_job_record *rec;
@@ -465,7 +487,6 @@ static int opengpu_hw_submit_queue(struct opengpu_device *gpu,
     if (!fence)
         return -ENOMEM;
 
-    mutex_lock(&gpu->hw.submit_lock);
     dma_fence_init(&fence->base, &opengpu_fence_ops,
                    &gpu->hw.fence_lock, gpu->hw.fence_context,
                    ++gpu->hw.fence_seqno);
@@ -489,7 +510,7 @@ static int opengpu_hw_submit_queue(struct opengpu_device *gpu,
     }
     spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
     if (ret)
-        goto out_unlock;
+        goto out;
 
     opengpu_reg_write(gpu, GPU_REG_JOB_WPTR, gpu->hw.job_wptr & 0xffff);
     mod_delayed_work(system_dfl_wq, &gpu->hw.timeout_work,
@@ -497,35 +518,35 @@ static int opengpu_hw_submit_queue(struct opengpu_device *gpu,
     mod_delayed_work(system_dfl_wq, &gpu->hw.poll_work,
                      msecs_to_jiffies(OPENGPU_HW_POLL_INTERVAL_MS));
 
-out_unlock:
-    mutex_unlock(&gpu->hw.submit_lock);
+out:
     if (ret)
         dma_fence_put(&fence->base);
     return ret;
 }
 
-int opengpu_hw_submit_async(struct opengpu_device *gpu,
-                            const struct opengpu_job *job,
-                            struct dma_fence **out_fence)
+static int opengpu_hw_validate_job(const struct opengpu_job *job,
+                                   struct dma_fence **out_fence)
 {
-    struct opengpu_fence *fence;
-    unsigned long flags;
-    int ret = 0;
-
     if (!out_fence)
         return -EINVAL;
     if (upper_32_bits(job->cmd) || upper_32_bits(job->color) ||
         upper_32_bits(job->depth) || upper_32_bits(job->texture))
         return -ERANGE;
+    return 0;
+}
 
-    if (gpu->hw.queue_ready)
-        return opengpu_hw_submit_queue(gpu, job, out_fence);
+static int opengpu_hw_submit_legacy_locked(struct opengpu_device *gpu,
+                                           const struct opengpu_job *job,
+                                           struct dma_fence **out_fence)
+{
+    struct opengpu_fence *fence;
+    unsigned long flags;
+    int ret = 0;
 
     fence = kzalloc(sizeof(*fence), GFP_KERNEL);
     if (!fence)
         return -ENOMEM;
 
-    mutex_lock(&gpu->hw.submit_lock);
     dma_fence_init(&fence->base, &opengpu_fence_ops,
                    &gpu->hw.fence_lock, gpu->hw.fence_context,
                    ++gpu->hw.fence_seqno);
@@ -540,7 +561,7 @@ int opengpu_hw_submit_async(struct opengpu_device *gpu,
     }
     spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
     if (ret)
-        goto out_unlock;
+        goto out;
 
     opengpu_reg_write(gpu, GPU_REG_CMD_BASE, lower_32_bits(job->cmd));
     opengpu_reg_write(gpu, GPU_REG_CMD_COUNT, job->cmd_count);
@@ -561,10 +582,33 @@ int opengpu_hw_submit_async(struct opengpu_device *gpu,
                           msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS));
     opengpu_reg_write(gpu, GPU_REG_CONTROL, GPU_CTRL_START);
 
-out_unlock:
-    mutex_unlock(&gpu->hw.submit_lock);
+out:
     if (ret)
         dma_fence_put(&fence->base);
+    return ret;
+}
+
+static int opengpu_hw_submit_locked(struct opengpu_device *gpu,
+                                    const struct opengpu_job *job,
+                                    struct dma_fence **out_fence)
+{
+    if (gpu->hw.queue_ready)
+        return opengpu_hw_submit_queue_locked(gpu, job, out_fence);
+    return opengpu_hw_submit_legacy_locked(gpu, job, out_fence);
+}
+
+int opengpu_hw_submit_async(struct opengpu_device *gpu,
+                            const struct opengpu_job *job,
+                            struct dma_fence **out_fence)
+{
+    int ret;
+
+    ret = opengpu_hw_validate_job(job, out_fence);
+    if (ret)
+        return ret;
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_submit_locked(gpu, job, out_fence);
+    mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }
 
@@ -601,17 +645,27 @@ int opengpu_hw_submit(struct opengpu_device *gpu,
  * CLEAR_START and poll STATUS.CLEAR_BUSY.  The destination must be 64-byte
  * aligned with a byte count that is a multiple of 64 (the engine rejects
  * anything else; this helper returns -ERANGE for a misprogrammed range).
- * The caller must guarantee no draw is in flight (explicit-sync contract). */
-int opengpu_hw_clear(struct opengpu_device *gpu, u32 base, u32 bytes,
-                     u32 pattern)
+ * A clear is rejected while a draw is in flight. */
+static int opengpu_hw_clear_locked(struct opengpu_device *gpu, u32 base,
+                                   u32 bytes, u32 pattern)
 {
+    unsigned long flags;
     unsigned long timeout;
+    bool engine_busy;
     int ret = 0;
 
     if (!(gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE))
         return -EOPNOTSUPP;
     if ((base & 63u) || !bytes || (bytes & 63u))
         return -ERANGE;
+
+    spin_lock_irqsave(&gpu->hw.fence_lock, flags);
+    engine_busy = gpu->hw.queue_ready ?
+        gpu->hw.job_wptr != gpu->hw.job_done :
+        gpu->hw.active_fence != NULL;
+    spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
+    if (engine_busy)
+        return -EBUSY;
 
     opengpu_reg_write(gpu, GPU_REG_CLEAR_BASE, base);
     opengpu_reg_write(gpu, GPU_REG_CLEAR_BYTES, bytes);
@@ -630,6 +684,42 @@ int opengpu_hw_clear(struct opengpu_device *gpu, u32 base, u32 bytes,
         opengpu_hw_progress_tick(gpu);
         cond_resched();
     }
+    return ret;
+}
+
+int opengpu_hw_clear(struct opengpu_device *gpu, u32 base, u32 bytes,
+                     u32 pattern)
+{
+    int ret;
+
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_clear_locked(gpu, base, bytes, pattern);
+    mutex_unlock(&gpu->hw.submit_lock);
+    return ret;
+}
+
+/** Clear private job storage and publish the corresponding draw without an
+ * intervening submission.  Holding submit_lock across both operations keeps
+ * the legacy misc ABI and DRM contexts from inserting a draw between the
+ * clear and its owner.  The DRM scheduler's one-credit policy guarantees that
+ * the previous scheduled draw has completed before this entry point runs. */
+int opengpu_hw_clear_and_submit_async(struct opengpu_device *gpu,
+                                      const struct opengpu_job *job,
+                                      u32 clear_base, u32 clear_bytes,
+                                      u32 clear_pattern,
+                                      struct dma_fence **out_fence)
+{
+    int ret;
+
+    ret = opengpu_hw_validate_job(job, out_fence);
+    if (ret)
+        return ret;
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_clear_locked(gpu, clear_base, clear_bytes,
+                                  clear_pattern);
+    if (!ret)
+        ret = opengpu_hw_submit_locked(gpu, job, out_fence);
+    mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }
 

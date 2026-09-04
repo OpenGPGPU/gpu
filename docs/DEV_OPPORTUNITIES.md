@@ -37,7 +37,6 @@ Priority order:
 
 - Measure full-system cost by resolution and select a practical regression
   default.
-- Route per-job depth clear through `FillEngine` with job-queue ordering.
 - Add a colour-copy/blit mode to the DMA path.
 - Unify `GpuSystem` and `GpuHostAxi` so graphics, multi-CU compute and DMA share
   one host attachment, memory hierarchy, queue and interrupt model.

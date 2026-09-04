@@ -882,7 +882,12 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
     struct dma_fence *fence;
     int ret;
 
-    ret = opengpu_hw_submit_async(job->gpu, &job->hw, &fence);
+    if (job->gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE)
+        ret = opengpu_hw_clear_and_submit_async(
+            job->gpu, &job->hw, lower_32_bits(job->depth.dma),
+            job->depth.size, 0xffffffffu, &fence);
+    else
+        ret = opengpu_hw_submit_async(job->gpu, &job->hw, &fence);
     if (ret)
         return ERR_PTR(ret);
     return fence;
@@ -1111,7 +1116,10 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
             shader ? &sched_job->shader : NULL, kernarg, texture);
     if (ret)
         goto out_job;
-    memset(sched_job->depth.cpu, 0xff, sched_job->depth.size);
+    /* Clear-capable hardware clears this private depth plane immediately
+     * before its draw. Older devices retain the coherent CPU fallback. */
+    if (!(gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE))
+        memset(sched_job->depth.cpu, 0xff, sched_job->depth.size);
     sched_job->hw = (struct opengpu_job) {
         .cmd = sched_job->commands.dma,
         .cmd_count = args->command_count,

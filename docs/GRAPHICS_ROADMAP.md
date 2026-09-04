@@ -66,6 +66,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 - Completion waits for store drain so host-visible DONE implies framebuffer
   visibility.
 - Hardware fill engine for aligned patterned clears.
+- Scheduler-ordered hardware clearing of each DRM job's private depth plane,
+  with a CPU fallback for devices without the fill engine.
 
 ### Host and Linux
 
@@ -86,7 +88,7 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
   device.
 - Add Linux compute, copy, fill and strided-DMA submissions using the existing
   queue and fence model.
-- Order depth clears and colour blits as ordinary queued jobs.
+- Add colour blits as ordered jobs.
 - Establish practical resolution/performance budgets for full-system tests.
 
 ### Graphics capability
