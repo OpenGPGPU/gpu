@@ -649,14 +649,17 @@ int opengpu_hw_submit(struct opengpu_device *gpu,
 static int opengpu_hw_clear_locked(struct opengpu_device *gpu, u32 base,
                                    u32 bytes, u32 pattern)
 {
+    u64 end = (u64)base + bytes;
     unsigned long flags;
     unsigned long timeout;
     bool engine_busy;
-    int ret = 0;
+    u32 status;
 
     if (!(gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE))
         return -EOPNOTSUPP;
     if ((base & 63u) || !bytes || (bytes & 63u))
+        return -ERANGE;
+    if (end > (1ull << 32))
         return -ERANGE;
 
     spin_lock_irqsave(&gpu->hw.fence_lock, flags);
@@ -667,6 +670,7 @@ static int opengpu_hw_clear_locked(struct opengpu_device *gpu, u32 base,
     if (engine_busy)
         return -EBUSY;
 
+    opengpu_reg_write(gpu, GPU_REG_STATUS, GPU_STATUS_ERROR);
     opengpu_reg_write(gpu, GPU_REG_CLEAR_BASE, base);
     opengpu_reg_write(gpu, GPU_REG_CLEAR_BYTES, bytes);
     opengpu_reg_write(gpu, GPU_REG_CLEAR_PATTERN, pattern);
@@ -676,15 +680,16 @@ static int opengpu_hw_clear_locked(struct opengpu_device *gpu, u32 base,
      * registers, so poll through opengpu_hw_progress_tick() like the fence
      * waiters do. */
     timeout = jiffies + msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS);
-    while (opengpu_reg_read(gpu, GPU_REG_STATUS) & GPU_STATUS_CLEAR_BUSY) {
-        if (time_after(jiffies, timeout)) {
-            ret = -ETIMEDOUT;
+    do {
+        status = opengpu_reg_read(gpu, GPU_REG_STATUS);
+        if (!(status & GPU_STATUS_CLEAR_BUSY))
             break;
-        }
+        if (time_after(jiffies, timeout))
+            return -ETIMEDOUT;
         opengpu_hw_progress_tick(gpu);
         cond_resched();
-    }
-    return ret;
+    } while (true);
+    return status & GPU_STATUS_ERROR ? -EIO : 0;
 }
 
 static int opengpu_hw_blit_locked(struct opengpu_device *gpu, u32 source,

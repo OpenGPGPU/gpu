@@ -201,6 +201,8 @@ int opengpu_compute_resource_unbind_ioctl(struct drm_device *drm, void *data,
                                           struct drm_file *file);
 int opengpu_compute_blit_ioctl(struct drm_device *drm, void *data,
                                struct drm_file *file);
+int opengpu_compute_fill_ioctl(struct drm_device *drm, void *data,
+                               struct drm_file *file);
 
 int opengpu_display_init(struct opengpu_device *gpu,
                          const struct opengpu_buffer *boot_fb);

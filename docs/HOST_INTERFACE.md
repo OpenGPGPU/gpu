@@ -164,14 +164,16 @@ memory. In silicon, the same clients attach to the SoC L2/DRAM fabric.
   a CPU fallback when the capability is absent.
 - Scheduler-ordered colour blits with GEM range validation, implicit
   reservation fences and optional input/output sync objects.
+- Scheduler-ordered patterned GEM fills using the same validation and
+  synchronization model.
 - Separate render-target and KMS scanout programming.
 - ARTI-generated QEMU/Linux device, shared guest-memory access and end-to-end
   DRM/KMS execution.
 
 ## Next
 
-- Add general compute, fill and strided-DMA descriptor types to the shared
-  queue; migrate the current ordered blit onto that common descriptor path.
+- Add general compute and strided-DMA descriptor types to the shared queue;
+  migrate the current ordered fill/blit jobs onto that common descriptor path.
 - Define ABI-visible fault codes, reset recovery and timeout behavior.
 - Expand shader profiles and resource types only with matching hardware and
   validation.

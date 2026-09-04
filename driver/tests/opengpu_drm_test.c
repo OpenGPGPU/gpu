@@ -575,6 +575,25 @@ static int submit_blit(int fd, uint32_t context_id,
     return ioctl(fd, DRM_IOCTL_OPENGPU_BLIT, &blit);
 }
 
+static int submit_fill(int fd, uint32_t context_id,
+                       const struct dumb_fb *destination,
+                       uint64_t destination_offset, uint64_t bytes,
+                       uint32_t pattern, uint32_t in_syncobj,
+                       uint32_t out_syncobj)
+{
+    struct drm_opengpu_fill fill = {
+        .context_id = context_id,
+        .destination_handle = destination->handle,
+        .pattern = pattern,
+        .destination_offset = destination_offset,
+        .bytes = bytes,
+        .in_syncobj = in_syncobj,
+        .out_syncobj = out_syncobj,
+    };
+
+    return ioctl(fd, DRM_IOCTL_OPENGPU_FILL, &fill);
+}
+
 static int reject_unsafe_command(int fd, uint32_t context_id,
                                  struct command_buffer *commands,
                                  const struct dumb_fb *fb)
@@ -887,7 +906,7 @@ int main(void)
     struct resource_buffer vertex_buffer = { 0 };
     struct resource_buffer vertex_shader = { 0 }, vertex_kernarg = { 0 };
     struct drm_event_vblank event = { 0 };
-    uint32_t syncobjs[4] = { 0 };
+    uint32_t syncobjs[5] = { 0 };
     uint32_t output_syncobjs[2];
     uint64_t capabilities;
     uint32_t batch_capacity;
@@ -1011,6 +1030,7 @@ int main(void)
     CHECK(create_syncobj(fd, &syncobjs[1]), "create first output syncobj");
     CHECK(create_syncobj(fd, &syncobjs[2]), "create second output syncobj");
     CHECK(create_syncobj(fd, &syncobjs[3]), "create blit output syncobj");
+    CHECK(create_syncobj(fd, &syncobjs[4]), "create fill output syncobj");
     CHECK(submit_selected_render(
               fd, vert_core, context_id, &commands, &first, texture_slot,
               shader_slot, kernarg_slot, vertex_buffer_slot,
@@ -1085,6 +1105,29 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL queued texture result");
         return 1;
     }
+    if (!(capabilities & OPENGPU_CAP_CLEAR_ENGINE)) {
+        errno = EOPNOTSUPP;
+        perror("OPENGPU USERSPACE DRM FAIL fill capability");
+        return 1;
+    }
+    errno = 0;
+    if (submit_fill(fd, context_id, &second, 4, 64, 0x12345678u,
+                    syncobjs[3], syncobjs[4]) != -1 || errno != EINVAL) {
+        errno = EPROTO;
+        perror("OPENGPU USERSPACE DRM FAIL unaligned fill accepted");
+        return 1;
+    }
+    CHECK(submit_fill(fd, context_id, &second, 0, 64, 0x12345678u,
+                      syncobjs[3], syncobjs[4]),
+          "queue ordered colour fill");
+    CHECK(wait_syncobjs(fd, &syncobjs[4], 1), "wait colour fill syncobj");
+    for (uint32_t i = 0; i < 16; i++) {
+        if (((uint32_t *)second.map)[i] != 0x12345678u) {
+            errno = EIO;
+            perror("OPENGPU USERSPACE DRM FAIL colour fill result");
+            return 1;
+        }
+    }
     if (vert_core)
         CHECK(unbind_resource(fd, context_id, 5), "unbind vertex shader");
     else if (frag_core)
@@ -1116,7 +1159,7 @@ int main(void)
 
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
            "syncobj + %s sandbox + "
-           "validated context + ordered colour blit + "
+           "validated context + ordered colour blit/fill + "
            "vblank flip event sequence=%u\n",
            vert_core ? "vertex+fragment-core-backed" :
            frag_core ? "core-backed" : "texture",

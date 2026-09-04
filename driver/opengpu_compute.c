@@ -41,13 +41,20 @@ struct opengpu_resource_binding {
     u32 flags;
 };
 
+enum opengpu_sched_job_type {
+    OPENGPU_SCHED_RENDER,
+    OPENGPU_SCHED_BLIT,
+    OPENGPU_SCHED_FILL,
+};
+
 struct opengpu_sched_job {
     struct drm_sched_job base;
     struct opengpu_device *gpu;
-    bool is_blit;
-    dma_addr_t blit_source;
-    dma_addr_t blit_destination;
-    u32 blit_bytes;
+    enum opengpu_sched_job_type type;
+    dma_addr_t dma_source;
+    dma_addr_t dma_destination;
+    u32 dma_bytes;
+    u32 fill_pattern;
     struct opengpu_job hw;
     struct opengpu_buffer commands;
     struct opengpu_buffer shader;
@@ -886,11 +893,17 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
     struct dma_fence *fence;
     int ret;
 
-    if (job->is_blit) {
+    if (job->type == OPENGPU_SCHED_BLIT) {
         ret = opengpu_hw_blit(job->gpu,
-                              lower_32_bits(job->blit_source),
-                              lower_32_bits(job->blit_destination),
-                              job->blit_bytes);
+                              lower_32_bits(job->dma_source),
+                              lower_32_bits(job->dma_destination),
+                              job->dma_bytes);
+        return ret ? ERR_PTR(ret) : NULL;
+    }
+    if (job->type == OPENGPU_SCHED_FILL) {
+        ret = opengpu_hw_clear(job->gpu,
+                               lower_32_bits(job->dma_destination),
+                               job->dma_bytes, job->fill_pattern);
         return ret ? ERR_PTR(ret) : NULL;
     }
     if (job->gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE)
@@ -1351,10 +1364,10 @@ int opengpu_compute_blit_ioctl(struct drm_device *drm, void *data,
         goto out_exec;
     }
     sched_job->gpu = gpu;
-    sched_job->is_blit = true;
-    sched_job->blit_source = source_address;
-    sched_job->blit_destination = destination_address;
-    sched_job->blit_bytes = args->bytes;
+    sched_job->type = OPENGPU_SCHED_BLIT;
+    sched_job->dma_source = source_address;
+    sched_job->dma_destination = destination_address;
+    sched_job->dma_bytes = args->bytes;
     ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
                              render_file, file->client_id);
     if (ret)
@@ -1408,6 +1421,131 @@ out_destination:
     drm_gem_object_put(destination_object);
 out_source:
     drm_gem_object_put(source_object);
+    return ret;
+}
+
+int opengpu_compute_fill_ioctl(struct drm_device *drm, void *data,
+                               struct drm_file *file)
+{
+    struct drm_opengpu_fill *args = data;
+    struct opengpu_device *gpu = dev_get_drvdata(drm->dev);
+    struct opengpu_file *render_file = file->driver_priv;
+    struct opengpu_render_context *context;
+    struct drm_gem_object *destination_object;
+    struct drm_gem_dma_object *destination_dma;
+    struct opengpu_sched_job *sched_job = NULL;
+    struct drm_syncobj *out_sync = NULL;
+    struct dma_fence *fence = NULL;
+    struct drm_exec exec;
+    u64 destination_end, destination_address;
+    bool sched_initialized = false;
+    int ret;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE))
+        return -EOPNOTSUPP;
+    if (!args->context_id || !args->destination_handle || args->flags ||
+        args->pad[0] || args->pad[1] || !args->bytes ||
+        args->bytes > U32_MAX || (args->destination_offset & 63) ||
+        (args->bytes & 63) ||
+        check_add_overflow(args->destination_offset, args->bytes,
+                           &destination_end))
+        return -EINVAL;
+
+    destination_object = drm_gem_object_lookup(file,
+                                                args->destination_handle);
+    if (!destination_object)
+        return -ENOENT;
+    if (destination_end > destination_object->size) {
+        ret = -EINVAL;
+        goto out_destination;
+    }
+    destination_dma = to_drm_gem_dma_obj(destination_object);
+    if (check_add_overflow((u64)destination_dma->dma_addr,
+                           args->destination_offset,
+                           &destination_address) ||
+        check_add_overflow(destination_address, args->bytes,
+                           &destination_end) ||
+        destination_address > U32_MAX ||
+        destination_end > (1ull << 32)) {
+        ret = -ERANGE;
+        goto out_destination;
+    }
+    if (args->out_syncobj) {
+        out_sync = drm_syncobj_find(file, args->out_syncobj);
+        if (!out_sync) {
+            ret = -ENOENT;
+            goto out_destination;
+        }
+    }
+
+    mutex_lock(&render_file->lock);
+    context = idr_find(&render_file->contexts, args->context_id);
+    if (!context) {
+        ret = -ENOENT;
+        goto out_file;
+    }
+    drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
+                         DRM_EXEC_IGNORE_DUPLICATES, 0);
+    drm_exec_until_all_locked(&exec) {
+        ret = drm_exec_prepare_obj(&exec, destination_object, 1);
+        drm_exec_retry_on_contention(&exec);
+        if (ret)
+            goto out_exec;
+    }
+
+    sched_job = kzalloc(sizeof(*sched_job), GFP_KERNEL);
+    if (!sched_job) {
+        ret = -ENOMEM;
+        goto out_exec;
+    }
+    sched_job->gpu = gpu;
+    sched_job->type = OPENGPU_SCHED_FILL;
+    sched_job->dma_destination = destination_address;
+    sched_job->dma_bytes = args->bytes;
+    sched_job->fill_pattern = args->pattern;
+    ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
+                             render_file, file->client_id);
+    if (ret)
+        goto out_job;
+    sched_initialized = true;
+    if (args->in_syncobj)
+        ret = drm_sched_job_add_syncobj_dependency(&sched_job->base, file,
+                                                    args->in_syncobj, 0);
+    if (!ret)
+        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
+                                                   destination_object->resv,
+                                                   DMA_RESV_USAGE_READ);
+    if (ret)
+        goto out_job;
+
+    drm_gem_object_get(destination_object);
+    sched_job->objects[sched_job->object_count++] = destination_object;
+    drm_sched_job_arm(&sched_job->base);
+    fence = dma_fence_get(&sched_job->base.s_fence->finished);
+    dma_fence_put(context->last_fence);
+    context->last_fence = dma_fence_get(fence);
+    dma_resv_add_fence(destination_object->resv, fence,
+                       DMA_RESV_USAGE_WRITE);
+    if (out_sync)
+        drm_syncobj_replace_fence(out_sync, fence);
+    drm_sched_entity_push_job(&sched_job->base);
+    sched_job = NULL;
+    dma_fence_put(fence);
+    ret = 0;
+    goto out_exec;
+
+out_job:
+    if (sched_initialized)
+        drm_sched_job_cleanup(&sched_job->base);
+    kfree(sched_job);
+out_exec:
+    drm_exec_fini(&exec);
+out_file:
+    mutex_unlock(&render_file->lock);
+    if (out_sync)
+        drm_syncobj_put(out_sync);
+out_destination:
+    drm_gem_object_put(destination_object);
     return ret;
 }
 

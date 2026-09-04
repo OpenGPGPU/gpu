@@ -78,6 +78,7 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
   fences and sync objects.
 - Ordered DRM blit jobs using the same context, reservation-fence and syncobj
   model as rendering.
+- Ordered DRM patterned-fill jobs for validated GEM ranges.
 - KMS scanout handoff, atomic modeset, page flip and virtual vblank.
 - ARTI/QEMU/Linux integration for fixed-function, fragment-core and vertex-core
   configurations.
@@ -89,8 +90,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 
 - Merge the graphics host top with multi-CU compute and DMA into one SoC-facing
   device.
-- Add Linux general-compute, fill and strided-DMA submissions using the
-  existing queue and fence model; move blits to the common queue payload.
+- Add Linux general-compute and strided-DMA submissions using the existing
+  queue and fence model; move fill/blit jobs to the common queue payload.
 - Establish practical resolution/performance budgets for full-system tests.
 
 ### Graphics capability
