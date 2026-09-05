@@ -55,7 +55,12 @@ class TexSampleUnit(
   io.mem.req <> sampler.io.mem.req
   sampler.io.mem.resp <> io.mem.resp
 
-  private val sIdle :: sSample :: sCommit :: Nil = Enum(3)
+  // Vector LOD selection is deliberately pipelined.  The gradient subtracts,
+  // extent multiplies, max reduction, mip walk, and log-fraction LUT each sit
+  // in their own stage; even the gradient cone alone is far deeper than one
+  // 1 GHz cycle between the issued vector request and mipFracReg.
+  private val sIdle :: sGrad :: sMul :: sMaxPair :: sMax :: sMax2 :: sLod :: sFrac :: sSample :: sCommit :: Nil =
+    Enum(10)
   private val state = RegInit(sIdle)
 
   private val warpIdReg = RegInit(0.U(config.warpIdWidth.W))
@@ -79,50 +84,71 @@ class TexSampleUnit(
   private val vReg = RegInit(0.U(32.W))
   private val mipLevelReg = RegInit(0.U(4.W))
   private val mipFracReg = RegInit(0.U(8.W))
+  private val rhoReg = RegInit(0.U(46.W))
+  private val rhoNormalReg = RegInit(0.U(46.W))
+  private val lodIsClampedReg = RegInit(false.B)
+  private val lodBiasReg = RegInit(0.S(5.W))
+  private val minLevelReg = RegInit(0.U(4.W))
+  private val maxLevelReg = RegInit(0.U(4.W))
+  private val texWidthReg = RegInit(0.U(14.W))
+  private val texHeightReg = RegInit(0.U(14.W))
 
   /** One nearest mip per quad. UV differences remain Q16.16; multiplying by
     * the base extent converts them to texels-per-pixel in Q16.16. */
   private def absDiff(a: UInt, b: UInt): UInt = Mux(a >= b, a - b, b - a)
-  private val automaticMip = WireDefault(0.U(4.W))
-  private val rho = WireDefault(0.U(46.W))
+  private val diffReg = Reg(Vec(8, UInt(32.W)))
+  private val gradReg = Reg(Vec(8, UInt(46.W)))
+  private val rhoPairReg = Reg(Vec(4, UInt(46.W)))
+  private val rhoLowReg = RegInit(0.U(46.W))
+  private val rhoHighReg = RegInit(0.U(46.W))
   if (config.lanes >= 4) {
-    val u = io.vectorIn.bits.issued.vs1Data
-    val v = io.vectorIn.bits.issued.vs2Data
+    val u = uVectorReg
+    val v = vVectorReg
+    diffReg(0) := absDiff(u(1), u(0))
+    diffReg(1) := absDiff(u(3), u(2))
+    diffReg(2) := absDiff(u(2), u(0))
+    diffReg(3) := absDiff(u(3), u(1))
+    diffReg(4) := absDiff(v(1), v(0))
+    diffReg(5) := absDiff(v(3), v(2))
+    diffReg(6) := absDiff(v(2), v(0))
+    diffReg(7) := absDiff(v(3), v(1))
     val gradients = Seq(
-      absDiff(u(1), u(0)) * io.texWidth,
-      absDiff(u(3), u(2)) * io.texWidth,
-      absDiff(u(2), u(0)) * io.texWidth,
-      absDiff(u(3), u(1)) * io.texWidth,
-      absDiff(v(1), v(0)) * io.texHeight,
-      absDiff(v(3), v(2)) * io.texHeight,
-      absDiff(v(2), v(0)) * io.texHeight,
-      absDiff(v(3), v(1)) * io.texHeight)
-    rho := gradients.reduce((a, b) => Mux(a >= b, a, b))
+      diffReg(0) * texWidthReg,
+      diffReg(1) * texWidthReg,
+      diffReg(2) * texWidthReg,
+      diffReg(3) * texWidthReg,
+      diffReg(4) * texHeightReg,
+      diffReg(5) * texHeightReg,
+      diffReg(6) * texHeightReg,
+      diffReg(7) * texHeightReg)
+    gradReg := VecInit(gradients)
+  }
+  private val automaticMip = WireDefault(0.U(4.W))
+  if (config.lanes >= 4) {
     for (level <- 1 until 16) {
-      when(rho >= (BigInt(1) << (16 + level)).U) {
+      when(rhoReg >= (BigInt(1) << (16 + level)).U) {
         automaticMip := level.U
       }
     }
   }
-  private val biasedMip = automaticMip.zext + io.lodBias
-  private val clampedMip = Mux(biasedMip < io.minLevel.zext,
-    io.minLevel, Mux(biasedMip > io.texMaxLevel.zext,
-      io.texMaxLevel, biasedMip.asUInt(3, 0)))
+  private val biasedMip = automaticMip.zext + lodBiasReg
+  private val clampedMip = Mux(biasedMip < minLevelReg.zext,
+    minLevelReg, Mux(biasedMip > maxLevelReg.zext,
+      maxLevelReg, biasedMip.asUInt(3, 0)))
   // The sampler consumes an 8-bit trilinear weight.  Normalise rho into
   // [1,2), then look up frac(log2(rho)) from the top eight fractional bits.
   // This is a 256-entry constant mux (not a divider or iterative logarithm),
   // and keeps the LOD error below one Q0.8 step plus input quantisation.
   // Clamp endpoints intentionally have no fractional blend, matching a
   // saturated LOD.
-  private val rhoNormal = rho >> automaticMip
+  private val rhoNormal = rhoNormalReg
   private val log2FracLut = VecInit(Seq.tabulate(256) { i =>
     math.floor(math.log(1.0 + i.toDouble / 256.0) / math.log(2.0) * 256.0)
       .toInt.U(8.W)
   })
   private val automaticFrac = Mux(rhoNormal > (1 << 16).U,
     log2FracLut(rhoNormal(15, 8)), 0.U)
-  private val lodIsClamped = biasedMip < io.minLevel.zext ||
-    biasedMip > io.texMaxLevel.zext
+  private val lodIsClamped = lodIsClampedReg
   private val clampedFrac = Mux(lodIsClamped, 0.U, automaticFrac)
 
   // Alternate priority after every accepted instruction so independent scalar
@@ -176,11 +202,14 @@ class TexSampleUnit(
         vectorDataReg := io.vectorIn.bits.issued.oldVdData
         uVectorReg := io.vectorIn.bits.issued.vs1Data
         vVectorReg := io.vectorIn.bits.issued.vs2Data
-        mipLevelReg := clampedMip
-        mipFracReg := clampedFrac
+        texWidthReg := io.texWidth
+        texHeightReg := io.texHeight
+        lodBiasReg := io.lodBias
+        minLevelReg := io.minLevel
+        maxLevelReg := io.texMaxLevel
         laneReg := 0.U
         preferVector := false.B
-        state := sSample
+        state := sGrad
       }.elsewhen(io.in.fire) {
         vectorModeReg := false.B
         warpIdReg := io.in.bits.decode.warpId
@@ -199,6 +228,51 @@ class TexSampleUnit(
         preferVector := true.B
         state := sSample
       }
+    }
+    is(sGrad) {
+      // Stage 2: UV differences only; the request-cycle logic stops at the
+      // subtract so the multiply cone never sees the input port.
+      state := sMul
+    }
+    is(sMul) {
+      // Stage 3: extent multiplies, one 32x14 product per gradient entry.
+      state := sMaxPair
+    }
+    is(sMaxPair) {
+      // Stage 4: compare adjacent gradients in parallel.  Keep this explicit
+      // rather than using reduce, which builds a serial comparator chain.
+      for (i <- 0 until 4) {
+        rhoPairReg(i) := Mux(
+          gradReg(2 * i) >= gradReg(2 * i + 1),
+          gradReg(2 * i),
+          gradReg(2 * i + 1))
+      }
+      state := sMax
+    }
+    is(sMax) {
+      // Stage 5: reduce the four pair maxima to two in parallel.
+      rhoLowReg := Mux(rhoPairReg(0) >= rhoPairReg(1), rhoPairReg(0), rhoPairReg(1))
+      rhoHighReg := Mux(rhoPairReg(2) >= rhoPairReg(3), rhoPairReg(2), rhoPairReg(3))
+      state := sMax2
+    }
+    is(sMax2) {
+      // Stage 6: final reduction into rhoReg.
+      rhoReg := Mux(rhoLowReg >= rhoHighReg, rhoLowReg, rhoHighReg)
+      state := sLod
+    }
+    is(sLod) {
+      // Stage 7: select the nearest mip and register the normalized rho used
+      // by the fractional-LOD lookup.
+      rhoNormalReg := rhoReg >> automaticMip
+      lodIsClampedReg := biasedMip < minLevelReg.zext ||
+        biasedMip > maxLevelReg.zext
+      mipLevelReg := clampedMip
+      state := sFrac
+    }
+    is(sFrac) {
+      // Stage 8: keep the LUT and its output mux off the request boundary.
+      mipFracReg := clampedFrac
+      state := sSample
     }
     is(sSample) {
       when(vectorModeReg) {

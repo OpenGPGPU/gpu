@@ -153,14 +153,16 @@ class FpuBackend(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
     mappedQueue.io.deq.valid && isExactDeq && executionReady
   exact.io.in.bits := mappedQueue.io.deq.bits.request
   fma.io.in.valid :=
-    mappedQueue.io.deq.valid && fast && !isExactDeq && executionReady
+    mappedQueue.io.deq.valid && mappedQueue.io.deq.bits.supported &&
+      !isExactDeq && executionReady
   fma.io.in.bits := mappedQueue.io.deq.bits.request
   mappedQueue.io.deq.ready := executionReady
   exactMetadata.io.enq.valid :=
     mappedQueue.io.deq.valid && isExactDeq && executionReady
   exactMetadata.io.enq.bits := mappedQueue.io.deq.bits.decode
   fmaMetadata.io.enq.valid :=
-    mappedQueue.io.deq.valid && fast && !isExactDeq && executionReady
+    mappedQueue.io.deq.valid && mappedQueue.io.deq.bits.supported &&
+      !isExactDeq && executionReady
   fmaMetadata.io.enq.bits := mappedQueue.io.deq.bits.decode
   memory.io.in.valid :=
     issue.io.out.valid && isMemory && memory.io.in.ready

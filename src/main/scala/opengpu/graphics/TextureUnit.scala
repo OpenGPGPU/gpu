@@ -118,7 +118,12 @@ class TextureUnit(
   // data).
   // sLevel walks the mip chain between accept and tap decode (see the class
   // doc); level 0 takes one decode cycle without changing base or dimensions.
-  private val sIdle :: sLevel :: sFetch :: sBlend :: sDone :: Nil = Enum(5)
+  // The tap decode itself is two pipelined cycles: sWrap resolves the
+  // wrapped/clamped texel-space coordinate (it contains the coordinate
+  // multiply), sTap forms the bilinear tap addresses and fractions (it
+  // contains the index-by-width multiply).
+  private val sIdle :: sLevel :: sWrap :: sIdx :: sTap :: sFetch :: sBlend :: sMix :: sDone :: Nil =
+    Enum(9)
   private val state = RegInit(sIdle)
 
   // Level-walk state latched at accept: the request pins are only stable
@@ -135,11 +140,6 @@ class TextureUnit(
   private val lodFracReg = RegInit(0.U(8.W))
   private val secondLevel = RegInit(false.B)
 
-  // Tap geometry latched at accept time so the memory latency window touches
-  // no live multiplies: clamped/wrapped corner indices and 8-bit fractions.
-  private val fxReg = RegInit(0.U(8.W))
-  private val fyReg = RegInit(0.U(8.W))
-
   // Four logical per-level reads. `tapIssued` marks physical requests, which
   // are coalesced when clamp addressing makes logical taps share an address.
   // `tapReceived` tracks the four blend inputs independently.
@@ -151,32 +151,51 @@ class TextureUnit(
   // Blended result held until result.fire.
   private val resultReg = RegInit(0.U(32.W))
   private val firstLevelResult = RegInit(0.U(32.W))
+  // Bilinear result registered between sBlend and sMix so the trilinear
+  // weight multiplies never sit behind the four-tap blend adder tree.
+  private val blendedReg = RegInit(0.U(32.W))
+  // Corner indices registered between sIdx and sTap so the tap-address
+  // multiply never sits behind the clamp/wrap comparators.
+  private val idxXReg = Reg(Vec(2, UInt(14.W)))
+  private val idxYReg = Reg(Vec(2, UInt(14.W)))
 
   io.sample.ready := state === sIdle
 
   // ---------------------------------------------------------------------
-  // Coordinate decode: selected by wrap mode as documented above.
+  // Coordinate decode, split across the sWrap and sTap stages so neither
+  // stage carries more than one multiply.
   // ---------------------------------------------------------------------
-  /** Axis decode with the industry-standard half-texel alignment: the sample
-    * coordinate maps to texel space minus one half texel, so u = (i+0.5)/N
-    * hits texel i's centre and u = k/N falls exactly between texel k-1 and k.
+  /** Stage 1 (captured on the sLevel -> sWrap transition): map the coordinate
+    * into texel space x256 with the industry-standard half-texel alignment,
+    * so u = (i+0.5)/N hits texel i's centre and u = k/N falls exactly between
+    * texel k-1 and k.
     *
     * The bias is applied before wrapping, using two's-complement wraparound:
     *   biased = (u*extent) - 0.5            (fixed-point, wide enough never
     *                                          to lose information)
+    *
+    * Coordinate ranges here keep every product below 2^46.  Shift into
+    * texel-space x256 first, THEN apply the half-texel bias (the bias is
+    * -128 in the post-shift domain; applying it pre-shift would be off by
+    * a factor of 256).  Natural-width shift + borrow-capable subtraction;
+    * no fixed-size slicing so no truncation surprises.
+    */
+  private def axisBias(coord: UInt, extent: UInt): UInt =
+    ((coord * extent) >> 8) - 128.U
+
+  private val biasedXReg = RegInit(0.U(38.W))
+  private val biasedYReg = RegInit(0.U(38.W))
+  private val inRangeXReg = RegInit(0.U(22.W))
+  private val inRangeYReg = RegInit(0.U(22.W))
+
+  /** Stage 2 (captured on the sWrap -> sTap transition): apply the wrap or
+    * clamp to the biased texel-space coordinate.
     *   REPEAT: biased & ((extent<<8)-1)     -- masks index and fraction; the
     *           wrapped-negative phase lands on the far side of the period,
     *           giving seamless tiling for power-of-two extents
     *   CLAMP : saturate biased into [0, (extent<<8)-1]
     */
-  private def axisDecode(coord: UInt, extent: UInt): (UInt, UInt, UInt) = {
-    // Coordinate ranges here keep every product below 2^46.  Shift into
-    // texel-space x256 first, THEN apply the half-texel bias (the bias is
-    // -128 in the post-shift domain; applying it pre-shift would be off by
-    // a factor of 256).
-    // Natural-width shift + borrow-capable subtraction; no fixed-size
-    // slicing so no truncation surprises.
-    val biased = ((coord * extent) >> 8) - 128.U
+  private def axisRange(biased: UInt, extent: UInt): UInt = {
     val signedBiased = biased.asSInt
 
     val periodLast = (extent << 8) - 1.U
@@ -189,24 +208,9 @@ class TextureUnit(
 
     val inRange = Mux(io.wrapMode === TexWrap.clamp,
       clampedSigned.asUInt,
-      biased & periodLastPad)
-
-    val idx0raw = inRange(21, 8)
-    val frac = inRange(7, 0)
-    val idx0 =
-      Mux(io.wrapMode === TexWrap.clamp,
-        Mux(idx0raw > extent - 1.U, extent - 1.U, idx0raw), idx0raw)
-    val idx1 =
-      Mux(io.wrapMode === TexWrap.clamp,
-        Mux(idx0 + 1.U > extent - 1.U, extent - 1.U, idx0 + 1.U),
-        (idx0 + 1.U) & (extent - 1.U))
-    (idx0, idx1, frac)
+      biased.pad(64) & periodLastPad)
+    inRange(21, 0)
   }
-
-  // Decode off the latched coordinates against the walked-to level's dims
-  // (at level 0 these registers hold io.texBase/Width/Height verbatim).
-  private val decX = axisDecode(uReg, levelW)
-  private val decY = axisDecode(vReg, levelH)
 
   // ---------------------------------------------------------------------
   // Tap addressing: linear RGBA8888, 4 bytes per texel, into the selected
@@ -248,15 +252,16 @@ class TextureUnit(
 
   // ---------------------------------------------------------------------
   // Blend: fixed-point weights summing to exactly 65536, truncated shift.
+  // The weights are captured in sIdx so the sBlend adder tree starts from
+  // registered weights instead of live fx/fy multiplies.
   // ---------------------------------------------------------------------
-  private val w00 = (256.U - fxReg) * (256.U - fyReg)
-  private val w10 = fxReg * (256.U - fyReg)
-  private val w01 = (256.U - fxReg) * fyReg
-  private val w11 = fxReg * fyReg
+  // An endpoint weight can equal 256*256 = 65536, so all 17 bits are needed.
+  // Keeping only 16 bits would turn exact-texel samples into transparent RGB.
+  private val wReg = Reg(Vec(4, UInt(17.W)))
 
   private def blend(sel: UInt => UInt): UInt = {
-    val acc = sel(tapWords(0)) * w00 + sel(tapWords(1)) * w10 +
-      sel(tapWords(2)) * w01 + sel(tapWords(3)) * w11
+    val acc = sel(tapWords(0)) * wReg(0) + sel(tapWords(1)) * wReg(1) +
+      sel(tapWords(2)) * wReg(2) + sel(tapWords(3)) * wReg(3)
     acc(23, 16)
   }
 
@@ -271,7 +276,7 @@ class TextureUnit(
 
   private def trilinearChannel(shift: Int): UInt = {
     val first = firstLevelResult(shift + 7, shift)
-    val second = blended(shift + 7, shift)
+    val second = blendedReg(shift + 7, shift)
     (((first * (256.U - lodFracReg)) + second * lodFracReg) >> 8)(7, 0)
   }
   private val trilinear = Cat(
@@ -311,21 +316,55 @@ class TextureUnit(
     }
     is(sLevel) {
       when(levelSteps === 0.U) {
-        fxReg := decX._3
-        fyReg := decY._3
-        tapAddrs(0) := tapAddr(decX._1, decY._1)
-        tapAddrs(1) := tapAddr(decX._2, decY._1)
-        tapAddrs(2) := tapAddr(decX._1, decY._2)
-        tapAddrs(3) := tapAddr(decX._2, decY._2)
-        tapIssued := 0.U
-        tapReceived := 0.U
-        state := sFetch
+        biasedXReg := axisBias(uReg, levelW)
+        biasedYReg := axisBias(vReg, levelH)
+        state := sWrap
       }.otherwise {
         levelBase := levelBase + ((levelW * levelH) << 2)
         levelW := Mux(levelW === 1.U, 1.U, levelW >> 1)
         levelH := Mux(levelH === 1.U, 1.U, levelH >> 1)
         levelSteps := levelSteps - 1.U
       }
+    }
+    is(sWrap) {
+      inRangeXReg := axisRange(biasedXReg, levelW)
+      inRangeYReg := axisRange(biasedYReg, levelH)
+      state := sIdx
+    }
+    is(sIdx) {
+      // Clamp/wrap decode: corner indices and fractions off the wrapped
+      // coordinate.
+      val idx0rawX = inRangeXReg(21, 8)
+      val idx0rawY = inRangeYReg(21, 8)
+      val idx0X = Mux(io.wrapMode === TexWrap.clamp,
+        Mux(idx0rawX > levelW - 1.U, levelW - 1.U, idx0rawX), idx0rawX)
+      val idx0Y = Mux(io.wrapMode === TexWrap.clamp,
+        Mux(idx0rawY > levelH - 1.U, levelH - 1.U, idx0rawY), idx0rawY)
+      val idx1X = Mux(io.wrapMode === TexWrap.clamp,
+        Mux(idx0X + 1.U > levelW - 1.U, levelW - 1.U, idx0X + 1.U),
+        (idx0X + 1.U) & (levelW - 1.U))
+      val idx1Y = Mux(io.wrapMode === TexWrap.clamp,
+        Mux(idx0Y + 1.U > levelH - 1.U, levelH - 1.U, idx0Y + 1.U),
+        (idx0Y + 1.U) & (levelH - 1.U))
+      wReg(0) := (256.U - inRangeXReg(7, 0)) * (256.U - inRangeYReg(7, 0))
+      wReg(1) := inRangeXReg(7, 0) * (256.U - inRangeYReg(7, 0))
+      wReg(2) := (256.U - inRangeXReg(7, 0)) * inRangeYReg(7, 0)
+      wReg(3) := inRangeXReg(7, 0) * inRangeYReg(7, 0)
+      idxXReg(0) := idx0X
+      idxXReg(1) := idx1X
+      idxYReg(0) := idx0Y
+      idxYReg(1) := idx1Y
+      state := sTap
+    }
+    is(sTap) {
+      // Tap addresses: one index-by-width multiply plus the level base.
+      tapAddrs(0) := tapAddr(idxXReg(0), idxYReg(0))
+      tapAddrs(1) := tapAddr(idxXReg(1), idxYReg(0))
+      tapAddrs(2) := tapAddr(idxXReg(0), idxYReg(1))
+      tapAddrs(3) := tapAddr(idxXReg(1), idxYReg(1))
+      tapIssued := 0.U
+      tapReceived := 0.U
+      state := sFetch
     }
     is(sFetch) {
       when(io.mem.req.fire) {
@@ -346,6 +385,7 @@ class TextureUnit(
       }
     }
     is(sBlend) {
+      blendedReg := blended
       when(!secondLevel && lodFracReg =/= 0.U) {
         // Fetch level N+1 from a freshly rewound packed-chain walk. Keeping
         // the two bilinear passes serial preserves the one-word memory-port
@@ -358,9 +398,12 @@ class TextureUnit(
         secondLevel := true.B
         state := sLevel
       }.otherwise {
-        resultReg := Mux(secondLevel, trilinear, blended)
-        state := sDone
+        state := sMix
       }
+    }
+    is(sMix) {
+      resultReg := Mux(secondLevel, trilinear, blendedReg)
+      state := sDone
     }
     is(sDone) {
       when(io.result.fire) { state := sIdle }

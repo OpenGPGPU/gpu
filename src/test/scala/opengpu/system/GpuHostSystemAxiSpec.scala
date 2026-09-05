@@ -4,7 +4,7 @@ import chisel3._
 import chisel3.simulator.EphemeralSimulator._
 import opengpu.command.GpuCommandOpcode
 import opengpu.config.GpuConfig
-import opengpu.graphics.{GraphicsConfig, RenderHostRegs}
+import opengpu.graphics.{GpuCommandMmioRegs, GraphicsConfig, RenderHostRegs}
 import org.scalatest.flatspec.AnyFlatSpec
 
 class GpuHostSystemAxiSpec extends AnyFlatSpec {
@@ -17,9 +17,6 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
     dut.io.s_axi_bready.poke(false.B)
     dut.io.s_axi_arvalid.poke(false.B)
     dut.io.s_axi_rready.poke(false.B)
-    dut.io.gpuCommand.valid.poke(false.B)
-    dut.io.gpuCommand.bits.poke(0.U.asTypeOf(dut.io.gpuCommand.bits))
-    dut.io.gpuCompletion.ready.poke(true.B)
     dut.io.memoryRequest.ready.poke(true.B)
     dut.io.memoryResponse.valid.poke(false.B)
     dut.io.memoryResponse.bits.poke(
@@ -40,7 +37,7 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
     dut.io.s_axi_awsize.poke(2.U)
     dut.io.s_axi_awburst.poke(0.U)
     dut.io.s_axi_awvalid.poke(true.B)
-    dut.io.s_axi_wdata.poke(data.U)
+    dut.io.s_axi_wdata.poke((data.toLong & 0xffffffffL).U)
     dut.io.s_axi_wstrb.poke(0xf.U)
     dut.io.s_axi_wlast.poke(true.B)
     dut.io.s_axi_wvalid.poke(true.B)
@@ -214,20 +211,14 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
       lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
     simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
       initialize(dut)
-      dut.io.gpuCompletion.ready.poke(false.B)
       axiWrite(dut, RenderHostRegs.IRQ, 1)
-
-      dut.io.gpuCommand.bits.poke(
-        0.U.asTypeOf(dut.io.gpuCommand.bits))
-      dut.io.gpuCommand.bits.commandId.poke(9.U)
-      dut.io.gpuCommand.bits.opcode.poke(GpuCommandOpcode.fill)
-      dut.io.gpuCommand.bits.destinationAddress.poke(0x7000.U)
-      dut.io.gpuCommand.bits.bytes.poke(64.U)
-      dut.io.gpuCommand.bits.pattern.poke("h89abcdef".U)
-      dut.io.gpuCommand.valid.poke(true.B)
-      while (!dut.io.gpuCommand.ready.peek().litToBoolean) dut.clock.step()
-      dut.clock.step()
-      dut.io.gpuCommand.valid.poke(false.B)
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 9)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE,
+        GpuCommandOpcode.fill.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, 0x7000)
+      axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+      axiWrite(dut, GpuCommandMmioRegs.PATTERN, 0x89abcdef)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
 
       var cycles = 0
       while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 80) {
@@ -246,22 +237,24 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
       dut.io.memoryResponse.valid.poke(false.B)
 
       cycles = 0
-      while (!dut.io.gpuCompletion.valid.peek().litToBoolean && cycles < 80) {
-        dut.clock.step(); cycles += 1
+      var commandStatus = axiRead(dut, GpuCommandMmioRegs.STATUS)
+      while ((commandStatus & 0x2L) == 0L && cycles < 40) {
+        commandStatus = axiRead(dut, GpuCommandMmioRegs.STATUS)
+        cycles += 1
       }
-      dut.io.gpuCompletion.valid.expect(true.B)
-      dut.io.gpuCompletion.bits.commandId.expect(9.U)
-      dut.io.gpuCompletion.bits.opcode.expect(GpuCommandOpcode.fill)
-      dut.io.gpuCompletion.bits.success.expect(true.B)
-      dut.io.gpuCompletion.bits.bytesProcessed.expect(64.U)
-      // Completion stays backpressured for a cycle, allowing RenderHost to
-      // latch the event even when the result consumer is not polling.
-      dut.clock.step()
+      assert((commandStatus & 0x2L) != 0L,
+        "unified completion did not reach the MMIO result slot")
+      val completion = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+      assert((completion & 0xffL) == 9L)
+      assert(((completion >> 8) & 0x7L) ==
+        GpuCommandOpcode.fill.litValue)
+      assert(((completion >> 15) & 1L) == 1L)
+      assert(axiRead(dut, GpuCommandMmioRegs.COMPLETION_BYTES_LO) == 64L)
+      assert(axiRead(dut, GpuCommandMmioRegs.COMPLETION_BYTES_HI) == 0L)
       dut.io.m_irq.expect(true.B)
       assert((axiRead(dut, RenderHostRegs.IRQ) & 0x3L) == 0x3L)
 
-      dut.io.gpuCompletion.ready.poke(true.B)
-      dut.clock.step()
+      axiWrite(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
       axiWrite(dut, RenderHostRegs.IRQ, 3)
       dut.io.m_irq.expect(false.B)
       assert((axiRead(dut, RenderHostRegs.IRQ) & 0x3L) == 0x1L)

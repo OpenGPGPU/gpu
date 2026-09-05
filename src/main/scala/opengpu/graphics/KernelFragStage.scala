@@ -567,12 +567,18 @@ class KernelFragStage(
   // touches the word port: its fragments stage into registers and stream
   // through sWrite only after the slot is swapped in.
   private val stagingActive = state === sWrite || state === sRead
-  io.wordMemReq.valid := Mux(stagingActive, bridge.io.memoryRequest.valid,
+  // Register the wide line request at the block boundary.  Besides providing
+  // one entry of elastic backpressure, this prevents the staging/texture mux
+  // and its 512-bit write-data cone from becoming a top-level output path.
+  private val wordMemReqPipe = Module(
+    new Queue(new ComputeMemoryRequest(config), 1, pipe = false, flow = false))
+  wordMemReqPipe.io.enq.valid := Mux(stagingActive, bridge.io.memoryRequest.valid,
     texBridge.io.memoryRequest.valid)
-  io.wordMemReq.bits := Mux(stagingActive, bridge.io.memoryRequest.bits,
+  wordMemReqPipe.io.enq.bits := Mux(stagingActive, bridge.io.memoryRequest.bits,
     texBridge.io.memoryRequest.bits)
-  bridge.io.memoryRequest.ready := io.wordMemReq.ready && stagingActive
-  texBridge.io.memoryRequest.ready := io.wordMemReq.ready && !stagingActive
+  bridge.io.memoryRequest.ready := wordMemReqPipe.io.enq.ready && stagingActive
+  texBridge.io.memoryRequest.ready := wordMemReqPipe.io.enq.ready && !stagingActive
+  io.wordMemReq <> wordMemReqPipe.io.deq
   io.wordMemResp.ready := Mux(stagingActive, bridge.io.memoryResponse.ready,
     texBridge.io.memoryResponse.ready)
   bridge.io.memoryResponse.valid := io.wordMemResp.valid && stagingActive

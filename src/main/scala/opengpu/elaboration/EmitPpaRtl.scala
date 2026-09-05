@@ -4,8 +4,9 @@ import circt.stage.ChiselStage
 import opengpu.command.GpuCommandRouter
 import opengpu.config.GpuConfig
 import opengpu.core.backend.{FpuBackend, ScalarBackend, VectorBackend}
-import opengpu.core.frontend.GpuFrontend
-import opengpu.core.GpuComputeUnit
+import opengpu.core.frontend.{FrontendICache, FrontendScalar, FrontendScalarFpu, GpuFrontend}
+import opengpu.core.frontend.warp.WarpScheduler
+import opengpu.core.{Gpu, GpuComputeUnit}
 import opengpu.core.memory.{
   BankedSharedMemory,
   ComputeUnitMemoryInterconnect,
@@ -15,9 +16,18 @@ import opengpu.core.memory.{
   VectorMemoryCoalescer
 }
 import opengpu.core.execute.fpu.Fp32FmaLane
-import opengpu.graphics.{GraphicsConfig, TriangleRasterizer}
+import opengpu.graphics.{
+  CommandBufferStage,
+  DrawContextFifo,
+  GraphicsConfig,
+  KernelFragStage,
+  KernelVertStage,
+  RenderPipeline,
+  TriangleRasterizer
+}
 import opengpu.core.execute.fpu.Fp32ExactUnit
 import opengpu.core.execute.fpu.Fp32DivLane
+import opengpu.system.GpuSystem
 import opengpu.core.vector.{
   VectorFcvtAlu,
   VectorFdivAlu,
@@ -86,6 +96,34 @@ object EmitPpaRtl {
           new TriangleRasterizer(
             GraphicsConfig(screenWidth = 128, screenHeight = 128, subPixelBits = 8)),
           stageArgs, firtoolArgs)
+      case "draw-fifo" =>
+        ChiselStage.emitSystemVerilogFile(
+          new DrawContextFifo(depth = 4),
+          stageArgs, firtoolArgs)
+      case "command-buffer-scalar" =>
+        ChiselStage.emitSystemVerilogFile(
+          new CommandBufferStage(GraphicsConfig(), vertCore = false),
+          stageArgs, firtoolArgs)
+      case "command-buffer-vert" =>
+        ChiselStage.emitSystemVerilogFile(
+          new CommandBufferStage(GraphicsConfig(), vertCore = true),
+          stageArgs, firtoolArgs)
+      case "kernel-frag-stage" =>
+        ChiselStage.emitSystemVerilogFile(
+          new KernelFragStage(GpuConfig(), GraphicsConfig()),
+          stageArgs, firtoolArgs)
+      case "kernel-vert-stage" =>
+        ChiselStage.emitSystemVerilogFile(
+          new KernelVertStage(GpuConfig(), GraphicsConfig(), standaloneKernel = true),
+          stageArgs, firtoolArgs)
+      case "render-pipeline-fc" =>
+        ChiselStage.emitSystemVerilogFile(
+          new RenderPipeline(GraphicsConfig(), GpuConfig(), fragCore = true, vertCore = false),
+          stageArgs, firtoolArgs)
+      case "render-pipeline-vc" =>
+        ChiselStage.emitSystemVerilogFile(
+          new RenderPipeline(GraphicsConfig(), GpuConfig(), fragCore = true, vertCore = true),
+          stageArgs, firtoolArgs)
       case "div-lane" =>
         ChiselStage.emitSystemVerilogFile(
           new Fp32DivLane(),
@@ -113,6 +151,101 @@ object EmitPpaRtl {
       case "vector-fdiv-alu" =>
         ChiselStage.emitSystemVerilogFile(
           new VectorFdivAlu(GpuConfig()),
+          stageArgs, firtoolArgs)
+      case "warp-scheduler" =>
+        ChiselStage.emitSystemVerilogFile(
+          new WarpScheduler(GpuConfig(lanes = 4, warps = 4)),
+          stageArgs, firtoolArgs)
+      case "gpu-frontend" =>
+        ChiselStage.emitSystemVerilogFile(
+          new GpuFrontend(GpuConfig(lanes = 4, warps = 4)),
+          stageArgs, firtoolArgs)
+      case "shared-mem" =>
+        ChiselStage.emitSystemVerilogFile(
+          new BankedSharedMemory(
+            GpuConfig(
+              lanes = 4,
+              warps = 4,
+              sharedMemoryBytes = 256,
+              sharedMemoryBanks = 4)),
+          stageArgs, firtoolArgs)
+      case "icache" =>
+        ChiselStage.emitSystemVerilogFile(
+          new InstructionCache(
+            GpuConfig(lanes = 4, warps = 4),
+            sets = 16,
+            ways = 2,
+            lineBytes = 8,
+            missEntries = 2),
+          stageArgs, firtoolArgs)
+      case "scalar-pipe" =>
+        ChiselStage.emitSystemVerilogFile(
+          new ScalarBackend(GpuConfig(lanes = 4, warps = 4), useBlackBoxes = false),
+          stageArgs, firtoolArgs)
+      case "vector-pipe" =>
+        ChiselStage.emitSystemVerilogFile(
+          new VectorBackend(GpuConfig(lanes = 4, warps = 4), useBlackBox = false),
+          stageArgs, firtoolArgs)
+      case "fpu-pipe" =>
+        ChiselStage.emitSystemVerilogFile(
+          new FpuBackend(GpuConfig(lanes = 4, warps = 4)),
+          stageArgs, firtoolArgs)
+      case "frontend-icache" =>
+        ChiselStage.emitSystemVerilogFile(
+          new FrontendICache(
+            GpuConfig(lanes = 4, warps = 4),
+            sets = 16,
+            ways = 2,
+            lineBytes = 8,
+            missEntries = 2),
+          stageArgs, firtoolArgs)
+      case "frontend-scalar" =>
+        ChiselStage.emitSystemVerilogFile(
+          new FrontendScalar(
+            GpuConfig(lanes = 4, warps = 4),
+            sets = 16,
+            ways = 2,
+            lineBytes = 8,
+            missEntries = 2),
+          stageArgs, firtoolArgs)
+      case "frontend-scalar-fpu" =>
+        ChiselStage.emitSystemVerilogFile(
+          new FrontendScalarFpu(
+            GpuConfig(lanes = 4, warps = 4),
+            sets = 16,
+            ways = 2,
+            lineBytes = 8,
+            missEntries = 2),
+          stageArgs, firtoolArgs)
+      case "gpu" =>
+        ChiselStage.emitSystemVerilogFile(
+          new Gpu(
+            GpuConfig(
+              lanes = 4,
+              warps = 4,
+              sharedMemoryBytes = 256,
+              sharedMemoryBanks = 4),
+            sets = 16,
+            ways = 2,
+            lineBytes = 8,
+            missEntries = 2),
+          stageArgs, firtoolArgs)
+      case "gpu-system" =>
+        ChiselStage.emitSystemVerilogFile(
+          new GpuSystem(
+            GpuConfig(
+              lanes = 4,
+              warps = 4,
+              sharedMemoryBytes = 256,
+              sharedMemoryBanks = 4,
+              l2Sets = 8,
+              l2Ways = 2,
+              l2Banks = 1),
+            numComputeUnits = 1,
+            commandIdWidth = 4,
+            transactionsPerCu = 4,
+            useBlackBoxes = false,
+            enableFpuBackend = true),
           stageArgs, firtoolArgs)
       case "frontend" =>
         ChiselStage.emitSystemVerilogFile(

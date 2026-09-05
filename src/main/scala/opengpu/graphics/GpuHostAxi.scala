@@ -2,6 +2,7 @@ package opengpu.graphics
 
 import chisel3._
 import chisel3.util._
+import opengpu.command.{GpuCommand, GpuCommandResult}
 import opengpu.config.GpuConfig
 import opengpu.core.memory.{
   CacheLineInvalidate,
@@ -38,7 +39,9 @@ class GpuHostAxi(
   vertCore: Boolean = false,
   deviceId: Int = 0x4755,
   version: Int = 0x0001,
-  externalCompletionIrq: Boolean = false
+  externalCompletionIrq: Boolean = false,
+  unifiedCommandMmio: Boolean = false,
+  commandIdWidth: Int = 8
 ) extends Module {
   override def desiredName: String = "GpuHostAxi"
 
@@ -81,6 +84,12 @@ class GpuHostAxi(
     val externalCompletion = if (externalCompletionIrq) {
       Some(Input(Bool()))
     } else None
+    val gpuCommand = if (unifiedCommandMmio) {
+      Some(Decoupled(new GpuCommand(gpuConfig, commandIdWidth)))
+    } else None
+    val gpuCompletion = if (unifiedCommandMmio) {
+      Some(Flipped(Decoupled(new GpuCommandResult(commandIdWidth))))
+    } else None
 
     // Renderer shared-memory ports (command buffer + framebuffer words, and the
     // core-backed shader kernel's line/coherence side ports) pass straight
@@ -110,8 +119,17 @@ class GpuHostAxi(
 
   withClockAndReset(clock, !io.s_axi_aresetn) {
     val host = Module(new RenderHost(config, gpuConfig, fragCore, vertCore, deviceId, version))
+    val unified = if (unifiedCommandMmio) {
+      Some(Module(new GpuCommandMmio(
+        gpuConfig, commandIdWidth, gpuConfig.commandQueueDepth)))
+    } else None
 
-    host.io.externalCompletion := io.externalCompletion.getOrElse(false.B)
+    unified.foreach { bridge =>
+      io.gpuCommand.get <> bridge.io.command
+      bridge.io.completion <> io.gpuCompletion.get
+    }
+    host.io.externalCompletion := io.externalCompletion.getOrElse(false.B) ||
+      unified.map(_.io.completionEvent).getOrElse(false.B)
     io.m_irq := host.io.irq
     host.io.cbMem.req <> io.cbMem.req
     io.cbMem.resp <> host.io.cbMem.resp
@@ -134,6 +152,11 @@ class GpuHostAxi(
     reg.req.bits.strb := 0xf.U
     reg.req.bits.addr := 0.U
     reg.req.valid := false.B
+    unified.foreach { bridge =>
+      bridge.io.reg.resp.ready := true.B
+      bridge.io.reg.req.bits := 0.U.asTypeOf(bridge.io.reg.req.bits)
+      bridge.io.reg.req.valid := false.B
+    }
 
     // -------------------------------------------------------------------------
     // One in-flight transaction.  The single-ported register file cannot serve
@@ -155,8 +178,9 @@ class GpuHostAxi(
     val beatAddr =
       Mux(burstReg === 0.U, addrReg + (beat << sizeReg), addrReg)
     val lastBeat = beat === lenReg
-    val beatOk =
-      (beatAddr & 0x3.U) === 0.U && beatAddr < RenderHostRegs.END.U
+    val mappedEnd = (if (unifiedCommandMmio) GpuCommandMmioRegs.END
+      else RenderHostRegs.END).U
+    val beatOk = (beatAddr & 0x3.U) === 0.U && beatAddr < mappedEnd
 
     val writeBeat = writeActive && !bPending
     val wBeatFire = writeBeat && io.s_axi_wvalid && io.s_axi_wready
@@ -164,11 +188,23 @@ class GpuHostAxi(
 
     // Multiplex the single-ported register file between the read and write
     // channel (mutually exclusive by construction).
-    reg.req.valid := Mux(readActive, true.B, Mux(writeBeat, io.s_axi_wvalid, false.B))
+    val busRegValid = Mux(
+      readActive, true.B, Mux(writeBeat, io.s_axi_wvalid, false.B))
+    val targetUnified = if (unifiedCommandMmio) {
+      beatAddr >= GpuCommandMmioRegs.COMMAND_ID.U
+    } else false.B
+    reg.req.valid := busRegValid && !targetUnified
     reg.req.bits.isWrite := writeActive
     reg.req.bits.addr := beatAddr(9, 0)
     reg.req.bits.data := io.s_axi_wdata
     reg.req.bits.strb := io.s_axi_wstrb
+    unified.foreach { bridge =>
+      bridge.io.reg.req.valid := busRegValid && targetUnified
+      bridge.io.reg.req.bits.isWrite := writeActive
+      bridge.io.reg.req.bits.addr := beatAddr(9, 0)
+      bridge.io.reg.req.bits.data := io.s_axi_wdata
+      bridge.io.reg.req.bits.strb := io.s_axi_wstrb
+    }
 
     // ---------------------------------------------------------------------
     // Read channel.
@@ -188,7 +224,9 @@ class GpuHostAxi(
     io.s_axi_rresp := Mux(beatOk, 0.U, 2.U)
     val rdata = WireDefault(0.U(32.W))
     when(readActive) {
-      rdata := reg.resp.bits.data
+      rdata := unified.map { bridge =>
+        Mux(targetUnified, bridge.io.reg.resp.bits.data, reg.resp.bits.data)
+      }.getOrElse(reg.resp.bits.data)
       when(rBeatFire) {
         when(lastBeat) {
           readActive := false.B

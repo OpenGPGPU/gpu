@@ -41,7 +41,9 @@ import opengpu.core.memory.{
 class GpuCore(
   config: GpuConfig = GpuConfig(),
   useBlackBoxes: Boolean = false,
-  enableFpuBackend: Boolean = false
+  enableFpuBackend: Boolean = false,
+  vectorCacheSets: Int = 64,
+  vectorCacheWays: Int = 2
 ) extends Module {
   val io = IO(new Bundle {
     val launch = Flipped(Decoupled(new WarpLaunch(config)))
@@ -103,7 +105,8 @@ class GpuCore(
   private val vectorCoalescer = Module(new VectorMemoryCoalescer(config))
   private val vectorMemoryRouter = Module(new VectorMemorySpaceRouter(config))
   private val sharedMemory = Module(new BankedSharedMemory(config))
-  private val vectorDataCache = Module(new VectorDataCache(config))
+  private val vectorDataCache = Module(
+    new VectorDataCache(config, sets = vectorCacheSets, ways = vectorCacheWays))
   private val vectorTlb = Module(new VectorTlb(config))
   private val vectorPageTableWalker = Module(new Sv32PageTableWalker(config))
   private val trapArbiter = Module(new CoreTrapArbiter(config))

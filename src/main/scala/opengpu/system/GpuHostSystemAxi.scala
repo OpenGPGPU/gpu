@@ -2,7 +2,6 @@ package opengpu.system
 
 import chisel3._
 import chisel3.util._
-import opengpu.command.{GpuCommand, GpuCommandResult}
 import opengpu.config.GpuConfig
 import opengpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse}
 import opengpu.graphics.{
@@ -78,10 +77,6 @@ class GpuHostSystemAxi(
     val s_axi_rready = Input(Bool())
     val m_irq = Output(Bool())
 
-    val gpuCommand = Flipped(Decoupled(
-      new GpuCommand(gpuConfig, commandIdWidth)))
-    val gpuCompletion = Decoupled(new GpuCommandResult(commandIdWidth))
-
     val memoryRequest = Decoupled(new ComputeMemoryRequest(
       gpuConfig, 64, systemTransactions))
     val memoryResponse = Flipped(Decoupled(new ComputeMemoryResponse(
@@ -94,8 +89,9 @@ class GpuHostSystemAxi(
 
   withClockAndReset(clock, !io.s_axi_aresetn) {
     val host = Module(new GpuHostAxi(
-      graphicsConfig, gpuConfig, fragCore, vertCore, deviceId, version,
-      externalCompletionIrq = true))
+      graphicsConfig, gpuConfig, fragCore, vertCore,
+      deviceId = deviceId, version = version,
+      unifiedCommandMmio = true, commandIdWidth = commandIdWidth))
     val system = Module(new GpuSystem(
       gpuConfig,
       numComputeUnits = numComputeUnits,
@@ -131,8 +127,10 @@ class GpuHostSystemAxi(
     io.s_axi_rlast := host.io.s_axi_rlast
     io.s_axi_rvalid := host.io.s_axi_rvalid
     host.io.s_axi_rready := io.s_axi_rready
-    host.io.externalCompletion.get := system.io.gpuCompletion.valid
     io.m_irq := host.io.m_irq
+
+    system.io.gpuCommand <> host.io.gpuCommand.get
+    host.io.gpuCompletion.get <> system.io.gpuCompletion
 
     system.io.graphicsShaderRequest <> host.io.kernelMemReq
     host.io.kernelMemResp <> system.io.graphicsShaderResponse
@@ -213,9 +211,6 @@ class GpuHostSystemAxi(
 
     io.memoryRequest <> system.io.memoryRequest
     system.io.memoryResponse <> io.memoryResponse
-    system.io.gpuCommand <> io.gpuCommand
-    io.gpuCompletion <> system.io.gpuCompletion
-
     system.io.command.valid := false.B
     system.io.command.bits := 0.U.asTypeOf(system.io.command.bits)
     system.io.commandCompletion.ready := true.B
