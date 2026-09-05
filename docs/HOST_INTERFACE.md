@@ -159,6 +159,12 @@ fragment-core top; adding `GPU_VERT_CORE=1` selects vertex-core records.
 ARTI bridges the AXI slave port and adapts GPU memory clients to guest physical
 memory. In silicon, the same clients attach to the SoC L2/DRAM fabric.
 
+`GpuSystem.graphicsHostRequest/graphicsHostResponse` is the first unified-memory
+attachment point. It accepts the graphics host's eight-ID cache-line protocol,
+remaps those IDs above the CU and DMA ranges, and routes the traffic through the
+same shared L2. Command-buffer, framebuffer, texture and coherence-side ports
+remain explicit while the combined SoC-facing top is developed incrementally.
+
 ## Implemented
 
 - AXI4 register control, interrupt delivery and capability discovery.

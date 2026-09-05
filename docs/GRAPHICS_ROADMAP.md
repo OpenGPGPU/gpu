@@ -89,8 +89,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 
 ### Product integration
 
-- Merge the graphics host top with multi-CU compute and DMA into one SoC-facing
-  device.
+- Build the SoC-facing host top on the new shared-L2 graphics line attachment;
+  then merge the remaining word/coherence clients and control plane.
 - Add Linux general-compute submissions using the existing queue and fence
   model; move fill/blit/strided-copy jobs to the common queue payload.
 - Establish practical resolution/performance budgets for full-system tests.

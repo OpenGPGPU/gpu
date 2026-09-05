@@ -34,6 +34,8 @@ Priority order:
 - Power-of-two render resolutions of at least 16x16, selected consistently by
   RTL elaboration, driver defaults and guest tests.
 - Multi-CU dispatch and copy/fill/strided DMA in `GpuSystem` RTL.
+- A graphics-host line-memory attachment in `GpuSystem`, with transaction-ID
+  remapping into the shared CU/DMA L2 namespace.
 
 ## Next
 
@@ -41,8 +43,9 @@ Priority order:
 
 - Measure full-system cost by resolution and select a practical regression
   default.
-- Unify `GpuSystem` and `GpuHostAxi` so graphics, multi-CU compute and DMA share
-  one host attachment, memory hierarchy, queue and interrupt model.
+- Attach the remaining graphics word/coherence clients and AXI control plane
+  to `GpuSystem` so graphics, multi-CU compute and DMA share one host surface,
+  memory hierarchy, queue and interrupt model.
 - Expose general compute jobs through Linux, and migrate the existing
   fill/blit/strided-copy ioctls onto the unified queue payload.
 

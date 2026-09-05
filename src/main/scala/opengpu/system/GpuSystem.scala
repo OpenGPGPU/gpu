@@ -28,8 +28,9 @@ class GpuPerformanceCounters extends Bundle {
   *
   * Kernels carry host command tags, CUs execute independently, and one shared
   * memory port supports out-of-order responses through globally unique
-  * transaction IDs. Graphics fixed-function blocks can later attach outside
-  * this boundary without changing the compute-unit contract.
+  * transaction IDs. The graphics host has a compatibility line client in the
+  * same L2 namespace, allowing host integration to proceed without changing
+  * the compute-unit contract.
   */
 class GpuSystem(
   config: GpuConfig = GpuConfig(),
@@ -38,9 +39,12 @@ class GpuSystem(
   transactionsPerCu: Int = 4,
   useBlackBoxes: Boolean = false,
   enableFpuBackend: Boolean = false,
-  enableUnifiedCommands: Boolean = false
+  enableUnifiedCommands: Boolean = false,
+  graphicsHostTransactions: Int = 8
 ) extends Module {
   require(numComputeUnits > 0)
+  require(graphicsHostTransactions > 0 && isPow2(graphicsHostTransactions),
+    "graphics-host transaction count must be a positive power of two")
   private val totalTransactions = numComputeUnits * transactionsPerCu
   private val copyTransactions = 4
   private val fillTransactions = 2
@@ -48,8 +52,10 @@ class GpuSystem(
   private val copyBase = totalTransactions
   private val fillBase = copyBase + copyTransactions
   private val stridedCopyBase = fillBase + fillTransactions
-  private val totalSystemTransactions =
+  private val graphicsHostBase =
     stridedCopyBase + stridedCopyTransactions
+  private val totalSystemTransactions =
+    graphicsHostBase + graphicsHostTransactions
   private val systemTransactionWidth =
     math.max(1, log2Ceil(totalSystemTransactions))
 
@@ -71,6 +77,15 @@ class GpuSystem(
     val gpuCommand = Flipped(Decoupled(
       new GpuCommand(config, commandIdWidth)))
     val gpuCompletion = Decoupled(new GpuCommandResult(commandIdWidth))
+
+    /** Compatibility attachment for the graphics host's shared line port.
+      * IDs are local to this client and remapped above all CU/DMA IDs before
+      * entering the shared L2.
+      */
+    val graphicsHostRequest = Flipped(Decoupled(new ComputeMemoryRequest(
+      config, 64, graphicsHostTransactions)))
+    val graphicsHostResponse = Decoupled(new ComputeMemoryResponse(
+      64, graphicsHostTransactions))
 
     val memoryRequest = Decoupled(new ComputeMemoryRequest(
       config, 64, totalSystemTransactions))
@@ -305,7 +320,7 @@ class GpuSystem(
     stridedCopyEngine.io.completion.bits.success
 
   private val l2RequestArbiter = Module(new RRArbiter(
-    new ComputeMemoryRequest(config, 64, totalSystemTransactions), 4))
+    new ComputeMemoryRequest(config, 64, totalSystemTransactions), 5))
   l2RequestArbiter.io.in(0).valid := memory.io.memoryRequest.valid
   l2RequestArbiter.io.in(0).bits := memory.io.memoryRequest.bits
   memory.io.memoryRequest.ready := l2RequestArbiter.io.in(0).ready
@@ -327,6 +342,12 @@ class GpuSystem(
     stridedCopyBase.U(systemTransactionWidth.W) +
     stridedCopyEngine.io.memoryRequest.bits.transactionId
   stridedCopyEngine.io.memoryRequest.ready := l2RequestArbiter.io.in(3).ready
+  l2RequestArbiter.io.in(4).valid := io.graphicsHostRequest.valid
+  l2RequestArbiter.io.in(4).bits := io.graphicsHostRequest.bits
+  l2RequestArbiter.io.in(4).bits.transactionId :=
+    graphicsHostBase.U(systemTransactionWidth.W) +
+    io.graphicsHostRequest.bits.transactionId
+  io.graphicsHostRequest.ready := l2RequestArbiter.io.in(4).ready
   l2.io.request <> l2RequestArbiter.io.out
 
   private val l2ResponseForCu =
@@ -339,6 +360,9 @@ class GpuSystem(
       l2.io.response.bits.transactionId < stridedCopyBase.U
   private val l2ResponseForStridedCopy =
     l2.io.response.bits.transactionId >= stridedCopyBase.U &&
+      l2.io.response.bits.transactionId < graphicsHostBase.U
+  private val l2ResponseForGraphicsHost =
+    l2.io.response.bits.transactionId >= graphicsHostBase.U &&
       l2.io.response.bits.transactionId < totalSystemTransactions.U
   memory.io.memoryResponse.valid := l2.io.response.valid && l2ResponseForCu
   memory.io.memoryResponse.bits.readData := l2.io.response.bits.readData
@@ -365,15 +389,23 @@ class GpuSystem(
     l2.io.response.bits.fault
   stridedCopyEngine.io.memoryResponse.bits.transactionId :=
     l2.io.response.bits.transactionId - stridedCopyBase.U
+  io.graphicsHostResponse.valid :=
+    l2.io.response.valid && l2ResponseForGraphicsHost
+  io.graphicsHostResponse.bits.readData := l2.io.response.bits.readData
+  io.graphicsHostResponse.bits.fault := l2.io.response.bits.fault
+  io.graphicsHostResponse.bits.transactionId :=
+    l2.io.response.bits.transactionId - graphicsHostBase.U
   l2.io.response.ready := Mux(l2ResponseForCu,
     memory.io.memoryResponse.ready, Mux(l2ResponseForCopy,
       copyEngine.io.memoryResponse.ready,
       Mux(l2ResponseForFill, fillEngine.io.memoryResponse.ready,
-        l2ResponseForStridedCopy && stridedCopyEngine.io.memoryResponse.ready)))
+        Mux(l2ResponseForStridedCopy,
+          stridedCopyEngine.io.memoryResponse.ready,
+          l2ResponseForGraphicsHost && io.graphicsHostResponse.ready))))
   when(l2.io.response.valid) {
     assert(l2ResponseForCu || l2ResponseForCopy || l2ResponseForFill ||
-      l2ResponseForStridedCopy,
-      "L2 response must target a CU or DMA transaction")
+      l2ResponseForStridedCopy || l2ResponseForGraphicsHost,
+      "L2 response must target a CU, DMA, or graphics-host transaction")
   }
   io.memoryRequest <> l2.io.memoryRequest
   l2.io.memoryResponse <> io.memoryResponse

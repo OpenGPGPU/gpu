@@ -29,6 +29,10 @@ class GpuSystemSpec extends AnyFlatSpec {
     dut.io.gpuCommand.valid.poke(false.B)
     dut.io.gpuCommand.bits.poke(0.U.asTypeOf(dut.io.gpuCommand.bits))
     dut.io.gpuCompletion.ready.poke(true.B)
+    dut.io.graphicsHostRequest.valid.poke(false.B)
+    dut.io.graphicsHostRequest.bits.poke(
+      0.U.asTypeOf(dut.io.graphicsHostRequest.bits))
+    dut.io.graphicsHostResponse.ready.poke(true.B)
     dut.io.memoryRequest.ready.poke(true.B)
     dut.io.memoryResponse.valid.poke(false.B)
     dut.io.memoryResponse.bits.poke(
@@ -107,6 +111,52 @@ class GpuSystemSpec extends AnyFlatSpec {
       dut.io.fillCompletion.valid.expect(true.B)
       dut.io.fillCompletion.bits.descriptorId.expect(6.U)
       dut.io.fillCompletion.bits.bytesFilled.expect(64.U)
+    }
+  }
+
+  it should "route graphics-host line traffic through the shared L2" in {
+    val config = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuSystem(config, numComputeUnits = 2)) { dut =>
+      initialize(dut, 2)
+      val line = BigInt("0123456789abcdef", 16)
+
+      dut.io.graphicsHostRequest.bits.address.poke(0x5000.U)
+      dut.io.graphicsHostRequest.bits.writeData.poke(0.U)
+      dut.io.graphicsHostRequest.bits.byteMask.poke(0.U)
+      dut.io.graphicsHostRequest.bits.isWrite.poke(false.B)
+      dut.io.graphicsHostRequest.bits.sizeLog2.poke(6.U)
+      dut.io.graphicsHostRequest.bits.cacheClient.poke(false.B)
+      dut.io.graphicsHostRequest.bits.cacheResident.poke(false.B)
+      dut.io.graphicsHostRequest.bits.transactionId.poke(5.U)
+      dut.io.graphicsHostRequest.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.graphicsHostRequest.valid.poke(false.B)
+
+      var cycles = 0
+      while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 30) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.memoryRequest.valid.expect(true.B)
+      dut.io.memoryRequest.bits.address.expect(0x5000.U)
+      val lowerId = dut.io.memoryRequest.bits.transactionId.peek().litValue
+      dut.clock.step()
+
+      dut.io.memoryResponse.bits.transactionId.poke(lowerId.U)
+      dut.io.memoryResponse.bits.readData.poke(line.U)
+      dut.io.memoryResponse.bits.fault.poke(false.B)
+      dut.io.memoryResponse.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.memoryResponse.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.graphicsHostResponse.valid.peek().litToBoolean &&
+          cycles < 30) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.graphicsHostResponse.valid.expect(true.B)
+      dut.io.graphicsHostResponse.bits.transactionId.expect(5.U)
+      dut.io.graphicsHostResponse.bits.readData.expect(line.U)
+      dut.io.graphicsHostResponse.bits.fault.expect(false.B)
     }
   }
 
