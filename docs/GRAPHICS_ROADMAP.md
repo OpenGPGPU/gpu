@@ -80,6 +80,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
   model as rendering.
 - Ordered DRM patterned-fill jobs for validated GEM ranges.
 - Ordered DRM strided-copy jobs for validated two-dimensional GEM ranges.
+- Capability-selected unified-command submission for Linux fill, blit and
+  strided-copy jobs, with legacy dedicated-register fallback.
 - KMS scanout handoff, atomic modeset, page flip and virtual vblank.
 - ARTI/QEMU/Linux integration for fixed-function, fragment-core and vertex-core
   configurations.
@@ -89,11 +91,12 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 
 ### Product integration
 
-- Expose general compute jobs through Linux and migrate DMA ioctls to the
-  unified command payload. `GpuHostSystemAxi` already shares its memory and
-  sticky completion interrupt across graphics, compute and DMA.
+- Expose general compute jobs through Linux. `GpuHostSystemAxi` already shares
+  its memory and sticky completion interrupt across graphics, compute and DMA,
+  and the existing DMA ioctls now use its unified payload when advertised.
 - Add Linux general-compute submissions using the existing queue and fence
-  model; move fill/blit/strided-copy jobs to the common queue payload.
+  model, then make unified completions asynchronous instead of polling the
+  single completion slot.
 - Establish practical resolution/performance budgets for full-system tests.
 
 ### Graphics capability

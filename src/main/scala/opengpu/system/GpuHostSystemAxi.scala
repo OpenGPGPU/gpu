@@ -27,7 +27,14 @@ class GpuHostSystemAxi(
   fragCore: Boolean = false,
   vertCore: Boolean = false,
   deviceId: Int = 0x4755,
-  version: Int = 0x0001
+  version: Int = 0x0001,
+  useBlackBoxes: Boolean = false,
+  enableFpuBackend: Boolean = false,
+  instructionCacheSets: Int = 64,
+  instructionCacheWays: Int = 2,
+  instructionCacheMissEntries: Int = 4,
+  vectorCacheSets: Int = 64,
+  vectorCacheWays: Int = 2
 ) extends Module {
   require(numComputeUnits > 0)
   require(!vertCore || fragCore,
@@ -97,8 +104,15 @@ class GpuHostSystemAxi(
       numComputeUnits = numComputeUnits,
       commandIdWidth = commandIdWidth,
       transactionsPerCu = transactionsPerCu,
+      useBlackBoxes = useBlackBoxes,
+      enableFpuBackend = enableFpuBackend,
       enableUnifiedCommands = true,
-      graphicsHostTransactions = graphicsHostTransactions))
+      graphicsHostTransactions = graphicsHostTransactions,
+      instructionCacheSets = instructionCacheSets,
+      instructionCacheWays = instructionCacheWays,
+      instructionCacheMissEntries = instructionCacheMissEntries,
+      vectorCacheSets = vectorCacheSets,
+      vectorCacheWays = vectorCacheWays))
 
     host.io.s_axi_aclk := io.s_axi_aclk
     host.io.s_axi_aresetn := io.s_axi_aresetn

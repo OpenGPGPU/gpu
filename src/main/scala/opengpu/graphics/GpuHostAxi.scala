@@ -118,7 +118,9 @@ class GpuHostAxi(
   })
 
   withClockAndReset(clock, !io.s_axi_aresetn) {
-    val host = Module(new RenderHost(config, gpuConfig, fragCore, vertCore, deviceId, version))
+    val host = Module(new RenderHost(
+      config, gpuConfig, fragCore, vertCore, deviceId, version,
+      unifiedCommands = unifiedCommandMmio))
     val unified = if (unifiedCommandMmio) {
       Some(Module(new GpuCommandMmio(
         gpuConfig, commandIdWidth, gpuConfig.commandQueueDepth)))

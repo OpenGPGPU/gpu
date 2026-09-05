@@ -12,7 +12,8 @@
  * sizes or owns a buffer; it computes addresses and issues reads/writes.
  *
  * Register offsets are BYTE offsets into the AXI4-M mapped control region
- * (32-bit words, little-endian, matching RenderHostRegs in GpuHostAxi.scala).
+ * (32-bit words, little-endian, matching RenderHostRegs and
+ * GpuCommandMmioRegs in GpuHostAxi.scala).
  */
 
 /* ---- Device identification -------------------------------------------- */
@@ -82,12 +83,44 @@
 #define GPU_REG_STRIDED_DST_STRIDE 0x0bc
 #define GPU_REG_STRIDED_START      0x0c0
 
+/* Unified compute/DMA command staging. SUBMIT snapshots these registers into
+ * the hardware command FIFO. Completion metadata remains valid until POP. */
+#define GPU_REG_UCMD_ID             0x0c4
+#define GPU_REG_UCMD_OPCODE         0x0c8
+#define GPU_REG_UCMD_KERNEL_PC      0x0cc
+#define GPU_REG_UCMD_KERNARG        0x0d0
+#define GPU_REG_UCMD_GRID_X         0x0d4
+#define GPU_REG_UCMD_GRID_Y         0x0d8
+#define GPU_REG_UCMD_GRID_Z         0x0dc
+#define GPU_REG_UCMD_LOCAL_X        0x0e0
+#define GPU_REG_UCMD_LOCAL_Y        0x0e4
+#define GPU_REG_UCMD_LOCAL_Z        0x0e8
+#define GPU_REG_UCMD_FLAGS          0x0ec
+#define GPU_REG_UCMD_DMA_DEPENDENCY 0x0f0
+#define GPU_REG_UCMD_SOURCE         0x0f4
+#define GPU_REG_UCMD_DESTINATION    0x0f8
+#define GPU_REG_UCMD_BYTES          0x0fc
+#define GPU_REG_UCMD_PATTERN        0x100
+#define GPU_REG_UCMD_WIDTH          0x104
+#define GPU_REG_UCMD_HEIGHT         0x108
+#define GPU_REG_UCMD_SOURCE_STRIDE  0x10c
+#define GPU_REG_UCMD_DEST_STRIDE    0x110
+#define GPU_REG_UCMD_WAIT_EVENT     0x114
+#define GPU_REG_UCMD_SIGNAL_EVENT   0x118
+#define GPU_REG_UCMD_SUBMIT         0x11c
+#define GPU_REG_UCMD_STATUS         0x120
+#define GPU_REG_UCMD_COMPLETION     0x124
+#define GPU_REG_UCMD_COMPLETION_BYTES_LO 0x128
+#define GPU_REG_UCMD_COMPLETION_BYTES_HI 0x12c
+#define GPU_REG_UCMD_COMPLETION_POP 0x130
+
 #define GPU_CAP_FRAGMENT_CORE   (1u << 0)
 #define GPU_CAP_JOB_QUEUE       (1u << 1)
 #define GPU_CAP_VERTEX_CORE     (1u << 2)
 #define GPU_CAP_CLEAR_ENGINE    (1u << 3)
 #define GPU_CAP_BLIT_ENGINE     (1u << 4)
 #define GPU_CAP_STRIDED_ENGINE  (1u << 5)
+#define GPU_CAP_UNIFIED_COMMANDS (1u << 6)
 #define GPU_CAP_FRAGMENT_BATCH_SHIFT 8u
 #define GPU_CAP_FRAGMENT_BATCH_MASK  (0xffu << GPU_CAP_FRAGMENT_BATCH_SHIFT)
 
@@ -122,6 +155,33 @@
 #define GPU_STATUS_CLEAR_BUSY  (1u << 3)
 #define GPU_STATUS_BLIT_BUSY   (1u << 4)
 #define GPU_STATUS_STRIDED_BUSY (1u << 5)
+
+/* Unified command opcodes and register fields. */
+#define GPU_UCMD_OP_KERNEL       0u
+#define GPU_UCMD_OP_COPY         1u
+#define GPU_UCMD_OP_FILL         2u
+#define GPU_UCMD_OP_STRIDED_COPY 3u
+#define GPU_UCMD_FLAG_WAIT_DMA   (1u << 0)
+#define GPU_UCMD_FLAG_WAIT_EVENT (1u << 1)
+#define GPU_UCMD_FLAG_SIGNAL_EVENT (1u << 2)
+#define GPU_UCMD_STATUS_READY      (1u << 0)
+#define GPU_UCMD_STATUS_COMPLETION (1u << 1)
+#define GPU_UCMD_STATUS_OVERFLOW   (1u << 2)
+#define GPU_UCMD_COMPLETION_ID(v)      ((v) & 0xffu)
+#define GPU_UCMD_COMPLETION_OPCODE(v)  (((v) >> 8) & 0x7u)
+#define GPU_UCMD_COMPLETION_STATUS(v)  (((v) >> 11) & 0xfu)
+#define GPU_UCMD_COMPLETION_SUCCESS(v) (((v) >> 15) & 0x1u)
+#define GPU_UCMD_RESULT_SUCCESS             0u
+#define GPU_UCMD_RESULT_INVALID_ALIGNMENT   1u
+#define GPU_UCMD_RESULT_INVALID_LENGTH      2u
+#define GPU_UCMD_RESULT_ADDRESS_OVERFLOW    3u
+#define GPU_UCMD_RESULT_OVERLAP_UNSUPPORTED 4u
+#define GPU_UCMD_RESULT_READ_FAULT          5u
+#define GPU_UCMD_RESULT_WRITE_FAULT         6u
+#define GPU_UCMD_EVENT(id, generation) \
+    (((id) & 0xffu) | (((generation) & 0xffu) << 8))
+#define GPU_UCMD_DMA_DEP(source, id) \
+    (((source) & 0x3u) | (((id) & 0xffu) << 8))
 
 /* ---- IRQ (bit0 ENABLE, bit1 PENDING w1c) ------------------------------- */
 #define GPU_IRQ_ENABLE         (1u << 0)

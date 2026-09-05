@@ -76,13 +76,15 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
   and source-over blending in the validated graphics path.
 - Atomic modeset, render-fence-aware page flip and virtual vblank events.
 - Fixed-function and shader-backed probe paths selected from capabilities.
+- Unified compute/DMA MMIO register definitions, capability discovery and
+  capability-selected fill/blit/strided-copy submission with legacy fallback.
 
 ## Next
 
-- Add general-compute and DMA job payloads without duplicating queue, memory or
-  fence machinery.
-- Generalize the queue payload for compute jobs; migrate ordered
-  fill/blit/strided-copy operations onto that common hardware queue.
+- Add general-compute job payloads without duplicating queue, memory or fence
+  machinery.
+- Retire unified completions asynchronously through scheduler fences; DMA jobs
+  currently keep the scheduler's single hardware credit until polling ends.
 - Define precise reset, timeout recovery and host-visible fault reporting.
 - Grow the admitted shader ISA only with matching RTL, validator and ABI rules.
 - Add runtime power management when required by the SoC integration.

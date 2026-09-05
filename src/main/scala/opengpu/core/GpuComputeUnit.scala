@@ -21,7 +21,12 @@ import opengpu.core.backend.writeback.ScalarCommitRequest
 class GpuComputeUnit(
   config: GpuConfig = GpuConfig(),
   useBlackBoxes: Boolean = false,
-  enableFpuBackend: Boolean = false
+  enableFpuBackend: Boolean = false,
+  instructionCacheSets: Int = 64,
+  instructionCacheWays: Int = 2,
+  instructionCacheMissEntries: Int = 4,
+  vectorCacheSets: Int = 64,
+  vectorCacheWays: Int = 2
 ) extends Module {
   val io = IO(new Bundle {
     val kernel = Flipped(Decoupled(new KernelLaunch(config)))
@@ -64,10 +69,22 @@ class GpuComputeUnit(
   })
 
   private val controller = Module(new SingleCuKernelController(config))
-  private val core = Module(new GpuCore(config, useBlackBoxes, enableFpuBackend))
+  private val core = Module(
+    new GpuCore(
+      config,
+      useBlackBoxes,
+      enableFpuBackend,
+      vectorCacheSets,
+      vectorCacheWays))
   private val system = Module(new WarpSystemControl(config))
   private val barrier = Module(new WorkgroupBarrierController(config))
-  private val instructionCache = Module(new InstructionCache(config))
+  private val instructionCache = Module(
+    new InstructionCache(
+      config,
+      instructionCacheSets,
+      instructionCacheWays,
+      lineBytes = 64,
+      missEntries = instructionCacheMissEntries))
   private val instructionTlb = Module(new InstructionTlb(config))
   private val instructionPageTableWalker = Module(new Sv32PageTableWalker(config))
   private val memoryInterconnect = Module(new ComputeUnitMemoryInterconnect(config))

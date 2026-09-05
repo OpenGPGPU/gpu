@@ -114,14 +114,17 @@ class FillEngine(
 
   private val responseId = io.memoryResponse.bits.transactionId - transactionIdBase.U
   private val responseInRange = responseId < lineSlots.U
-  private val responseExpected = responseInRange && pending(responseId)
+  private val responseSlot =
+    if (lineSlots == 1) 0.U
+    else responseId(log2Ceil(lineSlots) - 1, 0)
+  private val responseExpected = responseInRange && pending(responseSlot)
   io.memoryResponse.ready := active && responseExpected
   when(io.memoryResponse.valid) {
     assert(active && responseExpected,
       "fill response must identify an outstanding write slot")
   }
   when(io.memoryResponse.fire) {
-    pending(responseId) := false.B
+    pending(responseSlot) := false.B
     when(io.memoryResponse.bits.fault) {
       when(!aborting) {
         aborting := true.B

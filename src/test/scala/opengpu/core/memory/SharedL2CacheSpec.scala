@@ -159,7 +159,10 @@ class SharedL2CacheSpec extends AnyFlatSpec {
   }
 
   it should "invalidate another CU sharer before accepting a write" in {
-    simulate(new SharedL2Cache(GpuConfig(lanes = 4), sets = 8, ways = 2)) { dut =>
+    // Exercise the single-bank owner path used by the bounded integrated PPA
+    // top as well as the coherence handshake itself.
+    simulate(new SharedL2Cache(
+      GpuConfig(lanes = 4), sets = 8, ways = 2, banks = 1)) { dut =>
       initialize(dut)
       // CU0 local transaction 0 fills the line and becomes a sharer.
       requestLine(dut, 0xc000, 0)

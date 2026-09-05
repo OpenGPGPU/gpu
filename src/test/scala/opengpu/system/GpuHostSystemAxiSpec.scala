@@ -211,6 +211,8 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
       lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
     simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
       initialize(dut)
+      assert((axiRead(dut, RenderHostRegs.CAPABILITIES) & (1 << 6)) != 0L,
+        "integrated host must advertise unified-command MMIO")
       axiWrite(dut, RenderHostRegs.IRQ, 1)
       axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 9)
       axiWrite(dut, GpuCommandMmioRegs.OPCODE,

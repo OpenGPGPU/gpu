@@ -51,7 +51,7 @@ global atomic traffic. No secondary memory port remains on the integrated top.
 | 0x54 | SCANOUT_FORMAT | RW | 0 = RGBA8888 |
 | 0x58 | SCANOUT_CONTROL | RW | bit 0 ENABLE |
 | 0x5C | SCANOUT_STATUS | RO | bit 0 ACTIVE |
-| 0x60 | CAPABILITIES | RO | fragment core, job/IH rings, vertex core, clear/blit/strided engines and batch capacity |
+| 0x60 | CAPABILITIES | RO | fragment core, job/IH rings, vertex core, clear/blit/strided engines, unified commands and batch capacity |
 | 0x64 | JOB_RING_BASE | RW | job-ring byte address |
 | 0x68 | JOB_RING_SIZE | RW | power-of-two entry count |
 | 0x6C | JOB_WPTR | RW | host producer pointer/doorbell |
@@ -76,6 +76,29 @@ global atomic traffic. No secondary memory port remains on the integrated top.
 | 0xB8 | STRIDED_SRC_STRIDE | RW | source row stride, aligned and at least width |
 | 0xBC | STRIDED_DST_STRIDE | RW | destination row stride, aligned and at least width |
 | 0xC0 | STRIDED_START | W1P | start non-overlapping 2D copy |
+| 0xC4 | UCMD_ID | RW | unified command ID, low 8 bits |
+| 0xC8 | UCMD_OPCODE | RW | kernel, copy, fill or strided-copy opcode |
+| 0xCC | UCMD_KERNEL_PC | RW | compute kernel entry PC |
+| 0xD0 | UCMD_KERNARG | RW | compute kernarg byte address |
+| 0xD4-0xDC | UCMD_GRID_X/Y/Z | RW | compute grid dimensions |
+| 0xE0-0xE8 | UCMD_LOCAL_X/Y/Z | RW | compute workgroup dimensions |
+| 0xEC | UCMD_FLAGS | RW | wait-DMA, wait-event and signal-event enables |
+| 0xF0 | UCMD_DMA_DEPENDENCY | RW | DMA source `[1:0]` and descriptor ID `[15:8]` |
+| 0xF4 | UCMD_SOURCE | RW | copy source byte address |
+| 0xF8 | UCMD_DESTINATION | RW | copy/fill destination byte address |
+| 0xFC | UCMD_BYTES | RW | linear copy/fill byte count |
+| 0x100 | UCMD_PATTERN | RW | fill pattern |
+| 0x104 | UCMD_WIDTH | RW | strided-copy width in bytes |
+| 0x108 | UCMD_HEIGHT | RW | strided-copy row count |
+| 0x10C | UCMD_SOURCE_STRIDE | RW | strided-copy source stride |
+| 0x110 | UCMD_DEST_STRIDE | RW | strided-copy destination stride |
+| 0x114 | UCMD_WAIT_EVENT | RW | event ID `[7:0]` and generation `[15:8]` |
+| 0x118 | UCMD_SIGNAL_EVENT | RW | event ID `[7:0]` and generation `[15:8]` |
+| 0x11C | UCMD_SUBMIT | W1P | snapshot and enqueue when bit 0 is written |
+| 0x120 | UCMD_STATUS | RO/W1C | ready, completion-valid and submit-overflow; bit 2 clears overflow |
+| 0x124 | UCMD_COMPLETION | RO | ID `[7:0]`, opcode `[10:8]`, status `[14:11]`, success `[15]` |
+| 0x128-0x12C | UCMD_COMPLETION_BYTES | RO | processed byte count, low then high word |
+| 0x130 | UCMD_COMPLETION_POP | W1P | consume completion when bit 0 is written |
 
 START snapshots the programmed job state. On queue-capable hardware, the host
 writes a 64-byte descriptor to the job ring and advances `JOB_WPTR`. Jobs
@@ -83,6 +106,13 @@ execute in order. Completion writes a 16-byte IH record before raising the
 interrupt; the driver drains records by job id and retires the matching fence.
 Legacy register-programmed START remains supported and is mutually exclusive
 with queued execution.
+
+Integrated hosts advertise `CAPABILITIES[6]` when the unified command bank is
+present. Software must test this bit before accessing `UCMD_*`. A command ID
+remains reserved from submission until its completion is popped; duplicate IDs
+are not accepted. The staging FIFO preserves submission order, while engines
+may finish independently and report their opcode and status in the common
+completion format.
 
 ### Shared-memory ABI
 
@@ -205,11 +235,15 @@ result must be consumed before the interrupt is acknowledged.
 - ARTI-generated QEMU/Linux device, shared guest-memory access and end-to-end
   DRM/KMS execution.
 - Shared `m_irq` delivery for graphics and unified-command completions.
+- Capability discovery and a synchronized register ABI for unified compute and
+  DMA command submission/completion.
+- Linux fill/blit/strided-copy ioctls use unified commands when capability bit
+  6 is present and fall back to their dedicated register banks otherwise.
 
 ## Next
 
-- Add general compute descriptors to the shared queue; migrate the current
-  ordered fill/blit/strided-copy jobs onto that common descriptor path.
+- Add Linux general-compute descriptors and asynchronous fence retirement for
+  unified completions; DMA jobs currently poll the common completion slot.
 - Define ABI-visible fault codes, reset recovery and timeout behavior.
 - Expand shader profiles and resource types only with matching hardware and
   validation.

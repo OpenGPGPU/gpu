@@ -72,6 +72,17 @@ ASAP7 TC/SLVT, 1 GHz, 25% utilization, density 0.60, no retiming. Emitted RTL
 is under `generated/ppa_refresh_head/`, physical artifacts under
 `generated/ppa_runs/head_*` (post-route unless noted).
 
+The bounded complete integration tops are `gpu-host-system-fc` and
+`gpu-host-system-vc`. They include the AXI host, fixed-function graphics,
+shared shader CU, general compute CU, DMA engines and shared L2. Both use a
+16x16 render target and reduced cache/L2 capacities so full-top synthesis can
+be attempted without changing the product defaults. For example:
+
+```sh
+sbt -batch 'runMain opengpu.elaboration.EmitPpaRtl gpu-host-system-vc generated/ppa_refresh_head/gpu_host_system_vc'
+scripts/run_graphics_ppa.py generated/ppa_refresh_head/gpu_host_system_vc GpuHostSystemAxi synthesis-only
+```
+
 | Block | Status | Result |
 |---|---|---|
 | CommandBufferStage (scene/scalar) | post-route PASS | 1779.42 MHz, +55.829 ps, 5412.91 um^2, 29.10 mW, DRC 0 |

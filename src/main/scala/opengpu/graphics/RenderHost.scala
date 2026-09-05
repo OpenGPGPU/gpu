@@ -152,7 +152,8 @@ class RenderHost(
   fragCore: Boolean = false,
   vertCore: Boolean = false,
   deviceId: Int = 0x4755, // 'GU'
-  version: Int = 0x0001
+  version: Int = 0x0001,
+  unifiedCommands: Boolean = false
 ) extends Module {
   override def desiredName: String = "RenderHost"
 
@@ -398,7 +399,7 @@ class RenderHost(
   private val capabilityBits =
     ((if (fragCore) 1 else 0) | (1 << 1) |
       (if (vertCore) (1 << 2) else 0) | (1 << 3) |
-      (1 << 4) | (1 << 5) |
+      (1 << 4) | (1 << 5) | (if (unifiedCommands) (1 << 6) else 0) |
       (gpuConfig.warps * gpuConfig.lanes << 8)).U(32.W)
   private val jobStatusBits = Cat(
     0.U(22.W), jq.io.pendingValid, jq.io.running, 0.U(7.W), jqEnabled)

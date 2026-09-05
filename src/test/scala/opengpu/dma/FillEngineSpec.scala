@@ -81,6 +81,27 @@ class FillEngineSpec extends AnyFlatSpec {
     }
   }
 
+  it should "map a narrow slot index into a wider shared transaction range" in {
+    simulate(new FillEngine(
+      GpuConfig(lanes = 4),
+      descriptorIdWidth = 4,
+      maxOutstanding = 8,
+      lineSlots = 2,
+      transactionIdBase = 4)) { dut =>
+      initialize(dut)
+      submit(dut, 5, 0x5800, 64, 0x12345678L)
+
+      dut.io.memoryRequest.valid.expect(true.B)
+      dut.io.memoryRequest.bits.transactionId.expect(4.U)
+      dut.clock.step()
+      respond(dut, 4)
+      dut.clock.step()
+      dut.io.completion.valid.expect(true.B)
+      dut.io.completion.bits.success.expect(true.B)
+      dut.io.completion.bits.bytesFilled.expect(64.U)
+    }
+  }
+
   it should "reject unaligned and non-line-sized descriptors" in {
     simulate(new FillEngine(GpuConfig(lanes = 4), descriptorIdWidth = 4)) { dut =>
       initialize(dut)

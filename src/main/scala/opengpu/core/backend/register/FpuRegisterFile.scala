@@ -1,7 +1,7 @@
 package opengpu.core.backend.register
 
 import chisel3._
-import chisel3.util.Valid
+import chisel3.util.{Mux1H, Valid}
 import opengpu.config.GpuConfig
 
 class FpuRegisterRead(config: GpuConfig) extends Bundle {
@@ -44,7 +44,12 @@ class FpuRegisterFile(config: GpuConfig = GpuConfig()) extends Module {
     if (config.warps == 1) {
       registers(0)(index)
     } else {
-      registers(warpId)(index)
+      // Select the register within each warp before selecting the warp.  A
+      // nested dynamic Vec index otherwise lowers to a mux of whole register
+      // arrays, which cannot be emitted with disallowPackedArrays.
+      Mux1H((0 until config.warps).map { warp =>
+        (warpId === warp.U) -> registers(warp)(index)
+      })
     }
   private def readWithBypass(
     warpId: UInt,

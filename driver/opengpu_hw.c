@@ -408,6 +408,19 @@ int opengpu_hw_init(struct opengpu_device *gpu, struct platform_device *pdev)
              "GPU ABI device=0x%08x version=0x%04x capabilities=0x%08x\n",
              id, id & 0xffff, gpu->hw.capabilities);
 
+    if (gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS) {
+        u32 command_status = opengpu_reg_read(gpu, GPU_REG_UCMD_STATUS);
+
+        /* Firmware must hand the device to Linux idle. Discard a consumed
+         * boot-time result and clear the sticky submit-overflow diagnostic so
+         * the first scheduler job starts from an owned completion slot. */
+        if (command_status & GPU_UCMD_STATUS_COMPLETION)
+            opengpu_reg_write(gpu, GPU_REG_UCMD_COMPLETION_POP, 1);
+        if (command_status & GPU_UCMD_STATUS_OVERFLOW)
+            opengpu_reg_write(gpu, GPU_REG_UCMD_STATUS,
+                              GPU_UCMD_STATUS_OVERFLOW);
+    }
+
     gpu->hw.irq = platform_get_irq_optional(pdev, 0);
     if (gpu->hw.irq == -EPROBE_DEFER)
         return -EPROBE_DEFER;
@@ -598,6 +611,96 @@ static int opengpu_hw_submit_locked(struct opengpu_device *gpu,
     return opengpu_hw_submit_legacy_locked(gpu, job, out_fence);
 }
 
+static int opengpu_hw_unified_result_error(u32 status)
+{
+    switch (status) {
+    case GPU_UCMD_RESULT_SUCCESS:
+        return 0;
+    case GPU_UCMD_RESULT_INVALID_ALIGNMENT:
+    case GPU_UCMD_RESULT_INVALID_LENGTH:
+    case GPU_UCMD_RESULT_ADDRESS_OVERFLOW:
+        return -ERANGE;
+    case GPU_UCMD_RESULT_OVERLAP_UNSUPPORTED:
+        return -EINVAL;
+    case GPU_UCMD_RESULT_READ_FAULT:
+    case GPU_UCMD_RESULT_WRITE_FAULT:
+    default:
+        return -EIO;
+    }
+}
+
+/* Submit one DMA operation through the integrated common command payload.
+ * DRM scheduler credit_limit=1 and submit_lock serialize this single MMIO
+ * completion slot. Older tops retain the dedicated-engine fallback below. */
+static int opengpu_hw_unified_dma_locked(struct opengpu_device *gpu,
+                                         u32 opcode, u32 source,
+                                         u32 destination, u32 bytes,
+                                         u32 pattern, u32 height,
+                                         u32 source_stride,
+                                         u32 destination_stride,
+                                         u64 expected_bytes)
+{
+    unsigned long timeout;
+    u64 processed;
+    u32 command_id;
+    u32 completion;
+    u32 status;
+    int ret;
+
+    status = opengpu_reg_read(gpu, GPU_REG_UCMD_STATUS);
+    if (!(status & GPU_UCMD_STATUS_READY) ||
+        (status & GPU_UCMD_STATUS_COMPLETION))
+        return -EBUSY;
+    if (status & GPU_UCMD_STATUS_OVERFLOW)
+        opengpu_reg_write(gpu, GPU_REG_UCMD_STATUS,
+                          GPU_UCMD_STATUS_OVERFLOW);
+
+    command_id = opengpu_next_job_id(gpu) & 0xffu;
+    opengpu_reg_write(gpu, GPU_REG_UCMD_ID, command_id);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_OPCODE, opcode);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_FLAGS, 0);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_SOURCE, source);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_DESTINATION, destination);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_BYTES, bytes);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_PATTERN, pattern);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_WIDTH, bytes);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_HEIGHT, height);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_SOURCE_STRIDE, source_stride);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_DEST_STRIDE,
+                      destination_stride);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_SUBMIT, 1);
+
+    timeout = jiffies + msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS);
+    do {
+        status = opengpu_reg_read(gpu, GPU_REG_UCMD_STATUS);
+        if (status & GPU_UCMD_STATUS_COMPLETION)
+            break;
+        if (status & GPU_UCMD_STATUS_OVERFLOW)
+            return -EBUSY;
+        if (time_after(jiffies, timeout))
+            return -ETIMEDOUT;
+        opengpu_hw_progress_tick(gpu);
+        cond_resched();
+    } while (true);
+
+    completion = opengpu_reg_read(gpu, GPU_REG_UCMD_COMPLETION);
+    processed = opengpu_reg_read(gpu,
+        GPU_REG_UCMD_COMPLETION_BYTES_LO);
+    processed |= (u64)opengpu_reg_read(gpu,
+        GPU_REG_UCMD_COMPLETION_BYTES_HI) << 32;
+    ret = opengpu_hw_unified_result_error(
+        GPU_UCMD_COMPLETION_STATUS(completion));
+    if (GPU_UCMD_COMPLETION_ID(completion) != command_id ||
+        GPU_UCMD_COMPLETION_OPCODE(completion) != opcode)
+        ret = -EIO;
+    else if (!GPU_UCMD_COMPLETION_SUCCESS(completion) && !ret)
+        ret = -EIO;
+    else if (!ret && processed != expected_bytes)
+        ret = -EIO;
+    opengpu_reg_write(gpu, GPU_REG_UCMD_COMPLETION_POP, 1);
+    return ret;
+}
+
 int opengpu_hw_submit_async(struct opengpu_device *gpu,
                             const struct opengpu_job *job,
                             struct dma_fence **out_fence)
@@ -671,6 +774,11 @@ static int opengpu_hw_clear_locked(struct opengpu_device *gpu, u32 base,
     if (engine_busy)
         return -EBUSY;
 
+    if (gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS)
+        return opengpu_hw_unified_dma_locked(
+            gpu, GPU_UCMD_OP_FILL, 0, base, bytes, pattern, 0, 0, 0,
+            bytes);
+
     opengpu_reg_write(gpu, GPU_REG_STATUS, GPU_STATUS_ERROR);
     opengpu_reg_write(gpu, GPU_REG_CLEAR_BASE, base);
     opengpu_reg_write(gpu, GPU_REG_CLEAR_BYTES, bytes);
@@ -720,6 +828,11 @@ static int opengpu_hw_blit_locked(struct opengpu_device *gpu, u32 source,
     spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
     if (engine_busy)
         return -EBUSY;
+
+    if (gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS)
+        return opengpu_hw_unified_dma_locked(
+            gpu, GPU_UCMD_OP_COPY, source, destination, bytes, 0, 0, 0, 0,
+            bytes);
 
     opengpu_reg_write(gpu, GPU_REG_STATUS, GPU_STATUS_ERROR);
     opengpu_reg_write(gpu, GPU_REG_BLIT_SRC_BASE, source);
@@ -781,6 +894,12 @@ static int opengpu_hw_strided_blit_locked(struct opengpu_device *gpu,
     spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
     if (engine_busy)
         return -EBUSY;
+
+    if (gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS)
+        return opengpu_hw_unified_dma_locked(
+            gpu, GPU_UCMD_OP_STRIDED_COPY, source, destination, width, 0,
+            height, source_stride, destination_stride,
+            (u64)width * height);
 
     opengpu_reg_write(gpu, GPU_REG_STATUS, GPU_STATUS_ERROR);
     opengpu_reg_write(gpu, GPU_REG_STRIDED_SRC_BASE, source);

@@ -825,8 +825,11 @@ class SharedL2Cache(
       invalidateBusy := true.B
       invalidateOwner := invalidateArbiter.io.chosen
     }
-    io.invalidateDone(cu).ready := invalidateBusy &&
+    io.invalidateDone(cu).ready := invalidateBusy && (if (banks == 1) {
+      slices.head.io.invalidateDone(cu).ready
+    } else {
       VecInit(slices.map(_.io.invalidateDone(cu).ready))(invalidateOwner)
+    })
     when(io.invalidateDone(cu).fire) { invalidateBusy := false.B }
   }
 
@@ -869,8 +872,11 @@ class SharedL2Cache(
   private val responseId = io.memoryResponse.bits.transactionId
   private val responseInRange = responseId < maxOutstanding.U
   private val responseValid = responseInRange && lowerValid(responseId)
-  io.memoryResponse.ready := responseValid &&
+  io.memoryResponse.ready := responseValid && (if (banks == 1) {
+    slices.head.io.memoryResponse.ready
+  } else {
     VecInit(slices.map(_.io.memoryResponse.ready))(lowerOwner(responseId))
+  })
   when(io.memoryResponse.fire) { lowerValid(responseId) := false.B }
   when(io.memoryResponse.valid) {
     assert(responseValid,

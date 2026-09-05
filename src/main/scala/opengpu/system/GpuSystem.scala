@@ -53,7 +53,12 @@ class GpuSystem(
   useBlackBoxes: Boolean = false,
   enableFpuBackend: Boolean = false,
   enableUnifiedCommands: Boolean = false,
-  graphicsHostTransactions: Int = 8
+  graphicsHostTransactions: Int = 8,
+  instructionCacheSets: Int = 64,
+  instructionCacheWays: Int = 2,
+  instructionCacheMissEntries: Int = 4,
+  vectorCacheSets: Int = 64,
+  vectorCacheWays: Int = 2
 ) extends Module {
   require(numComputeUnits > 0)
   require(graphicsHostTransactions > 0 && isPow2(graphicsHostTransactions),
@@ -190,7 +195,16 @@ class GpuSystem(
     useSramBlackBoxes = useBlackBoxes))
   l2.io.clearPerformanceCounters := io.clearPerformanceCounters
   private val computeUnits = Seq.fill(numComputeUnits) {
-    Module(new GpuComputeUnit(config, useBlackBoxes, enableFpuBackend))
+    Module(
+      new GpuComputeUnit(
+        config,
+        useBlackBoxes,
+        enableFpuBackend,
+        instructionCacheSets,
+        instructionCacheWays,
+        instructionCacheMissEntries,
+        vectorCacheSets,
+        vectorCacheWays))
   }
   // The generic compute system has no graphics sampler. Keep the optional
   // texture-instruction sideband quiescent; graphics top levels connect it to

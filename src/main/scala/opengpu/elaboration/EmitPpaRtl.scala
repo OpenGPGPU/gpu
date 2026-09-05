@@ -27,7 +27,7 @@ import opengpu.graphics.{
 }
 import opengpu.core.execute.fpu.Fp32ExactUnit
 import opengpu.core.execute.fpu.Fp32DivLane
-import opengpu.system.GpuSystem
+import opengpu.system.{GpuHostSystemAxi, GpuSystem}
 import opengpu.core.vector.{
   VectorFcvtAlu,
   VectorFdivAlu,
@@ -245,7 +245,41 @@ object EmitPpaRtl {
             commandIdWidth = 4,
             transactionsPerCu = 4,
             useBlackBoxes = false,
-            enableFpuBackend = true),
+            enableFpuBackend = true,
+            instructionCacheSets = 16,
+            instructionCacheWays = 2,
+            instructionCacheMissEntries = 2,
+            vectorCacheSets = 8,
+            vectorCacheWays = 2),
+          stageArgs, firtoolArgs)
+      case "gpu-host-system-fc" | "gpu-host-system-vc" =>
+        val vertCore = args(0) == "gpu-host-system-vc"
+        ChiselStage.emitSystemVerilogFile(
+          new GpuHostSystemAxi(
+            GraphicsConfig(
+              screenWidth = 16,
+              screenHeight = 16,
+              subPixelBits = 8),
+            GpuConfig(
+              lanes = 4,
+              warps = 2,
+              sharedMemoryBytes = 256,
+              sharedMemoryBanks = 4,
+              l2Sets = 8,
+              l2Ways = 2,
+              l2Banks = 1),
+            numComputeUnits = 1,
+            commandIdWidth = 4,
+            transactionsPerCu = 4,
+            fragCore = true,
+            vertCore = vertCore,
+            useBlackBoxes = false,
+            enableFpuBackend = true,
+            instructionCacheSets = 16,
+            instructionCacheWays = 2,
+            instructionCacheMissEntries = 2,
+            vectorCacheSets = 8,
+            vectorCacheWays = 2),
           stageArgs, firtoolArgs)
       case "frontend" =>
         ChiselStage.emitSystemVerilogFile(

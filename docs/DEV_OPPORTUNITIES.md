@@ -42,6 +42,12 @@ Priority order:
   invalidation and global atomics; the integrated top now has one memory port.
 - Shared sticky interrupt delivery for graphics and unified-command
   completions through the existing AXI IRQ enable/pending register.
+- Bounded fixed-function and vertex-core PPA emitters for the complete AXI
+  host + graphics + compute/DMA + shared-L2 integration top.
+- ABI-defined unified-command MMIO with capability discovery for the next
+  Linux compute/DMA submission path.
+- Linux fill/blit/strided-copy jobs select that unified payload on integrated
+  hardware while retaining compatibility with dedicated-engine registers.
 
 ## Next
 
@@ -49,8 +55,8 @@ Priority order:
 
 - Measure full-system cost by resolution and select a practical regression
   default.
-- Expose general compute jobs through Linux, and migrate the existing
-  fill/blit/strided-copy ioctls onto the unified queue payload.
+- Expose general compute jobs through Linux and convert the currently polled
+  unified DMA completion slot to scheduler-owned asynchronous fences.
 
 ### Mid term
 
