@@ -23,18 +23,6 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
     dut.io.memoryResponse.valid.poke(false.B)
     dut.io.memoryResponse.bits.poke(
       0.U.asTypeOf(dut.io.memoryResponse.bits))
-    dut.io.kernelMemReq.ready.poke(true.B)
-    dut.io.kernelMemResp.valid.poke(false.B)
-    dut.io.kernelMemResp.bits.poke(
-      0.U.asTypeOf(dut.io.kernelMemResp.bits))
-    dut.io.kernelL1Invalidate.valid.poke(false.B)
-    dut.io.kernelL1Invalidate.bits.poke(
-      0.U.asTypeOf(dut.io.kernelL1Invalidate.bits))
-    dut.io.kernelL1InvalidateDone.ready.poke(true.B)
-    dut.io.kernelGlobalAtomicRequest.ready.poke(true.B)
-    dut.io.kernelGlobalAtomicResponse.valid.poke(false.B)
-    dut.io.kernelGlobalAtomicResponse.bits.poke(
-      0.U.asTypeOf(dut.io.kernelGlobalAtomicResponse.bits))
     dut.io.s_axi_aresetn.poke(false.B)
     dut.clock.step()
     dut.io.s_axi_aresetn.poke(true.B)

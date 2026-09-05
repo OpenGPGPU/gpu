@@ -4,13 +4,7 @@ import chisel3._
 import chisel3.util._
 import opengpu.command.{GpuCommand, GpuCommandResult}
 import opengpu.config.GpuConfig
-import opengpu.core.memory.{
-  CacheLineInvalidate,
-  ComputeMemoryRequest,
-  ComputeMemoryResponse,
-  SharedAtomicRequest,
-  SharedAtomicResponse
-}
+import opengpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse}
 import opengpu.graphics.{
   GpuHostAxi,
   GraphicsConfig,
@@ -21,9 +15,9 @@ import opengpu.graphics.{
   *
   * The graphics host's eight-ID cache-line port and the compute/DMA clients
   * share one lower-memory port. Command-buffer, framebuffer and texture word
-  * clients are adapted internally. The graphics shader's separate cached,
-  * coherence and atomic ports remain explicit until it joins the compute
-  * system's coherent-client topology.
+  * clients are adapted internally. The graphics shader is an additional
+  * coherent L2 client, including private-cache invalidation and global atomic
+  * channels, so the top exposes only one lower-memory port.
   */
 class GpuHostSystemAxi(
   graphicsConfig: GraphicsConfig = GraphicsConfig(),
@@ -93,16 +87,6 @@ class GpuHostSystemAxi(
     val memoryResponse = Flipped(Decoupled(new ComputeMemoryResponse(
       64, systemTransactions)))
 
-    val kernelMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig))
-    val kernelMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
-    val kernelL1Invalidate = Flipped(Decoupled(
-      new CacheLineInvalidate(gpuConfig)))
-    val kernelL1InvalidateDone = Decoupled(
-      new CacheLineInvalidate(gpuConfig))
-    val kernelGlobalAtomicRequest = Decoupled(
-      new SharedAtomicRequest(gpuConfig))
-    val kernelGlobalAtomicResponse = Flipped(Decoupled(
-      new SharedAtomicResponse(gpuConfig)))
     /** Compute/unified-command activity; graphics STATUS remains AXI-visible. */
     val commandBusy = Output(Bool())
     val performance = Output(new GpuPerformanceCounters)
@@ -148,12 +132,15 @@ class GpuHostSystemAxi(
     host.io.s_axi_rready := io.s_axi_rready
     io.m_irq := host.io.m_irq
 
-    host.io.kernelMemReq <> io.kernelMemReq
-    host.io.kernelMemResp <> io.kernelMemResp
-    host.io.kernelL1Invalidate <> io.kernelL1Invalidate
-    io.kernelL1InvalidateDone <> host.io.kernelL1InvalidateDone
-    host.io.kernelGlobalAtomicRequest <> io.kernelGlobalAtomicRequest
-    host.io.kernelGlobalAtomicResponse <> io.kernelGlobalAtomicResponse
+    system.io.graphicsShaderRequest <> host.io.kernelMemReq
+    host.io.kernelMemResp <> system.io.graphicsShaderResponse
+    system.io.graphicsShaderL1Invalidate <> host.io.kernelL1Invalidate
+    host.io.kernelL1InvalidateDone <>
+      system.io.graphicsShaderL1InvalidateDone
+    system.io.graphicsShaderAtomicRequest <>
+      host.io.kernelGlobalAtomicRequest
+    host.io.kernelGlobalAtomicResponse <>
+      system.io.graphicsShaderAtomicResponse
     val cbBridge = Module(new OmWordToLinePort(
       gpuConfig, 64, wordPortTransactions))
     val fbBridge = Module(new OmWordToLinePort(

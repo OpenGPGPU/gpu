@@ -4,6 +4,7 @@ import chisel3._
 import chisel3.simulator.EphemeralSimulator._
 import opengpu.config.GpuConfig
 import opengpu.command.GpuCommandOpcode
+import opengpu.core.memory.AtomicMemoryOp
 import org.scalatest.flatspec.AnyFlatSpec
 
 class GpuSystemSpec extends AnyFlatSpec {
@@ -33,6 +34,18 @@ class GpuSystemSpec extends AnyFlatSpec {
     dut.io.graphicsHostRequest.bits.poke(
       0.U.asTypeOf(dut.io.graphicsHostRequest.bits))
     dut.io.graphicsHostResponse.ready.poke(true.B)
+    dut.io.graphicsShaderRequest.valid.poke(false.B)
+    dut.io.graphicsShaderRequest.bits.poke(
+      0.U.asTypeOf(dut.io.graphicsShaderRequest.bits))
+    dut.io.graphicsShaderResponse.ready.poke(true.B)
+    dut.io.graphicsShaderL1Invalidate.ready.poke(true.B)
+    dut.io.graphicsShaderL1InvalidateDone.valid.poke(false.B)
+    dut.io.graphicsShaderL1InvalidateDone.bits.poke(
+      0.U.asTypeOf(dut.io.graphicsShaderL1InvalidateDone.bits))
+    dut.io.graphicsShaderAtomicRequest.valid.poke(false.B)
+    dut.io.graphicsShaderAtomicRequest.bits.poke(
+      0.U.asTypeOf(dut.io.graphicsShaderAtomicRequest.bits))
+    dut.io.graphicsShaderAtomicResponse.ready.poke(true.B)
     dut.io.memoryRequest.ready.poke(true.B)
     dut.io.memoryResponse.valid.poke(false.B)
     dut.io.memoryResponse.bits.poke(
@@ -157,6 +170,145 @@ class GpuSystemSpec extends AnyFlatSpec {
       dut.io.graphicsHostResponse.bits.transactionId.expect(5.U)
       dut.io.graphicsHostResponse.bits.readData.expect(line.U)
       dut.io.graphicsHostResponse.bits.fault.expect(false.B)
+    }
+  }
+
+  it should "coherently attach the graphics shader to the shared L2" in {
+    val config = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuSystem(config, numComputeUnits = 2)) { dut =>
+      initialize(dut, 2)
+      val address = 0x5800
+      val line = BigInt("cafebabedeadbeef", 16)
+
+      dut.io.graphicsShaderRequest.bits.poke(
+        0.U.asTypeOf(dut.io.graphicsShaderRequest.bits))
+      dut.io.graphicsShaderRequest.bits.address.poke(address.U)
+      dut.io.graphicsShaderRequest.bits.sizeLog2.poke(6.U)
+      dut.io.graphicsShaderRequest.bits.cacheClient.poke(true.B)
+      dut.io.graphicsShaderRequest.bits.transactionId.poke(3.U)
+      dut.io.graphicsShaderRequest.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.graphicsShaderRequest.valid.poke(false.B)
+
+      var cycles = 0
+      while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 40) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.memoryRequest.valid.expect(true.B)
+      dut.io.memoryRequest.bits.address.expect(address.U)
+      val readId = dut.io.memoryRequest.bits.transactionId.peek().litValue
+      dut.clock.step()
+      dut.io.memoryResponse.bits.transactionId.poke(readId.U)
+      dut.io.memoryResponse.bits.readData.poke(line.U)
+      dut.io.memoryResponse.bits.fault.poke(false.B)
+      dut.io.memoryResponse.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.memoryResponse.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.graphicsShaderResponse.valid.peek().litToBoolean &&
+          cycles < 40) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.graphicsShaderResponse.valid.expect(true.B)
+      dut.io.graphicsShaderResponse.bits.transactionId.expect(3.U)
+      dut.io.graphicsShaderResponse.bits.readData.expect(line.U)
+      dut.clock.step()
+
+      // A foreign graphics word/line client writing the cached line must
+      // invalidate the graphics shader's private copy before reaching memory.
+      dut.io.graphicsHostRequest.bits.poke(
+        0.U.asTypeOf(dut.io.graphicsHostRequest.bits))
+      dut.io.graphicsHostRequest.bits.address.poke(address.U)
+      dut.io.graphicsHostRequest.bits.writeData.poke("h11223344".U)
+      dut.io.graphicsHostRequest.bits.byteMask.poke(0xf.U)
+      dut.io.graphicsHostRequest.bits.isWrite.poke(true.B)
+      dut.io.graphicsHostRequest.bits.sizeLog2.poke(6.U)
+      dut.io.graphicsHostRequest.bits.transactionId.poke(7.U)
+      dut.io.graphicsHostRequest.valid.poke(true.B)
+      while (!dut.io.graphicsHostRequest.ready.peek().litToBoolean)
+        dut.clock.step()
+      dut.clock.step()
+      dut.io.graphicsHostRequest.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.graphicsShaderL1Invalidate.valid.peek().litToBoolean &&
+          cycles < 40) {
+        dut.io.memoryRequest.valid.expect(false.B)
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.graphicsShaderL1Invalidate.valid.expect(true.B)
+      dut.io.graphicsShaderL1Invalidate.bits.lineAddress.expect(address.U)
+      dut.clock.step()
+      dut.io.graphicsShaderL1InvalidateDone.bits.lineAddress.poke(address.U)
+      dut.io.graphicsShaderL1InvalidateDone.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.graphicsShaderL1InvalidateDone.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 40) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.memoryRequest.valid.expect(true.B)
+      dut.io.memoryRequest.bits.address.expect(address.U)
+      dut.io.memoryRequest.bits.isWrite.expect(true.B)
+    }
+  }
+
+  it should "route graphics-shader global atomics through the shared L2" in {
+    val config = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuSystem(config, numComputeUnits = 2)) { dut =>
+      initialize(dut, 2)
+      dut.io.graphicsShaderAtomicRequest.bits.warpId.poke(1.U)
+      dut.io.graphicsShaderAtomicRequest.bits.address.poke(0x6004.U)
+      dut.io.graphicsShaderAtomicRequest.bits.operand.poke(3.U)
+      dut.io.graphicsShaderAtomicRequest.bits.operation.poke(AtomicMemoryOp.add)
+      dut.io.graphicsShaderAtomicRequest.valid.poke(true.B)
+      while (!dut.io.graphicsShaderAtomicRequest.ready.peek().litToBoolean)
+        dut.clock.step()
+      dut.clock.step()
+      dut.io.graphicsShaderAtomicRequest.valid.poke(false.B)
+
+      var cycles = 0
+      while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 40) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.memoryRequest.bits.isWrite.expect(false.B)
+      dut.io.memoryRequest.bits.address.expect(0x6000.U)
+      val readId = dut.io.memoryRequest.bits.transactionId.peek().litValue
+      dut.clock.step()
+      dut.io.memoryResponse.bits.transactionId.poke(readId.U)
+      dut.io.memoryResponse.bits.readData.poke((BigInt(5) << 32).U)
+      dut.io.memoryResponse.bits.fault.poke(false.B)
+      dut.io.memoryResponse.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.memoryResponse.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 40) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.memoryRequest.bits.isWrite.expect(true.B)
+      dut.io.memoryRequest.bits.address.expect(0x6000.U)
+      dut.io.memoryRequest.bits.byteMask.expect(0xf0.U)
+      dut.io.memoryRequest.bits.writeData.expect((BigInt(8) << 32).U)
+      val writeId = dut.io.memoryRequest.bits.transactionId.peek().litValue
+      dut.clock.step()
+      dut.io.memoryResponse.bits.transactionId.poke(writeId.U)
+      dut.io.memoryResponse.bits.readData.poke(0.U)
+      dut.io.memoryResponse.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.memoryResponse.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.graphicsShaderAtomicResponse.valid.peek().litToBoolean &&
+          cycles < 40) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.graphicsShaderAtomicResponse.valid.expect(true.B)
+      dut.io.graphicsShaderAtomicResponse.bits.warpId.expect(1.U)
+      dut.io.graphicsShaderAtomicResponse.bits.oldValue.expect(5.U)
+      dut.io.graphicsShaderAtomicResponse.bits.fault.expect(false.B)
     }
   }
 

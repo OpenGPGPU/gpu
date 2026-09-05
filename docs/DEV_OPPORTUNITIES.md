@@ -38,6 +38,8 @@ Priority order:
   graphics/compute/DMA L2 line port and collision-free transaction-ID ranges.
 - Internal command-buffer, framebuffer and texture word-to-line bridges in the
   integrated top; these clients no longer require independent lower ports.
+- A dedicated coherent-client slot for the graphics shader, including L1
+  invalidation and global atomics; the integrated top now has one memory port.
 
 ## Next
 
@@ -45,8 +47,8 @@ Priority order:
 
 - Measure full-system cost by resolution and select a practical regression
   default.
-- Attach the graphics shader's cached/coherence/atomic client to `GpuSystem`,
-  then converge graphics and general-compute completion/interrupt delivery.
+- Converge graphics and general-compute completion/interrupt delivery on the
+  integrated top.
 - Expose general compute jobs through Linux, and migrate the existing
   fill/blit/strided-copy ioctls onto the unified queue payload.
 

@@ -33,7 +33,7 @@ object GpuSystem {
     numComputeUnits: Int,
     transactionsPerCu: Int,
     graphicsHostTransactions: Int
-  ): Int = numComputeUnits * transactionsPerCu + copyTransactions +
+  ): Int = (numComputeUnits + 1) * transactionsPerCu + copyTransactions +
     fillTransactions + stridedCopyTransactions + graphicsHostTransactions
 }
 
@@ -41,9 +41,9 @@ object GpuSystem {
   *
   * Kernels carry host command tags, CUs execute independently, and one shared
   * memory port supports out-of-order responses through globally unique
-  * transaction IDs. The graphics host has a compatibility line client in the
-  * same L2 namespace, allowing host integration to proceed without changing
-  * the compute-unit contract.
+  * transaction IDs. The graphics shader occupies an additional coherent
+  * client slot, while non-cacheable graphics traffic uses a separate host ID
+  * range in the same L2 namespace.
   */
 class GpuSystem(
   config: GpuConfig = GpuConfig(),
@@ -59,10 +59,13 @@ class GpuSystem(
   require(graphicsHostTransactions > 0 && isPow2(graphicsHostTransactions),
     "graphics-host transaction count must be a positive power of two")
   private val totalTransactions = numComputeUnits * transactionsPerCu
+  private val graphicsShaderBase = totalTransactions
+  private val coherentTransactions =
+    (numComputeUnits + 1) * transactionsPerCu
   private val copyTransactions = GpuSystem.copyTransactions
   private val fillTransactions = GpuSystem.fillTransactions
   private val stridedCopyTransactions = GpuSystem.stridedCopyTransactions
-  private val copyBase = totalTransactions
+  private val copyBase = coherentTransactions
   private val fillBase = copyBase + copyTransactions
   private val stridedCopyBase = fillBase + fillTransactions
   private val graphicsHostBase =
@@ -100,6 +103,22 @@ class GpuSystem(
       config, 64, graphicsHostTransactions)))
     val graphicsHostResponse = Decoupled(new ComputeMemoryResponse(
       64, graphicsHostTransactions))
+
+    /** Cached graphics-shader client. Its IDs occupy one CU-sized range so
+      * the shared L2 tracks its private-cache sharers and invalidations.
+      */
+    val graphicsShaderRequest = Flipped(Decoupled(new ComputeMemoryRequest(
+      config, 64, transactionsPerCu)))
+    val graphicsShaderResponse = Decoupled(new ComputeMemoryResponse(
+      64, transactionsPerCu))
+    val graphicsShaderL1Invalidate = Decoupled(
+      new CacheLineInvalidate(config))
+    val graphicsShaderL1InvalidateDone = Flipped(Decoupled(
+      new CacheLineInvalidate(config)))
+    val graphicsShaderAtomicRequest = Flipped(Decoupled(
+      new SharedAtomicRequest(config)))
+    val graphicsShaderAtomicResponse = Decoupled(
+      new SharedAtomicResponse(config))
 
     val memoryRequest = Decoupled(new ComputeMemoryRequest(
       config, 64, totalSystemTransactions))
@@ -164,7 +183,8 @@ class GpuSystem(
     config, numComputeUnits, 64, transactionsPerCu))
   private val l2 = Module(new SharedL2Cache(
     config, sets = config.l2Sets, ways = config.l2Ways, lineBytes = 64,
-    maxOutstanding = totalSystemTransactions, numComputeUnits = numComputeUnits,
+    maxOutstanding = totalSystemTransactions,
+    numComputeUnits = numComputeUnits + 1,
     transactionsPerCu = transactionsPerCu, banks = config.l2Banks,
     requestQueueDepth = config.l2RequestQueueDepth,
     useSramBlackBoxes = useBlackBoxes))
@@ -334,38 +354,47 @@ class GpuSystem(
     stridedCopyEngine.io.completion.bits.success
 
   private val l2RequestArbiter = Module(new RRArbiter(
-    new ComputeMemoryRequest(config, 64, totalSystemTransactions), 5))
+    new ComputeMemoryRequest(config, 64, totalSystemTransactions), 6))
   l2RequestArbiter.io.in(0).valid := memory.io.memoryRequest.valid
   l2RequestArbiter.io.in(0).bits := memory.io.memoryRequest.bits
   memory.io.memoryRequest.ready := l2RequestArbiter.io.in(0).ready
-  l2RequestArbiter.io.in(1).valid := copyEngine.io.memoryRequest.valid
-  l2RequestArbiter.io.in(1).bits := copyEngine.io.memoryRequest.bits
+  l2RequestArbiter.io.in(1).valid := io.graphicsShaderRequest.valid
+  l2RequestArbiter.io.in(1).bits := io.graphicsShaderRequest.bits
   l2RequestArbiter.io.in(1).bits.transactionId :=
+    graphicsShaderBase.U(systemTransactionWidth.W) +
+    io.graphicsShaderRequest.bits.transactionId
+  io.graphicsShaderRequest.ready := l2RequestArbiter.io.in(1).ready
+  l2RequestArbiter.io.in(2).valid := copyEngine.io.memoryRequest.valid
+  l2RequestArbiter.io.in(2).bits := copyEngine.io.memoryRequest.bits
+  l2RequestArbiter.io.in(2).bits.transactionId :=
     copyBase.U(systemTransactionWidth.W) +
     copyEngine.io.memoryRequest.bits.transactionId
-  copyEngine.io.memoryRequest.ready := l2RequestArbiter.io.in(1).ready
-  l2RequestArbiter.io.in(2).valid := fillEngine.io.memoryRequest.valid
-  l2RequestArbiter.io.in(2).bits := fillEngine.io.memoryRequest.bits
-  l2RequestArbiter.io.in(2).bits.transactionId :=
+  copyEngine.io.memoryRequest.ready := l2RequestArbiter.io.in(2).ready
+  l2RequestArbiter.io.in(3).valid := fillEngine.io.memoryRequest.valid
+  l2RequestArbiter.io.in(3).bits := fillEngine.io.memoryRequest.bits
+  l2RequestArbiter.io.in(3).bits.transactionId :=
     fillBase.U(systemTransactionWidth.W) +
     fillEngine.io.memoryRequest.bits.transactionId
-  fillEngine.io.memoryRequest.ready := l2RequestArbiter.io.in(2).ready
-  l2RequestArbiter.io.in(3).valid := stridedCopyEngine.io.memoryRequest.valid
-  l2RequestArbiter.io.in(3).bits := stridedCopyEngine.io.memoryRequest.bits
-  l2RequestArbiter.io.in(3).bits.transactionId :=
+  fillEngine.io.memoryRequest.ready := l2RequestArbiter.io.in(3).ready
+  l2RequestArbiter.io.in(4).valid := stridedCopyEngine.io.memoryRequest.valid
+  l2RequestArbiter.io.in(4).bits := stridedCopyEngine.io.memoryRequest.bits
+  l2RequestArbiter.io.in(4).bits.transactionId :=
     stridedCopyBase.U(systemTransactionWidth.W) +
     stridedCopyEngine.io.memoryRequest.bits.transactionId
-  stridedCopyEngine.io.memoryRequest.ready := l2RequestArbiter.io.in(3).ready
-  l2RequestArbiter.io.in(4).valid := io.graphicsHostRequest.valid
-  l2RequestArbiter.io.in(4).bits := io.graphicsHostRequest.bits
-  l2RequestArbiter.io.in(4).bits.transactionId :=
+  stridedCopyEngine.io.memoryRequest.ready := l2RequestArbiter.io.in(4).ready
+  l2RequestArbiter.io.in(5).valid := io.graphicsHostRequest.valid
+  l2RequestArbiter.io.in(5).bits := io.graphicsHostRequest.bits
+  l2RequestArbiter.io.in(5).bits.transactionId :=
     graphicsHostBase.U(systemTransactionWidth.W) +
     io.graphicsHostRequest.bits.transactionId
-  io.graphicsHostRequest.ready := l2RequestArbiter.io.in(4).ready
+  io.graphicsHostRequest.ready := l2RequestArbiter.io.in(5).ready
   l2.io.request <> l2RequestArbiter.io.out
 
   private val l2ResponseForCu =
     l2.io.response.bits.transactionId < totalTransactions.U
+  private val l2ResponseForGraphicsShader =
+    l2.io.response.bits.transactionId >= graphicsShaderBase.U &&
+      l2.io.response.bits.transactionId < copyBase.U
   private val l2ResponseForCopy =
     l2.io.response.bits.transactionId >= copyBase.U &&
       l2.io.response.bits.transactionId < fillBase.U
@@ -383,6 +412,12 @@ class GpuSystem(
   memory.io.memoryResponse.bits.fault := l2.io.response.bits.fault
   memory.io.memoryResponse.bits.transactionId :=
     l2.io.response.bits.transactionId
+  io.graphicsShaderResponse.valid :=
+    l2.io.response.valid && l2ResponseForGraphicsShader
+  io.graphicsShaderResponse.bits.readData := l2.io.response.bits.readData
+  io.graphicsShaderResponse.bits.fault := l2.io.response.bits.fault
+  io.graphicsShaderResponse.bits.transactionId :=
+    l2.io.response.bits.transactionId - graphicsShaderBase.U
   copyEngine.io.memoryResponse.valid :=
     l2.io.response.valid && l2ResponseForCopy
   copyEngine.io.memoryResponse.bits.readData := l2.io.response.bits.readData
@@ -410,16 +445,18 @@ class GpuSystem(
   io.graphicsHostResponse.bits.transactionId :=
     l2.io.response.bits.transactionId - graphicsHostBase.U
   l2.io.response.ready := Mux(l2ResponseForCu,
-    memory.io.memoryResponse.ready, Mux(l2ResponseForCopy,
-      copyEngine.io.memoryResponse.ready,
-      Mux(l2ResponseForFill, fillEngine.io.memoryResponse.ready,
-        Mux(l2ResponseForStridedCopy,
-          stridedCopyEngine.io.memoryResponse.ready,
-          l2ResponseForGraphicsHost && io.graphicsHostResponse.ready))))
+    memory.io.memoryResponse.ready, Mux(l2ResponseForGraphicsShader,
+      io.graphicsShaderResponse.ready, Mux(l2ResponseForCopy,
+        copyEngine.io.memoryResponse.ready,
+        Mux(l2ResponseForFill, fillEngine.io.memoryResponse.ready,
+          Mux(l2ResponseForStridedCopy,
+            stridedCopyEngine.io.memoryResponse.ready,
+            l2ResponseForGraphicsHost && io.graphicsHostResponse.ready)))))
   when(l2.io.response.valid) {
-    assert(l2ResponseForCu || l2ResponseForCopy || l2ResponseForFill ||
-      l2ResponseForStridedCopy || l2ResponseForGraphicsHost,
-      "L2 response must target a CU, DMA, or graphics-host transaction")
+    assert(l2ResponseForCu || l2ResponseForGraphicsShader ||
+      l2ResponseForCopy || l2ResponseForFill || l2ResponseForStridedCopy ||
+      l2ResponseForGraphicsHost,
+      "L2 response must target a CU, graphics shader, DMA, or host transaction")
   }
   io.memoryRequest <> l2.io.memoryRequest
   l2.io.memoryResponse <> io.memoryResponse
@@ -457,4 +494,12 @@ class GpuSystem(
     io.blockedWarps(cu) := unit.io.blocked
     io.barrierWaiting(cu) := unit.io.barrierWaiting
   }
+
+  l2.io.invalidate(numComputeUnits) <> io.graphicsShaderL1Invalidate
+  io.graphicsShaderL1InvalidateDone <>
+    l2.io.invalidateDone(numComputeUnits)
+  l2.io.atomicRequest(numComputeUnits) <>
+    io.graphicsShaderAtomicRequest
+  io.graphicsShaderAtomicResponse <>
+    l2.io.atomicResponse(numComputeUnits)
 }

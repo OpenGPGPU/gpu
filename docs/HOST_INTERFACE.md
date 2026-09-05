@@ -17,9 +17,9 @@ INCR bursts, one read or write transaction at a time.
 that AXI ABI, exposes the common `GpuCommand` submission/completion stream, and
 routes the graphics host's direct line client and its command-buffer,
 framebuffer and texture word clients together with compute and DMA traffic
-through one shared L2 and one lower-memory line port. Only the graphics shader's
-cached-memory, coherence and atomic side ports remain explicit while that
-client is integrated incrementally.
+through one shared L2 and one lower-memory line port. The graphics shader is an
+additional coherent client of that L2, including private-cache invalidation and
+global atomic traffic. No secondary memory port remains on the integrated top.
 
 ### Register ABI
 
@@ -172,7 +172,9 @@ memory. In silicon, the same clients attach to the SoC L2/DRAM fabric.
 host's eight local IDs above the CU and DMA ranges and returns responses with
 their original IDs. Three four-entry word-to-line bridges occupy separate
 command-buffer, framebuffer and texture ID ranges in the same 32-ID graphics
-namespace. RTL can be emitted with
+namespace. `GpuHostAxi.kernelMem*`, invalidate and atomic channels occupy one
+additional CU-sized coherent range and connect directly to the L2 directory.
+RTL can be emitted with
 `runMain opengpu.elaboration.EmitGpuHostSystemAxi [target-dir]`, optionally
 adding `--compute-units N`, `--frag-core`, `--vert-core`, `--width N`, and
 `--height N`.

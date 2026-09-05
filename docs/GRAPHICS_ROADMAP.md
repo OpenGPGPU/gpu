@@ -89,10 +89,9 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 
 ### Product integration
 
-- Merge the graphics shader's cached/coherence/atomic client into the new
-  `GpuHostSystemAxi` shared-L2 top, then converge graphics and general-compute
-  completion/interrupt delivery. Command-buffer, framebuffer and texture word
-  clients are already attached through internal bridges.
+- Converge graphics and general-compute completion/interrupt delivery on
+  `GpuHostSystemAxi`. Its shader coherent client and command-buffer,
+  framebuffer and texture word bridges now share one L2/lower-memory port.
 - Add Linux general-compute submissions using the existing queue and fence
   model; move fill/blit/strided-copy jobs to the common queue payload.
 - Establish practical resolution/performance budgets for full-system tests.
