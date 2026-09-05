@@ -34,8 +34,9 @@ class GpuHostSystemAxi(
   instructionCacheWays: Int = 2,
   instructionCacheMissEntries: Int = 4,
   vectorCacheSets: Int = 64,
-  vectorCacheWays: Int = 2
-) extends Module {
+  vectorCacheWays: Int = 2,
+  memoryAxiDataBytes: Int = 8
+) extends RawModule {
   require(numComputeUnits > 0)
   require(!vertCore || fragCore,
     "vertex-core graphics requires fragment-core graphics")
@@ -50,6 +51,8 @@ class GpuHostSystemAxi(
   private val usedGraphicsTransactions = texBase + wordPortTransactions
   private val systemTransactions = GpuSystem.totalMemoryTransactions(
     numComputeUnits, transactionsPerCu, graphicsHostTransactions)
+  private val memoryAxiIdWidth = math.max(1, log2Ceil(systemTransactions))
+  private val memoryAxiDataWidth = memoryAxiDataBytes * 8
 
   override def desiredName: String = "GpuHostSystemAxi"
 
@@ -84,17 +87,46 @@ class GpuHostSystemAxi(
     val s_axi_rready = Input(Bool())
     val m_irq = Output(Bool())
 
-    val memoryRequest = Decoupled(new ComputeMemoryRequest(
-      gpuConfig, 64, systemTransactions))
-    val memoryResponse = Flipped(Decoupled(new ComputeMemoryResponse(
-      64, systemTransactions)))
-
-    /** Compute/unified-command activity; graphics STATUS remains AXI-visible. */
-    val commandBusy = Output(Bool())
-    val performance = Output(new GpuPerformanceCounters)
+    val m_axi_awid = Output(UInt(memoryAxiIdWidth.W))
+    val m_axi_awaddr = Output(UInt(gpuConfig.xLen.W))
+    val m_axi_awlen = Output(UInt(8.W))
+    val m_axi_awsize = Output(UInt(3.W))
+    val m_axi_awburst = Output(UInt(2.W))
+    val m_axi_awlock = Output(Bool())
+    val m_axi_awcache = Output(UInt(4.W))
+    val m_axi_awprot = Output(UInt(3.W))
+    val m_axi_awqos = Output(UInt(4.W))
+    val m_axi_awvalid = Output(Bool())
+    val m_axi_awready = Input(Bool())
+    val m_axi_wdata = Output(UInt(memoryAxiDataWidth.W))
+    val m_axi_wstrb = Output(UInt(memoryAxiDataBytes.W))
+    val m_axi_wlast = Output(Bool())
+    val m_axi_wvalid = Output(Bool())
+    val m_axi_wready = Input(Bool())
+    val m_axi_bid = Input(UInt(memoryAxiIdWidth.W))
+    val m_axi_bresp = Input(UInt(2.W))
+    val m_axi_bvalid = Input(Bool())
+    val m_axi_bready = Output(Bool())
+    val m_axi_arid = Output(UInt(memoryAxiIdWidth.W))
+    val m_axi_araddr = Output(UInt(gpuConfig.xLen.W))
+    val m_axi_arlen = Output(UInt(8.W))
+    val m_axi_arsize = Output(UInt(3.W))
+    val m_axi_arburst = Output(UInt(2.W))
+    val m_axi_arlock = Output(Bool())
+    val m_axi_arcache = Output(UInt(4.W))
+    val m_axi_arprot = Output(UInt(3.W))
+    val m_axi_arqos = Output(UInt(4.W))
+    val m_axi_arvalid = Output(Bool())
+    val m_axi_arready = Input(Bool())
+    val m_axi_rid = Input(UInt(memoryAxiIdWidth.W))
+    val m_axi_rdata = Input(UInt(memoryAxiDataWidth.W))
+    val m_axi_rresp = Input(UInt(2.W))
+    val m_axi_rlast = Input(Bool())
+    val m_axi_rvalid = Input(Bool())
+    val m_axi_rready = Output(Bool())
   })
 
-  withClockAndReset(clock, !io.s_axi_aresetn) {
+  withClockAndReset(io.s_axi_aclk, !io.s_axi_aresetn) {
     val host = Module(new GpuHostAxi(
       graphicsConfig, gpuConfig, fragCore, vertCore,
       deviceId = deviceId, version = version,
@@ -223,8 +255,47 @@ class GpuHostSystemAxi(
         "graphics response must target an attached line or word client")
     }
 
-    io.memoryRequest <> system.io.memoryRequest
-    system.io.memoryResponse <> io.memoryResponse
+    val memoryAxi = Module(new ComputeMemoryAxiMaster(
+      gpuConfig, 64, systemTransactions, memoryAxiDataBytes))
+    memoryAxi.io.request <> system.io.memoryRequest
+    system.io.memoryResponse <> memoryAxi.io.response
+    io.m_axi_awid := memoryAxi.io.m_axi_awid
+    io.m_axi_awaddr := memoryAxi.io.m_axi_awaddr
+    io.m_axi_awlen := memoryAxi.io.m_axi_awlen
+    io.m_axi_awsize := memoryAxi.io.m_axi_awsize
+    io.m_axi_awburst := memoryAxi.io.m_axi_awburst
+    io.m_axi_awlock := memoryAxi.io.m_axi_awlock
+    io.m_axi_awcache := memoryAxi.io.m_axi_awcache
+    io.m_axi_awprot := memoryAxi.io.m_axi_awprot
+    io.m_axi_awqos := memoryAxi.io.m_axi_awqos
+    io.m_axi_awvalid := memoryAxi.io.m_axi_awvalid
+    memoryAxi.io.m_axi_awready := io.m_axi_awready
+    io.m_axi_wdata := memoryAxi.io.m_axi_wdata
+    io.m_axi_wstrb := memoryAxi.io.m_axi_wstrb
+    io.m_axi_wlast := memoryAxi.io.m_axi_wlast
+    io.m_axi_wvalid := memoryAxi.io.m_axi_wvalid
+    memoryAxi.io.m_axi_wready := io.m_axi_wready
+    memoryAxi.io.m_axi_bid := io.m_axi_bid
+    memoryAxi.io.m_axi_bresp := io.m_axi_bresp
+    memoryAxi.io.m_axi_bvalid := io.m_axi_bvalid
+    io.m_axi_bready := memoryAxi.io.m_axi_bready
+    io.m_axi_arid := memoryAxi.io.m_axi_arid
+    io.m_axi_araddr := memoryAxi.io.m_axi_araddr
+    io.m_axi_arlen := memoryAxi.io.m_axi_arlen
+    io.m_axi_arsize := memoryAxi.io.m_axi_arsize
+    io.m_axi_arburst := memoryAxi.io.m_axi_arburst
+    io.m_axi_arlock := memoryAxi.io.m_axi_arlock
+    io.m_axi_arcache := memoryAxi.io.m_axi_arcache
+    io.m_axi_arprot := memoryAxi.io.m_axi_arprot
+    io.m_axi_arqos := memoryAxi.io.m_axi_arqos
+    io.m_axi_arvalid := memoryAxi.io.m_axi_arvalid
+    memoryAxi.io.m_axi_arready := io.m_axi_arready
+    memoryAxi.io.m_axi_rid := io.m_axi_rid
+    memoryAxi.io.m_axi_rdata := io.m_axi_rdata
+    memoryAxi.io.m_axi_rresp := io.m_axi_rresp
+    memoryAxi.io.m_axi_rlast := io.m_axi_rlast
+    memoryAxi.io.m_axi_rvalid := io.m_axi_rvalid
+    io.m_axi_rready := memoryAxi.io.m_axi_rready
     system.io.command.valid := false.B
     system.io.command.bits := 0.U.asTypeOf(system.io.command.bits)
     system.io.commandCompletion.ready := true.B
@@ -263,10 +334,5 @@ class GpuHostSystemAxi(
         0.U.asTypeOf(system.io.simtBranch(cu).bits)
     }
 
-    io.commandBusy := system.io.commandProcessorBusy ||
-      system.io.unifiedCommandRouterBusy || system.io.busyComputeUnits.orR ||
-      system.io.copyEngineBusy || system.io.fillEngineBusy ||
-      system.io.stridedCopyEngineBusy
-    io.performance := system.io.performance
   }
 }

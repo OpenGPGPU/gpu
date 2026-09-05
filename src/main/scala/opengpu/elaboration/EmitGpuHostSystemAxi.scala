@@ -27,6 +27,7 @@ object EmitGpuHostSystemAxi {
     val width = intOption("--width").getOrElse(16)
     val height = intOption("--height").getOrElse(16)
     val computeUnits = intOption("--compute-units").getOrElse(1)
+    val memoryAxiDataBytes = intOption("--memory-axi-data-bytes").getOrElse(8)
     def isPow2(n: Int): Boolean = n > 0 && (n & (n - 1)) == 0
     require(isPow2(width) && isPow2(height),
       s"resolution must be powers of two, got ${width}x${height}")
@@ -34,6 +35,9 @@ object EmitGpuHostSystemAxi {
       s"resolution must be at least 16x16, got ${width}x${height}")
     require(computeUnits > 0,
       s"compute-unit count must be positive, got $computeUnits")
+    require(isPow2(memoryAxiDataBytes) && memoryAxiDataBytes >= 4 &&
+      memoryAxiDataBytes <= 64,
+      s"memory AXI beat must be 4, 8, 16, 32 or 64 bytes, got $memoryAxiDataBytes")
 
     ChiselStage.emitSystemVerilogFile(
       new GpuHostSystemAxi(
@@ -42,7 +46,8 @@ object EmitGpuHostSystemAxi {
         GpuConfig(lanes = 4, warps = 2),
         numComputeUnits = computeUnits,
         fragCore = fragCore,
-        vertCore = vertCore),
+        vertCore = vertCore,
+        memoryAxiDataBytes = memoryAxiDataBytes),
       Array("--target-dir", targetDir),
       Array("--lowering-options=disallowLocalVariables,disallowPackedArrays")
     )

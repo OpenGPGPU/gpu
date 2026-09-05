@@ -1095,6 +1095,10 @@ int main(void)
         (!frag_core &&
          *(uint32_t *)((uint8_t *)first.map + first.pitch + 4) !=
              expected_pixel)) {
+        if (!frag_core)
+            fprintf(stderr, "texture pixel got=0x%08x expected=0x%08x\n",
+                    *(uint32_t *)((uint8_t *)first.map + first.pitch + 4),
+                    expected_pixel);
         errno = EIO;
         perror("OPENGPU USERSPACE DRM FAIL texture result");
         return 1;

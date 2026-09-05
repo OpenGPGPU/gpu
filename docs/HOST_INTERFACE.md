@@ -6,20 +6,32 @@
 
 OpenGPU is an integrated shared-memory accelerator. An RV64 Linux host accesses
 an AXI4 slave control port; the GPU accesses command, shader, texture, colour
-and depth buffers in host DRAM through its memory clients and shared L2. There
-is no v1 GPU-local VRAM.
+and depth buffers in host DRAM through an AXI4 master port behind its shared
+L2. There is no v1 GPU-local VRAM.
 
 `opengpu.graphics.GpuHostAxi` exposes `s_axi_*` AXI4 control signals and the
 `m_irq` completion interrupt. The register file accepts 32-bit accesses and
 INCR bursts, one read or write transaction at a time.
 
-`opengpu.system.GpuHostSystemAxi` is the integrated successor top. It retains
-that AXI ABI, exposes the common `GpuCommand` submission/completion stream, and
-routes the graphics host's direct line client and its command-buffer,
-framebuffer and texture word clients together with compute and DMA traffic
-through one shared L2 and one lower-memory line port. The graphics shader is an
-additional coherent client of that L2, including private-cache invalidation and
-global atomic traffic. No secondary memory port remains on the integrated top.
+`opengpu.system.GpuHostSystemAxi` is the product integration top. Its external
+surface is only one clock/reset pair, a 32-bit `s_axi_*` AXI4 control slave, an
+`m_axi_*` AXI4 memory master and `m_irq`. Graphics, compute and DMA commands are
+submitted through MMIO; no command, cache-line or performance-counter bundle is
+exported as a product pin.
+
+The memory master defaults to a 64-bit data bus. A 64-byte cache-line request
+becomes an eight-beat INCR burst; a page-table word becomes one four-byte AXI
+narrow transfer with the correct byte lane and strobe. `BRESP` and `RRESP`
+errors are returned to the internal requester as faults. The data width is
+elaboration-time configurable to 4, 8, 16, 32 or 64 bytes with
+`--memory-axi-data-bytes`; the current bridge serializes lower-memory
+transactions while preserving their AXI IDs.
+
+Internally, the graphics host's line and word clients, compute units and DMA
+engines all converge on one shared L2. The graphics shader is an additional
+coherent L2 client, including private-cache invalidation and global atomics.
+Private `ComputeMemoryRequest/Response` bundles stop at the AXI master adapter
+and are not part of the SoC ABI.
 
 ### Register ABI
 
@@ -189,13 +201,15 @@ properties use matching driver defaults.
 
 ### ARTI integration
 
-`scripts/run_arti_gpu.sh` emits `GpuHostAxi`, builds the driver and guest test,
-and runs the generated device under QEMU/Linux. `GPU_FRAG_CORE=1` selects the
-fragment-core top; adding `GPU_VERT_CORE=1` selects vertex-core records.
-`GPU_WIDTH` and `GPU_HEIGHT` select a matching RTL and guest mode.
+`scripts/run_arti_gpu.sh` emits `GpuHostSystemAxi`, builds the driver and guest
+test, and runs the generated device under QEMU/Linux. `GPU_FRAG_CORE=1` selects
+the fragment-core configuration; adding `GPU_VERT_CORE=1` selects vertex-core
+records. `GPU_WIDTH` and `GPU_HEIGHT` select a matching RTL and guest mode.
 
-ARTI bridges the AXI slave port and adapts GPU memory clients to guest physical
-memory. In silicon, the same clients attach to the SoC L2/DRAM fabric.
+ARTI drives the AXI control slave and implements an AXI memory slave for the
+GPU's `m_axi_*` master. AXI masters are discovered from channel shape and port
+direction, not from GPU-specific names such as `kernelMemReq` or
+`memoryRequest`. In silicon, `m_axi_*` attaches to the SoC L2/DRAM fabric.
 
 `GpuHostSystemAxi` connects `GpuHostAxi.kernelWordMem*` to
 `GpuSystem.graphicsHostRequest/graphicsHostResponse`. It remaps the graphics
@@ -207,7 +221,7 @@ additional CU-sized coherent range and connect directly to the L2 directory.
 RTL can be emitted with
 `runMain opengpu.elaboration.EmitGpuHostSystemAxi [target-dir]`, optionally
 adding `--compute-units N`, `--frag-core`, `--vert-core`, `--width N`, and
-`--height N`.
+`--height N`, and `--memory-axi-data-bytes N`.
 
 The integrated top also feeds `GpuSystem.gpuCompletion.valid` into the same
 sticky IRQ pending bit used by graphics jobs. Software consumes the structured

@@ -34,8 +34,9 @@ Priority order:
 - Power-of-two render resolutions of at least 16x16, selected consistently by
   RTL elaboration, driver defaults and guest tests.
 - Multi-CU dispatch and copy/fill/strided DMA in `GpuSystem` RTL.
-- An AXI-controlled `GpuHostSystemAxi` integration top with a shared
-  graphics/compute/DMA L2 line port and collision-free transaction-ID ranges.
+- A `GpuHostSystemAxi` product top with a standard AXI4 control slave and AXI4
+  memory master; private graphics/compute/DMA traffic shares one L2 internally
+  with collision-free transaction-ID ranges.
 - Internal command-buffer, framebuffer and texture word-to-line bridges in the
   integrated top; these clients no longer require independent lower ports.
 - A dedicated coherent-client slot for the graphics shader, including L1

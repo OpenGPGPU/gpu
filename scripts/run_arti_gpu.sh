@@ -39,7 +39,7 @@ fail() {
 [ -f "$ARTI_DIR/examples/linux_arti_driver/setup_env.sh" ] || \
     fail "ARTI Linux setup script not found under $ARTI_DIR"
 [ -f "$INTEGRATION_CONFIG" ] || fail "integration profile not found: $INTEGRATION_CONFIG"
-command -v sbt >/dev/null 2>&1 || fail "sbt is required to emit GpuHostAxi RTL"
+command -v sbt >/dev/null 2>&1 || fail "sbt is required to emit GpuHostSystemAxi RTL"
 [ "$GPU_FRAG_CORE" = "0" ] || [ "$GPU_FRAG_CORE" = "1" ] || \
     fail "GPU_FRAG_CORE must be 0 or 1"
 [ "$GPU_VERT_CORE" = "0" ] || [ "$GPU_VERT_CORE" = "1" ] || \
@@ -125,29 +125,29 @@ if ! linux_src_valid "$LINUX_SRC"; then
 fi
 echo "Linux source: $LINUX_SRC (valid)"
 
-echo "=== 1/4 Emit GpuHostAxi RTL ==="
+echo "=== 1/4 Emit GpuHostSystemAxi RTL ==="
 if [ "$GPU_VERT_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
-        sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host --frag-core --vert-core --width $GPU_WIDTH --height $GPU_HEIGHT")
+        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --frag-core --vert-core --width $GPU_WIDTH --height $GPU_HEIGHT")
     TIMEOUT="${TIMEOUT:-120}"
 elif [ "$GPU_FRAG_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
-        sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host --frag-core --width $GPU_WIDTH --height $GPU_HEIGHT")
+        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --frag-core --width $GPU_WIDTH --height $GPU_HEIGHT")
     TIMEOUT="${TIMEOUT:-120}"
 else
     (cd "$GPU_DIR" && \
-        sbt "runMain opengpu.elaboration.EmitGpuHostAxi generated/host --width $GPU_WIDTH --height $GPU_HEIGHT")
+        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --width $GPU_WIDTH --height $GPU_HEIGHT")
     TIMEOUT="${TIMEOUT:-180}"
 fi
-[ -f "$GPU_DIR/generated/host/GpuHostAxi.sv" ] || \
-    fail "RTL emission did not produce generated/host/GpuHostAxi.sv"
+[ -f "$GPU_DIR/generated/host/GpuHostSystemAxi.sv" ] || \
+    fail "RTL emission did not produce generated/host/GpuHostSystemAxi.sv"
 [ -f "$GPU_DIR/generated/host/filelist.f" ] || \
     fail "RTL emission did not produce generated/host/filelist.f"
 
-ARTI_RTL_SOURCE_LIST="$GPU_DIR/generated/host/GpuHostAxi.sv"
+ARTI_RTL_SOURCE_LIST="$GPU_DIR/generated/host/GpuHostSystemAxi.sv"
 while IFS= read -r rtl_source; do
     [ -n "$rtl_source" ] || continue
-    [ "$rtl_source" = "GpuHostAxi.sv" ] && continue
+    [ "$rtl_source" = "GpuHostSystemAxi.sv" ] && continue
     rtl_source="$GPU_DIR/generated/host/$rtl_source"
     [ -f "$rtl_source" ] || fail "RTL dependency from filelist.f is missing: $rtl_source"
     ARTI_RTL_SOURCE_LIST="${ARTI_RTL_SOURCE_LIST:+$ARTI_RTL_SOURCE_LIST,}$rtl_source"

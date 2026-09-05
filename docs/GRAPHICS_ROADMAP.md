@@ -85,8 +85,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 - IRQ-driven unified DMA completion fences, with a periodic progress poll for
   emulators that advance only on MMIO activity.
 - KMS scanout handoff, atomic modeset, page flip and virtual vblank.
-- ARTI/QEMU/Linux integration for fixed-function, fragment-core and vertex-core
-  configurations.
+- ARTI/QEMU/Linux integration for the standard-AXI `GpuHostSystemAxi` product
+  top in fixed-function, fragment-core and vertex-core configurations.
 - Parameterized power-of-two render targets of at least 16x16.
 
 ## Next
@@ -94,8 +94,9 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 ### Product integration
 
 - Expose general compute jobs through Linux. `GpuHostSystemAxi` already shares
-  its memory and sticky completion interrupt across graphics, compute and DMA,
-  and the existing DMA ioctls now use its unified payload when advertised.
+  its standard AXI memory master and sticky completion interrupt across
+  graphics, compute and DMA, and the existing DMA ioctls use its unified
+  payload when advertised.
 - Add Linux general-compute submissions using the existing queue and fence
   model.
 - Establish practical resolution/performance budgets for full-system tests.
