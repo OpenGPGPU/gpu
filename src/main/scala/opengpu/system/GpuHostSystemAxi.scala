@@ -94,7 +94,8 @@ class GpuHostSystemAxi(
 
   withClockAndReset(clock, !io.s_axi_aresetn) {
     val host = Module(new GpuHostAxi(
-      graphicsConfig, gpuConfig, fragCore, vertCore, deviceId, version))
+      graphicsConfig, gpuConfig, fragCore, vertCore, deviceId, version,
+      externalCompletionIrq = true))
     val system = Module(new GpuSystem(
       gpuConfig,
       numComputeUnits = numComputeUnits,
@@ -130,6 +131,7 @@ class GpuHostSystemAxi(
     io.s_axi_rlast := host.io.s_axi_rlast
     io.s_axi_rvalid := host.io.s_axi_rvalid
     host.io.s_axi_rready := io.s_axi_rready
+    host.io.externalCompletion.get := system.io.gpuCompletion.valid
     io.m_irq := host.io.m_irq
 
     system.io.graphicsShaderRequest <> host.io.kernelMemReq

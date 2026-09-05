@@ -165,6 +165,7 @@ class RenderHostSpec extends AnyFlatSpec {
     simulate(new RenderHost(
       gpuConfig = GpuConfig(lanes = 4, warps = 2), fragCore = true,
       deviceId = 0x4755, version = 0x0001)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       assert(regRead(dut, RenderHostRegs.ID) == 0x47550001L,
         "device ID register must report device<<16 | version")
@@ -234,9 +235,29 @@ class RenderHostSpec extends AnyFlatSpec {
     simulate(new RenderHost(
       gpuConfig = GpuConfig(lanes = 4, warps = 2), fragCore = true,
       vertCore = true)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x83fL,
         "shared vertex/fragment-core builds must advertise both shader stages")
+    }
+  }
+
+  it should "latch an external completion in the shared IRQ pending bit" in {
+    simulate(new RenderHost(gpuConfig = GpuConfig(lanes = 4, warps = 2))) {
+      dut =>
+        dut.io.externalCompletion.poke(false.B)
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        regWrite(dut, RenderHostRegs.IRQ, 1)
+
+        dut.io.externalCompletion.poke(true.B)
+        dut.clock.step()
+        dut.io.externalCompletion.poke(false.B)
+        dut.io.irq.expect(true.B)
+        assert((regRead(dut, RenderHostRegs.IRQ) & 0x3L) == 0x3L)
+
+        regWrite(dut, RenderHostRegs.IRQ, 3)
+        dut.io.irq.expect(false.B)
+        assert((regRead(dut, RenderHostRegs.IRQ) & 0x3L) == 0x1L)
     }
   }
 
@@ -248,6 +269,7 @@ class RenderHostSpec extends AnyFlatSpec {
     for (i <- 0 until 16) m.wwrite(source + i * 4, 0x10203040 + i)
 
     simulate(new RenderHost(gpuConfig = cfg)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       dut.io.cbMem.req.ready.poke(true.B)
       dut.io.cbMem.resp.valid.poke(false.B)
@@ -281,6 +303,7 @@ class RenderHostSpec extends AnyFlatSpec {
         0x10203040 + row * 0x100 + i)
 
     simulate(new RenderHost(gpuConfig = cfg)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       dut.io.cbMem.req.ready.poke(true.B)
       dut.io.cbMem.resp.valid.poke(false.B)
@@ -328,6 +351,7 @@ class RenderHostSpec extends AnyFlatSpec {
     for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0xffffffff)
 
     simulate(new RenderHost(config, cfg, fragCore = false)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
 
       // Program the render via the register file.
@@ -443,6 +467,7 @@ class RenderHostSpec extends AnyFlatSpec {
     }
 
     simulate(new RenderHost(config, cfg, fragCore = false)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
 
       dut.io.cbMem.req.ready.poke(true.B)

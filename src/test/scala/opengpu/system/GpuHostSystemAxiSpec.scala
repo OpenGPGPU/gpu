@@ -2,6 +2,7 @@ package opengpu.system
 
 import chisel3._
 import chisel3.simulator.EphemeralSimulator._
+import opengpu.command.GpuCommandOpcode
 import opengpu.config.GpuConfig
 import opengpu.graphics.{GraphicsConfig, RenderHostRegs}
 import org.scalatest.flatspec.AnyFlatSpec
@@ -204,6 +205,66 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
         "command parser did not consume the first shared-L2 cache line")
       dut.clock.step()
       dut.io.performance.lowerReadRequests.expect(2.U)
+    }
+  }
+
+  it should "deliver unified-command completions through the shared IRQ" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(
+      lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      dut.io.gpuCompletion.ready.poke(false.B)
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+
+      dut.io.gpuCommand.bits.poke(
+        0.U.asTypeOf(dut.io.gpuCommand.bits))
+      dut.io.gpuCommand.bits.commandId.poke(9.U)
+      dut.io.gpuCommand.bits.opcode.poke(GpuCommandOpcode.fill)
+      dut.io.gpuCommand.bits.destinationAddress.poke(0x7000.U)
+      dut.io.gpuCommand.bits.bytes.poke(64.U)
+      dut.io.gpuCommand.bits.pattern.poke("h89abcdef".U)
+      dut.io.gpuCommand.valid.poke(true.B)
+      while (!dut.io.gpuCommand.ready.peek().litToBoolean) dut.clock.step()
+      dut.clock.step()
+      dut.io.gpuCommand.valid.poke(false.B)
+
+      var cycles = 0
+      while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 80) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.memoryRequest.valid.expect(true.B)
+      dut.io.memoryRequest.bits.address.expect(0x7000.U)
+      dut.io.memoryRequest.bits.isWrite.expect(true.B)
+      val lowerId = dut.io.memoryRequest.bits.transactionId.peek().litValue
+      dut.clock.step()
+      dut.io.memoryResponse.bits.transactionId.poke(lowerId.U)
+      dut.io.memoryResponse.bits.readData.poke(0.U)
+      dut.io.memoryResponse.bits.fault.poke(false.B)
+      dut.io.memoryResponse.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.memoryResponse.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.gpuCompletion.valid.peek().litToBoolean && cycles < 80) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.gpuCompletion.valid.expect(true.B)
+      dut.io.gpuCompletion.bits.commandId.expect(9.U)
+      dut.io.gpuCompletion.bits.opcode.expect(GpuCommandOpcode.fill)
+      dut.io.gpuCompletion.bits.success.expect(true.B)
+      dut.io.gpuCompletion.bits.bytesProcessed.expect(64.U)
+      // Completion stays backpressured for a cycle, allowing RenderHost to
+      // latch the event even when the result consumer is not polling.
+      dut.clock.step()
+      dut.io.m_irq.expect(true.B)
+      assert((axiRead(dut, RenderHostRegs.IRQ) & 0x3L) == 0x3L)
+
+      dut.io.gpuCompletion.ready.poke(true.B)
+      dut.clock.step()
+      axiWrite(dut, RenderHostRegs.IRQ, 3)
+      dut.io.m_irq.expect(false.B)
+      assert((axiRead(dut, RenderHostRegs.IRQ) & 0x3L) == 0x1L)
     }
   }
 }

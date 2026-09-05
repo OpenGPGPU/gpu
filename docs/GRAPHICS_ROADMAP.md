@@ -89,9 +89,9 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 
 ### Product integration
 
-- Converge graphics and general-compute completion/interrupt delivery on
-  `GpuHostSystemAxi`. Its shader coherent client and command-buffer,
-  framebuffer and texture word bridges now share one L2/lower-memory port.
+- Expose general compute jobs through Linux and migrate DMA ioctls to the
+  unified command payload. `GpuHostSystemAxi` already shares its memory and
+  sticky completion interrupt across graphics, compute and DMA.
 - Add Linux general-compute submissions using the existing queue and fence
   model; move fill/blit/strided-copy jobs to the common queue payload.
 - Establish practical resolution/performance budgets for full-system tests.

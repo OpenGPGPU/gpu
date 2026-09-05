@@ -30,7 +30,7 @@ global atomic traffic. No secondary memory port remains on the integrated top.
 | 0x00 | ID | RO | `device_id << 16 \| version` |
 | 0x04 | CONTROL | W1P | bit 0 START |
 | 0x08 | STATUS | RO/W1C | BUSY, DONE, ERROR and DMA-engine busy bits |
-| 0x0C | IRQ | RW | ENABLE and PENDING |
+| 0x0C | IRQ | RW/W1C | bit 0 ENABLE; bit 1 PENDING for graphics or unified-command completion |
 | 0x10 | CMD_BASE | RW | command-buffer byte address |
 | 0x14 | CMD_COUNT | RW | draw-record count |
 | 0x18 | COLOR_BASE | RW | colour-buffer byte address |
@@ -179,6 +179,12 @@ RTL can be emitted with
 adding `--compute-units N`, `--frag-core`, `--vert-core`, `--width N`, and
 `--height N`.
 
+The integrated top also feeds `GpuSystem.gpuCompletion.valid` into the same
+sticky IRQ pending bit used by graphics jobs. Software consumes the structured
+`gpuCompletion` result and clears IRQ.PENDING through the existing AXI W1C
+write. A completion held under backpressure keeps reasserting pending, so the
+result must be consumed before the interrupt is acknowledged.
+
 ## Implemented
 
 - AXI4 register control, interrupt delivery and capability discovery.
@@ -198,6 +204,7 @@ adding `--compute-units N`, `--frag-core`, `--vert-core`, `--width N`, and
 - Separate render-target and KMS scanout programming.
 - ARTI-generated QEMU/Linux device, shared guest-memory access and end-to-end
   DRM/KMS execution.
+- Shared `m_irq` delivery for graphics and unified-command completions.
 
 ## Next
 

@@ -161,8 +161,10 @@ class RenderHost(
       val req = Flipped(Decoupled(new RenderHostRegRequest))
       val resp = Decoupled(new RenderHostRegResponse)
     }
-    /** Completion interrupt; asserted while IRQ.PENDING && IRQ.ENABLE. */
+    /** Graphics/unified completion interrupt; IRQ.PENDING && IRQ.ENABLE. */
     val irq = Output(Bool())
+    /** Completion event from an integrated compute/command subsystem. */
+    val externalCompletion = Input(Bool())
 
     val cbMem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
@@ -685,6 +687,9 @@ class RenderHost(
   // completed and JobQueue has advanced IH_WPTR.  Raising IRQ at core.done
   // races the handler against the still-empty IH ring.
   when(jq.io.ihCommitted) { irqPending := true.B }
+  // Integrated compute/DMA completions share the same sticky, AXI-visible
+  // pending bit and W1C acknowledgement as graphics completions.
+  when(io.externalCompletion) { irqPending := true.B }
 
   // Tie the engine to the latched configuration: legacy register snapshots
   // when the host programmed START, the queue's descriptor snapshot when a

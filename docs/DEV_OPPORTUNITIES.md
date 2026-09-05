@@ -40,6 +40,8 @@ Priority order:
   integrated top; these clients no longer require independent lower ports.
 - A dedicated coherent-client slot for the graphics shader, including L1
   invalidation and global atomics; the integrated top now has one memory port.
+- Shared sticky interrupt delivery for graphics and unified-command
+  completions through the existing AXI IRQ enable/pending register.
 
 ## Next
 
@@ -47,8 +49,6 @@ Priority order:
 
 - Measure full-system cost by resolution and select a practical regression
   default.
-- Converge graphics and general-compute completion/interrupt delivery on the
-  integrated top.
 - Expose general compute jobs through Linux, and migrate the existing
   fill/blit/strided-copy ioctls onto the unified queue payload.
 

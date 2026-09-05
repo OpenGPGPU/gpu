@@ -37,7 +37,8 @@ class GpuHostAxi(
   fragCore: Boolean = false,
   vertCore: Boolean = false,
   deviceId: Int = 0x4755,
-  version: Int = 0x0001
+  version: Int = 0x0001,
+  externalCompletionIrq: Boolean = false
 ) extends Module {
   override def desiredName: String = "GpuHostAxi"
 
@@ -75,8 +76,11 @@ class GpuHostAxi(
     val s_axi_rvalid = Output(Bool())
     val s_axi_rready = Input(Bool())
 
-    /** Completion interrupt (asserted while IRQ.PENDING && IRQ.ENABLE). */
+    /** Graphics/unified completion IRQ (IRQ.PENDING && IRQ.ENABLE). */
     val m_irq = Output(Bool())
+    val externalCompletion = if (externalCompletionIrq) {
+      Some(Input(Bool()))
+    } else None
 
     // Renderer shared-memory ports (command buffer + framebuffer words, and the
     // core-backed shader kernel's line/coherence side ports) pass straight
@@ -107,6 +111,7 @@ class GpuHostAxi(
   withClockAndReset(clock, !io.s_axi_aresetn) {
     val host = Module(new RenderHost(config, gpuConfig, fragCore, vertCore, deviceId, version))
 
+    host.io.externalCompletion := io.externalCompletion.getOrElse(false.B)
     io.m_irq := host.io.irq
     host.io.cbMem.req <> io.cbMem.req
     io.cbMem.resp <> host.io.cbMem.resp
