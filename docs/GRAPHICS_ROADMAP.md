@@ -89,8 +89,9 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 
 ### Product integration
 
-- Build the SoC-facing host top on the new shared-L2 graphics line attachment;
-  then merge the remaining word/coherence clients and control plane.
+- Merge the remaining word/coherence clients into the new
+  `GpuHostSystemAxi` shared-L2 top, then converge graphics and general-compute
+  completion/interrupt delivery.
 - Add Linux general-compute submissions using the existing queue and fence
   model; move fill/blit/strided-copy jobs to the common queue payload.
 - Establish practical resolution/performance budgets for full-system tests.

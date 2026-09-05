@@ -13,6 +13,13 @@ is no v1 GPU-local VRAM.
 `m_irq` completion interrupt. The register file accepts 32-bit accesses and
 INCR bursts, one read or write transaction at a time.
 
+`opengpu.system.GpuHostSystemAxi` is the integrated successor top. It retains
+that AXI ABI, exposes the common `GpuCommand` submission/completion stream, and
+routes the graphics host's cache-line client together with compute and DMA
+traffic through one shared L2 and one lower-memory line port. The framebuffer,
+texture and shader coherence/atomic side ports are still passed through while
+their adapters are integrated incrementally.
+
 ### Register ABI
 
 `RenderHostRegs` and `driver/gpu_abi.h` must remain synchronized.
@@ -159,11 +166,13 @@ fragment-core top; adding `GPU_VERT_CORE=1` selects vertex-core records.
 ARTI bridges the AXI slave port and adapts GPU memory clients to guest physical
 memory. In silicon, the same clients attach to the SoC L2/DRAM fabric.
 
-`GpuSystem.graphicsHostRequest/graphicsHostResponse` is the first unified-memory
-attachment point. It accepts the graphics host's eight-ID cache-line protocol,
-remaps those IDs above the CU and DMA ranges, and routes the traffic through the
-same shared L2. Command-buffer, framebuffer, texture and coherence-side ports
-remain explicit while the combined SoC-facing top is developed incrementally.
+`GpuHostSystemAxi` connects `GpuHostAxi.kernelWordMem*` to
+`GpuSystem.graphicsHostRequest/graphicsHostResponse`. It remaps the graphics
+host's eight local IDs above the CU and DMA ranges and returns responses with
+their original IDs. RTL can be emitted with
+`runMain opengpu.elaboration.EmitGpuHostSystemAxi [target-dir]`, optionally
+adding `--compute-units N`, `--frag-core`, `--vert-core`, `--width N`, and
+`--height N`.
 
 ## Implemented
 

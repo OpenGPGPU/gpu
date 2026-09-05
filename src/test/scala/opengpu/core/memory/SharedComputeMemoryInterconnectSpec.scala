@@ -43,4 +43,33 @@ class SharedComputeMemoryInterconnectSpec extends AnyFlatSpec {
       dut.clock.step()
     }
   }
+
+  it should "preserve local transaction IDs with one compute unit" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new SharedComputeMemoryInterconnect(config, 1, 64, 4)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.memoryRequest.ready.poke(true.B)
+      dut.io.memoryResponse.valid.poke(false.B)
+      dut.io.memoryResponse.bits.poke(
+        0.U.asTypeOf(dut.io.memoryResponse.bits))
+      dut.io.cuRequest(0).valid.poke(true.B)
+      dut.io.cuRequest(0).bits.poke(
+        0.U.asTypeOf(dut.io.cuRequest(0).bits))
+      dut.io.cuRequest(0).bits.address.poke(0x5000.U)
+      dut.io.cuRequest(0).bits.transactionId.poke(3.U)
+      dut.io.cuResponse(0).ready.poke(true.B)
+
+      dut.io.memoryRequest.valid.expect(true.B)
+      dut.io.memoryRequest.bits.transactionId.expect(3.U)
+      dut.clock.step()
+      dut.io.cuRequest(0).valid.poke(false.B)
+
+      dut.io.memoryResponse.valid.poke(true.B)
+      dut.io.memoryResponse.bits.transactionId.poke(3.U)
+      dut.io.memoryResponse.bits.readData.poke("h12345678".U)
+      dut.io.cuResponse(0).valid.expect(true.B)
+      dut.io.cuResponse(0).bits.transactionId.expect(3.U)
+      dut.io.cuResponse(0).bits.readData.expect("h12345678".U)
+    }
+  }
 }

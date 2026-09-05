@@ -41,8 +41,11 @@ class SharedComputeMemoryInterconnect(
     arbiter.io.in(cu) <> io.cuRequest(cu)
   }
 
-  private val globalId =
+  private val globalId = if (numComputeUnits == 1) {
+    arbiter.io.out.bits.transactionId
+  } else {
     Cat(arbiter.io.chosen, arbiter.io.out.bits.transactionId)
+  }
   io.memoryRequest.valid := arbiter.io.out.valid
   io.memoryRequest.bits.address := arbiter.io.out.bits.address
   io.memoryRequest.bits.writeData := arbiter.io.out.bits.writeData
@@ -56,8 +59,11 @@ class SharedComputeMemoryInterconnect(
 
   private val responseId = io.memoryResponse.bits.transactionId
   private val responseInRange = responseId < totalTransactions.U
-  private val responseCu =
+  private val responseCu = if (numComputeUnits == 1) {
+    0.U(cuIdWidth.W)
+  } else {
     responseId(localIdWidth + cuIdWidth - 1, localIdWidth)
+  }
   private val responseLocalId = responseId(localIdWidth - 1, 0)
   for (cu <- 0 until numComputeUnits) {
     io.cuResponse(cu).valid :=
@@ -66,7 +72,11 @@ class SharedComputeMemoryInterconnect(
     io.cuResponse(cu).bits.fault := io.memoryResponse.bits.fault
     io.cuResponse(cu).bits.transactionId := responseLocalId(localIdWidth - 1, 0)
   }
-  io.memoryResponse.ready := responseInRange && io.cuResponse(responseCu).ready
+  io.memoryResponse.ready := responseInRange && (if (numComputeUnits == 1) {
+    io.cuResponse.head.ready
+  } else {
+    io.cuResponse(responseCu).ready
+  })
 
   when(io.memoryResponse.valid) {
     assert(responseInRange,
