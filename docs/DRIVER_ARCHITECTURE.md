@@ -78,13 +78,13 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
 - Fixed-function and shader-backed probe paths selected from capabilities.
 - Unified compute/DMA MMIO register definitions, capability discovery and
   capability-selected fill/blit/strided-copy submission with legacy fallback.
+- IRQ-driven unified DMA fences with validated completion identity/status,
+  timeout and abort signaling, plus an emulator progress-poll fallback.
 
 ## Next
 
 - Add general-compute job payloads without duplicating queue, memory or fence
   machinery.
-- Retire unified completions asynchronously through scheduler fences; DMA jobs
-  currently keep the scheduler's single hardware credit until polling ends.
 - Define precise reset, timeout recovery and host-visible fault reporting.
 - Grow the admitted shader ISA only with matching RTL, validator and ABI rules.
 - Add runtime power management when required by the SoC integration.

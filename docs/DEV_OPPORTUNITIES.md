@@ -48,6 +48,9 @@ Priority order:
   Linux compute/DMA submission path.
 - Linux fill/blit/strided-copy jobs select that unified payload on integrated
   hardware while retaining compatibility with dedicated-engine registers.
+- Unified DMA jobs return scheduler fences immediately; IRQ handling validates
+  and retires the common completion, with timeout, abort and emulator-poll
+  recovery paths.
 
 ## Next
 
@@ -55,8 +58,8 @@ Priority order:
 
 - Measure full-system cost by resolution and select a practical regression
   default.
-- Expose general compute jobs through Linux and convert the currently polled
-  unified DMA completion slot to scheduler-owned asynchronous fences.
+- Expose general compute jobs through Linux using the scheduler-owned unified
+  completion fence path.
 
 ### Mid term
 

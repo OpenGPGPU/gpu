@@ -56,6 +56,9 @@ static void opengpu_reg_write(struct opengpu_device *gpu, u32 offset, u32 value)
     iowrite32(value, gpu->hw.regs + offset);
 }
 
+static int opengpu_hw_unified_result_error(u32 status);
+static bool opengpu_hw_unified_drain(struct opengpu_device *gpu);
+
 void opengpu_hw_progress_tick(struct opengpu_device *gpu)
 {
     /* Heartbeat read: RO register, no side effects. Emulated hardware
@@ -186,10 +189,28 @@ static void opengpu_ih_drain(struct opengpu_device *gpu)
 
 void opengpu_hw_abort(struct opengpu_device *gpu, int error)
 {
+    struct dma_fence *unified = NULL;
+    unsigned long unified_flags;
+
     cancel_delayed_work_sync(&gpu->hw.timeout_work);
     cancel_delayed_work_sync(&gpu->hw.completion_work);
     cancel_delayed_work_sync(&gpu->hw.poll_work);
     opengpu_reg_write(gpu, GPU_REG_IRQ, 0);
+
+    spin_lock_irqsave(&gpu->hw.fence_lock, unified_flags);
+    unified = gpu->hw.unified_fence;
+    gpu->hw.unified_fence = NULL;
+    if (unified) {
+        dma_fence_set_error(unified, error ?: -ECANCELED);
+        dma_fence_signal_locked(unified);
+    }
+    spin_unlock_irqrestore(&gpu->hw.fence_lock, unified_flags);
+    if (unified) {
+        if (opengpu_reg_read(gpu, GPU_REG_UCMD_STATUS) &
+            GPU_UCMD_STATUS_COMPLETION)
+            opengpu_reg_write(gpu, GPU_REG_UCMD_COMPLETION_POP, 1);
+        dma_fence_put(unified);
+    }
 
     if (gpu->hw.queue_ready) {
         struct dma_fence *abandoned[OPENGPU_JOB_RING_ENTRIES + 1];
@@ -248,6 +269,19 @@ static void opengpu_timeout_work(struct work_struct *work)
     hw = container_of(to_delayed_work(work), struct opengpu_hw,
                       timeout_work);
     gpu = container_of(hw, struct opengpu_device, hw);
+
+    spin_lock_irqsave(&gpu->hw.fence_lock, flags);
+    fence = gpu->hw.unified_fence;
+    if (fence) {
+        gpu->hw.unified_fence = NULL;
+        dma_fence_set_error(fence, -ETIMEDOUT);
+        dma_fence_signal_locked(fence);
+    }
+    spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
+    if (fence) {
+        dma_fence_put(fence);
+        return;
+    }
 
     if (gpu->hw.queue_ready) {
         spin_lock_irqsave(&gpu->hw.fence_lock, flags);
@@ -325,6 +359,15 @@ static void opengpu_poll_work(struct work_struct *work)
     hw = container_of(to_delayed_work(work), struct opengpu_hw, poll_work);
     gpu = container_of(hw, struct opengpu_device, hw);
 
+    if (opengpu_hw_unified_drain(gpu))
+        return;
+    if (READ_ONCE(gpu->hw.unified_fence)) {
+        opengpu_hw_progress_tick(gpu);
+        mod_delayed_work(system_dfl_wq, &gpu->hw.poll_work,
+                         msecs_to_jiffies(OPENGPU_HW_POLL_INTERVAL_MS));
+        return;
+    }
+
     if (!gpu->hw.queue_ready)
         return;
     if (gpu->hw.job_wptr == gpu->hw.job_done)
@@ -352,6 +395,7 @@ static irqreturn_t opengpu_irq_handler(int irq, void *data)
 
     dev_info(gpu->dev, "OPENGPU irq: status=%08x wptr=%u done=%u\n",
              status, gpu->hw.job_wptr, gpu->hw.job_done);
+    opengpu_hw_unified_drain(gpu);
     if (gpu->hw.queue_ready) {
         opengpu_ih_drain(gpu);
         return IRQ_HANDLED;
@@ -629,24 +673,68 @@ static int opengpu_hw_unified_result_error(u32 status)
     }
 }
 
-/* Submit one DMA operation through the integrated common command payload.
- * DRM scheduler credit_limit=1 and submit_lock serialize this single MMIO
- * completion slot. Older tops retain the dedicated-engine fallback below. */
-static int opengpu_hw_unified_dma_locked(struct opengpu_device *gpu,
-                                         u32 opcode, u32 source,
-                                         u32 destination, u32 bytes,
-                                         u32 pattern, u32 height,
-                                         u32 source_stride,
-                                         u32 destination_stride,
-                                         u64 expected_bytes)
+static bool opengpu_hw_unified_drain(struct opengpu_device *gpu)
 {
-    unsigned long timeout;
+    struct dma_fence *fence = NULL;
+    unsigned long flags;
     u64 processed;
-    u32 command_id;
     u32 completion;
-    u32 status;
+    u32 command_id;
+    u32 opcode;
+    u64 expected_bytes;
     int ret;
 
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS) ||
+        !(opengpu_reg_read(gpu, GPU_REG_UCMD_STATUS) &
+          GPU_UCMD_STATUS_COMPLETION))
+        return false;
+
+    completion = opengpu_reg_read(gpu, GPU_REG_UCMD_COMPLETION);
+    processed = opengpu_reg_read(gpu,
+        GPU_REG_UCMD_COMPLETION_BYTES_LO);
+    processed |= (u64)opengpu_reg_read(gpu,
+        GPU_REG_UCMD_COMPLETION_BYTES_HI) << 32;
+    opengpu_reg_write(gpu, GPU_REG_UCMD_COMPLETION_POP, 1);
+
+    spin_lock_irqsave(&gpu->hw.fence_lock, flags);
+    fence = gpu->hw.unified_fence;
+    command_id = gpu->hw.unified_command_id;
+    opcode = gpu->hw.unified_opcode;
+    expected_bytes = gpu->hw.unified_expected_bytes;
+    gpu->hw.unified_fence = NULL;
+    if (fence) {
+        ret = opengpu_hw_unified_result_error(
+            GPU_UCMD_COMPLETION_STATUS(completion));
+        if (GPU_UCMD_COMPLETION_ID(completion) != command_id ||
+            GPU_UCMD_COMPLETION_OPCODE(completion) != opcode ||
+            (!GPU_UCMD_COMPLETION_SUCCESS(completion) && !ret) ||
+            (!ret && processed != expected_bytes))
+            ret = -EIO;
+        if (ret)
+            dma_fence_set_error(fence, ret);
+        dma_fence_signal_locked(fence);
+    }
+    spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
+    if (fence)
+        dma_fence_put(fence);
+    cancel_delayed_work(&gpu->hw.timeout_work);
+    return true;
+}
+
+static int opengpu_hw_unified_dma_submit_locked(
+    struct opengpu_device *gpu, u32 opcode, u32 source, u32 destination,
+    u32 bytes, u32 pattern, u32 height, u32 source_stride,
+    u32 destination_stride, u64 expected_bytes, struct dma_fence **out_fence)
+{
+    struct opengpu_fence *fence;
+    unsigned long flags;
+    u32 command_id;
+    u32 status;
+    int ret = 0;
+
+    if (!out_fence)
+        return -EINVAL;
+    *out_fence = NULL;
     status = opengpu_reg_read(gpu, GPU_REG_UCMD_STATUS);
     if (!(status & GPU_UCMD_STATUS_READY) ||
         (status & GPU_UCMD_STATUS_COMPLETION))
@@ -655,7 +743,30 @@ static int opengpu_hw_unified_dma_locked(struct opengpu_device *gpu,
         opengpu_reg_write(gpu, GPU_REG_UCMD_STATUS,
                           GPU_UCMD_STATUS_OVERFLOW);
 
-    command_id = opengpu_next_job_id(gpu) & 0xffu;
+    fence = kzalloc(sizeof(*fence), GFP_KERNEL);
+    if (!fence)
+        return -ENOMEM;
+    dma_fence_init(&fence->base, &opengpu_fence_ops,
+                   &gpu->hw.fence_lock, gpu->hw.fence_context,
+                   ++gpu->hw.fence_seqno);
+
+    spin_lock_irqsave(&gpu->hw.fence_lock, flags);
+    if (gpu->hw.unified_fence) {
+        ret = -EBUSY;
+    } else {
+        command_id = opengpu_next_job_id(gpu) & 0xffu;
+        gpu->hw.unified_fence = &fence->base;
+        gpu->hw.unified_command_id = command_id;
+        gpu->hw.unified_opcode = opcode;
+        gpu->hw.unified_expected_bytes = expected_bytes;
+        *out_fence = dma_fence_get(&fence->base);
+    }
+    spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
+    if (ret) {
+        dma_fence_put(&fence->base);
+        return ret;
+    }
+
     opengpu_reg_write(gpu, GPU_REG_UCMD_ID, command_id);
     opengpu_reg_write(gpu, GPU_REG_UCMD_OPCODE, opcode);
     opengpu_reg_write(gpu, GPU_REG_UCMD_FLAGS, 0);
@@ -669,35 +780,44 @@ static int opengpu_hw_unified_dma_locked(struct opengpu_device *gpu,
     opengpu_reg_write(gpu, GPU_REG_UCMD_DEST_STRIDE,
                       destination_stride);
     opengpu_reg_write(gpu, GPU_REG_UCMD_SUBMIT, 1);
+    mod_delayed_work(system_dfl_wq, &gpu->hw.timeout_work,
+                     msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS));
+    mod_delayed_work(system_dfl_wq, &gpu->hw.poll_work,
+                     msecs_to_jiffies(OPENGPU_HW_POLL_INTERVAL_MS));
+    return 0;
+}
 
-    timeout = jiffies + msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS);
-    do {
-        status = opengpu_reg_read(gpu, GPU_REG_UCMD_STATUS);
-        if (status & GPU_UCMD_STATUS_COMPLETION)
-            break;
-        if (status & GPU_UCMD_STATUS_OVERFLOW)
-            return -EBUSY;
-        if (time_after(jiffies, timeout))
-            return -ETIMEDOUT;
-        opengpu_hw_progress_tick(gpu);
-        cond_resched();
-    } while (true);
+/* Submit one DMA operation through the integrated common command payload.
+ * DRM scheduler credit_limit=1 and submit_lock serialize this single MMIO
+ * completion slot. Older tops retain the dedicated-engine fallback below. */
+static int opengpu_hw_unified_dma_locked(struct opengpu_device *gpu,
+                                         u32 opcode, u32 source,
+                                         u32 destination, u32 bytes,
+                                         u32 pattern, u32 height,
+                                         u32 source_stride,
+                                         u32 destination_stride,
+                                         u64 expected_bytes)
+{
+    struct dma_fence *fence;
+    long timeout;
+    int ret;
 
-    completion = opengpu_reg_read(gpu, GPU_REG_UCMD_COMPLETION);
-    processed = opengpu_reg_read(gpu,
-        GPU_REG_UCMD_COMPLETION_BYTES_LO);
-    processed |= (u64)opengpu_reg_read(gpu,
-        GPU_REG_UCMD_COMPLETION_BYTES_HI) << 32;
-    ret = opengpu_hw_unified_result_error(
-        GPU_UCMD_COMPLETION_STATUS(completion));
-    if (GPU_UCMD_COMPLETION_ID(completion) != command_id ||
-        GPU_UCMD_COMPLETION_OPCODE(completion) != opcode)
-        ret = -EIO;
-    else if (!GPU_UCMD_COMPLETION_SUCCESS(completion) && !ret)
-        ret = -EIO;
-    else if (!ret && processed != expected_bytes)
-        ret = -EIO;
-    opengpu_reg_write(gpu, GPU_REG_UCMD_COMPLETION_POP, 1);
+    ret = opengpu_hw_unified_dma_submit_locked(
+        gpu, opcode, source, destination, bytes, pattern, height,
+        source_stride, destination_stride, expected_bytes, &fence);
+    if (ret)
+        return ret;
+    timeout = dma_fence_wait_timeout(
+        fence, false, msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS + 100));
+    if (timeout <= 0) {
+        opengpu_hw_abort(gpu, timeout < 0 ? (int)timeout : -ETIMEDOUT);
+        ret = timeout < 0 ? (int)timeout : -ETIMEDOUT;
+    } else {
+        ret = dma_fence_get_status(fence);
+        if (ret > 0)
+            ret = 0;
+    }
+    dma_fence_put(fence);
     return ret;
 }
 
@@ -956,6 +1076,125 @@ int opengpu_hw_strided_blit(struct opengpu_device *gpu, u32 source,
     ret = opengpu_hw_strided_blit_locked(gpu, source, destination, width,
                                          height, source_stride,
                                          destination_stride);
+    mutex_unlock(&gpu->hw.submit_lock);
+    return ret;
+}
+
+static bool opengpu_hw_execution_busy(struct opengpu_device *gpu)
+{
+    unsigned long flags;
+    bool busy;
+
+    spin_lock_irqsave(&gpu->hw.fence_lock, flags);
+    busy = gpu->hw.unified_fence || (gpu->hw.queue_ready ?
+        gpu->hw.job_wptr != gpu->hw.job_done :
+        gpu->hw.active_fence != NULL);
+    spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
+    return busy;
+}
+
+int opengpu_hw_clear_async(struct opengpu_device *gpu, u32 base, u32 bytes,
+                           u32 pattern, struct dma_fence **out_fence)
+{
+    u64 end = (u64)base + bytes;
+    int ret;
+
+    if (!out_fence)
+        return -EINVAL;
+    *out_fence = NULL;
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
+        return opengpu_hw_clear(gpu, base, bytes, pattern);
+    if (!(gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE))
+        return -EOPNOTSUPP;
+    if ((base & 63u) || !bytes || (bytes & 63u) || end > (1ull << 32))
+        return -ERANGE;
+
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
+        opengpu_hw_unified_dma_submit_locked(
+            gpu, GPU_UCMD_OP_FILL, 0, base, bytes, pattern, 0, 0, 0,
+            bytes, out_fence);
+    mutex_unlock(&gpu->hw.submit_lock);
+    return ret;
+}
+
+int opengpu_hw_blit_async(struct opengpu_device *gpu, u32 source,
+                          u32 destination, u32 bytes,
+                          struct dma_fence **out_fence)
+{
+    u64 source_end = (u64)source + bytes;
+    u64 destination_end = (u64)destination + bytes;
+    int ret;
+
+    if (!out_fence)
+        return -EINVAL;
+    *out_fence = NULL;
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
+        return opengpu_hw_blit(gpu, source, destination, bytes);
+    if (!(gpu->hw.capabilities & GPU_CAP_BLIT_ENGINE))
+        return -EOPNOTSUPP;
+    if ((source & 63u) || (destination & 63u) || !bytes ||
+        (bytes & 63u) || source_end > (1ull << 32) ||
+        destination_end > (1ull << 32))
+        return -ERANGE;
+    if ((u64)source < destination_end &&
+        (u64)destination < source_end)
+        return -EINVAL;
+
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
+        opengpu_hw_unified_dma_submit_locked(
+            gpu, GPU_UCMD_OP_COPY, source, destination, bytes, 0, 0, 0, 0,
+            bytes, out_fence);
+    mutex_unlock(&gpu->hw.submit_lock);
+    return ret;
+}
+
+int opengpu_hw_strided_blit_async(struct opengpu_device *gpu, u32 source,
+                                  u32 destination, u32 width, u32 height,
+                                  u32 source_stride,
+                                  u32 destination_stride,
+                                  struct dma_fence **out_fence)
+{
+    u64 source_span, destination_span, source_end, destination_end;
+    int ret;
+
+    if (!out_fence)
+        return -EINVAL;
+    *out_fence = NULL;
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
+        return opengpu_hw_strided_blit(gpu, source, destination, width,
+                                       height, source_stride,
+                                       destination_stride);
+    if (!(gpu->hw.capabilities & GPU_CAP_STRIDED_ENGINE))
+        return -EOPNOTSUPP;
+    if ((source & 63u) || (destination & 63u) || !width || !height ||
+        (width & 63u) || (source_stride & 63u) ||
+        (destination_stride & 63u) || source_stride < width ||
+        destination_stride < width)
+        return -ERANGE;
+    if (check_mul_overflow((u64)(height - 1), (u64)source_stride,
+                           &source_span) ||
+        check_mul_overflow((u64)(height - 1), (u64)destination_stride,
+                           &destination_span) ||
+        check_add_overflow((u64)source, source_span, &source_end) ||
+        check_add_overflow(source_end, (u64)width, &source_end) ||
+        check_add_overflow((u64)destination, destination_span,
+                           &destination_end) ||
+        check_add_overflow(destination_end, (u64)width,
+                           &destination_end) ||
+        source_end > (1ull << 32) || destination_end > (1ull << 32))
+        return -ERANGE;
+    if ((u64)source < destination_end &&
+        (u64)destination < source_end)
+        return -EINVAL;
+
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
+        opengpu_hw_unified_dma_submit_locked(
+            gpu, GPU_UCMD_OP_STRIDED_COPY, source, destination, width, 0,
+            height, source_stride, destination_stride,
+            (u64)width * height, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }

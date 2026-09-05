@@ -70,6 +70,10 @@ struct opengpu_hw {
     struct mutex submit_lock;
     spinlock_t fence_lock;
     struct dma_fence *active_fence;
+    struct dma_fence *unified_fence;
+    u32 unified_command_id;
+    u32 unified_opcode;
+    u64 unified_expected_bytes;
     struct delayed_work timeout_work;
     struct delayed_work completion_work;
     struct delayed_work poll_work;
@@ -177,6 +181,16 @@ int opengpu_hw_blit(struct opengpu_device *gpu, u32 source, u32 destination,
 int opengpu_hw_strided_blit(struct opengpu_device *gpu, u32 source,
                             u32 destination, u32 width, u32 height,
                             u32 source_stride, u32 destination_stride);
+int opengpu_hw_clear_async(struct opengpu_device *gpu, u32 base, u32 bytes,
+                           u32 pattern, struct dma_fence **fence);
+int opengpu_hw_blit_async(struct opengpu_device *gpu, u32 source,
+                          u32 destination, u32 bytes,
+                          struct dma_fence **fence);
+int opengpu_hw_strided_blit_async(struct opengpu_device *gpu, u32 source,
+                                  u32 destination, u32 width, u32 height,
+                                  u32 source_stride,
+                                  u32 destination_stride,
+                                  struct dma_fence **fence);
 int opengpu_hw_display_commit(struct opengpu_device *gpu,
                               const struct opengpu_scanout *scanout);
 

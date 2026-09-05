@@ -898,25 +898,26 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
     int ret;
 
     if (job->type == OPENGPU_SCHED_BLIT) {
-        ret = opengpu_hw_blit(job->gpu,
-                              lower_32_bits(job->dma_source),
-                              lower_32_bits(job->dma_destination),
-                              job->dma_bytes);
-        return ret ? ERR_PTR(ret) : NULL;
+        ret = opengpu_hw_blit_async(job->gpu,
+                                    lower_32_bits(job->dma_source),
+                                    lower_32_bits(job->dma_destination),
+                                    job->dma_bytes, &fence);
+        return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_FILL) {
-        ret = opengpu_hw_clear(job->gpu,
-                               lower_32_bits(job->dma_destination),
-                               job->dma_bytes, job->fill_pattern);
-        return ret ? ERR_PTR(ret) : NULL;
+        ret = opengpu_hw_clear_async(job->gpu,
+                                     lower_32_bits(job->dma_destination),
+                                     job->dma_bytes, job->fill_pattern,
+                                     &fence);
+        return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_STRIDED_BLIT) {
-        ret = opengpu_hw_strided_blit(
+        ret = opengpu_hw_strided_blit_async(
             job->gpu, lower_32_bits(job->dma_source),
             lower_32_bits(job->dma_destination), job->dma_bytes,
             job->dma_height, job->dma_source_stride,
-            job->dma_destination_stride);
-        return ret ? ERR_PTR(ret) : NULL;
+            job->dma_destination_stride, &fence);
+        return ret ? ERR_PTR(ret) : fence;
     }
     if (job->gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE)
         ret = opengpu_hw_clear_and_submit_async(

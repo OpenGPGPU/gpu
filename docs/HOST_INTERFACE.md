@@ -239,11 +239,16 @@ result must be consumed before the interrupt is acknowledged.
   DMA command submission/completion.
 - Linux fill/blit/strided-copy ioctls use unified commands when capability bit
   6 is present and fall back to their dedicated register banks otherwise.
+- Unified DMA submission returns an asynchronous DRM scheduler fence. The IRQ
+  handler validates completion ID, opcode, status and processed byte count
+  before signaling it; timeout and abort paths signal an error fence. A 5 ms
+  progress poll is retained for MMIO-driven emulators, not for synchronous job
+  execution.
 
 ## Next
 
-- Add Linux general-compute descriptors and asynchronous fence retirement for
-  unified completions; DMA jobs currently poll the common completion slot.
+- Add Linux general-compute descriptors on the existing asynchronous unified
+  completion path.
 - Define ABI-visible fault codes, reset recovery and timeout behavior.
 - Expand shader profiles and resource types only with matching hardware and
   validation.
