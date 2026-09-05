@@ -24,6 +24,19 @@ class GpuPerformanceCounters extends Bundle {
   val l2 = new L2PerformanceCounters
 }
 
+object GpuSystem {
+  private[system] val copyTransactions = 4
+  private[system] val fillTransactions = 2
+  private[system] val stridedCopyTransactions = 4
+
+  def totalMemoryTransactions(
+    numComputeUnits: Int,
+    transactionsPerCu: Int,
+    graphicsHostTransactions: Int
+  ): Int = numComputeUnits * transactionsPerCu + copyTransactions +
+    fillTransactions + stridedCopyTransactions + graphicsHostTransactions
+}
+
 /** Scalable compute-first GPU integration point.
   *
   * Kernels carry host command tags, CUs execute independently, and one shared
@@ -46,16 +59,17 @@ class GpuSystem(
   require(graphicsHostTransactions > 0 && isPow2(graphicsHostTransactions),
     "graphics-host transaction count must be a positive power of two")
   private val totalTransactions = numComputeUnits * transactionsPerCu
-  private val copyTransactions = 4
-  private val fillTransactions = 2
-  private val stridedCopyTransactions = 4
+  private val copyTransactions = GpuSystem.copyTransactions
+  private val fillTransactions = GpuSystem.fillTransactions
+  private val stridedCopyTransactions = GpuSystem.stridedCopyTransactions
   private val copyBase = totalTransactions
   private val fillBase = copyBase + copyTransactions
   private val stridedCopyBase = fillBase + fillTransactions
   private val graphicsHostBase =
     stridedCopyBase + stridedCopyTransactions
   private val totalSystemTransactions =
-    graphicsHostBase + graphicsHostTransactions
+    GpuSystem.totalMemoryTransactions(
+      numComputeUnits, transactionsPerCu, graphicsHostTransactions)
   private val systemTransactionWidth =
     math.max(1, log2Ceil(totalSystemTransactions))
 

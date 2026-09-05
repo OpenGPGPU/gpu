@@ -14,16 +14,16 @@ import opengpu.core.memory.{
 import opengpu.graphics.{
   GpuHostAxi,
   GraphicsConfig,
-  OmMemoryRequest,
-  OmMemoryResponse
+  OmWordToLinePort
 }
 
 /** AXI-controlled graphics host attached to the compute system's shared L2.
   *
   * The graphics host's eight-ID cache-line port and the compute/DMA clients
-  * share one lower-memory port. Word-sized framebuffer, texture, shader-side
-  * coherence and atomic ports remain explicit until their adapters join the
-  * same hierarchy.
+  * share one lower-memory port. Command-buffer, framebuffer and texture word
+  * clients are adapted internally. The graphics shader's separate cached,
+  * coherence and atomic ports remain explicit until it joins the compute
+  * system's coherent-client topology.
   */
 class GpuHostSystemAxi(
   graphicsConfig: GraphicsConfig = GraphicsConfig(),
@@ -40,10 +40,16 @@ class GpuHostSystemAxi(
   require(!vertCore || fragCore,
     "vertex-core graphics requires fragment-core graphics")
 
-  private val graphicsHostTransactions = 8
-  private val systemTransactions = numComputeUnits * transactionsPerCu +
-    4 /* copy */ + 2 /* fill */ + 4 /* strided copy */ +
-    graphicsHostTransactions
+  // Eight direct graphics line transactions plus three four-entry word-port
+  // bridges. Round up to a power of two for simple local-ID range checking.
+  private val graphicsHostTransactions = 32
+  private val wordPortTransactions = 4
+  private val cbBase = 8
+  private val fbBase = cbBase + wordPortTransactions
+  private val texBase = fbBase + wordPortTransactions
+  private val usedGraphicsTransactions = texBase + wordPortTransactions
+  private val systemTransactions = GpuSystem.totalMemoryTransactions(
+    numComputeUnits, transactionsPerCu, graphicsHostTransactions)
 
   override def desiredName: String = "GpuHostSystemAxi"
 
@@ -87,14 +93,6 @@ class GpuHostSystemAxi(
     val memoryResponse = Flipped(Decoupled(new ComputeMemoryResponse(
       64, systemTransactions)))
 
-    val cbMem = new Bundle {
-      val req = Decoupled(new OmMemoryRequest)
-      val resp = Flipped(Decoupled(new OmMemoryResponse))
-    }
-    val fbMem = new Bundle {
-      val req = Decoupled(new OmMemoryRequest)
-      val resp = Flipped(Decoupled(new OmMemoryResponse))
-    }
     val kernelMemReq = Decoupled(new ComputeMemoryRequest(gpuConfig))
     val kernelMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
     val kernelL1Invalidate = Flipped(Decoupled(
@@ -105,11 +103,6 @@ class GpuHostSystemAxi(
       new SharedAtomicRequest(gpuConfig))
     val kernelGlobalAtomicResponse = Flipped(Decoupled(
       new SharedAtomicResponse(gpuConfig)))
-    val texMem = new Bundle {
-      val req = Decoupled(new OmMemoryRequest)
-      val resp = Flipped(Decoupled(new OmMemoryResponse))
-    }
-
     /** Compute/unified-command activity; graphics STATUS remains AXI-visible. */
     val commandBusy = Output(Bool())
     val performance = Output(new GpuPerformanceCounters)
@@ -155,21 +148,80 @@ class GpuHostSystemAxi(
     host.io.s_axi_rready := io.s_axi_rready
     io.m_irq := host.io.m_irq
 
-    host.io.cbMem.req <> io.cbMem.req
-    io.cbMem.resp <> host.io.cbMem.resp
-    host.io.fbMem.req <> io.fbMem.req
-    io.fbMem.resp <> host.io.fbMem.resp
     host.io.kernelMemReq <> io.kernelMemReq
     host.io.kernelMemResp <> io.kernelMemResp
     host.io.kernelL1Invalidate <> io.kernelL1Invalidate
     io.kernelL1InvalidateDone <> host.io.kernelL1InvalidateDone
     host.io.kernelGlobalAtomicRequest <> io.kernelGlobalAtomicRequest
     host.io.kernelGlobalAtomicResponse <> io.kernelGlobalAtomicResponse
-    host.io.texMem.req <> io.texMem.req
-    io.texMem.resp <> host.io.texMem.resp
+    val cbBridge = Module(new OmWordToLinePort(
+      gpuConfig, 64, wordPortTransactions))
+    val fbBridge = Module(new OmWordToLinePort(
+      gpuConfig, 64, wordPortTransactions))
+    val texBridge = Module(new OmWordToLinePort(
+      gpuConfig, 64, wordPortTransactions))
+    cbBridge.io.in <> host.io.cbMem.req
+    host.io.cbMem.resp <> cbBridge.io.out
+    fbBridge.io.in <> host.io.fbMem.req
+    host.io.fbMem.resp <> fbBridge.io.out
+    texBridge.io.in <> host.io.texMem.req
+    host.io.texMem.resp <> texBridge.io.out
 
-    system.io.graphicsHostRequest <> host.io.kernelWordMemReq
-    host.io.kernelWordMemResp <> system.io.graphicsHostResponse
+    val graphicsRequestArbiter = Module(new RRArbiter(
+      new ComputeMemoryRequest(gpuConfig, 64, graphicsHostTransactions), 4))
+    def attachGraphicsRequest(
+      index: Int,
+      request: DecoupledIO[ComputeMemoryRequest],
+      base: Int
+    ): Unit = {
+      graphicsRequestArbiter.io.in(index).valid := request.valid
+      graphicsRequestArbiter.io.in(index).bits := request.bits
+      graphicsRequestArbiter.io.in(index).bits.transactionId :=
+        base.U + request.bits.transactionId
+      request.ready := graphicsRequestArbiter.io.in(index).ready
+    }
+    attachGraphicsRequest(0, host.io.kernelWordMemReq, 0)
+    attachGraphicsRequest(1, cbBridge.io.memoryRequest, cbBase)
+    attachGraphicsRequest(2, fbBridge.io.memoryRequest, fbBase)
+    attachGraphicsRequest(3, texBridge.io.memoryRequest, texBase)
+    system.io.graphicsHostRequest <> graphicsRequestArbiter.io.out
+
+    val graphicsResponse = system.io.graphicsHostResponse
+    val responseId = graphicsResponse.bits.transactionId
+    val responseForKernelWord = responseId < cbBase.U
+    val responseForCb = responseId >= cbBase.U && responseId < fbBase.U
+    val responseForFb = responseId >= fbBase.U && responseId < texBase.U
+    val responseForTex = responseId >= texBase.U &&
+      responseId < usedGraphicsTransactions.U
+    def attachGraphicsResponse(
+      response: DecoupledIO[ComputeMemoryResponse],
+      select: Bool,
+      base: Int
+    ): Unit = {
+      response.valid := graphicsResponse.valid && select
+      response.bits.readData := graphicsResponse.bits.readData
+      response.bits.fault := graphicsResponse.bits.fault
+      response.bits.transactionId := responseId - base.U
+    }
+    attachGraphicsResponse(
+      host.io.kernelWordMemResp, responseForKernelWord, 0)
+    attachGraphicsResponse(
+      cbBridge.io.memoryResponse, responseForCb, cbBase)
+    attachGraphicsResponse(
+      fbBridge.io.memoryResponse, responseForFb, fbBase)
+    attachGraphicsResponse(
+      texBridge.io.memoryResponse, responseForTex, texBase)
+    graphicsResponse.ready := MuxCase(false.B, Seq(
+      responseForKernelWord -> host.io.kernelWordMemResp.ready,
+      responseForCb -> cbBridge.io.memoryResponse.ready,
+      responseForFb -> fbBridge.io.memoryResponse.ready,
+      responseForTex -> texBridge.io.memoryResponse.ready))
+    when(graphicsResponse.valid) {
+      assert(responseForKernelWord || responseForCb || responseForFb ||
+        responseForTex,
+        "graphics response must target an attached line or word client")
+    }
+
     io.memoryRequest <> system.io.memoryRequest
     system.io.memoryResponse <> io.memoryResponse
     system.io.gpuCommand <> io.gpuCommand

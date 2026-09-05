@@ -36,6 +36,8 @@ Priority order:
 - Multi-CU dispatch and copy/fill/strided DMA in `GpuSystem` RTL.
 - An AXI-controlled `GpuHostSystemAxi` integration top with a shared
   graphics/compute/DMA L2 line port and collision-free transaction-ID ranges.
+- Internal command-buffer, framebuffer and texture word-to-line bridges in the
+  integrated top; these clients no longer require independent lower ports.
 
 ## Next
 
@@ -43,8 +45,8 @@ Priority order:
 
 - Measure full-system cost by resolution and select a practical regression
   default.
-- Attach the remaining graphics word/coherence clients to `GpuSystem`, then
-  converge graphics and general-compute completion/interrupt delivery.
+- Attach the graphics shader's cached/coherence/atomic client to `GpuSystem`,
+  then converge graphics and general-compute completion/interrupt delivery.
 - Expose general compute jobs through Linux, and migrate the existing
   fill/blit/strided-copy ioctls onto the unified queue payload.
 
