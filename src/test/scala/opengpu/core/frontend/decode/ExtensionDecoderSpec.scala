@@ -144,6 +144,10 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.instruction.poke("b0100101_00100_00110_010_00011_1010111".U)
       dut.io.decoded.valid.expect(true.B)
       dut.io.decoded.unit.expect(VectorUnit.alu)
+      dut.io.instruction.poke("b0100101_00100_00101_010_00011_1010111".U)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.instruction.poke("b0100101_00100_00010_010_00011_1010111".U)
+      dut.io.decoded.valid.expect(true.B)
 
       // Masked unit-stride word loads are implemented by the vector LSU.
       dut.io.instruction.poke("b0000_0_00_0_00000_00010_110_00011_0000111".U)

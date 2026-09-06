@@ -473,7 +473,9 @@ static inline bool opengpu_shader_validate_words_profile(
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
                     !vector_defined[rs2] ||
-                    ((insn >> 26) == 0x12 && (rs1 < 6 || rs1 > 7)) ||
+                    ((insn >> 26) == 0x12 &&
+                     !(rs1 == 2 || rs1 == 3 || rs1 == 4 || rs1 == 5 ||
+                       rs1 == 6 || rs1 == 7)) ||
                     ((insn >> 26) <= 0x07 && funct3 == 2 &&
                      !vector_defined[rd]) ||
                     ((insn >> 26) == 0x0e && !vector_defined[rd]) ||

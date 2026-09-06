@@ -135,12 +135,15 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         "h0d".U -> quadDy,
         "h0e".U -> lhs,
         "h0f".U -> lhs,
-        // vsext.vf2 (vs1=7) and vzext.vf2 (vs1=6).
-        "h12".U -> Mux(
-          partialBits.immediate === 7.U,
-          Cat(Fill(16, lhs(15)), lhs(15, 0)),
-          Cat(0.U(16.W), lhs(15, 0))
-        )
+        // vsext/vzext vf2/vf4/vf8 use vs1=7/6, 5/4, and 3/2.
+        "h12".U -> MuxLookup(partialBits.immediate, 0.U(32.W))(Seq(
+          7.U -> Cat(Fill(16, lhs(15)), lhs(15, 0)),
+          6.U -> Cat(0.U(16.W), lhs(15, 0)),
+          5.U -> Cat(Fill(24, lhs(7)), lhs(7, 0)),
+          4.U -> Cat(0.U(24.W), lhs(7, 0)),
+          3.U -> Cat(Fill(28, lhs(3)), lhs(3, 0)),
+          2.U -> Cat(0.U(28.W), lhs(3, 0))
+        ))
       ))
     )
     val saturatingResult = Mux(

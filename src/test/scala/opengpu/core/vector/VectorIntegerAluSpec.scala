@@ -100,6 +100,24 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.out.bits.data(0).expect("h00008001".U)
       dut.io.out.bits.data(2).expect("h00008000".U)
       dut.io.out.bits.data(3).expect("h00005678".U)
+
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.immediate.poke(5.U) // vsext.vf4
+      dut.io.in.bits.vs2(0).poke("h00000080".U)
+      dut.io.in.bits.vs2(1).poke("h0000007f".U)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(3)
+      dut.io.out.bits.data(0).expect("hffffff80".U)
+      dut.io.out.bits.data(1).expect("h0000007f".U)
+
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.immediate.poke(2.U) // vzext.vf8
+      dut.io.in.bits.vs2(0).poke("h0000000f".U)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(3)
+      dut.io.out.bits.data(0).expect("h0000000f".U)
     }
   }
 

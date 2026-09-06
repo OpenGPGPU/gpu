@@ -251,6 +251,10 @@ int main(void)
     program[3] = OPENGPU_SHADER_CEASE;
     assert(opengpu_compute_shader_validate_words(program, 4, 64, 4));
 
+    program[1] = vector_alu(0x12, 2, 3, 1, 5); /* vsext.vf4 */
+    program[2] = vector_alu(0x12, 2, 5, 1, 2); /* vzext.vf8 */
+    assert(opengpu_compute_shader_validate_words(program, 4, 64, 4));
+
     program[1] = vector_alu(0x12, 2, 3, 4, 5); /* unsupported vf scale */
     assert(!opengpu_compute_shader_validate_words(program, 4, 64, 4));
 

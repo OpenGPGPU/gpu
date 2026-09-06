@@ -50,8 +50,9 @@ a `vfrec7` subnormal reciprocal overflows.
 
 Remaining RVV families (most widening/narrowing and the remaining VFUNARY1
 forms) remain separate migration steps. The fixed SEW=32 profile implements
-`vsext.vf2` and `vzext.vf2` as lane-local integer widening operations: the low
-16 bits of each source lane are sign- or zero-extended to 32 bits. Full RVV
+`vsext.vf2/vf4/vf8` and `vzext.vf2/vf4/vf8` as lane-local integer widening
+operations: the low 16, 8, or 4 bits of each source lane are sign- or
+zero-extended to 32 bits. Full RVV
 register-group and variable-SEW widening semantics remain outside this
 profile.
 
