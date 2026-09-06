@@ -94,6 +94,11 @@ static int get_capabilities(int fd, uint64_t *capabilities)
     return 0;
 }
 
+static int get_last_fault(int fd, struct drm_opengpu_fault *fault)
+{
+    return ioctl(fd, DRM_IOCTL_OPENGPU_GET_FAULT, fault);
+}
+
 static uint32_t find_property(int fd, uint32_t object_id,
                               uint32_t object_type, const char *name)
 {
@@ -989,6 +994,7 @@ int main(void)
     struct resource_buffer vertex_shader = { 0 }, vertex_kernarg = { 0 };
     struct resource_buffer compute_shader = { 0 }, compute_kernarg = { 0 };
     struct drm_event_vblank event = { 0 };
+    struct drm_opengpu_fault initial_fault = { 0 }, final_fault = { 0 };
     uint32_t syncobjs[7] = { 0 };
     uint32_t output_syncobjs[2];
     uint64_t capabilities;
@@ -1017,6 +1023,24 @@ int main(void)
           "universal planes");
     CHECK(set_client_cap(fd, DRM_CLIENT_CAP_ATOMIC), "atomic capability");
     CHECK(get_capabilities(fd, &capabilities), "query GPU capabilities");
+    CHECK(get_last_fault(fd, &initial_fault), "query initial GPU fault");
+    if (!!initial_fault.sequence !=
+        !!(initial_fault.flags & OPENGPU_FAULT_VALID) ||
+        (initial_fault.flags & ~OPENGPU_FAULT_FLAGS_MASK)) {
+        errno = EPROTO;
+        perror("OPENGPU USERSPACE DRM FAIL malformed fault snapshot");
+        return 1;
+    }
+    {
+        struct drm_opengpu_fault invalid_fault = { .pad = { 1, 0 } };
+
+        errno = 0;
+        if (get_last_fault(fd, &invalid_fault) != -1 || errno != EINVAL) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL fault reserved fields");
+            return 1;
+        }
+    }
     frag_core = capabilities & OPENGPU_CAP_FRAGMENT_CORE;
     vert_core = capabilities & OPENGPU_CAP_VERTEX_CORE;
     batch_capacity = (capabilities & OPENGPU_CAP_FRAGMENT_BATCH_MASK) >>
@@ -1356,6 +1380,18 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL destroyed context accepted");
         return 1;
     }
+    CHECK(get_last_fault(fd, &final_fault), "query final GPU fault");
+    if (final_fault.sequence != initial_fault.sequence) {
+        fprintf(stderr,
+                "unexpected GPU fault sequence before=%llu after=%llu "
+                "flags=0x%x error=%d\n",
+                (unsigned long long)initial_fault.sequence,
+                (unsigned long long)final_fault.sequence,
+                final_fault.flags, final_fault.error);
+        errno = EIO;
+        perror("OPENGPU USERSPACE DRM FAIL successful jobs recorded fault");
+        return 1;
+    }
 #undef CHECK
 
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
@@ -1363,7 +1399,7 @@ int main(void)
            "validated context + event-chained general compute + "
            "ordered colour "
            "blit/fill/strided blit + "
-           "vblank flip event sequence=%u\n",
+           "fault-query ABI + vblank flip event sequence=%u\n",
            vert_core ? "vertex+fragment-core-backed" :
            frag_core ? "core-backed" : "texture",
            vert_core ? "validated vertex passthrough + vtex/quad-derivative/discard" :

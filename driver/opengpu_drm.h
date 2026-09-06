@@ -93,6 +93,33 @@ struct drm_opengpu_param {
 #define OPENGPU_CAP_FRAGMENT_BATCH_MASK \
     (0xffu << OPENGPU_CAP_FRAGMENT_BATCH_SHIFT)
 
+/* Device-global snapshot of the most recent unified-command fault. Sequence
+ * zero means that no fault has been observed since driver initialization.
+ * The status field is the raw GPU_UCMD_* result value. */
+struct drm_opengpu_fault {
+    __u64 sequence;
+    __u64 bytes_processed;
+    __u64 expected_bytes;
+    __s32 error;
+    __u32 command_id;
+    __u32 opcode;
+    __u32 status;
+    __u32 flags;
+    __u32 expected_command_id;
+    __u32 expected_opcode;
+    __u32 pad[2];
+};
+
+#define OPENGPU_FAULT_VALID               (1u << 0)
+#define OPENGPU_FAULT_TIMEOUT             (1u << 1)
+#define OPENGPU_FAULT_ABORTED             (1u << 2)
+#define OPENGPU_FAULT_COMPLETION_ERROR    (1u << 3)
+#define OPENGPU_FAULT_COMMAND_ID_MISMATCH (1u << 4)
+#define OPENGPU_FAULT_OPCODE_MISMATCH     (1u << 5)
+#define OPENGPU_FAULT_SUCCESS_MISMATCH    (1u << 6)
+#define OPENGPU_FAULT_BYTES_MISMATCH      (1u << 7)
+#define OPENGPU_FAULT_FLAGS_MASK          0xffu
+
 enum drm_opengpu_resource_type {
     OPENGPU_RESOURCE_SHADER = 1,
     OPENGPU_RESOURCE_KERNARG = 2,
@@ -236,6 +263,7 @@ struct drm_opengpu_compute {
 #define DRM_OPENGPU_FILL 0x07
 #define DRM_OPENGPU_STRIDED_BLIT 0x08
 #define DRM_OPENGPU_COMPUTE 0x09
+#define DRM_OPENGPU_GET_FAULT 0x0a
 #define DRM_IOCTL_OPENGPU_SUBMIT \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_SUBMIT, \
              struct drm_opengpu_submit)
@@ -266,5 +294,8 @@ struct drm_opengpu_compute {
 #define DRM_IOCTL_OPENGPU_COMPUTE \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_COMPUTE, \
              struct drm_opengpu_compute)
+#define DRM_IOCTL_OPENGPU_GET_FAULT \
+    DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_GET_FAULT, \
+             struct drm_opengpu_fault)
 
 #endif /* OPENGPU_DRM_H */

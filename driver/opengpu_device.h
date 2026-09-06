@@ -60,6 +60,19 @@ struct opengpu_pending_job {
     u32 delay_ms;
 };
 
+struct opengpu_fault_snapshot {
+    u64 sequence;
+    u64 bytes_processed;
+    u64 expected_bytes;
+    int error;
+    u32 command_id;
+    u32 opcode;
+    u32 status;
+    u32 flags;
+    u32 expected_command_id;
+    u32 expected_opcode;
+};
+
 /* Hardware-owned state. Business layers must use opengpu_hw_* APIs instead
  * of accessing the register aperture directly. */
 struct opengpu_hw {
@@ -74,6 +87,7 @@ struct opengpu_hw {
     u32 unified_command_id;
     u32 unified_opcode;
     u64 unified_expected_bytes;
+    struct opengpu_fault_snapshot last_fault;
     struct delayed_work timeout_work;
     struct delayed_work completion_work;
     struct delayed_work poll_work;
@@ -187,6 +201,8 @@ int opengpu_hw_clear_and_submit_async(struct opengpu_device *gpu,
                                       struct dma_fence **fence);
 void opengpu_hw_abort(struct opengpu_device *gpu, int error);
 void opengpu_hw_progress_tick(struct opengpu_device *gpu);
+void opengpu_hw_get_fault(struct opengpu_device *gpu,
+                          struct opengpu_fault_snapshot *fault);
 int opengpu_hw_clear(struct opengpu_device *gpu, u32 base, u32 bytes,
                      u32 pattern);
 int opengpu_hw_blit(struct opengpu_device *gpu, u32 source, u32 destination,
@@ -230,6 +246,8 @@ void opengpu_compute_drm_postclose(struct drm_device *drm,
 int opengpu_compute_context_create_ioctl(struct drm_device *drm, void *data,
                                          struct drm_file *file);
 int opengpu_compute_get_param_ioctl(struct drm_device *drm, void *data,
+                                    struct drm_file *file);
+int opengpu_compute_get_fault_ioctl(struct drm_device *drm, void *data,
                                     struct drm_file *file);
 int opengpu_compute_context_destroy_ioctl(struct drm_device *drm, void *data,
                                           struct drm_file *file);

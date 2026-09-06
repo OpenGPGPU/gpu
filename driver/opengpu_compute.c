@@ -284,6 +284,30 @@ int opengpu_compute_get_param_ioctl(struct drm_device *drm, void *data,
     return 0;
 }
 
+int opengpu_compute_get_fault_ioctl(struct drm_device *drm, void *data,
+                                    struct drm_file *file)
+{
+    struct drm_opengpu_fault *args = data;
+    struct opengpu_device *gpu = dev_get_drvdata(drm->dev);
+    struct opengpu_fault_snapshot fault;
+
+    if (args->pad[0] || args->pad[1])
+        return -EINVAL;
+    opengpu_hw_get_fault(gpu, &fault);
+    memset(args, 0, sizeof(*args));
+    args->sequence = fault.sequence;
+    args->bytes_processed = fault.bytes_processed;
+    args->expected_bytes = fault.expected_bytes;
+    args->error = fault.error;
+    args->command_id = fault.command_id;
+    args->opcode = fault.opcode;
+    args->status = fault.status;
+    args->flags = fault.flags;
+    args->expected_command_id = fault.expected_command_id;
+    args->expected_opcode = fault.expected_opcode;
+    return 0;
+}
+
 void opengpu_compute_drm_postclose(struct drm_device *drm,
                                    struct drm_file *file)
 {

@@ -17,6 +17,7 @@
 #include <linux/platform_device.h>
 
 #include "opengpu_device.h"
+#include "opengpu_drm.h"
 
 struct opengpu_fence {
     struct dma_fence base;
@@ -58,6 +59,40 @@ static void opengpu_reg_write(struct opengpu_device *gpu, u32 offset, u32 value)
 
 static int opengpu_hw_unified_result_error(u32 opcode, u32 status);
 static bool opengpu_hw_unified_drain(struct opengpu_device *gpu);
+
+static void opengpu_hw_record_fault_locked(struct opengpu_device *gpu,
+                                            int error, u32 flags,
+                                            u32 command_id, u32 opcode,
+                                            u32 expected_command_id,
+                                            u32 expected_opcode,
+                                            u32 status, u64 processed,
+                                            u64 expected)
+{
+    struct opengpu_fault_snapshot *fault = &gpu->hw.last_fault;
+
+    fault->sequence++;
+    if (!fault->sequence)
+        fault->sequence++;
+    fault->bytes_processed = processed;
+    fault->expected_bytes = expected;
+    fault->error = error;
+    fault->command_id = command_id;
+    fault->opcode = opcode;
+    fault->status = status;
+    fault->flags = flags | OPENGPU_FAULT_VALID;
+    fault->expected_command_id = expected_command_id;
+    fault->expected_opcode = expected_opcode;
+}
+
+void opengpu_hw_get_fault(struct opengpu_device *gpu,
+                          struct opengpu_fault_snapshot *fault)
+{
+    unsigned long flags;
+
+    spin_lock_irqsave(&gpu->hw.fence_lock, flags);
+    *fault = gpu->hw.last_fault;
+    spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
+}
 
 void opengpu_hw_progress_tick(struct opengpu_device *gpu)
 {
@@ -201,6 +236,15 @@ void opengpu_hw_abort(struct opengpu_device *gpu, int error)
     unified = gpu->hw.unified_fence;
     gpu->hw.unified_fence = NULL;
     if (unified) {
+        u32 fault_flags = OPENGPU_FAULT_ABORTED;
+
+        if (error == -ETIMEDOUT)
+            fault_flags |= OPENGPU_FAULT_TIMEOUT;
+        opengpu_hw_record_fault_locked(
+            gpu, error ?: -ECANCELED, fault_flags,
+            gpu->hw.unified_command_id, gpu->hw.unified_opcode,
+            gpu->hw.unified_command_id, gpu->hw.unified_opcode, 0, 0,
+            gpu->hw.unified_expected_bytes);
         dma_fence_set_error(unified, error ?: -ECANCELED);
         dma_fence_signal_locked(unified);
     }
@@ -274,6 +318,12 @@ static void opengpu_timeout_work(struct work_struct *work)
     fence = gpu->hw.unified_fence;
     if (fence) {
         gpu->hw.unified_fence = NULL;
+        opengpu_hw_record_fault_locked(
+            gpu, -ETIMEDOUT,
+            OPENGPU_FAULT_TIMEOUT | OPENGPU_FAULT_ABORTED,
+            gpu->hw.unified_command_id, gpu->hw.unified_opcode,
+            gpu->hw.unified_command_id, gpu->hw.unified_opcode, 0, 0,
+            gpu->hw.unified_expected_bytes);
         dma_fence_set_error(fence, -ETIMEDOUT);
         dma_fence_signal_locked(fence);
     }
@@ -720,14 +770,30 @@ static bool opengpu_hw_unified_drain(struct opengpu_device *gpu)
     expected_bytes = gpu->hw.unified_expected_bytes;
     gpu->hw.unified_fence = NULL;
     if (fence) {
+        u32 fault_flags = 0;
+        u32 actual_id = GPU_UCMD_COMPLETION_ID(completion);
+        u32 actual_opcode = GPU_UCMD_COMPLETION_OPCODE(completion);
+        u32 actual_status = GPU_UCMD_COMPLETION_STATUS(completion);
+        bool actual_success = GPU_UCMD_COMPLETION_SUCCESS(completion);
+
         ret = opengpu_hw_unified_result_error(opcode,
-            GPU_UCMD_COMPLETION_STATUS(completion));
-        if (GPU_UCMD_COMPLETION_ID(completion) != command_id ||
-            GPU_UCMD_COMPLETION_OPCODE(completion) != opcode ||
-            (!GPU_UCMD_COMPLETION_SUCCESS(completion) && !ret) ||
-            (!ret && processed != expected_bytes))
+            actual_status);
+        if (ret)
+            fault_flags |= OPENGPU_FAULT_COMPLETION_ERROR;
+        if (actual_id != command_id)
+            fault_flags |= OPENGPU_FAULT_COMMAND_ID_MISMATCH;
+        if (actual_opcode != opcode)
+            fault_flags |= OPENGPU_FAULT_OPCODE_MISMATCH;
+        if (actual_success != !ret)
+            fault_flags |= OPENGPU_FAULT_SUCCESS_MISMATCH;
+        if (!ret && processed != expected_bytes)
+            fault_flags |= OPENGPU_FAULT_BYTES_MISMATCH;
+        if (fault_flags & ~OPENGPU_FAULT_COMPLETION_ERROR)
             ret = -EIO;
         if (ret) {
+            opengpu_hw_record_fault_locked(
+                gpu, ret, fault_flags, actual_id, actual_opcode,
+                command_id, opcode, actual_status, processed, expected_bytes);
             dev_err(gpu->dev,
                     "unified command %u opcode %u failed: completion=%08x bytes=%llu error=%d\n",
                     command_id, opcode, completion, processed, ret);

@@ -101,6 +101,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
   completion fences.
 - Generation-tagged hardware event waits and signals for unified compute and
   DMA ioctls, with failed dependencies surfaced through fence errors.
+- Atomic DRM queries for the latest unified-command fault, including raw
+  status, errno, command metadata, byte counts and timeout/protocol reasons.
 - KMS scanout handoff, atomic modeset, page flip and virtual vblank.
 - ARTI/QEMU/Linux integration for the standard-AXI `GpuHostSystemAxi` product
   top in fixed-function, fragment-core and vertex-core configurations.
@@ -117,7 +119,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
   memory operations, extending validation only with matching hardware support.
 - Measure full-system cost by resolution, remove avoidable host-memory work and
   establish a practical regression default.
-- Define ABI-visible unified-command fault reporting and reset recovery.
+- Add a safe unified-command reset that drains or invalidates in-flight memory
+  transactions and define its DRM recovery semantics.
 
 ### Graphics capability
 

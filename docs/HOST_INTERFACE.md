@@ -147,6 +147,20 @@ their corresponding flag is set, and DMA ioctls reject event flags on hardware
 without the unified-command capability. A failed waited event completes the
 dependent command with an error fence instead of dispatching it.
 
+`DRM_IOCTL_OPENGPU_GET_FAULT` returns one atomic, device-global snapshot of the
+most recent unified-command failure. Sequence zero and a clear
+`OPENGPU_FAULT_VALID` bit mean that the driver has not observed a fault. Each
+new hardware completion error, completion-protocol mismatch or watchdog abort
+advances the nonzero sequence and records the Linux errno, raw hardware status,
+observed and expected command ID/opcode, and actual and expected byte counts.
+Reason flags distinguish hardware completion errors, timeouts, aborts, ID or
+opcode mismatches, inconsistent success metadata and short/long successful
+transfers. For an abort without a completion, raw status and processed bytes
+are zero. The snapshot intentionally contains no GPU addresses and remains
+available after the failing fence is consumed, so render clients can diagnose
+asynchronous failures without racing completion handling. Reserved input words
+must be zero.
+
 ### Shared-memory ABI
 
 The canonical layouts are defined in `driver/gpu_abi.h`.
@@ -284,10 +298,13 @@ result must be consumed before the interrupt is acknowledged.
   completion fence.
 - Compute and DMA ioctls expose generation-tagged wait/signal hardware events;
   event-dependency failures propagate as scheduler fence errors.
+- `DRM_IOCTL_OPENGPU_GET_FAULT` exposes an atomic retained snapshot of the most
+  recent unified completion error, protocol mismatch or watchdog abort.
 
 ## Next
 
-- Define ABI-visible fault codes, reset recovery and timeout behavior.
+- Add a safe command-level reset that drains or invalidates in-flight memory
+  transactions, then expose explicit reset recovery semantics through DRM.
 - Expand shader profiles and resource types only with matching hardware and
   validation.
 - Stabilize the ABI and performance envelope before a Mesa userspace driver.
