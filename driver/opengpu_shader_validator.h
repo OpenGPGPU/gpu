@@ -120,16 +120,93 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
 
     if (!(insn & (1u << 25))) /* shader vector ALU is deliberately unmasked */
         return false;
-    switch (funct6) {
-    case 0x00: /* vadd.vv/vi */
-    case 0x09: /* vand.vv/vi */
-    case 0x0a: /* vor.vv/vi */
-    case 0x0b: /* vxor.vv/vi */
-        return form == 0 || form == 3;
-    case 0x02: /* vsub.vv */
-        return form == 0;
-    case 0x03: /* vrsub.vi */
-        return form == 3;
+    switch (form) {
+    case 0: /* integer vv */
+        switch (funct6) {
+        case 0x00: /* vadd */
+        case 0x02: /* vsub */
+        case 0x04: /* vminu */
+        case 0x05: /* vmin */
+        case 0x06: /* vmaxu */
+        case 0x07: /* vmax */
+        case 0x09: /* vand */
+        case 0x0a: /* vor */
+        case 0x0b: /* vxor */
+        case 0x18: /* vmseq */
+        case 0x19: /* vmsne */
+        case 0x1a: /* vmsltu */
+        case 0x1b: /* vmslt */
+        case 0x1c: /* vmsleu */
+        case 0x1d: /* vmsle */
+        case 0x20: /* vsaddu */
+        case 0x21: /* vsadd */
+        case 0x22: /* vssubu */
+        case 0x23: /* vssub */
+        case 0x25: /* vsll */
+        case 0x27: /* vsmul */
+        case 0x28: /* vsrl */
+        case 0x29: /* vsra */
+            return true;
+        default:
+            return false;
+        }
+    case 2: /* multiply/divide vv */
+    case 6: /* multiply/divide vx */
+        return funct6 >= 0x20 && funct6 <= 0x27;
+    case 3: /* integer vi */
+        switch (funct6) {
+        case 0x00: /* vadd */
+        case 0x03: /* vrsub */
+        case 0x09: /* vand */
+        case 0x0a: /* vor */
+        case 0x0b: /* vxor */
+        case 0x18: /* vmseq */
+        case 0x19: /* vmsne */
+        case 0x1c: /* vmsleu */
+        case 0x1d: /* vmsle */
+        case 0x1e: /* vmsgtu */
+        case 0x1f: /* vmsgt */
+        case 0x20: /* vsaddu */
+        case 0x21: /* vsadd */
+        case 0x25: /* vsll */
+        case 0x28: /* vsrl */
+        case 0x29: /* vsra */
+            return true;
+        default:
+            return false;
+        }
+    case 4: /* integer vx */
+        switch (funct6) {
+        case 0x00: /* vadd */
+        case 0x02: /* vsub */
+        case 0x03: /* vrsub */
+        case 0x04: /* vminu */
+        case 0x05: /* vmin */
+        case 0x06: /* vmaxu */
+        case 0x07: /* vmax */
+        case 0x09: /* vand */
+        case 0x0a: /* vor */
+        case 0x0b: /* vxor */
+        case 0x18: /* vmseq */
+        case 0x19: /* vmsne */
+        case 0x1a: /* vmsltu */
+        case 0x1b: /* vmslt */
+        case 0x1c: /* vmsleu */
+        case 0x1d: /* vmsle */
+        case 0x1e: /* vmsgtu */
+        case 0x1f: /* vmsgt */
+        case 0x20: /* vsaddu */
+        case 0x21: /* vsadd */
+        case 0x22: /* vssubu */
+        case 0x23: /* vssub */
+        case 0x25: /* vsll */
+        case 0x27: /* vsmul */
+        case 0x28: /* vsrl */
+        case 0x29: /* vsra */
+            return true;
+        default:
+            return false;
+        }
     default:
         return false;
     }
@@ -139,8 +216,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * to four. Paths may reconverge or terminate independently in CEASE; every
  * reachable path must terminate. x1 remains the immutable kernarg base.
  * Scalar lw/sw retain the v1
- * bounds. The RVV profile admits vsetivli e32,m1, a lane-local integer ALU
- * allow-list, and unmasked unit-stride vle32/vse32. Defined-register tracking
+ * bounds. The RVV profile admits vsetivli e32,m1, the implemented lane-local
+ * integer ALU, comparison, saturating, multiply, divide and remainder forms,
+ * and unmasked unit-stride vle32/vse32. Defined-register tracking
  * prevents stale SGPR/VGPR data from being exported. A small abstract
  * interpreter recognizes x1 +
  * 4*x8 + constant, where x8 is the trusted warp localLinearBase, and proves
@@ -321,7 +399,10 @@ static inline bool opengpu_shader_validate_words_profile(
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
                     !vector_defined[rs2] ||
-                    (funct3 == 0 && !vector_defined[rs1]))
+                    ((funct3 == 0 || funct3 == 2) &&
+                     !vector_defined[rs1]) ||
+                    ((funct3 == 4 || funct3 == 6) &&
+                     !scalar_defined[rs1]))
                     return false;
                 vector_defined[rd] = true;
             }

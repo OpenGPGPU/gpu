@@ -133,8 +133,13 @@ int main(void)
         unsigned int form;
     } arithmetic[] = {
         { 0x00, 0 }, { 0x00, 3 }, { 0x02, 0 }, { 0x03, 3 },
+        { 0x04, 0 }, { 0x07, 4 },
         { 0x09, 0 }, { 0x09, 3 }, { 0x0a, 0 }, { 0x0a, 3 },
         { 0x0b, 0 }, { 0x0b, 3 },
+        { 0x18, 3 }, { 0x1b, 0 },
+        { 0x20, 4 }, { 0x23, 0 }, { 0x25, 3 }, { 0x29, 4 },
+        { 0x25, 2 }, { 0x24, 6 }, /* vmul.vv, vmulhu.vx */
+        { 0x20, 2 }, { 0x23, 6 }, /* vdivu.vv, vrem.vx */
     };
     const unsigned int branch_forms[] = { 0, 1, 4, 5, 6, 7 };
     uint32_t program[64];
@@ -236,7 +241,8 @@ int main(void)
     }
 
     for (i = 0; i < sizeof(arithmetic) / sizeof(arithmetic[0]); i++) {
-        unsigned int operand = arithmetic[i].form == 0 ? 2 : 1;
+        unsigned int operand =
+            arithmetic[i].form == 0 || arithmetic[i].form == 2 ? 2 : 0;
 
         program[0] = vsetivli(4);
         program[1] = addi(5, 1, 96);
@@ -332,6 +338,21 @@ int main(void)
     assert(!opengpu_shader_validate_words(program, 3, 288, 8));
 
     program[1] = vector_alu(0x02, 3, 2, 1, 1); /* vsub.vi is reserved */
+    assert(!opengpu_shader_validate_words(program, 3, 288, 8));
+
+    program[1] = vector_alu(0x04, 3, 2, 1, 1); /* vminu.vi is reserved */
+    assert(!opengpu_shader_validate_words(program, 3, 288, 8));
+
+    program[1] = vector_alu(0x24, 0, 2, 1, 1); /* no integer vv form */
+    assert(!opengpu_shader_validate_words(program, 3, 288, 8));
+
+    program[1] = vector_alu(0x00, 1, 2, 1, 1); /* floating vv is excluded */
+    assert(!opengpu_shader_validate_words(program, 3, 288, 8));
+
+    program[1] = vector_alu(0x00, 4, 2, 1, 10); /* undefined scalar x10 */
+    assert(!opengpu_shader_validate_words(program, 3, 288, 8));
+
+    program[1] = vector_alu(0x25, 2, 2, 1, 3); /* undefined vector v3 */
     assert(!opengpu_shader_validate_words(program, 3, 288, 8));
 
     program[1] = vector_alu(0x00, 3, 2, 1, 1) & ~(1u << 25);

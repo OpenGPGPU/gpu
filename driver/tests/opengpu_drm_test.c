@@ -675,9 +675,14 @@ static void write_compute_shader(void *mapping)
 {
     uint32_t *program = mapping;
 
-    program[0] = 0x0000a483u; /* lw x9,0(x1) */
-    program[1] = 0x0090a223u; /* sw x9,4(x1) */
-    program[2] = 0x30500073u; /* cease */
+    program[0] = 0xc100f057u; /* vsetivli x0,1,e32,m1,ta,ma */
+    program[1] = 0x00008293u; /* addi x5,x1,0 */
+    program[2] = 0x0202e107u; /* vle32.v v2,(x5) */
+    program[3] = 0x00300313u; /* addi x6,x0,3 */
+    program[4] = 0x962361d7u; /* vmul.vx v3,v2,x6 */
+    program[5] = 0x00408293u; /* addi x5,x1,4 */
+    program[6] = 0x0202e1a7u; /* vse32.v v3,(x5) */
+    program[7] = 0x30500073u; /* cease */
 }
 
 static int reject_unsafe_command(int fd, uint32_t context_id,
@@ -1183,10 +1188,10 @@ int main(void)
               OPENGPU_COMMAND_EVENT(8, 1)),
           "queue event-dependent general compute");
     CHECK(wait_syncobjs(fd, &syncobjs[6], 1), "wait compute syncobj");
-    if (((uint32_t *)compute_kernarg.map)[1] != 0xcafe0001u) {
+    if (((uint32_t *)compute_kernarg.map)[1] != 0x60fa0003u) {
         fprintf(stderr,
                 "compute kernarg input=0x%08x output=0x%08x "
-                "expected=0xcafe0001\n",
+                "expected=0x60fa0003\n",
                 ((uint32_t *)compute_kernarg.map)[0],
                 ((uint32_t *)compute_kernarg.map)[1]);
         errno = EIO;
@@ -1396,7 +1401,7 @@ int main(void)
 
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
            "syncobj + %s sandbox + "
-           "validated context + event-chained general compute + "
+           "validated context + event-chained RVV multiply compute + "
            "ordered colour "
            "blit/fill/strided blit + "
            "fault-query ABI + vblank flip event sequence=%u\n",
