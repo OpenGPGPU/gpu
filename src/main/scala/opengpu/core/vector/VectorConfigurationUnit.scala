@@ -74,6 +74,15 @@ class VectorConfigurationUnit(config: GpuConfig = GpuConfig()) extends Module {
   private val frm = RegInit(VecInit(Seq.fill(config.warps)(0.U(3.W))))
   private val fflags = RegInit(VecInit(Seq.fill(config.warps)(0.U(5.W))))
 
+  // GpuConfig keeps warp IDs at least one bit wide, while a single-entry Vec
+  // has no dynamic index bits. Select entry zero statically in that profile so
+  // narrow PPA/test configurations elaborate without width warnings.
+  private def readWarp[T <: Data](entries: Vec[T], warp: UInt): T =
+    if (config.warps == 1) entries(0) else entries(warp)
+  private def writeWarp[T <: Data](entries: Vec[T], warp: UInt,
+                                   value: T): Unit =
+    if (config.warps == 1) entries(0) := value else entries(warp) := value
+
   private val outputValid = RegInit(false.B)
   private val outputBits = Reg(new VectorConfigurationResult(config))
   private val outputReady = !outputValid || io.out.ready
@@ -102,7 +111,7 @@ class VectorConfigurationUnit(config: GpuConfig = GpuConfig()) extends Module {
       requestedVtype(5, 3) === "b010".U &&
       requestedVtype(2, 0) === "b000".U
 
-  private val currentVl = vl(io.in.bits.warpId)
+  private val currentVl = readWarp(vl, io.in.bits.warpId)
   private val avl = Mux(
     isVsetivli,
     rs1,
@@ -122,41 +131,50 @@ class VectorConfigurationUnit(config: GpuConfig = GpuConfig()) extends Module {
   io.out.valid := outputValid
   io.out.bits := outputBits
 
-  io.state.vl := vl(io.queryWarpId)
-  io.state.vtype := vtype(io.queryWarpId)
-  io.state.vstart := vstart(io.queryWarpId)
-  io.state.vxrm := vxrm(io.queryWarpId)
-  io.state.vxsat := vxsat(io.queryWarpId)
-  io.state.frm := frm(io.queryWarpId)
-  io.state.fflags := fflags(io.queryWarpId)
+  io.state.vl := readWarp(vl, io.queryWarpId)
+  io.state.vtype := readWarp(vtype, io.queryWarpId)
+  io.state.vstart := readWarp(vstart, io.queryWarpId)
+  io.state.vxrm := readWarp(vxrm, io.queryWarpId)
+  io.state.vxsat := readWarp(vxsat, io.queryWarpId)
+  io.state.frm := readWarp(frm, io.queryWarpId)
+  io.state.fflags := readWarp(fflags, io.queryWarpId)
   io.frmByWarp := frm
 
   when(io.csrWrite.valid) {
     val warp = io.csrWrite.bits.warpId
     switch(io.csrWrite.bits.address) {
-      is("h008".U) { vstart(warp) := io.csrWrite.bits.data }
-      is("h009".U) { vxsat(warp) := io.csrWrite.bits.data(0) }
-      is("h00a".U) { vxrm(warp) := io.csrWrite.bits.data(1, 0) }
-      is("h002".U) { frm(warp) := io.csrWrite.bits.data(2, 0) }
+      is("h008".U) {
+        writeWarp(vstart, warp, io.csrWrite.bits.data)
+      }
+      is("h009".U) {
+        writeWarp(vxsat, warp, io.csrWrite.bits.data(0))
+      }
+      is("h00a".U) {
+        writeWarp(vxrm, warp, io.csrWrite.bits.data(1, 0))
+      }
+      is("h002".U) {
+        writeWarp(frm, warp, io.csrWrite.bits.data(2, 0))
+      }
       is("h003".U) {
-        frm(warp) := io.csrWrite.bits.data(7, 5)
-        fflags(warp) := io.csrWrite.bits.data(4, 0)
+        writeWarp(frm, warp, io.csrWrite.bits.data(7, 5))
+        writeWarp(fflags, warp, io.csrWrite.bits.data(4, 0))
       }
       is("h00f".U) {
-        vxrm(warp) := io.csrWrite.bits.data(2, 1)
-        vxsat(warp) := io.csrWrite.bits.data(0)
+        writeWarp(vxrm, warp, io.csrWrite.bits.data(2, 1))
+        writeWarp(vxsat, warp, io.csrWrite.bits.data(0))
       }
     }
   }
 
   when(io.flagsWrite.valid) {
-    fflags(io.flagsWrite.bits.warpId) :=
-      fflags(io.flagsWrite.bits.warpId) | io.flagsWrite.bits.flags
+    writeWarp(fflags, io.flagsWrite.bits.warpId,
+      readWarp(fflags, io.flagsWrite.bits.warpId) | io.flagsWrite.bits.flags)
   }
 
   when(io.scalarFlagsWrite.valid) {
-    fflags(io.scalarFlagsWrite.bits.warpId) :=
-      fflags(io.scalarFlagsWrite.bits.warpId) | io.scalarFlagsWrite.bits.flags
+    writeWarp(fflags, io.scalarFlagsWrite.bits.warpId,
+      readWarp(fflags, io.scalarFlagsWrite.bits.warpId) |
+        io.scalarFlagsWrite.bits.flags)
   }
 
   when(outputReady) {
@@ -170,9 +188,9 @@ class VectorConfigurationUnit(config: GpuConfig = GpuConfig()) extends Module {
       outputBits.writeRd := rd =/= 0.U
       outputBits.data := nextVl
       outputBits.vill := vill
-      vl(warp) := nextVl
-      vtype(warp) := nextVtype
-      vstart(warp) := 0.U
+      writeWarp(vl, warp, nextVl)
+      writeWarp(vtype, warp, nextVtype)
+      writeWarp(vstart, warp, 0.U)
     }
   }
 

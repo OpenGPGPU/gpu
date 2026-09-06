@@ -198,4 +198,37 @@ class VectorConfigurationUnitSpec extends AnyFlatSpec {
       dut.io.state.fflags.expect("h08".U)
     }
   }
+
+  it should "support statically indexed single-warp state" in {
+    val singleWarp = GpuConfig(lanes = 4, warps = 1)
+    simulate(new VectorConfigurationUnit(singleWarp)) { dut =>
+      dut.reset.poke(true.B)
+      dut.io.in.valid.poke(false.B)
+      dut.io.out.ready.poke(true.B)
+      dut.io.queryWarpId.poke(0.U)
+      dut.io.csrWrite.valid.poke(false.B)
+      dut.io.flagsWrite.valid.poke(false.B)
+      dut.io.scalarFlagsWrite.valid.poke(false.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      dut.io.in.bits.instruction.poke(vsetivli(1, 4, 0x10).U)
+      dut.io.in.bits.warpId.poke(0.U)
+      dut.io.in.bits.pc.poke(0.U)
+      dut.io.in.bits.warpActiveMask.poke("b1111".U)
+      dut.io.in.bits.rs1Data.poke(0.U)
+      dut.io.in.bits.rs2Data.poke(0.U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.io.state.vl.expect(4.U)
+
+      dut.io.flagsWrite.bits.warpId.poke(0.U)
+      dut.io.flagsWrite.bits.flags.poke("h03".U)
+      dut.io.flagsWrite.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.flagsWrite.valid.poke(false.B)
+      dut.io.state.fflags.expect("h03".U)
+    }
+  }
 }
