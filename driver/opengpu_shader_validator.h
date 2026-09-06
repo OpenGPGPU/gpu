@@ -117,8 +117,12 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
 {
     opengpu_shader_u32 funct6 = insn >> 26;
     opengpu_shader_u32 form = (insn >> 12) & 7;
+    opengpu_shader_u32 vd = (insn >> 7) & 0x1f;
+    opengpu_shader_u32 vs2 = (insn >> 20) & 0x1f;
 
     if (!(insn & (1u << 25))) /* shader vector ALU is deliberately unmasked */
+        return false;
+    if (funct6 == 0x0e && vd == vs2) /* vslideup overlap is reserved */
         return false;
     switch (form) {
     case 0: /* integer vv */
@@ -162,6 +166,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x0a: /* vor */
         case 0x0b: /* vxor */
         case 0x0c: /* vrgather */
+        case 0x0e: /* vslideup */
+        case 0x0f: /* vslidedown */
         case 0x18: /* vmseq */
         case 0x19: /* vmsne */
         case 0x1c: /* vmsleu */
@@ -190,6 +196,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x0a: /* vor */
         case 0x0b: /* vxor */
         case 0x0c: /* vrgather */
+        case 0x0e: /* vslideup */
+        case 0x0f: /* vslidedown */
         case 0x18: /* vmseq */
         case 0x19: /* vmsne */
         case 0x1a: /* vmsltu */
@@ -220,9 +228,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * reachable path must terminate. x1 remains the immutable kernarg base.
  * Scalar lw/sw retain the v1
  * bounds. The RVV profile admits vsetivli e32,m1, the implemented lane-local
- * integer ALU, comparison, saturating, gather, multiply, divide and remainder
- * forms, and unmasked unit-stride vle32/vse32. Defined-register tracking
- * prevents stale SGPR/VGPR data from being exported. A small abstract
+ * integer ALU, comparison, saturating, gather, slide, multiply, divide and
+ * remainder forms, and unmasked unit-stride vle32/vse32. Defined-register
+ * tracking prevents stale SGPR/VGPR data from being exported. A small abstract
  * interpreter recognizes x1 +
  * 4*x8 + constant, where x8 is the trusted warp localLinearBase, and proves
  * every active vector lane remains in kernarg; each profile selects the
@@ -402,6 +410,7 @@ static inline bool opengpu_shader_validate_words_profile(
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
                     !vector_defined[rs2] ||
+                    ((insn >> 26) == 0x0e && !vector_defined[rd]) ||
                     ((funct3 == 0 || funct3 == 2) &&
                      !vector_defined[rs1]) ||
                     ((funct3 == 4 || funct3 == 6) &&

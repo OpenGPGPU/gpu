@@ -73,6 +73,24 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.valid.expect(true.B)
       dut.io.decoded.unit.expect(VectorUnit.alu)
 
+      // vslideup.vx and vslidedown.vi use scalar/immediate offsets.
+      dut.io.instruction.poke("b001110_1_00001_00010_100_00011_1010111".U)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.unit.expect(VectorUnit.alu)
+      dut.io.instruction.poke("b001111_1_00001_00010_011_00011_1010111".U)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.unit.expect(VectorUnit.alu)
+
+      // There is no vector-vector encoding for the slide family.
+      dut.io.instruction.poke("b001110_1_00001_00010_000_00011_1010111".U)
+      dut.io.decoded.recognized.expect(true.B)
+      dut.io.decoded.valid.expect(false.B)
+
+      // vslideup cannot overlap its destination and vector source groups.
+      dut.io.instruction.poke("b001110_1_00011_00010_100_00011_1010111".U)
+      dut.io.decoded.recognized.expect(true.B)
+      dut.io.decoded.valid.expect(false.B)
+
       // vsmul is enabled once vxrm is supplied by vector configuration state.
       dut.io.instruction.poke("b100111_1_00001_00010_000_00011_1010111".U)
       dut.io.decoded.recognized.expect(true.B)

@@ -13,8 +13,11 @@ subsystem. It is intentionally rewritten around the fixed GPU profile:
 `VectorIntegerAlu` implements the lane-local integer ALU, comparison/mask,
 saturating add/subtract, and shift instructions accepted by `VectorDecoder`.
 It also implements `vrgather.vv/vx/vi`; each destination lane selects a source
-element independently, and indices outside VLMAX produce zero. The custom
-fragment-quad `vquad.dfdx`/`vquad.dfdy`
+element independently, and indices outside VLMAX produce zero.
+`vslideup.vx/vi` and `vslidedown.vx/vi` move elements across lanes; slide-up
+preserves destination elements below the offset, while slide-down returns zero
+when its source index is outside VLMAX. The custom fragment-quad
+`vquad.dfdx`/`vquad.dfdy`
 cross-lane primitives over four-lane groups ordered TL, TR, BL, BR. These
 encodings remain outside the driver shader profile until graphics dispatch
 guarantees that ordering and supplies helper lanes at primitive edges.
@@ -43,8 +46,8 @@ estimates with the standard mantissa lookup tables. It handles infinities,
 zeros, NaNs, and subnormal normalization, reports DZ/NV, and raises OF/NX when
 a `vfrec7` subnormal reciprocal overflows.
 
-Remaining RVV families (reductions, widening/narrowing, slide, and the
-remaining VFUNARY1 forms) remain separate migration steps.
+Remaining RVV families (reductions, widening/narrowing, and the remaining
+VFUNARY1 forms) remain separate migration steps.
 
 The backend now contains a behavioral per-warp vector register file and issue
 boundary. Each warp owns 32 VLEN-wide registers with `vs1`, `vs2`, old-`vd`,

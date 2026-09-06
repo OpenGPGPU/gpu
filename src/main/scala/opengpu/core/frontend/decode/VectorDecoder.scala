@@ -124,6 +124,8 @@ private object VectorDecodeTable {
     VectorInstruction("vor",    0x0a, Seq(IVV, IVX, IVI)),
     VectorInstruction("vxor",   0x0b, Seq(IVV, IVX, IVI)),
     VectorInstruction("vrgather", 0x0c, Seq(IVV, IVX, IVI)),
+    VectorInstruction("vslideup", 0x0e, Seq(IVX, IVI)),
+    VectorInstruction("vslidedown", 0x0f, Seq(IVX, IVI)),
     VectorInstruction("vmseq",  0x18, Seq(IVV, IVX, IVI), unit = 7),
     VectorInstruction("vmsne",  0x19, Seq(IVV, IVX, IVI), unit = 7),
     VectorInstruction("vmsltu", 0x1a, Seq(IVV, IVX), unit = 7),
@@ -284,7 +286,7 @@ private object VectorDecodeTable {
   val table = new DecodeTable(patterns, fields)
 }
 
-/** Table-driven decoder for the implemented lane-local RVV subset. */
+/** Table-driven decoder for the implemented RVV subset. */
 class VectorDecoder extends Module {
   val io = IO(new Bundle {
     val instruction = Input(UInt(32.W))
@@ -296,10 +298,12 @@ class VectorDecoder extends Module {
     opcode === "b0100111".U || opcode === "b0101011".U
   val result = VectorDecodeTable.table.decode(io.instruction)
   val (decodedUnit, _) = VectorUnit.safe(result(VectorDecodeTable.Unit))
+  val slideUpOverlap = io.instruction(31, 26) === "b001110".U &&
+    io.instruction(11, 7) === io.instruction(24, 20)
 
   io.decoded := 0.U.asTypeOf(new VectorDecodeSignals)
   io.decoded.recognized := recognized
-  io.decoded.valid := result(VectorDecodeTable.Legal)
+  io.decoded.valid := result(VectorDecodeTable.Legal) && !slideUpOverlap
   io.decoded.unit := decodedUnit
   io.decoded.funct6 := io.instruction(31, 26)
   io.decoded.operandType := io.instruction(14, 12)

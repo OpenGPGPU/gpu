@@ -137,6 +137,7 @@ int main(void)
         { 0x09, 0 }, { 0x09, 3 }, { 0x0a, 0 }, { 0x0a, 3 },
         { 0x0b, 0 }, { 0x0b, 3 },
         { 0x0c, 0 }, { 0x0c, 3 }, { 0x0c, 4 },
+        { 0x0e, 3 }, { 0x0e, 4 }, { 0x0f, 3 }, { 0x0f, 4 },
         { 0x18, 3 }, { 0x1b, 0 },
         { 0x20, 4 }, { 0x23, 0 }, { 0x25, 3 }, { 0x29, 4 },
         { 0x25, 2 }, { 0x24, 6 }, /* vmul.vv, vmulhu.vx */
@@ -248,13 +249,21 @@ int main(void)
         program[0] = vsetivli(4);
         program[1] = addi(5, 1, 96);
         program[2] = vle32(2, 5);
-        program[3] = vector_alu(arithmetic[i].funct6,
+        program[3] = vle32(3, 5); /* vslideup preserves part of old vd */
+        program[4] = vector_alu(arithmetic[i].funct6,
                                 arithmetic[i].form, 3, 2, operand);
-        program[4] = addi(5, 1, 192);
-        program[5] = vse32(3, 5);
-        program[6] = OPENGPU_SHADER_CEASE;
-        assert(opengpu_shader_validate_words(program, 7, 288, 8));
+        program[5] = addi(5, 1, 192);
+        program[6] = vse32(3, 5);
+        program[7] = OPENGPU_SHADER_CEASE;
+        assert(opengpu_shader_validate_words(program, 8, 288, 8));
     }
+
+    program[0] = vsetivli(4);
+    program[1] = vector_alu(0x0e, 3, 2, 1, 1); /* undefined old vd */
+    program[2] = OPENGPU_SHADER_CEASE;
+    assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
+    program[1] = vector_alu(0x0e, 3, 1, 1, 1); /* overlapping vslideup */
+    assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
 
     program[0] = sw(10, 0); /* input array is read-only */
     program[1] = OPENGPU_SHADER_CEASE;

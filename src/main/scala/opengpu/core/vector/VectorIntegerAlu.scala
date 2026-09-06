@@ -60,9 +60,9 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
 /** RVV integer ALU for the fixed SEW=32, LMUL=1 GPU profile.
   *
   * The unit implements the precise funct6 encodings accepted by VectorDecoder,
-  * including the vrgather cross-lane source selection. Inactive or masked-off
-  * lanes preserve oldVd. Results are held under output backpressure and the
-  * unit sustains one operation per cycle when unstalled.
+  * including vrgather and slide cross-lane source selection. Inactive or
+  * masked-off lanes preserve oldVd. Results are held under output backpressure
+  * and the unit sustains one operation per cycle when unstalled.
   */
 class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   val io = IO(new Bundle {
@@ -123,7 +123,9 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       "h0a".U -> (lhs | rhs),
       "h0b".U -> (lhs ^ rhs),
       "h0c".U -> Mux(partialBits.quad, quadDx, lhs),
-      "h0d".U -> quadDy
+      "h0d".U -> quadDy,
+      "h0e".U -> lhs,
+      "h0f".U -> lhs
     ))
     val saturatingResult = Mux(
       partialBits.funct6 === "h20".U || partialBits.funct6 === "h21".U,
@@ -310,6 +312,11 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         io.in.bits.activeMask &
           Mux(io.in.bits.vm, Fill(config.lanes, 1.U), io.in.bits.predicateMask)
       val gatherIndexWidth = math.max(1, log2Ceil(config.lanes))
+      val slideOffset = Mux(
+        inputIsVx,
+        io.in.bits.scalar,
+        io.in.bits.immediate
+      )
       for (lane <- 0 until config.lanes) {
         inputBits.oldVd(lane) := io.in.bits.oldVd(lane)
         val gatherIndex = Mux(
@@ -322,11 +329,23 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
           io.in.bits.vs2(gatherIndex(gatherIndexWidth - 1, 0)),
           0.U
         )
-        inputBits.lhs(lane) := Mux(
-          io.in.bits.funct6 === "h0c".U && !io.in.bits.quad,
-          gathered,
-          io.in.bits.vs2(lane)
+        val slideUpIndex = lane.U(config.xLen.W) - slideOffset
+        val slideUp = Mux(
+          slideOffset <= lane.U,
+          io.in.bits.vs2(slideUpIndex(gatherIndexWidth - 1, 0)),
+          io.in.bits.oldVd(lane)
         )
+        val slideDownIndex = lane.U(config.xLen.W) +& slideOffset
+        val slideDown = Mux(
+          slideDownIndex < config.lanes.U,
+          io.in.bits.vs2(slideDownIndex(gatherIndexWidth - 1, 0)),
+          0.U
+        )
+        inputBits.lhs(lane) := MuxCase(io.in.bits.vs2(lane), Seq(
+          (io.in.bits.funct6 === "h0c".U && !io.in.bits.quad) -> gathered,
+          (io.in.bits.funct6 === "h0e".U) -> slideUp,
+          (io.in.bits.funct6 === "h0f".U) -> slideDown
+        ))
         inputBits.rhs(lane) := Mux(
           inputIsVv,
           io.in.bits.vs1(lane),

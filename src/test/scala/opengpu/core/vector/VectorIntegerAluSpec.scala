@@ -167,6 +167,56 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     }
   }
 
+  it should "slide elements up and down with scalar and immediate offsets" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      Seq(11, 22, 33, 44).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.in.bits.vs2(lane).poke(value.U)
+      }
+
+      dut.io.in.bits.funct6.poke("h0e".U)
+      dut.io.in.bits.operandType.poke("b011".U)
+      dut.io.in.bits.immediate.poke(1.U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(3)
+      Seq(100, 11, 22, 33).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.out.bits.data(lane).expect(value.U)
+      }
+
+      dut.io.in.bits.operandType.poke("b100".U)
+      dut.io.in.bits.scalar.poke(2.U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(3)
+      Seq(100, 101, 11, 22).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.out.bits.data(lane).expect(value.U)
+      }
+
+      dut.io.in.bits.funct6.poke("h0f".U)
+      dut.io.in.bits.operandType.poke("b011".U)
+      dut.io.in.bits.immediate.poke(1.U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(3)
+      Seq(22, 33, 44, 0).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.out.bits.data(lane).expect(value.U)
+      }
+
+      dut.io.in.bits.operandType.poke("b100".U)
+      dut.io.in.bits.scalar.poke(4.U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(3)
+      for (lane <- 0 until config.lanes)
+        dut.io.out.bits.data(lane).expect(0.U)
+    }
+  }
+
   it should "saturate signed and unsigned operations and hold backpressure" in {
     simulate(new VectorIntegerAlu(config)) { dut =>
       defaults(dut)

@@ -132,12 +132,17 @@ Applications bind separate `OPENGPU_RESOURCE_COMPUTE_SHADER` and
 binding-relative entry/kernarg offsets and three-dimensional grid and local
 sizes. The initial sandbox accepts bounded forward control flow and the
 supported scalar subset plus unmasked RVV integer ALU, comparison, saturating,
-gather, multiply, divide and remainder operations. It permits memory access
-only inside the bound kernarg range and limits a workgroup to the fixed 32
+gather, slide, multiply, divide and remainder operations. It permits memory
+access only inside the bound kernarg range and limits a workgroup to the fixed 32
 resident work-items. `vrgather.vv/vx/vi` selects within the fixed per-warp
 VLMAX and returns zero for an out-of-range index. Vector-vector and
 vector-scalar forms require proven defined VGPR or SGPR sources; immediate
 forms do not consume a source register.
+`vslideup.vx/vi` preserves destination elements below its unsigned offset;
+`vslidedown.vx/vi` returns zero when the selected source is outside VLMAX.
+The validator rejects the architecturally reserved `vslideup`
+destination/source overlap and requires its partially preserved destination
+register to be defined before use.
 The driver snapshots and validates the program, tracks the kernarg GEM object
 for both reads and writes, and publishes completion through the context's
 normal scheduler and optional input/output sync objects.
@@ -302,7 +307,7 @@ result must be consumed before the interrupt is acknowledged.
   immutable validated program snapshots and the same scheduler-owned unified
   completion fence.
 - The validator exposes the implemented RVV integer ALU, comparison,
-  saturation, gather, multiply, divide and remainder families with exact
+  saturation, gather, slide, multiply, divide and remainder families with exact
   operand-form and defined-register checks.
 - Compute and DMA ioctls expose generation-tagged wait/signal hardware events;
   event-dependency failures propagate as scheduler fence errors.
