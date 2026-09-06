@@ -119,6 +119,23 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.unit.expect(VectorUnit.loadStore)
       dut.io.decoded.mop.expect("b10".U)
 
+      // Ordered and unordered 32-bit indexed loads consume vs2 offsets.
+      dut.io.instruction.poke("b0000_0_01_1_00100_00010_110_00011_0000111".U)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.unit.expect(VectorUnit.loadStore)
+      dut.io.decoded.mop.expect("b01".U)
+      dut.io.decoded.readsVs2.expect(true.B)
+
+      dut.io.instruction.poke("b0000_0_11_1_00100_00010_110_00011_0100111".U)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.mop.expect("b11".U)
+      dut.io.decoded.readsVs2.expect(true.B)
+
+      // The fixed SEW=32 profile does not yet implement narrower indices.
+      dut.io.instruction.poke("b0000_0_01_1_00100_00010_101_00011_0000111".U)
+      dut.io.decoded.recognized.expect(true.B)
+      dut.io.decoded.valid.expect(false.B)
+
       // Masked unit-stride word loads are implemented by the vector LSU.
       dut.io.instruction.poke("b0000_0_00_0_00000_00010_110_00011_0000111".U)
       dut.io.decoded.valid.expect(true.B)

@@ -12,10 +12,12 @@ class VectorMemoryExecuteRequest(config: GpuConfig) extends Bundle {
   val vd = UInt(5.W)
   val baseAddress = UInt(config.xLen.W)
   val stride = UInt(config.xLen.W)
+  val indexData = Vec(config.lanes, UInt(config.xLen.W))
   val storeData = Vec(config.lanes, UInt(config.xLen.W))
   val oldVd = Vec(config.lanes, UInt(config.xLen.W))
   val elementSize = UInt(2.W)
   val strided = Bool()
+  val indexed = Bool()
   val isStore = Bool()
 }
 
@@ -94,9 +96,13 @@ class VectorMemoryUnit(config: GpuConfig = GpuConfig()) extends Module {
     for (lane <- 0 until config.lanes) {
       val laneNumber = lane.U(config.xLen.W)
       val byteOffset = Mux(
-        io.in.bits.strided,
-        laneNumber * io.in.bits.stride,
-        laneNumber << io.in.bits.elementSize
+        io.in.bits.indexed,
+        io.in.bits.indexData(lane),
+        Mux(
+          io.in.bits.strided,
+          laneNumber * io.in.bits.stride,
+          laneNumber << io.in.bits.elementSize
+        )
       )
       precomputedAddresses(lane) :=
         io.in.bits.baseAddress + byteOffset
@@ -111,9 +117,13 @@ class VectorMemoryUnit(config: GpuConfig = GpuConfig()) extends Module {
   for (lane <- 0 until config.lanes) {
     val laneNumber = lane.U(config.xLen.W)
     val byteOffset = Mux(
-      requestBits.strided,
-      laneNumber * requestBits.stride,
-      laneNumber << requestBits.elementSize
+      requestBits.indexed,
+      requestBits.indexData(lane),
+      Mux(
+        requestBits.strided,
+        laneNumber * requestBits.stride,
+        laneNumber << requestBits.elementSize
+      )
     )
     io.memoryRequest.bits.addresses(lane) :=
       requestBits.baseAddress + byteOffset

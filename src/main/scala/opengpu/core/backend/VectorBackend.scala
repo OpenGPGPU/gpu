@@ -479,8 +479,11 @@ class VectorBackend(
     dispatch.io.memory.bits.decode.instruction(11, 7)
   memory.io.in.bits.baseAddress := dispatch.io.memory.bits.scalarRs1Data
   memory.io.in.bits.stride := dispatch.io.memory.bits.scalarRs2Data
+  memory.io.in.bits.indexData := dispatch.io.memory.bits.vs2Data
   memory.io.in.bits.strided :=
     dispatch.io.memory.bits.decode.decoded.mop === "b10".U
+  memory.io.in.bits.indexed :=
+    dispatch.io.memory.bits.decode.decoded.mop(0)
   memory.io.in.bits.storeData := dispatch.io.memory.bits.oldVdData
   memory.io.in.bits.oldVd := dispatch.io.memory.bits.oldVdData
   memory.io.in.bits.elementSize := MuxLookup(

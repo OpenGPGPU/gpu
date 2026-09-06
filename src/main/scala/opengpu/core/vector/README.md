@@ -82,6 +82,13 @@ exposes the 32-bit forms when `rs2` is a directly materialized, aligned signed
 constant and its abstract interpreter proves every lane address inside the
 bound kernarg and writable output range.
 
+For the fixed SEW=32 profile, the LSU also implements ordered and unordered
+`vluxei32/vloxei32/vsuxei32/vsoxei32` using unsigned per-lane byte offsets from
+`vs2`. Indexed accesses reuse the sparse cache-line coalescer. The driver
+admits indices derived from the trusted launch-time local IDs by an exact
+two-bit left shift and proves the complete batch span; other index provenance
+is rejected.
+
 Texture sampling is routed as a separate elastic vector path. `vtex.sample`
 uses the warp active mask, `vl`, `vm`, and v0 predicate to select lanes; the
 sampler serializes those lane requests and commits one vector destination while

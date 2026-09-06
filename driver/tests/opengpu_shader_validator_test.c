@@ -65,6 +65,20 @@ static uint32_t vsse32(unsigned int vs3, unsigned int rs1,
            (rs1 & 0x1f) << 15 | (vs3 & 0x1f) << 7;
 }
 
+static uint32_t vluxei32(unsigned int vd, unsigned int rs1,
+                         unsigned int vs2)
+{
+    return 0x06006007u | (vs2 & 0x1f) << 20 |
+           (rs1 & 0x1f) << 15 | (vd & 0x1f) << 7;
+}
+
+static uint32_t vsoxei32(unsigned int vs3, unsigned int rs1,
+                         unsigned int vs2)
+{
+    return 0x0e006027u | (vs2 & 0x1f) << 20 |
+           (rs1 & 0x1f) << 15 | (vs3 & 0x1f) << 7;
+}
+
 static uint32_t vector_alu(unsigned int funct6, unsigned int form,
                            unsigned int vd, unsigned int vs2,
                            unsigned int operand)
@@ -211,6 +225,23 @@ int main(void)
     program[3] = addi(6, 0, 8);
     program[4] = vlse32(2, 5, 6);
     program[5] = OPENGPU_SHADER_CEASE;
+    assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
+
+    /* Indexed word access is admitted only for byte offsets derived from the
+     * trusted launch-time local IDs by an exact left shift of two. */
+    program[0] = vsetivli(4);
+    program[1] = vector_alu(0x25, 3, 2, 1, 2); /* vsll.vi v2,v1,2 */
+    program[2] = addi(5, 1, 0);
+    program[3] = vluxei32(3, 5, 2);
+    program[4] = vsoxei32(3, 5, 2);
+    program[5] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_compute_shader_validate_words(program, 6, 64, 4));
+
+    program[2] = addi(5, 1, 52); /* complete four-lane span exceeds 64 */
+    assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
+
+    program[1] = vector_alu(0x00, 3, 2, 1, 0); /* not trusted indices */
+    program[2] = addi(5, 1, 0);
     assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
 
     /* Vertex stores target transformed attribute slices 8..15. */

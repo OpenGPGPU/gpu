@@ -226,6 +226,42 @@ class VectorBackendSpec extends AnyFlatSpec {
         dut.io.committedVectorWriteback.bits.data(lane)
           .expect((0x80 + lane).U)
       }
+      dut.clock.step()
+
+      // vluxei32.v v6,(x1),v5: vs2 supplies per-lane byte indices.
+      initialize(5, 0x20)
+      val indexedLoadInstruction =
+        (BigInt(1) << 26) | (BigInt(1) << 25) |
+          (BigInt(5) << 20) | (BigInt(1) << 15) |
+          (BigInt(6) << 12) | (BigInt(6) << 7) | 0x07
+      dut.io.scalarRs1Data.poke(0x500.U)
+      dut.io.memoryRequest.ready.poke(false.B)
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.instruction.poke(indexedLoadInstruction.U)
+      dut.io.in.bits.pc.poke(0x1008.U)
+      dut.io.in.bits.decoded.unit.poke(VectorUnit.loadStore)
+      dut.io.in.bits.decoded.vm.poke(true.B)
+      dut.io.in.bits.decoded.mop.poke("b01".U)
+      dut.io.in.bits.decoded.readsVs1.poke(false.B)
+      dut.io.in.bits.decoded.readsVs2.poke(true.B)
+      dut.io.in.bits.decoded.readsScalar.poke(true.B)
+      dut.io.in.bits.decoded.writesVd.poke(true.B)
+      dut.io.in.bits.decoded.memoryRead.poke(true.B)
+      dut.io.in.bits.decoded.memoryWrite.poke(false.B)
+      while (!dut.io.in.ready.peek().litToBoolean)
+        dut.clock.step()
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 12) {
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(dut.io.memoryRequest.valid.peek().litToBoolean)
+      for (lane <- 0 until config.lanes)
+        dut.io.memoryRequest.bits.addresses(lane)
+          .expect((0x520 + lane).U)
     }
   }
 

@@ -39,6 +39,8 @@ struct opengpu_shader_state {
     struct opengpu_shader_value values[32];
     bool scalar_defined[32];
     bool vector_defined[32];
+    opengpu_shader_u32 vector_local_indices;
+    opengpu_shader_u32 vector_local_bytes;
     opengpu_shader_u32 vector_length;
 };
 
@@ -64,6 +66,8 @@ static inline void opengpu_shader_merge_state(
             state->values[reg].offset = 0;
         }
     }
+    state->vector_local_indices &= incoming->vector_local_indices;
+    state->vector_local_bytes &= incoming->vector_local_bytes;
     if (state->vector_length != incoming->vector_length)
         state->vector_length = 0;
 }
@@ -143,6 +147,26 @@ static inline bool opengpu_shader_vector_strided_access_valid(
             return false;
     }
     return true;
+}
+
+static inline bool opengpu_shader_vector_indexed_access_valid(
+    const struct opengpu_shader_value *base,
+    bool trusted_local_bytes,
+    bool store, opengpu_shader_u64 kernarg_size,
+    opengpu_shader_u32 batch_capacity, opengpu_shader_u64 output_start,
+    opengpu_shader_u64 output_end)
+{
+    opengpu_shader_u64 start, end;
+
+    if (base->kind != OPENGPU_SHADER_VALUE_KERNARG || base->offset < 0 ||
+        (base->offset & 3) ||
+        !trusted_local_bytes)
+        return false;
+    start = (opengpu_shader_u32)base->offset;
+    end = start + 4ull * batch_capacity;
+    if (end < start || end > kernarg_size)
+        return false;
+    return !store || (start >= output_start && end <= output_end);
 }
 
 static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
@@ -263,8 +287,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * Scalar lw/sw retain the v1
  * bounds. The RVV profile admits vsetivli e32,m1, the implemented lane-local
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
- * divide and remainder forms, and masked or unmasked unit-stride
- * vle32/vse32. Defined-register
+ * divide and remainder forms, and masked or unmasked unit-, constant-stride,
+ * and trusted-local-index word memory operations. Defined-register
  * tracking prevents stale SGPR/VGPR data from being exported. A small abstract
  * interpreter recognizes x1 +
  * 4*x8 + constant, where x8 is the trusted warp localLinearBase, and proves
@@ -309,6 +333,7 @@ static inline bool opengpu_shader_validate_words_profile(
     for (i = 0; i <= 8; i++)
         scalar_defined[i] = true;
     vector_defined[1] = true; /* launch-time local IDs */
+    state.vector_local_indices = 1u << 1;
     values[1].kind = OPENGPU_SHADER_VALUE_KERNARG;
     values[8].kind = OPENGPU_SHADER_VALUE_LOCAL_INDEX;
 
@@ -456,20 +481,34 @@ static inline bool opengpu_shader_validate_words_profile(
                     ((funct3 == 4 || funct3 == 6) &&
                      !scalar_defined[rs1]))
                     return false;
+                state.vector_local_indices &= ~(1u << rd);
+                state.vector_local_bytes &= ~(1u << rd);
+                if ((insn >> 26) == 0x25 && funct3 == 3 && rs1 == 2 &&
+                    (state.vector_local_indices & (1u << rs2)))
+                    state.vector_local_bytes |= 1u << rd;
                 vector_defined[rd] = true;
             }
             break;
         case 0x07: { /* unit-stride vle32.v or scalar-stride vlse32.v */
             bool strided =
                 (insn & 0xfc00707fu) == 0x08006007u;
+            bool indexed =
+                (insn & 0xfc00707fu) == 0x04006007u ||
+                (insn & 0xfc00707fu) == 0x0c006007u;
 
-            if ((!strided &&
+            if ((!strided && !indexed &&
                  (insn & 0xfdf0707fu) != 0x00006007u) ||
                 !scalar_defined[rs1] ||
                 (strided && !scalar_defined[rs2]) ||
+                (indexed && !vector_defined[rs2]) ||
                 (!(insn & (1u << 25)) &&
                  (!vector_defined[0] || rd == 0 || !vector_defined[rd])) ||
-                (strided ?
+                (indexed ?
+                 !opengpu_shader_vector_indexed_access_valid(
+                     &values[rs1],
+                     !!(state.vector_local_bytes & (1u << rs2)), false,
+                     kernarg_size,
+                     batch_capacity, output_start, output_end) : strided ?
                  !opengpu_shader_vector_strided_access_valid(
                      &values[rs1], &values[rs2], state.vector_length, false,
                      kernarg_size, output_start, output_end) :
@@ -477,19 +516,30 @@ static inline bool opengpu_shader_validate_words_profile(
                      &values[rs1], state.vector_length, false, kernarg_size,
                      batch_capacity, output_start, output_end)))
                 return false;
+            state.vector_local_indices &= ~(1u << rd);
+            state.vector_local_bytes &= ~(1u << rd);
             vector_defined[rd] = true;
             break;
         }
         case 0x27: { /* unit-stride vse32.v or scalar-stride vsse32.v */
             bool strided =
                 (insn & 0xfc00707fu) == 0x08006027u;
+            bool indexed =
+                (insn & 0xfc00707fu) == 0x04006027u ||
+                (insn & 0xfc00707fu) == 0x0c006027u;
 
-            if ((!strided &&
+            if ((!strided && !indexed &&
                  (insn & 0xfdf0707fu) != 0x00006027u) ||
                 !scalar_defined[rs1] || !vector_defined[rd] ||
                 (strided && !scalar_defined[rs2]) ||
+                (indexed && !vector_defined[rs2]) ||
                 (!(insn & (1u << 25)) && !vector_defined[0]) ||
-                (strided ?
+                (indexed ?
+                 !opengpu_shader_vector_indexed_access_valid(
+                     &values[rs1],
+                     !!(state.vector_local_bytes & (1u << rs2)), true,
+                     kernarg_size,
+                     batch_capacity, output_start, output_end) : strided ?
                  !opengpu_shader_vector_strided_access_valid(
                      &values[rs1], &values[rs2], state.vector_length, true,
                      kernarg_size, output_start, output_end) :
@@ -534,6 +584,8 @@ static inline bool opengpu_shader_validate_words_profile(
                 return false;
             }
             vector_defined[rd] = true;
+            state.vector_local_indices &= ~(1u << rd);
+            state.vector_local_bytes &= ~(1u << rd);
             break;
         default:
             return false;

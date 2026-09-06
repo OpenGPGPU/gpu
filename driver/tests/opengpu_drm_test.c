@@ -692,7 +692,10 @@ static void write_compute_shader(void *mapping)
     program[14] = 0x0a70e3a7u; /* vsse32.v v7,(x1),x7 */
     program[15] = 0x0a70e407u; /* vlse32.v v8,(x1),x7 */
     program[16] = 0x0200e427u; /* vse32.v v8,(x1) */
-    program[17] = 0x30500073u; /* cease */
+    program[17] = 0x961134d7u; /* vsll.vi v9,v1,2: trusted byte indices */
+    program[18] = 0x0690e507u; /* vluxei32.v v10,(x1),v9 */
+    program[19] = 0x0200e527u; /* vse32.v v10,(x1) */
+    program[20] = 0x30500073u; /* cease */
 }
 
 static int reject_unsafe_command(int fd, uint32_t context_id,
@@ -1414,7 +1417,7 @@ int main(void)
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
            "syncobj + %s sandbox + "
            "validated context + event-chained RVV "
-           "slide/reduction/gather/masked-memory compute + "
+           "slide/reduction/gather/masked/strided/indexed-memory compute + "
            "ordered colour "
            "blit/fill/strided blit + "
            "fault-query ABI + vblank flip event sequence=%u\n",

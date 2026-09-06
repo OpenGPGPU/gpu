@@ -162,6 +162,14 @@ fixed kernarg-relative pointer; lane-relative bases remain excluded. Loads must
 stay inside the kernarg object and stores must also stay inside its writable
 output range. The same defined-mask and preserved-destination rules apply to
 masked strided operations.
+The RTL also accepts ordered and unordered 32-bit indexed word operations
+`vluxei32/vloxei32/vsuxei32/vsoxei32`; each `vs2` lane is an unsigned byte
+offset from the scalar base and overlapping ordered stores resolve in element
+order. The Linux validator admits these instructions when the index vector is
+derived from trusted launch-time local IDs by exactly `vsll.vi ...,2`. It then
+proves the fixed kernarg-relative base plus the complete batch byte span,
+including the writable output interval for stores; other index provenance is
+rejected.
 The driver snapshots and validates the program, tracks the kernarg GEM object
 for both reads and writes, and publishes completion through the context's
 normal scheduler and optional input/output sync objects.
@@ -328,8 +336,9 @@ result must be consumed before the interrupt is acknowledged.
 - The validator exposes the implemented RVV integer ALU, comparison,
   saturation, reduction, gather, slide, multiply, divide and remainder families
   with exact operand-form and defined-register checks.
-- Unit- and constant-stride word vector loads and stores support validated
-  `v0.t` predication, including preserved-destination checks for masked loads.
+- Unit-, constant-stride and trusted-local-index word vector loads and stores
+  support validated `v0.t` predication, including preserved-destination checks
+  for masked loads.
 - Compute and DMA ioctls expose generation-tagged wait/signal hardware events;
   event-dependency failures propagate as scheduler fence errors.
 - `DRM_IOCTL_OPENGPU_GET_FAULT` exposes an atomic retained snapshot of the most
