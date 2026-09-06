@@ -258,6 +258,9 @@ int main(void)
     program[1] = vector_alu(0x12, 2, 3, 4, 5); /* unsupported vf scale */
     assert(!opengpu_compute_shader_validate_words(program, 4, 64, 4));
 
+    program[1] = vector_alu(0x12, 2, 1, 1, 7); /* reserved vd/vs2 overlap */
+    assert(!opengpu_compute_shader_validate_words(program, 4, 64, 4));
+
     /* Vertex stores target transformed attribute slices 8..15. */
     program[0] = lw(10, 0);
     program[1] = sw(10, 320);

@@ -180,6 +180,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         return false;
     if (funct6 == 0x0e && vd == vs2) /* vslideup overlap is reserved */
         return false;
+    if (funct6 == 0x12 && vd == vs2) /* widening source/destination overlap */
+        return false;
     switch (form) {
     case 0: /* integer vv */
         switch (funct6) {
