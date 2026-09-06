@@ -91,6 +91,16 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.recognized.expect(true.B)
       dut.io.decoded.valid.expect(false.B)
 
+      // vredsum.vs is a vector reduction routed through the integer ALU.
+      dut.io.instruction.poke("b000000_1_00001_00010_010_00011_1010111".U)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.unit.expect(VectorUnit.alu)
+
+      // Reduction funct6 values above vredmax are currently unsupported.
+      dut.io.instruction.poke("b001000_1_00001_00010_010_00011_1010111".U)
+      dut.io.decoded.recognized.expect(true.B)
+      dut.io.decoded.valid.expect(false.B)
+
       // vsmul is enabled once vxrm is supplied by vector configuration state.
       dut.io.instruction.poke("b100111_1_00001_00010_000_00011_1010111".U)
       dut.io.decoded.recognized.expect(true.B)

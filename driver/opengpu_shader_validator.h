@@ -155,7 +155,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         default:
             return false;
         }
-    case 2: /* multiply/divide vv */
+    case 2: /* integer reduction or multiply/divide vv */
+        return funct6 <= 0x07 ||
+               (funct6 >= 0x20 && funct6 <= 0x27);
     case 6: /* multiply/divide vx */
         return funct6 >= 0x20 && funct6 <= 0x27;
     case 3: /* integer vi */
@@ -228,8 +230,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * reachable path must terminate. x1 remains the immutable kernarg base.
  * Scalar lw/sw retain the v1
  * bounds. The RVV profile admits vsetivli e32,m1, the implemented lane-local
- * integer ALU, comparison, saturating, gather, slide, multiply, divide and
- * remainder forms, and unmasked unit-stride vle32/vse32. Defined-register
+ * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
+ * divide and remainder forms, and unmasked unit-stride vle32/vse32. Defined-register
  * tracking prevents stale SGPR/VGPR data from being exported. A small abstract
  * interpreter recognizes x1 +
  * 4*x8 + constant, where x8 is the trusted warp localLinearBase, and proves
@@ -410,6 +412,8 @@ static inline bool opengpu_shader_validate_words_profile(
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
                     !vector_defined[rs2] ||
+                    ((insn >> 26) <= 0x07 && funct3 == 2 &&
+                     !vector_defined[rd]) ||
                     ((insn >> 26) == 0x0e && !vector_defined[rd]) ||
                     ((funct3 == 0 || funct3 == 2) &&
                      !vector_defined[rs1]) ||

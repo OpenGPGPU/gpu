@@ -109,7 +109,7 @@ private object VectorDecodeTable {
   /*
    * This is an allow-list, not funct6 x funct3.  Each row below corresponds
    * to an actual RVV 1.0 encoding in riscv-opcodes extensions/rv_v.  Legal
-   * RVV operations that require cross-lane, widening, narrowing, reduction,
+   * RVV operations that require unsupported cross-lane, widening, narrowing,
    * or special unary handling are deliberately absent until implemented.
    */
   private val integerAluInstructions = Seq(
@@ -126,6 +126,14 @@ private object VectorDecodeTable {
     VectorInstruction("vrgather", 0x0c, Seq(IVV, IVX, IVI)),
     VectorInstruction("vslideup", 0x0e, Seq(IVX, IVI)),
     VectorInstruction("vslidedown", 0x0f, Seq(IVX, IVI)),
+    VectorInstruction("vredsum",  0x00, Seq(MVV)),
+    VectorInstruction("vredand",  0x01, Seq(MVV)),
+    VectorInstruction("vredor",   0x02, Seq(MVV)),
+    VectorInstruction("vredxor",  0x03, Seq(MVV)),
+    VectorInstruction("vredminu", 0x04, Seq(MVV)),
+    VectorInstruction("vredmin",  0x05, Seq(MVV)),
+    VectorInstruction("vredmaxu", 0x06, Seq(MVV)),
+    VectorInstruction("vredmax",  0x07, Seq(MVV)),
     VectorInstruction("vmseq",  0x18, Seq(IVV, IVX, IVI), unit = 7),
     VectorInstruction("vmsne",  0x19, Seq(IVV, IVX, IVI), unit = 7),
     VectorInstruction("vmsltu", 0x1a, Seq(IVV, IVX), unit = 7),

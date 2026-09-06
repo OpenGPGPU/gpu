@@ -15,6 +15,7 @@ private class NormalizedVectorIntegerRequest(config: GpuConfig) extends Bundle {
   val enabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
   val quad = Bool()
+  val reduction = Bool()
 }
 
 private class VectorIntegerCandidates(config: GpuConfig) extends Bundle {
@@ -26,6 +27,7 @@ private class VectorIntegerCandidates(config: GpuConfig) extends Bundle {
   val enabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
   val quad = Bool()
+  val reduction = Bool()
   val basic = Vec(config.lanes, UInt(config.xLen.W))
   val saturating = Vec(config.lanes, UInt(config.xLen.W))
   val saturationLimit = Vec(config.lanes, UInt(config.xLen.W))
@@ -43,6 +45,7 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
   val enabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
   val quad = Bool()
+  val reduction = Bool()
   val lhs = Vec(config.lanes, UInt(config.xLen.W))
   val rhs = Vec(config.lanes, UInt(config.xLen.W))
   val add = Vec(config.lanes, UInt(config.xLen.W))
@@ -60,9 +63,9 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
 /** RVV integer ALU for the fixed SEW=32, LMUL=1 GPU profile.
   *
   * The unit implements the precise funct6 encodings accepted by VectorDecoder,
-  * including vrgather and slide cross-lane source selection. Inactive or
-  * masked-off lanes preserve oldVd. Results are held under output backpressure
-  * and the unit sustains one operation per cycle when unstalled.
+  * including integer reductions, vrgather, and slide cross-lane selection.
+  * Inactive or masked-off lanes preserve oldVd. Results are held under output
+  * backpressure and the unit sustains one operation per cycle when unstalled.
   */
 class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   val io = IO(new Bundle {
@@ -111,22 +114,26 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       partialBits.lhs(top + 2) - partialBits.lhs(top)
     } else 0.U(32.W)
 
-    val basicResult = MuxLookup(partialBits.funct6, 0.U(32.W))(Seq(
-      "h00".U -> partialBits.add(lane),
-      "h02".U -> partialBits.sub(lane),
-      "h03".U -> (0.U - partialBits.sub(lane)),
-      "h04".U -> Mux(partialBits.less(lane), lhs, rhs),
-      "h05".U -> Mux(partialBits.lessSigned(lane), lhs, rhs),
-      "h06".U -> Mux(partialBits.greater(lane), lhs, rhs),
-      "h07".U -> Mux(partialBits.greaterSigned(lane), lhs, rhs),
-      "h09".U -> (lhs & rhs),
-      "h0a".U -> (lhs | rhs),
-      "h0b".U -> (lhs ^ rhs),
-      "h0c".U -> Mux(partialBits.quad, quadDx, lhs),
-      "h0d".U -> quadDy,
-      "h0e".U -> lhs,
-      "h0f".U -> lhs
-    ))
+    val basicResult = Mux(
+      partialBits.reduction,
+      lhs,
+      MuxLookup(partialBits.funct6, 0.U(32.W))(Seq(
+        "h00".U -> partialBits.add(lane),
+        "h02".U -> partialBits.sub(lane),
+        "h03".U -> (0.U - partialBits.sub(lane)),
+        "h04".U -> Mux(partialBits.less(lane), lhs, rhs),
+        "h05".U -> Mux(partialBits.lessSigned(lane), lhs, rhs),
+        "h06".U -> Mux(partialBits.greater(lane), lhs, rhs),
+        "h07".U -> Mux(partialBits.greaterSigned(lane), lhs, rhs),
+        "h09".U -> (lhs & rhs),
+        "h0a".U -> (lhs | rhs),
+        "h0b".U -> (lhs ^ rhs),
+        "h0c".U -> Mux(partialBits.quad, quadDx, lhs),
+        "h0d".U -> quadDy,
+        "h0e".U -> lhs,
+        "h0f".U -> lhs
+      ))
+    )
     val saturatingResult = Mux(
       partialBits.funct6 === "h20".U || partialBits.funct6 === "h21".U,
       partialBits.add(lane),
@@ -211,6 +218,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       candidateBits.enabled := partialBits.enabled
       candidateBits.funct6 := partialBits.funct6
       candidateBits.quad := partialBits.quad
+      candidateBits.reduction := partialBits.reduction
       candidateBits.basic := basicCandidates
       candidateBits.saturating := saturatingCandidates
       candidateBits.saturationLimit := saturationLimits
@@ -231,6 +239,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       partialBits.enabled := inputBits.enabled
       partialBits.funct6 := inputBits.funct6
       partialBits.quad := inputBits.quad
+      partialBits.reduction := inputBits.reduction
       for (lane <- 0 until config.lanes) {
         val lhs = inputBits.lhs(lane)
         val rhs = inputBits.rhs(lane)
@@ -297,6 +306,34 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
     when(io.in.valid) {
       val inputIsVv = io.in.bits.operandType === "b000".U
       val inputIsVx = io.in.bits.operandType === "b100".U
+      val inputIsReduction =
+        io.in.bits.operandType === "b010".U && io.in.bits.funct6 <= "h07".U
+      val sourceEnabled =
+        io.in.bits.activeMask &
+          Mux(io.in.bits.vm, Fill(config.lanes, 1.U), io.in.bits.predicateMask)
+      val reductionResult = (0 until config.lanes).foldLeft(io.in.bits.vs1(0)) {
+        case (accumulator, lane) =>
+          val value = io.in.bits.vs2(lane)
+          val combined = MuxLookup(io.in.bits.funct6, accumulator)(Seq(
+            "h00".U -> (accumulator + value),
+            "h01".U -> (accumulator & value),
+            "h02".U -> (accumulator | value),
+            "h03".U -> (accumulator ^ value),
+            "h04".U -> Mux(accumulator < value, accumulator, value),
+            "h05".U -> Mux(
+              accumulator.asSInt < value.asSInt,
+              accumulator,
+              value
+            ),
+            "h06".U -> Mux(accumulator > value, accumulator, value),
+            "h07".U -> Mux(
+              accumulator.asSInt > value.asSInt,
+              accumulator,
+              value
+            )
+          ))
+          Mux(sourceEnabled(lane), combined, accumulator)
+      }
       val inputImmediate =
         Cat(
           Fill(config.xLen - 5, io.in.bits.immediate(4)),
@@ -308,9 +345,12 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       inputBits.vd := io.in.bits.vd
       inputBits.funct6 := io.in.bits.funct6
       inputBits.quad := io.in.bits.quad
-      inputBits.enabled :=
-        io.in.bits.activeMask &
-          Mux(io.in.bits.vm, Fill(config.lanes, 1.U), io.in.bits.predicateMask)
+      inputBits.reduction := inputIsReduction
+      inputBits.enabled := Mux(
+        inputIsReduction,
+        io.in.bits.activeMask.orR,
+        sourceEnabled
+      )
       val gatherIndexWidth = math.max(1, log2Ceil(config.lanes))
       val slideOffset = Mux(
         inputIsVx,
@@ -341,11 +381,16 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
           io.in.bits.vs2(slideDownIndex(gatherIndexWidth - 1, 0)),
           0.U
         )
-        inputBits.lhs(lane) := MuxCase(io.in.bits.vs2(lane), Seq(
+        val crossLane = MuxCase(io.in.bits.vs2(lane), Seq(
           (io.in.bits.funct6 === "h0c".U && !io.in.bits.quad) -> gathered,
           (io.in.bits.funct6 === "h0e".U) -> slideUp,
           (io.in.bits.funct6 === "h0f".U) -> slideDown
         ))
+        inputBits.lhs(lane) := Mux(
+          inputIsReduction && lane.U === 0.U,
+          reductionResult,
+          crossLane
+        )
         inputBits.rhs(lane) := Mux(
           inputIsVv,
           io.in.bits.vs1(lane),
@@ -358,6 +403,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   when(io.in.valid) {
     assert(
       io.in.bits.operandType === "b000".U ||
+        io.in.bits.operandType === "b010".U ||
         io.in.bits.operandType === "b011".U ||
         io.in.bits.operandType === "b100".U,
       "VectorIntegerAlu received an unsupported RVV operand form"

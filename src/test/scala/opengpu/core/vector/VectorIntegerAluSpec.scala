@@ -217,6 +217,49 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     }
   }
 
+  it should "reduce active elements into destination element zero" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+
+      def issue(
+        funct6: Int,
+        initial: Long,
+        values: Seq[Long],
+        expected: Long,
+        vm: Boolean = true,
+        predicate: Int = 0xf
+      ): Unit = {
+        dut.io.in.bits.funct6.poke(funct6.U)
+        dut.io.in.bits.operandType.poke("b010".U)
+        dut.io.in.bits.vs1(0).poke(initial.U)
+        values.zipWithIndex.foreach { case (value, lane) =>
+          dut.io.in.bits.vs2(lane).poke(value.U)
+        }
+        dut.io.in.bits.vm.poke(vm.B)
+        dut.io.in.bits.predicateMask.poke(predicate.U)
+        dut.io.in.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+        dut.clock.step(3)
+        dut.io.out.bits.data(0).expect(expected.U)
+        for (lane <- 1 until config.lanes)
+          dut.io.out.bits.data(lane).expect((100 + lane).U)
+      }
+
+      issue(0x00, 10, Seq(1, 2, 3, 4), 20)
+      issue(0x01, 0xff, Seq(0xf0, 0xcc, 0xaa, 0x0f), 0)
+      issue(0x02, 0x10, Seq(1, 2, 4, 8), 0x1f)
+      issue(0x03, 0x0f, Seq(1, 2, 4, 8), 0)
+      issue(0x04, 10, Seq(7, 20, 3, 9), 3)
+      issue(0x05, 0, Seq(0xfffffffeL, 5, 0xfffffffbL, 1), 0xfffffffbL)
+      issue(0x06, 10, Seq(7, 20, 3, 9), 20)
+      issue(0x07, 0, Seq(0xfffffffeL, 5, 0xfffffffbL, 1), 5)
+
+      // The scalar seed is always included, even if every vector lane is masked.
+      issue(0x00, 10, Seq(1, 2, 3, 4), 10, vm = false, predicate = 0)
+    }
+  }
+
   it should "saturate signed and unsigned operations and hold backpressure" in {
     simulate(new VectorIntegerAlu(config)) { dut =>
       defaults(dut)

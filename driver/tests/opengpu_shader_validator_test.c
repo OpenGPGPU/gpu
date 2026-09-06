@@ -139,6 +139,8 @@ int main(void)
         { 0x0c, 0 }, { 0x0c, 3 }, { 0x0c, 4 },
         { 0x0e, 3 }, { 0x0e, 4 }, { 0x0f, 3 }, { 0x0f, 4 },
         { 0x18, 3 }, { 0x1b, 0 },
+        { 0x00, 2 }, { 0x01, 2 }, { 0x02, 2 }, { 0x03, 2 },
+        { 0x04, 2 }, { 0x05, 2 }, { 0x06, 2 }, { 0x07, 2 },
         { 0x20, 4 }, { 0x23, 0 }, { 0x25, 3 }, { 0x29, 4 },
         { 0x25, 2 }, { 0x24, 6 }, /* vmul.vv, vmulhu.vx */
         { 0x20, 2 }, { 0x23, 6 }, /* vdivu.vv, vrem.vx */
@@ -264,6 +266,13 @@ int main(void)
     assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
     program[1] = vector_alu(0x0e, 3, 1, 1, 1); /* overlapping vslideup */
     assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[0] = vsetivli(4);
+    program[1] = vector_alu(0x00, 2, 2, 1, 1); /* undefined reduction vd */
+    program[2] = OPENGPU_SHADER_CEASE;
+    assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
+    program[1] = vector_alu(0x00, 2, 1, 1, 1); /* reduction overlap is legal */
+    assert(opengpu_compute_shader_validate_words(program, 3, 64, 4));
 
     program[0] = sw(10, 0); /* input array is read-only */
     program[1] = OPENGPU_SHADER_CEASE;

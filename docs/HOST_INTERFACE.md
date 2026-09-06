@@ -132,7 +132,8 @@ Applications bind separate `OPENGPU_RESOURCE_COMPUTE_SHADER` and
 binding-relative entry/kernarg offsets and three-dimensional grid and local
 sizes. The initial sandbox accepts bounded forward control flow and the
 supported scalar subset plus unmasked RVV integer ALU, comparison, saturating,
-gather, slide, multiply, divide and remainder operations. It permits memory
+single-width reduction, gather, slide, multiply, divide and remainder
+operations. It permits memory
 access only inside the bound kernarg range and limits a workgroup to the fixed 32
 resident work-items. `vrgather.vv/vx/vi` selects within the fixed per-warp
 VLMAX and returns zero for an out-of-range index. Vector-vector and
@@ -143,6 +144,10 @@ forms do not consume a source register.
 The validator rejects the architecturally reserved `vslideup`
 destination/source overlap and requires its partially preserved destination
 register to be defined before use.
+The `vredsum/and/or/xor/minu/min/maxu/max.vs` family combines active source
+lanes with the always-included `vs1[0]` seed and writes `vd[0]`. Because this
+implementation preserves the remaining destination elements, the validator
+requires the destination VGPR to be defined before a reduction.
 The driver snapshots and validates the program, tracks the kernarg GEM object
 for both reads and writes, and publishes completion through the context's
 normal scheduler and optional input/output sync objects.
@@ -307,8 +312,8 @@ result must be consumed before the interrupt is acknowledged.
   immutable validated program snapshots and the same scheduler-owned unified
   completion fence.
 - The validator exposes the implemented RVV integer ALU, comparison,
-  saturation, gather, slide, multiply, divide and remainder families with exact
-  operand-form and defined-register checks.
+  saturation, reduction, gather, slide, multiply, divide and remainder families
+  with exact operand-form and defined-register checks.
 - Compute and DMA ioctls expose generation-tagged wait/signal hardware events;
   event-dependency failures propagate as scheduler fence errors.
 - `DRM_IOCTL_OPENGPU_GET_FAULT` exposes an atomic retained snapshot of the most

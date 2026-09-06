@@ -679,11 +679,13 @@ static void write_compute_shader(void *mapping)
     program[1] = 0x02103157u; /* vadd.vi v2,v1,0: define old vd */
     program[2] = 0x3a10b157u; /* vslideup.vi v2,v1,1 */
     program[3] = 0x3e20b1d7u; /* vslidedown.vi v3,v2,1 */
-    program[4] = 0x32313257u; /* vrgather.vi v4,v3,2: broadcast 2 */
-    program[5] = 0x00300313u; /* addi x6,x0,3 */
-    program[6] = 0x964362d7u; /* vmul.vx v5,v4,x6 */
-    program[7] = 0x0200e2a7u; /* vse32.v v5,(x1) */
-    program[8] = 0x30500073u; /* cease */
+    program[4] = 0x02103257u; /* vadd.vi v4,v1,0: define reduction vd */
+    program[5] = 0x0230a257u; /* vredsum.vs v4,v3,v1: result 3 */
+    program[6] = 0x324032d7u; /* vrgather.vi v5,v4,0: broadcast 3 */
+    program[7] = 0x00200313u; /* addi x6,x0,2 */
+    program[8] = 0x96536357u; /* vmul.vx v6,v5,x6 */
+    program[9] = 0x0200e327u; /* vse32.v v6,(x1) */
+    program[10] = 0x30500073u; /* cease */
 }
 
 static int reject_unsafe_command(int fd, uint32_t context_id,
@@ -1195,7 +1197,7 @@ int main(void)
                     "compute kernarg lane=%u output=0x%08x expected=6\n",
                     lane, ((uint32_t *)compute_kernarg.map)[lane]);
             errno = EIO;
-            perror("OPENGPU USERSPACE DRM FAIL slide/gather compute result");
+            perror("OPENGPU USERSPACE DRM FAIL reduction compute result");
             return 1;
         }
     }
@@ -1403,7 +1405,7 @@ int main(void)
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
            "syncobj + %s sandbox + "
            "validated context + event-chained RVV "
-           "slide/gather/multiply compute + "
+           "slide/reduction/gather/multiply compute + "
            "ordered colour "
            "blit/fill/strided blit + "
            "fault-query ABI + vblank flip event sequence=%u\n",
