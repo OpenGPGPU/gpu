@@ -73,6 +73,36 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     }
   }
 
+  it should "sign- and zero-extend fixed-profile 16-bit lanes" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.funct6.poke("h12".U)
+      dut.io.in.bits.operandType.poke("b010".U)
+      dut.io.in.bits.immediate.poke(7.U) // vsext.vf2
+      dut.io.in.bits.vs2(0).poke("h00008001".U)
+      dut.io.in.bits.vs2(1).poke("h00007fff".U)
+      dut.io.in.bits.vs2(2).poke("hffff8000".U)
+      dut.io.in.bits.vs2(3).poke("h12345678".U)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(3)
+      dut.io.out.bits.data(0).expect("hffff8001".U)
+      dut.io.out.bits.data(1).expect("h00007fff".U)
+      dut.io.out.bits.data(2).expect("hffff8000".U)
+      dut.io.out.bits.data(3).expect("h00005678".U)
+
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.immediate.poke(6.U) // vzext.vf2
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(3)
+      dut.io.out.bits.data(0).expect("h00008001".U)
+      dut.io.out.bits.data(2).expect("h00008000".U)
+      dut.io.out.bits.data(3).expect("h00005678".U)
+    }
+  }
+
   it should "preserve inactive lanes and produce precise mask results" in {
     simulate(new VectorIntegerAlu(config)) { dut =>
       defaults(dut)

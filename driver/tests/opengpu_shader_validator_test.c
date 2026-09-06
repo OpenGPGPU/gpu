@@ -244,6 +244,16 @@ int main(void)
     program[2] = addi(5, 1, 0);
     assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
 
+    /* Fixed-profile vsext.vf2/vzext.vf2 widen low 16-bit integer lanes. */
+    program[0] = vsetivli(4);
+    program[1] = vector_alu(0x12, 2, 3, 1, 7); /* vsext.vf2 v3,v1 */
+    program[2] = vector_alu(0x12, 2, 5, 1, 6); /* vzext.vf2 v5,v1 */
+    program[3] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_compute_shader_validate_words(program, 4, 64, 4));
+
+    program[1] = vector_alu(0x12, 2, 3, 4, 5); /* unsupported vf scale */
+    assert(!opengpu_compute_shader_validate_words(program, 4, 64, 4));
+
     /* Vertex stores target transformed attribute slices 8..15. */
     program[0] = lw(10, 0);
     program[1] = sw(10, 320);

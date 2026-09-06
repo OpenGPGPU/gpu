@@ -212,7 +212,7 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
             return false;
         }
     case 2: /* integer reduction or multiply/divide vv */
-        return funct6 <= 0x07 ||
+        return funct6 <= 0x07 || funct6 == 0x12 ||
                (funct6 >= 0x20 && funct6 <= 0x27);
     case 6: /* multiply/divide vx */
         return funct6 >= 0x20 && funct6 <= 0x27;
@@ -473,10 +473,11 @@ static inline bool opengpu_shader_validate_words_profile(
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
                     !vector_defined[rs2] ||
+                    ((insn >> 26) == 0x12 && (rs1 < 6 || rs1 > 7)) ||
                     ((insn >> 26) <= 0x07 && funct3 == 2 &&
                      !vector_defined[rd]) ||
                     ((insn >> 26) == 0x0e && !vector_defined[rd]) ||
-                    ((funct3 == 0 || funct3 == 2) &&
+                    ((funct3 == 0 || funct3 == 2) && (insn >> 26) != 0x12 &&
                      !vector_defined[rs1]) ||
                     ((funct3 == 4 || funct3 == 6) &&
                      !scalar_defined[rs1]))

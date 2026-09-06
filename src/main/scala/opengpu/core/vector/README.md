@@ -48,8 +48,12 @@ estimates with the standard mantissa lookup tables. It handles infinities,
 zeros, NaNs, and subnormal normalization, reports DZ/NV, and raises OF/NX when
 a `vfrec7` subnormal reciprocal overflows.
 
-Remaining RVV families (widening/narrowing and the remaining VFUNARY1 forms)
-remain separate migration steps.
+Remaining RVV families (most widening/narrowing and the remaining VFUNARY1
+forms) remain separate migration steps. The fixed SEW=32 profile implements
+`vsext.vf2` and `vzext.vf2` as lane-local integer widening operations: the low
+16 bits of each source lane are sign- or zero-extended to 32 bits. Full RVV
+register-group and variable-SEW widening semantics remain outside this
+profile.
 
 The backend now contains a behavioral per-warp vector register file and issue
 boundary. Each warp owns 32 VLEN-wide registers with `vs1`, `vs2`, old-`vd`,

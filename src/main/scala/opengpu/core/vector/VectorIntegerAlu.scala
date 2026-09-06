@@ -14,6 +14,7 @@ private class NormalizedVectorIntegerRequest(config: GpuConfig) extends Bundle {
   val rhs = Vec(config.lanes, UInt(config.xLen.W))
   val enabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
+  val immediate = UInt(5.W)
   val quad = Bool()
   val reduction = Bool()
 }
@@ -26,6 +27,7 @@ private class VectorIntegerCandidates(config: GpuConfig) extends Bundle {
   val oldVd = Vec(config.lanes, UInt(config.xLen.W))
   val enabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
+  val immediate = UInt(5.W)
   val quad = Bool()
   val reduction = Bool()
   val basic = Vec(config.lanes, UInt(config.xLen.W))
@@ -44,6 +46,7 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
   val oldVd = Vec(config.lanes, UInt(config.xLen.W))
   val enabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
+  val immediate = UInt(5.W)
   val quad = Bool()
   val reduction = Bool()
   val lhs = Vec(config.lanes, UInt(config.xLen.W))
@@ -131,7 +134,13 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         "h0c".U -> Mux(partialBits.quad, quadDx, lhs),
         "h0d".U -> quadDy,
         "h0e".U -> lhs,
-        "h0f".U -> lhs
+        "h0f".U -> lhs,
+        // vsext.vf2 (vs1=7) and vzext.vf2 (vs1=6).
+        "h12".U -> Mux(
+          partialBits.immediate === 7.U,
+          Cat(Fill(16, lhs(15)), lhs(15, 0)),
+          Cat(0.U(16.W), lhs(15, 0))
+        )
       ))
     )
     val saturatingResult = Mux(
@@ -217,6 +226,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       candidateBits.oldVd := partialBits.oldVd
       candidateBits.enabled := partialBits.enabled
       candidateBits.funct6 := partialBits.funct6
+      candidateBits.immediate := partialBits.immediate
       candidateBits.quad := partialBits.quad
       candidateBits.reduction := partialBits.reduction
       candidateBits.basic := basicCandidates
@@ -238,6 +248,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       partialBits.oldVd := inputBits.oldVd
       partialBits.enabled := inputBits.enabled
       partialBits.funct6 := inputBits.funct6
+      partialBits.immediate := inputBits.immediate
       partialBits.quad := inputBits.quad
       partialBits.reduction := inputBits.reduction
       for (lane <- 0 until config.lanes) {
@@ -344,6 +355,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       inputBits.warpActiveMask := io.in.bits.warpActiveMask
       inputBits.vd := io.in.bits.vd
       inputBits.funct6 := io.in.bits.funct6
+      inputBits.immediate := io.in.bits.immediate
       inputBits.quad := io.in.bits.quad
       inputBits.reduction := inputIsReduction
       inputBits.enabled := Mux(

@@ -127,8 +127,9 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 
 ### Product integration
 
-- Add high-value RVV widening/narrowing operations, extending validation only
-  with matching hardware support.
+- Add further high-value RVV widening/narrowing operations, extending
+  validation only with matching hardware support. The fixed profile now has
+  lane-local `vsext.vf2` and `vzext.vf2`.
 - Measure full-system cost by resolution, remove avoidable host-memory work and
   establish a practical regression default.
 - Add a safe unified-command reset that drains or invalidates in-flight memory

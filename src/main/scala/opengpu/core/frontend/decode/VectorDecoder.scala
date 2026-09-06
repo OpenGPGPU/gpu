@@ -195,6 +195,11 @@ private object VectorDecodeTable {
   // VFUNARY0: funct6 010010 carries the conversion opcode in the vs1 field.
   // Only the implemented SEW=32 conversions are allow-listed.
   private val unary0Patterns = Seq(
+    // Fixed-profile integer widening from the low 16 bits to SEW=32.
+    VectorPattern("vsext_vf2", "0100101?????00111010?????1010111", 1,
+      readsVs2 = true, writesVd = true),
+    VectorPattern("vzext_vf2", "0100101?????00110010?????1010111", 1,
+      readsVs2 = true, writesVd = true),
     VectorPattern("vfcvt_xu_f_v", "010010??????00000001?????1010111", 4,
       readsVs2 = true, writesVd = true),
     VectorPattern("vfcvt_x_f_v", "010010??????00001001?????1010111", 4,
