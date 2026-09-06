@@ -7,12 +7,14 @@
 typedef u32 opengpu_shader_u32;
 typedef s32 opengpu_shader_s32;
 typedef u64 opengpu_shader_u64;
+typedef s64 opengpu_shader_s64;
 #else
 #include <stdbool.h>
 #include <stdint.h>
 typedef uint32_t opengpu_shader_u32;
 typedef int32_t opengpu_shader_s32;
 typedef uint64_t opengpu_shader_u64;
+typedef int64_t opengpu_shader_s64;
 #endif
 
 #define OPENGPU_SHADER_MAX_INSTRUCTIONS 256u
@@ -25,6 +27,7 @@ enum opengpu_shader_value_kind {
     OPENGPU_SHADER_VALUE_LOCAL_INDEX,
     OPENGPU_SHADER_VALUE_LOCAL_BYTES,
     OPENGPU_SHADER_VALUE_KERNARG_LOCAL,
+    OPENGPU_SHADER_VALUE_CONSTANT,
 };
 
 struct opengpu_shader_value {
@@ -111,6 +114,35 @@ static inline bool opengpu_shader_vector_access_valid(
     if (end < start || end > kernarg_size)
         return false;
     return !store || (start >= output_start && end <= output_end);
+}
+
+static inline bool opengpu_shader_vector_strided_access_valid(
+    const struct opengpu_shader_value *base,
+    const struct opengpu_shader_value *stride, opengpu_shader_u32 vl,
+    bool store, opengpu_shader_u64 kernarg_size,
+    opengpu_shader_u64 output_start, opengpu_shader_u64 output_end)
+{
+    opengpu_shader_u32 lane;
+
+    if (!vl || base->kind != OPENGPU_SHADER_VALUE_KERNARG ||
+        stride->kind != OPENGPU_SHADER_VALUE_CONSTANT ||
+        base->offset < 0 || (base->offset & 3) || (stride->offset & 3))
+        return false;
+    for (lane = 0; lane < vl; lane++) {
+        opengpu_shader_s64 start = (opengpu_shader_s64)base->offset +
+            (opengpu_shader_s64)lane * stride->offset;
+        opengpu_shader_u64 end;
+
+        if (start < 0)
+            return false;
+        end = (opengpu_shader_u64)start + 4;
+        if (end < (opengpu_shader_u64)start || end > kernarg_size)
+            return false;
+        if (store && ((opengpu_shader_u64)start < output_start ||
+                      end > output_end))
+            return false;
+    }
+    return true;
 }
 
 static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
@@ -334,7 +366,10 @@ static inline bool opengpu_shader_validate_words_profile(
             values[rd].kind = OPENGPU_SHADER_VALUE_UNKNOWN;
             values[rd].offset = 0;
             imm = (opengpu_shader_s32)insn >> 20;
-            if (funct3 == 0 &&
+            if (funct3 == 0 && rs1 == 0) {
+                values[rd].kind = OPENGPU_SHADER_VALUE_CONSTANT;
+                values[rd].offset = imm;
+            } else if (funct3 == 0 &&
                 (lhs.kind == OPENGPU_SHADER_VALUE_KERNARG ||
                  lhs.kind == OPENGPU_SHADER_VALUE_LOCAL_BYTES ||
                  lhs.kind == OPENGPU_SHADER_VALUE_KERNARG_LOCAL)) {
@@ -424,26 +459,46 @@ static inline bool opengpu_shader_validate_words_profile(
                 vector_defined[rd] = true;
             }
             break;
-        case 0x07: /* unit-stride vle32.v */
-            if ((insn & 0xfdf0707fu) != 0x00006007u ||
+        case 0x07: { /* unit-stride vle32.v or scalar-stride vlse32.v */
+            bool strided =
+                (insn & 0xfc00707fu) == 0x08006007u;
+
+            if ((!strided &&
+                 (insn & 0xfdf0707fu) != 0x00006007u) ||
                 !scalar_defined[rs1] ||
+                (strided && !scalar_defined[rs2]) ||
                 (!(insn & (1u << 25)) &&
                  (!vector_defined[0] || rd == 0 || !vector_defined[rd])) ||
-                !opengpu_shader_vector_access_valid(
-                    &values[rs1], state.vector_length, false, kernarg_size,
-                    batch_capacity, output_start, output_end))
+                (strided ?
+                 !opengpu_shader_vector_strided_access_valid(
+                     &values[rs1], &values[rs2], state.vector_length, false,
+                     kernarg_size, output_start, output_end) :
+                 !opengpu_shader_vector_access_valid(
+                     &values[rs1], state.vector_length, false, kernarg_size,
+                     batch_capacity, output_start, output_end)))
                 return false;
             vector_defined[rd] = true;
             break;
-        case 0x27: /* unit-stride vse32.v */
-            if ((insn & 0xfdf0707fu) != 0x00006027u ||
+        }
+        case 0x27: { /* unit-stride vse32.v or scalar-stride vsse32.v */
+            bool strided =
+                (insn & 0xfc00707fu) == 0x08006027u;
+
+            if ((!strided &&
+                 (insn & 0xfdf0707fu) != 0x00006027u) ||
                 !scalar_defined[rs1] || !vector_defined[rd] ||
+                (strided && !scalar_defined[rs2]) ||
                 (!(insn & (1u << 25)) && !vector_defined[0]) ||
-                !opengpu_shader_vector_access_valid(
-                    &values[rs1], state.vector_length, true, kernarg_size,
-                    batch_capacity, output_start, output_end))
+                (strided ?
+                 !opengpu_shader_vector_strided_access_valid(
+                     &values[rs1], &values[rs2], state.vector_length, true,
+                     kernarg_size, output_start, output_end) :
+                 !opengpu_shader_vector_access_valid(
+                     &values[rs1], state.vector_length, true, kernarg_size,
+                     batch_capacity, output_start, output_end)))
                 return false;
             break;
+        }
         case 0x63: { /* bounded forward scalar conditional branch */
             opengpu_shader_s32 target;
 

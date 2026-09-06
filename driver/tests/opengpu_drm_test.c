@@ -688,8 +688,11 @@ static void write_compute_shader(void *mapping)
     program[10] = 0x0000e327u; /* vse32.v v6,(x1),v0.t */
     program[11] = 0x021033d7u; /* vadd.vi v7,v1,0: define masked-load vd */
     program[12] = 0x0000e387u; /* vle32.v v7,(x1),v0.t */
-    program[13] = 0x0200e3a7u; /* vse32.v v7,(x1) */
-    program[14] = 0x30500073u; /* cease */
+    program[13] = 0x00800393u; /* addi x7,x0,8: signed byte stride */
+    program[14] = 0x0a70e3a7u; /* vsse32.v v7,(x1),x7 */
+    program[15] = 0x0a70e407u; /* vlse32.v v8,(x1),x7 */
+    program[16] = 0x0200e427u; /* vse32.v v8,(x1) */
+    program[17] = 0x30500073u; /* cease */
 }
 
 static int reject_unsafe_command(int fd, uint32_t context_id,
@@ -1090,7 +1093,7 @@ int main(void)
     CHECK(create_texture_buffer(fd, &texture), "texture buffer");
     CHECK(create_resource_buffer(fd, 128, &shader), "shader buffer");
     CHECK(create_resource_buffer(fd, 640, &kernarg), "kernarg buffer");
-    CHECK(create_resource_buffer(fd, 64, &compute_shader),
+    CHECK(create_resource_buffer(fd, 128, &compute_shader),
           "compute shader buffer");
     CHECK(create_resource_buffer(fd, 64, &compute_kernarg),
           "compute kernarg buffer");
@@ -1114,7 +1117,7 @@ int main(void)
     CHECK(bind_resource(fd, context_id, 3, &kernarg,
                         OPENGPU_RESOURCE_KERNARG, 640), "bind kernarg");
     CHECK(bind_resource(fd, context_id, 7, &compute_shader,
-                        OPENGPU_RESOURCE_COMPUTE_SHADER, 64),
+                        OPENGPU_RESOURCE_COMPUTE_SHADER, 128),
           "bind compute shader");
     CHECK(bind_resource(fd, context_id, 8, &compute_kernarg,
                         OPENGPU_RESOURCE_COMPUTE_KERNARG, 64),

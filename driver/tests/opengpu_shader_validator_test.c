@@ -51,6 +51,20 @@ static uint32_t vse32(unsigned int vs3, unsigned int rs1)
     return 0x02006027u | (rs1 & 0x1f) << 15 | (vs3 & 0x1f) << 7;
 }
 
+static uint32_t vlse32(unsigned int vd, unsigned int rs1,
+                       unsigned int rs2)
+{
+    return 0x0a006007u | (rs2 & 0x1f) << 20 |
+           (rs1 & 0x1f) << 15 | (vd & 0x1f) << 7;
+}
+
+static uint32_t vsse32(unsigned int vs3, unsigned int rs1,
+                       unsigned int rs2)
+{
+    return 0x0a006027u | (rs2 & 0x1f) << 20 |
+           (rs1 & 0x1f) << 15 | (vs3 & 0x1f) << 7;
+}
+
 static uint32_t vector_alu(unsigned int funct6, unsigned int form,
                            unsigned int vd, unsigned int vs2,
                            unsigned int operand)
@@ -167,6 +181,37 @@ int main(void)
     program[1] = vtexsample(2, 1, 1);
     program[2] = OPENGPU_SHADER_CEASE;
     assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    /* Scalar-stride word accesses require a directly materialized, aligned
+     * constant stride and prove every signed lane address independently. */
+    program[0] = vsetivli(4);
+    program[1] = addi(5, 1, 0);
+    program[2] = addi(6, 0, 8);
+    program[3] = vlse32(2, 5, 6);
+    program[4] = vsse32(2, 5, 6);
+    program[5] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_compute_shader_validate_words(program, 6, 64, 4));
+
+    program[1] = addi(5, 1, 12);
+    program[2] = addi(6, 0, -4);
+    assert(opengpu_compute_shader_validate_words(program, 6, 64, 4));
+
+    program[1] = addi(5, 1, 0);
+    program[2] = addi(6, 0, 32); /* lane two starts past kernarg */
+    assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
+
+    program[2] = lw(6, 0); /* runtime-dependent stride is not proven */
+    assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
+
+    program[2] = addi(6, 0, 2); /* misaligned word stride */
+    assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
+
+    program[1] = slli(5, 8, 2);
+    program[2] = add(5, 1, 5); /* lane-relative bases need a wider proof */
+    program[3] = addi(6, 0, 8);
+    program[4] = vlse32(2, 5, 6);
+    program[5] = OPENGPU_SHADER_CEASE;
+    assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
 
     /* Vertex stores target transformed attribute slices 8..15. */
     program[0] = lw(10, 0);

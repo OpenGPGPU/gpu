@@ -77,9 +77,10 @@ masked load.
 `VectorMemoryUnit` also generates `vlse8/16/32.v` and `vsse8/16/32.v` lane
 addresses from the signed two's-complement scalar byte stride. The coalescer
 deduplicates every cache line touched by active lanes, serializes those line
-requests, and reassembles elements that cross a line boundary. Driver shader
-validation for strided accesses remains disabled until constant-stride bounds
-proof is added.
+requests, and reassembles elements that cross a line boundary. The driver
+exposes the 32-bit forms when `rs2` is a directly materialized, aligned signed
+constant and its abstract interpreter proves every lane address inside the
+bound kernarg and writable output range.
 
 Texture sampling is routed as a separate elastic vector path. `vtex.sample`
 uses the warp active mask, `vl`, `vm`, and v0 predicate to select lanes; the

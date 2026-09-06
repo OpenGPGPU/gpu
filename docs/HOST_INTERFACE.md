@@ -155,9 +155,13 @@ proved for the complete vector range, so masking can only remove accesses from
 an already safe range.
 The RTL LSU additionally implements scalar-stride `vlse8/16/32.v` and
 `vsse8/16/32.v`, including sparse cache-line transactions and elements that
-cross a line boundary. These encodings remain outside the Linux shader sandbox
-until its abstract interpreter can prove the signed stride and every resulting
-lane address remain within the bound kernarg object.
+cross a line boundary. The Linux shader sandbox admits `vlse32.v` and
+`vsse32.v` when `rs2` is an aligned signed constant created directly with
+`addi rd,x0,imm` and proves each lane address independently. The base must be a
+fixed kernarg-relative pointer; lane-relative bases remain excluded. Loads must
+stay inside the kernarg object and stores must also stay inside its writable
+output range. The same defined-mask and preserved-destination rules apply to
+masked strided operations.
 The driver snapshots and validates the program, tracks the kernarg GEM object
 for both reads and writes, and publishes completion through the context's
 normal scheduler and optional input/output sync objects.
@@ -324,8 +328,8 @@ result must be consumed before the interrupt is acknowledged.
 - The validator exposes the implemented RVV integer ALU, comparison,
   saturation, reduction, gather, slide, multiply, divide and remainder families
   with exact operand-form and defined-register checks.
-- Unit-stride vector loads and stores support validated `v0.t` predication,
-  including preserved-destination checks for masked loads.
+- Unit- and constant-stride word vector loads and stores support validated
+  `v0.t` predication, including preserved-destination checks for masked loads.
 - Compute and DMA ioctls expose generation-tagged wait/signal hardware events;
   event-dependency failures propagate as scheduler fence errors.
 - `DRM_IOCTL_OPENGPU_GET_FAULT` exposes an atomic retained snapshot of the most
