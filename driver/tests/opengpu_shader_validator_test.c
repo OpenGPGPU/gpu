@@ -255,11 +255,49 @@ int main(void)
     program[2] = vector_alu(0x12, 2, 5, 1, 2); /* vzext.vf8 */
     assert(opengpu_compute_shader_validate_words(program, 4, 64, 4));
 
-    program[1] = vector_alu(0x12, 2, 3, 4, 5); /* unsupported vf scale */
+    program[1] = vector_alu(0x12, 2, 3, 4, 5); /* undefined source register */
     assert(!opengpu_compute_shader_validate_words(program, 4, 64, 4));
 
     program[1] = vector_alu(0x12, 2, 1, 1, 7); /* reserved vd/vs2 overlap */
     assert(!opengpu_compute_shader_validate_words(program, 4, 64, 4));
+
+    /* Masked extensions require a defined predicate and preserved destination. */
+    for (i = 2; i <= 7; i++) {
+        program[0] = vsetivli(4);
+        program[1] = vector_alu(0x18, 0, 0, 1, 1); /* vmseq.vv v0,v1,v1 */
+        program[2] = vector_alu(0x00, 3, 3, 1, 0); /* define old v3 */
+        program[3] = vector_alu(0x12, 2, 3, 1, i) & ~(1u << 25);
+        program[4] = OPENGPU_SHADER_CEASE;
+        assert(opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        assert(opengpu_shader_validate_words(program, 5, 288, 8));
+        assert(opengpu_vertex_shader_validate_words(program, 5, 512, 8));
+
+        program[1] = vector_alu(0x18, 0, 2, 1, 1); /* undefined v0 */
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        program[1] = vector_alu(0x18, 0, 0, 1, 1);
+        program[2] = vector_alu(0x00, 3, 2, 1, 0); /* undefined old v3 */
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        program[2] = vector_alu(0x00, 3, 3, 1, 0);
+        program[3] = vector_alu(0x12, 2, 0, 1, i) & ~(1u << 25);
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        program[3] = vector_alu(0x12, 2, 3, 3, i) & ~(1u << 25);
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        program[3] = vector_alu(0x12, 2, 3, 4, i) & ~(1u << 25);
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    }
+    program[3] = vector_alu(0x12, 2, 3, 1, 1) & ~(1u << 25);
+    assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    program[3] = vector_alu(0x00, 3, 3, 1, 0) & ~(1u << 25);
+    assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+
+    /* A masked extension must discard previously trusted index provenance. */
+    program[0] = vsetivli(4);
+    program[1] = vector_alu(0x18, 0, 0, 1, 1);
+    program[2] = vector_alu(0x25, 3, 2, 1, 2);
+    program[3] = vector_alu(0x12, 2, 2, 1, 6) & ~(1u << 25);
+    program[4] = vluxei32(3, 1, 2);
+    program[5] = OPENGPU_SHADER_CEASE;
+    assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
 
     /* Vertex stores target transformed attribute slices 8..15. */
     program[0] = lw(10, 0);

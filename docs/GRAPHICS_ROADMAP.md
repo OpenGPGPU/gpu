@@ -58,6 +58,9 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 - Validated unmasked RVV integer ALU, comparison, saturation, single-width
   reduction, gather, slide, multiply, divide and remainder operations in `vv`,
   `vx`, `vs` and legal `vi` forms.
+- Validated masked and unmasked lane-local `vsext/vzext.vf2/vf4/vf8`
+  integer extensions in the fixed profile, with preserved inactive lanes,
+  defined predicate/destination checks and reserved-overlap rejection.
 - Validated masked and unmasked unit-stride RVV word loads and stores, with
   preserved-destination and mask-register checks.
 - Hardware `vlse8/16/32.v` and `vsse8/16/32.v` address generation with sparse
@@ -129,7 +132,7 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 
 - Add further high-value RVV widening/narrowing operations, extending
   validation only with matching hardware support. The fixed profile now has
-  lane-local `vsext/vzext.vf2/vf4/vf8`.
+  masked and unmasked lane-local `vsext/vzext.vf2/vf4/vf8`.
 - Measure full-system cost by resolution, remove avoidable host-memory work and
   establish a practical regression default.
 - Add a safe unified-command reset that drains or invalidates in-flight memory

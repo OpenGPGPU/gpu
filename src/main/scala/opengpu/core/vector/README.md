@@ -52,7 +52,11 @@ Remaining RVV families (most widening/narrowing and the remaining VFUNARY1
 forms) remain separate migration steps. The fixed SEW=32 profile implements
 `vsext.vf2/vf4/vf8` and `vzext.vf2/vf4/vf8` as lane-local integer widening
 operations: the low 16, 8, or 4 bits of each source lane are sign- or
-zero-extended to 32 bits. Full RVV
+zero-extended to 32 bits. Both masked and unmasked forms are supported;
+masked-off and inactive lanes preserve the old destination. The decoder and
+driver reject source/destination overlap and masked writes to v0. The driver
+also requires defined source, predicate and preserved destination registers
+for masked extensions. Full RVV
 register-group and variable-SEW widening semantics remain outside this
 profile.
 

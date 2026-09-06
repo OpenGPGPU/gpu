@@ -121,6 +121,51 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     }
   }
 
+  it should "mask every integer extension scale and hold results under backpressure" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      val inputs = Seq(BigInt("abcd8008", 16), BigInt("ffff7f77", 16),
+        BigInt("1234ffff", 16), BigInt("ffff8080", 16))
+      dut.io.in.bits.funct6.poke("h12".U)
+      dut.io.in.bits.operandType.poke(2.U)
+      dut.io.in.bits.vm.poke(false.B)
+      for (selector <- 2 to 7; mask <- Seq(0, 5, 15)) {
+        dut.io.in.bits.immediate.poke(selector.U)
+        dut.io.in.bits.activeMask.poke(7.U)
+        dut.io.in.bits.predicateMask.poke(mask.U)
+        inputs.zipWithIndex.foreach { case (value, lane) =>
+          dut.io.in.bits.vs2(lane).poke(value.U)
+        }
+        dut.io.out.ready.poke(false.B)
+        dut.io.in.valid.poke(true.B)
+        dut.io.in.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+        dut.clock.step(3)
+        val width = 1 << (selector / 2 + 1)
+        val expected = inputs.zipWithIndex.map { case (value, lane) =>
+          val low = value & ((BigInt(1) << width) - 1)
+          val extended = if (selector % 2 == 1 && low.testBit(width - 1))
+            low - (BigInt(1) << width) else low
+          if (((mask & 7) & (1 << lane)) != 0)
+            extended & BigInt("ffffffff", 16) else BigInt(100 + lane)
+        }
+        for (_ <- 0 until 3) {
+          dut.io.out.valid.expect(true.B)
+          dut.io.out.bits.writesMask.expect(false.B)
+          dut.io.out.bits.saturated.expect(false.B)
+          expected.zipWithIndex.foreach { case (value, lane) =>
+            dut.io.out.bits.data(lane).expect(value.U)
+          }
+          dut.clock.step()
+        }
+        dut.io.out.ready.poke(true.B)
+        dut.clock.step()
+        dut.io.out.valid.expect(false.B)
+      }
+    }
+  }
+
   it should "preserve inactive lanes and produce precise mask results" in {
     simulate(new VectorIntegerAlu(config)) { dut =>
       defaults(dut)

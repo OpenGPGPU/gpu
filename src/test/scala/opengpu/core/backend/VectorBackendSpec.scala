@@ -128,6 +128,33 @@ class VectorBackendSpec extends AnyFlatSpec {
         dut.io.committedVectorWriteback.bits.data(lane)
           .expect((0x20 + lane).U)
 
+      dut.clock.step() // retire the unmasked extension before initialization
+      initialize(0, 5) // packed v0 bits enable lanes 0 and 2
+      initialize(2, 0x8000)
+      initialize(6, 100)
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.instruction.poke((widenInstruction & ~(BigInt(1) << 25)).U)
+      dut.io.in.bits.decoded.vm.poke(false.B)
+      dut.io.in.bits.activeMask.poke(3.U) // lane 2 is inactive despite v0
+      dut.io.in.ready.expect(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      cycles = 0
+      while (!dut.io.committedVectorWriteback.valid.peek().litToBoolean &&
+        cycles < 24) {
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(dut.io.committedVectorWriteback.valid.peek().litToBoolean)
+      dut.io.committedVectorWriteback.bits.warpId.expect(1.U)
+      dut.io.committedVectorWriteback.bits.vd.expect(6.U)
+      dut.io.committedVectorWriteback.bits.data(0).expect("hffff8000".U)
+      for (lane <- 1 until config.lanes)
+        dut.io.committedVectorWriteback.bits.data(lane).expect((100 + lane).U)
+      dut.clock.step()
+      initialize(2, 0x20)
+      dut.io.in.bits.activeMask.poke(15.U)
+
       // vadd.vx v3, v2, x1
       val addInstruction =
         (BigInt(1) << 25) | (BigInt(2) << 20) | (BigInt(1) << 15) |

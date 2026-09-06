@@ -149,6 +149,33 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.instruction.poke("b0100101_00100_00010_010_00011_1010111".U)
       dut.io.decoded.valid.expect(true.B)
 
+      // Both mask forms of every extension scale have unary source metadata.
+      for (selector <- 2 to 7; vm <- 0 to 1) {
+        val instruction = (BigInt(0x12) << 26) | (BigInt(vm) << 25) |
+          (BigInt(4) << 20) | (BigInt(selector) << 15) |
+          (BigInt(2) << 12) | (BigInt(3) << 7) | 0x57
+        dut.io.instruction.poke(instruction.U)
+        dut.io.decoded.valid.expect(true.B)
+        dut.io.decoded.vm.expect((vm == 1).B)
+        dut.io.decoded.unit.expect(VectorUnit.alu)
+        dut.io.decoded.readsVs1.expect(false.B)
+        dut.io.decoded.readsVs2.expect(true.B)
+        dut.io.decoded.writesVd.expect(true.B)
+        // A fractional-width source cannot overlap the destination.
+        dut.io.instruction.poke(((instruction & ~(BigInt(31) << 7)) |
+          (BigInt(4) << 7)).U)
+        dut.io.decoded.valid.expect(false.B)
+        dut.io.instruction.poke((instruction & ~(BigInt(31) << 7)).U)
+        dut.io.decoded.valid.expect((vm == 1).B)
+      }
+      for (selector <- Seq(0, 1, 8, 31)) {
+        val instruction = (BigInt(0x12) << 26) | (BigInt(4) << 20) |
+          (BigInt(selector) << 15) | (BigInt(2) << 12) |
+          (BigInt(3) << 7) | 0x57
+        dut.io.instruction.poke(instruction.U)
+        dut.io.decoded.valid.expect(false.B)
+      }
+
       // Masked unit-stride word loads are implemented by the vector LSU.
       dut.io.instruction.poke("b0000_0_00_0_00000_00010_110_00011_0000111".U)
       dut.io.decoded.valid.expect(true.B)

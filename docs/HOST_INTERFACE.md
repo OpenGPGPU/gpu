@@ -133,7 +133,13 @@ binding-relative entry/kernarg offsets and three-dimensional grid and local
 sizes. The initial sandbox accepts bounded forward control flow and the
 supported scalar subset plus unmasked RVV integer ALU, comparison, saturating,
 single-width reduction, gather, slide, multiply, divide and remainder
-operations. It permits memory
+operations, plus masked and unmasked fixed-profile `vsext/vzext.vf2/vf4/vf8`.
+These extensions use the low 16/8/4 bits of each 32-bit source lane. Masked
+forms require defined v0 and destination registers and preserve disabled
+lanes. Source/destination overlap and masked writes to v0 are rejected, in
+line with the [RVV register overlap rules](https://docs.riscv.org/reference/isa/unpriv/v-st-ext).
+This fixed lane layout does not implement general RVV register groups or
+variable-SEW extension semantics. The sandbox permits memory
 access only inside the bound kernarg range and limits a workgroup to the fixed 32
 resident work-items. `vrgather.vv/vx/vi` selects within the fixed per-warp
 VLMAX and returns zero for an out-of-range index. Vector-vector and

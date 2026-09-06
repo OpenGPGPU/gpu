@@ -195,18 +195,18 @@ private object VectorDecodeTable {
   // VFUNARY0: funct6 010010 carries the conversion opcode in the vs1 field.
   // Only the implemented SEW=32 conversions are allow-listed.
   private val unary0Patterns = Seq(
-    // Fixed-profile integer widening from the low 16 bits to SEW=32.
-    VectorPattern("vsext_vf2", "0100101?????00111010?????1010111", 1,
+    // Fixed-profile integer widening from low 16/8/4 bits to SEW=32.
+    VectorPattern("vsext_vf2", "010010??????00111010?????1010111", 1,
       readsVs2 = true, writesVd = true),
-    VectorPattern("vzext_vf2", "0100101?????00110010?????1010111", 1,
+    VectorPattern("vzext_vf2", "010010??????00110010?????1010111", 1,
       readsVs2 = true, writesVd = true),
-    VectorPattern("vsext_vf4", "0100101?????00101010?????1010111", 1,
+    VectorPattern("vsext_vf4", "010010??????00101010?????1010111", 1,
       readsVs2 = true, writesVd = true),
-    VectorPattern("vzext_vf4", "0100101?????00100010?????1010111", 1,
+    VectorPattern("vzext_vf4", "010010??????00100010?????1010111", 1,
       readsVs2 = true, writesVd = true),
-    VectorPattern("vsext_vf8", "0100101?????00011010?????1010111", 1,
+    VectorPattern("vsext_vf8", "010010??????00011010?????1010111", 1,
       readsVs2 = true, writesVd = true),
-    VectorPattern("vzext_vf8", "0100101?????00010010?????1010111", 1,
+    VectorPattern("vzext_vf8", "010010??????00010010?????1010111", 1,
       readsVs2 = true, writesVd = true),
     VectorPattern("vfcvt_xu_f_v", "010010??????00000001?????1010111", 4,
       readsVs2 = true, writesVd = true),
@@ -338,9 +338,18 @@ class VectorDecoder extends Module {
   val slideUpOverlap = io.instruction(31, 26) === "b001110".U &&
     io.instruction(11, 7) === io.instruction(24, 20)
 
+  val integerExtension = opcode === "b1010111".U &&
+    io.instruction(31, 26) === "b010010".U &&
+    io.instruction(14, 12) === "b010".U
+  val extensionOverlap = integerExtension && (
+    io.instruction(11, 7) === io.instruction(24, 20) ||
+      (!io.instruction(25) && io.instruction(11, 7) === 0.U)
+  )
+
   io.decoded := 0.U.asTypeOf(new VectorDecodeSignals)
   io.decoded.recognized := recognized
-  io.decoded.valid := result(VectorDecodeTable.Legal) && !slideUpOverlap
+  io.decoded.valid := result(VectorDecodeTable.Legal) &&
+    !slideUpOverlap && !extensionOverlap
   io.decoded.unit := decodedUnit
   io.decoded.funct6 := io.instruction(31, 26)
   io.decoded.operandType := io.instruction(14, 12)

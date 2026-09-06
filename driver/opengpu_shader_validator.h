@@ -176,7 +176,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
     opengpu_shader_u32 vd = (insn >> 7) & 0x1f;
     opengpu_shader_u32 vs2 = (insn >> 20) & 0x1f;
 
-    if (!(insn & (1u << 25))) /* shader vector ALU is deliberately unmasked */
+    /* Only integer extensions currently admit masked ALU execution. */
+    if (!(insn & (1u << 25)) &&
+        (funct6 != 0x12 || form != 2 || vd == 0))
         return false;
     if (funct6 == 0x0e && vd == vs2) /* vslideup overlap is reserved */
         return false;
@@ -289,7 +291,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * Scalar lw/sw retain the v1
  * bounds. The RVV profile admits vsetivli e32,m1, the implemented lane-local
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
- * divide and remainder forms, and masked or unmasked unit-, constant-stride,
+ * divide and remainder forms, masked integer extensions, and masked or
+ * unmasked unit-, constant-stride,
  * and trusted-local-index word memory operations. Defined-register
  * tracking prevents stale SGPR/VGPR data from being exported. A small abstract
  * interpreter recognizes x1 +
@@ -465,7 +468,7 @@ static inline bool opengpu_shader_validate_words_profile(
             if (end > output_end)
                 return false;
             break;
-        case 0x57: /* vsetivli or allow-listed unmasked vector integer ALU */
+        case 0x57: /* vsetivli or allow-listed vector integer ALU */
             if ((insn & 0xfff07fffu) == 0xc1007057u) {
                 state.vector_length = rs1;
                 if (!state.vector_length ||
@@ -475,6 +478,8 @@ static inline bool opengpu_shader_validate_words_profile(
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
                     !vector_defined[rs2] ||
+                    (!(insn & (1u << 25)) &&
+                     (!vector_defined[0] || !vector_defined[rd])) ||
                     ((insn >> 26) == 0x12 &&
                      !(rs1 == 2 || rs1 == 3 || rs1 == 4 || rs1 == 5 ||
                        rs1 == 6 || rs1 == 7)) ||
