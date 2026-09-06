@@ -43,6 +43,7 @@ struct opengpu_resource_binding {
 
 enum opengpu_sched_job_type {
     OPENGPU_SCHED_RENDER,
+    OPENGPU_SCHED_COMPUTE,
     OPENGPU_SCHED_BLIT,
     OPENGPU_SCHED_FILL,
     OPENGPU_SCHED_STRIDED_BLIT,
@@ -59,6 +60,7 @@ struct opengpu_sched_job {
     u32 dma_source_stride;
     u32 dma_destination_stride;
     u32 fill_pattern;
+    struct opengpu_kernel_launch kernel;
     struct opengpu_job hw;
     struct opengpu_buffer commands;
     struct opengpu_buffer shader;
@@ -382,17 +384,19 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
     if (!args->context_id || !args->slot ||
         args->slot > OPENGPU_MAX_RESOURCE_SLOTS || !args->handle ||
         args->type < OPENGPU_RESOURCE_SHADER ||
-        args->type > OPENGPU_RESOURCE_VERTEX_KERNARG || !args->size ||
+        args->type > OPENGPU_RESOURCE_COMPUTE_KERNARG || !args->size ||
         (args->offset & 3) || args->pad ||
         check_add_overflow(args->offset, args->size, &end))
         return -EINVAL;
     if ((args->type == OPENGPU_RESOURCE_SHADER ||
-         args->type == OPENGPU_RESOURCE_VERTEX_SHADER) &&
+         args->type == OPENGPU_RESOURCE_VERTEX_SHADER ||
+         args->type == OPENGPU_RESOURCE_COMPUTE_SHADER) &&
         ((args->offset & 63) || (args->size & 63) ||
          args->size > OPENGPU_SHADER_MAX_INSTRUCTIONS * sizeof(u32)))
         return -EINVAL;
     if ((args->type == OPENGPU_RESOURCE_KERNARG ||
-         args->type == OPENGPU_RESOURCE_VERTEX_KERNARG) &&
+         args->type == OPENGPU_RESOURCE_VERTEX_KERNARG ||
+         args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG) &&
         ((args->offset & (GPU_KERNARG_BANK_ALIGN - 1)) ||
          (args->size & (GPU_KERNARG_BANK_ALIGN - 1))))
         return -EINVAL;
@@ -897,6 +901,10 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
     struct dma_fence *fence;
     int ret;
 
+    if (job->type == OPENGPU_SCHED_COMPUTE) {
+        ret = opengpu_hw_compute_async(job->gpu, &job->kernel, &fence);
+        return ret ? ERR_PTR(ret) : fence;
+    }
     if (job->type == OPENGPU_SCHED_BLIT) {
         ret = opengpu_hw_blit_async(job->gpu,
                                     lower_32_bits(job->dma_source),
@@ -1739,6 +1747,160 @@ out_destination:
     drm_gem_object_put(destination_object);
 out_source:
     drm_gem_object_put(source_object);
+    return ret;
+}
+
+int opengpu_compute_launch_ioctl(struct drm_device *drm, void *data,
+                                 struct drm_file *file)
+{
+    struct drm_opengpu_compute *args = data;
+    struct opengpu_device *gpu = dev_get_drvdata(drm->dev);
+    struct opengpu_file *render_file = file->driver_priv;
+    struct opengpu_render_context *context;
+    struct opengpu_resource_binding *shader, *kernarg;
+    struct drm_gem_dma_object *shader_dma;
+    struct opengpu_sched_job *sched_job = NULL;
+    struct drm_syncobj *out_sync = NULL;
+    struct dma_fence *fence = NULL;
+    struct drm_exec exec;
+    const u32 *program;
+    u64 local_xy, local_items, available;
+    u32 words;
+    bool sched_initialized = false;
+    int ret;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
+        return -EOPNOTSUPP;
+    if (!args->context_id || !args->shader_slot || !args->kernarg_slot ||
+        args->shader_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
+        args->kernarg_slot > OPENGPU_MAX_RESOURCE_SLOTS || args->flags ||
+        args->pad[0] || args->pad[1] || (args->shader_offset & 3) ||
+        (args->kernarg_offset & 3) || !args->grid[0] || !args->grid[1] ||
+        !args->grid[2] || !args->local[0] || !args->local[1] ||
+        !args->local[2] || args->local[0] > U16_MAX ||
+        args->local[1] > U16_MAX || args->local[2] > U16_MAX ||
+        check_mul_overflow((u64)args->local[0], (u64)args->local[1],
+                           &local_xy) ||
+        check_mul_overflow(local_xy, (u64)args->local[2], &local_items) ||
+        local_items > 32)
+        return -EINVAL;
+    if (args->out_syncobj) {
+        out_sync = drm_syncobj_find(file, args->out_syncobj);
+        if (!out_sync)
+            return -ENOENT;
+    }
+
+    mutex_lock(&render_file->lock);
+    context = opengpu_context_lookup(render_file, args->context_id);
+    if (!context) {
+        ret = -ENOENT;
+        goto out_file;
+    }
+    shader = opengpu_binding_lookup(context, args->shader_slot,
+                                    OPENGPU_RESOURCE_COMPUTE_SHADER);
+    kernarg = opengpu_binding_lookup(context, args->kernarg_slot,
+                                     OPENGPU_RESOURCE_COMPUTE_KERNARG);
+    if (!shader || !kernarg || shader->object == kernarg->object ||
+        args->shader_offset >= shader->size ||
+        args->kernarg_offset >= kernarg->size) {
+        ret = -EINVAL;
+        goto out_file;
+    }
+    shader_dma = to_drm_gem_dma_obj(shader->object);
+    if (!shader_dma->vaddr) {
+        ret = -EINVAL;
+        goto out_file;
+    }
+
+    drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
+                         DRM_EXEC_IGNORE_DUPLICATES, 0);
+    drm_exec_until_all_locked(&exec) {
+        ret = drm_exec_prepare_obj(&exec, shader->object, 1);
+        if (!ret)
+            ret = drm_exec_prepare_obj(&exec, kernarg->object, 1);
+        drm_exec_retry_on_contention(&exec);
+        if (ret)
+            goto out_exec;
+    }
+    ret = opengpu_wait_reservation(shader->object, DMA_RESV_USAGE_WRITE);
+    if (ret)
+        goto out_exec;
+
+    sched_job = kzalloc(sizeof(*sched_job), GFP_KERNEL);
+    if (!sched_job) {
+        ret = -ENOMEM;
+        goto out_exec;
+    }
+    sched_job->gpu = gpu;
+    sched_job->type = OPENGPU_SCHED_COMPUTE;
+    ret = opengpu_buffer_alloc(gpu, &sched_job->shader, shader->size);
+    if (ret)
+        goto out_job;
+    memcpy(sched_job->shader.cpu,
+           (const u8 *)shader_dma->vaddr + shader->offset, shader->size);
+
+    available = shader->size - args->shader_offset;
+    words = min_t(u64, available / sizeof(u32),
+                  OPENGPU_SHADER_MAX_INSTRUCTIONS);
+    program = (const u32 *)((const u8 *)sched_job->shader.cpu +
+                            args->shader_offset);
+    if (!opengpu_compute_shader_validate_words(
+            program, words, kernarg->size - args->kernarg_offset,
+            local_items)) {
+        ret = -EINVAL;
+        goto out_job;
+    }
+    sched_job->kernel.kernel_pc = sched_job->shader.dma +
+                                  args->shader_offset;
+    sched_job->kernel.kernarg = kernarg->dma + args->kernarg_offset;
+    memcpy(sched_job->kernel.grid, args->grid,
+           sizeof(sched_job->kernel.grid));
+    memcpy(sched_job->kernel.local, args->local,
+           sizeof(sched_job->kernel.local));
+
+    ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
+                             render_file, file->client_id);
+    if (ret)
+        goto out_job;
+    sched_initialized = true;
+    if (args->in_syncobj)
+        ret = drm_sched_job_add_syncobj_dependency(&sched_job->base, file,
+                                                    args->in_syncobj, 0);
+    if (!ret)
+        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
+                                                   kernarg->object->resv,
+                                                   DMA_RESV_USAGE_READ);
+    if (ret)
+        goto out_job;
+
+    drm_gem_object_get(kernarg->object);
+    sched_job->objects[sched_job->object_count++] = kernarg->object;
+    drm_sched_job_arm(&sched_job->base);
+    fence = dma_fence_get(&sched_job->base.s_fence->finished);
+    dma_fence_put(context->last_fence);
+    context->last_fence = dma_fence_get(fence);
+    dma_resv_add_fence(kernarg->object->resv, fence, DMA_RESV_USAGE_WRITE);
+    if (out_sync)
+        drm_syncobj_replace_fence(out_sync, fence);
+    drm_sched_entity_push_job(&sched_job->base);
+    sched_job = NULL;
+    dma_fence_put(fence);
+    ret = 0;
+    goto out_exec;
+
+out_job:
+    if (sched_initialized)
+        drm_sched_job_cleanup(&sched_job->base);
+    if (sched_job) {
+        opengpu_buffer_free(gpu, &sched_job->shader);
+        kfree(sched_job);
+    }
+out_exec:
+    drm_exec_fini(&exec);
+out_file:
+    mutex_unlock(&render_file->lock);
+    if (out_sync)
+        drm_syncobj_put(out_sync);
     return ret;
 }
 

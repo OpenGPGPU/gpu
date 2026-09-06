@@ -135,7 +135,7 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
     }
 }
 
-/* Fragment shader sandbox. Unreconverged forward scalar branches are limited
+/* Shared shader sandbox. Unreconverged forward scalar branches are limited
  * to four. Paths may reconverge or terminate independently in CEASE; every
  * reachable path must terminate. x1 remains the immutable kernarg base.
  * Scalar lw/sw retain the v1
@@ -144,9 +144,10 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * prevents stale SGPR/VGPR data from being exported. A small abstract
  * interpreter recognizes x1 +
  * 4*x8 + constant, where x8 is the trusted warp localLinearBase, and proves
- * every active vector lane remains in kernarg (loads) or the colour-output /
- * output-valid slices (stores). Clearing an output-valid word discards that
- * fragment. The bounded vector texture sample requires a validated
+ * every active vector lane remains in kernarg; each profile selects the
+ * writable portion. The fragment profile restricts stores to colour/depth/
+ * validity slices, while general compute permits the whole explicitly bound
+ * kernarg range. The bounded vector texture sample requires a validated
  * texture binding. Backward branches, jumps, atomics and all other custom
  * instructions remain rejected. */
 static inline bool opengpu_shader_validate_words_profile(
@@ -154,7 +155,7 @@ static inline bool opengpu_shader_validate_words_profile(
     opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity,
     opengpu_shader_u32 output_start_slice,
     opengpu_shader_u32 output_end_slice, bool fragment_ops_enabled,
-    bool texture_enabled)
+    bool texture_enabled, bool all_kernarg_writable)
 {
     opengpu_shader_u64 stride, output_start, output_end;
     struct opengpu_shader_state state = { 0 };
@@ -169,11 +170,16 @@ static inline bool opengpu_shader_validate_words_profile(
     if (!words || !word_count || !batch_capacity || batch_capacity > 64)
         return false;
     stride = 4ull * batch_capacity;
-    output_start = output_start_slice * stride;
-    output_end = output_end_slice * stride;
-    if (output_start_slice >= output_end_slice ||
-        kernarg_size < output_end)
-        return false;
+    if (all_kernarg_writable) {
+        output_start = 0;
+        output_end = kernarg_size;
+    } else {
+        output_start = output_start_slice * stride;
+        output_end = output_end_slice * stride;
+        if (output_start_slice >= output_end_slice ||
+            kernarg_size < output_end)
+            return false;
+    }
     if (word_count > OPENGPU_SHADER_MAX_INSTRUCTIONS)
         word_count = OPENGPU_SHADER_MAX_INSTRUCTIONS;
     for (i = 0; i <= 8; i++)
@@ -387,7 +393,7 @@ static inline bool opengpu_shader_validate_words_with_texture(
 {
     return opengpu_shader_validate_words_profile(
         words, word_count, kernarg_size, batch_capacity,
-        6, 9, true, texture_enabled);
+        6, 9, true, texture_enabled, false);
 }
 
 static inline bool opengpu_shader_validate_words(
@@ -407,7 +413,19 @@ static inline bool opengpu_vertex_shader_validate_words(
 {
     return opengpu_shader_validate_words_profile(
         words, word_count, kernarg_size, batch_capacity,
-        8, 16, false, false);
+        8, 16, false, false, false);
+}
+
+/* General-compute profile: retain the bounded instruction and address
+ * analysis, reject fragment-only operations, and permit writes anywhere
+ * inside the explicitly bound kernarg range. */
+static inline bool opengpu_compute_shader_validate_words(
+    const opengpu_shader_u32 *words, opengpu_shader_u32 word_count,
+    opengpu_shader_u64 kernarg_size, opengpu_shader_u32 local_items)
+{
+    return opengpu_shader_validate_words_profile(
+        words, word_count, kernarg_size, local_items,
+        0, 0, false, false, true);
 }
 
 #endif /* OPENGPU_SHADER_VALIDATOR_H */

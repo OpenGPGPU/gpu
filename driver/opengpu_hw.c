@@ -56,7 +56,7 @@ static void opengpu_reg_write(struct opengpu_device *gpu, u32 offset, u32 value)
     iowrite32(value, gpu->hw.regs + offset);
 }
 
-static int opengpu_hw_unified_result_error(u32 status);
+static int opengpu_hw_unified_result_error(u32 opcode, u32 status);
 static bool opengpu_hw_unified_drain(struct opengpu_device *gpu);
 
 void opengpu_hw_progress_tick(struct opengpu_device *gpu)
@@ -655,8 +655,23 @@ static int opengpu_hw_submit_locked(struct opengpu_device *gpu,
     return opengpu_hw_submit_legacy_locked(gpu, job, out_fence);
 }
 
-static int opengpu_hw_unified_result_error(u32 status)
+static int opengpu_hw_unified_result_error(u32 opcode, u32 status)
 {
+    if (opcode == GPU_UCMD_OP_KERNEL) {
+        switch (status) {
+        case GPU_UCMD_RESULT_SUCCESS:
+            return 0;
+        case GPU_UCMD_KERNEL_INVALID_PC:
+        case GPU_UCMD_KERNEL_INVALID_GRID:
+        case GPU_UCMD_KERNEL_INVALID_LOCAL_SIZE:
+        case GPU_UCMD_KERNEL_MISALIGNED_KERNARG:
+        case GPU_UCMD_KERNEL_DMA_DEPENDENCY:
+            return -EINVAL;
+        case GPU_UCMD_KERNEL_EXECUTION_FAILED:
+        default:
+            return -EIO;
+        }
+    }
     switch (status) {
     case GPU_UCMD_RESULT_SUCCESS:
         return 0;
@@ -703,15 +718,19 @@ static bool opengpu_hw_unified_drain(struct opengpu_device *gpu)
     expected_bytes = gpu->hw.unified_expected_bytes;
     gpu->hw.unified_fence = NULL;
     if (fence) {
-        ret = opengpu_hw_unified_result_error(
+        ret = opengpu_hw_unified_result_error(opcode,
             GPU_UCMD_COMPLETION_STATUS(completion));
         if (GPU_UCMD_COMPLETION_ID(completion) != command_id ||
             GPU_UCMD_COMPLETION_OPCODE(completion) != opcode ||
             (!GPU_UCMD_COMPLETION_SUCCESS(completion) && !ret) ||
             (!ret && processed != expected_bytes))
             ret = -EIO;
-        if (ret)
+        if (ret) {
+            dev_err(gpu->dev,
+                    "unified command %u opcode %u failed: completion=%08x bytes=%llu error=%d\n",
+                    command_id, opcode, completion, processed, ret);
             dma_fence_set_error(fence, ret);
+        }
         dma_fence_signal_locked(fence);
     }
     spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
@@ -721,8 +740,10 @@ static bool opengpu_hw_unified_drain(struct opengpu_device *gpu)
     return true;
 }
 
-static int opengpu_hw_unified_dma_submit_locked(
-    struct opengpu_device *gpu, u32 opcode, u32 source, u32 destination,
+static int opengpu_hw_unified_submit_locked(
+    struct opengpu_device *gpu,
+    const struct opengpu_kernel_launch *launch,
+    u32 opcode, u32 source, u32 destination,
     u32 bytes, u32 pattern, u32 height, u32 source_stride,
     u32 destination_stride, u64 expected_bytes, struct dma_fence **out_fence)
 {
@@ -769,6 +790,22 @@ static int opengpu_hw_unified_dma_submit_locked(
 
     opengpu_reg_write(gpu, GPU_REG_UCMD_ID, command_id);
     opengpu_reg_write(gpu, GPU_REG_UCMD_OPCODE, opcode);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_KERNEL_PC,
+                      launch ? lower_32_bits(launch->kernel_pc) : 0);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_KERNARG,
+                      launch ? lower_32_bits(launch->kernarg) : 0);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_GRID_X,
+                      launch ? launch->grid[0] : 1);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_GRID_Y,
+                      launch ? launch->grid[1] : 1);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_GRID_Z,
+                      launch ? launch->grid[2] : 1);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_LOCAL_X,
+                      launch ? launch->local[0] : 1);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_LOCAL_Y,
+                      launch ? launch->local[1] : 1);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_LOCAL_Z,
+                      launch ? launch->local[2] : 1);
     opengpu_reg_write(gpu, GPU_REG_UCMD_FLAGS, 0);
     opengpu_reg_write(gpu, GPU_REG_UCMD_SOURCE, source);
     opengpu_reg_write(gpu, GPU_REG_UCMD_DESTINATION, destination);
@@ -785,6 +822,16 @@ static int opengpu_hw_unified_dma_submit_locked(
     mod_delayed_work(system_dfl_wq, &gpu->hw.poll_work,
                      msecs_to_jiffies(OPENGPU_HW_POLL_INTERVAL_MS));
     return 0;
+}
+
+static int opengpu_hw_unified_dma_submit_locked(
+    struct opengpu_device *gpu, u32 opcode, u32 source, u32 destination,
+    u32 bytes, u32 pattern, u32 height, u32 source_stride,
+    u32 destination_stride, u64 expected_bytes, struct dma_fence **out_fence)
+{
+    return opengpu_hw_unified_submit_locked(
+        gpu, NULL, opcode, source, destination, bytes, pattern, height,
+        source_stride, destination_stride, expected_bytes, out_fence);
 }
 
 /* Submit one DMA operation through the integrated common command payload.
@@ -1195,6 +1242,38 @@ int opengpu_hw_strided_blit_async(struct opengpu_device *gpu, u32 source,
             gpu, GPU_UCMD_OP_STRIDED_COPY, source, destination, width, 0,
             height, source_stride, destination_stride,
             (u64)width * height, out_fence);
+    mutex_unlock(&gpu->hw.submit_lock);
+    return ret;
+}
+
+int opengpu_hw_compute_async(struct opengpu_device *gpu,
+                             const struct opengpu_kernel_launch *launch,
+                             struct dma_fence **out_fence)
+{
+    u64 local_xy, local_items;
+    int ret;
+
+    if (!launch || !out_fence)
+        return -EINVAL;
+    *out_fence = NULL;
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
+        return -EOPNOTSUPP;
+    if (!launch->kernel_pc || upper_32_bits(launch->kernel_pc) ||
+        (launch->kernel_pc & 3) || !launch->kernarg ||
+        upper_32_bits(launch->kernarg) || (launch->kernarg & 3) ||
+        !launch->grid[0] || !launch->grid[1] || !launch->grid[2] ||
+        !launch->local[0] || !launch->local[1] || !launch->local[2] ||
+        check_mul_overflow((u64)launch->local[0],
+                           (u64)launch->local[1], &local_xy) ||
+        check_mul_overflow(local_xy, (u64)launch->local[2], &local_items) ||
+        local_items > 32)
+        return -EINVAL;
+
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
+        opengpu_hw_unified_submit_locked(
+            gpu, launch, GPU_UCMD_OP_KERNEL, 0, 0, 0, 0, 0, 0, 0, 0,
+            out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }

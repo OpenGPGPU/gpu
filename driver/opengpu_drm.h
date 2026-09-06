@@ -100,6 +100,8 @@ enum drm_opengpu_resource_type {
     OPENGPU_RESOURCE_VERTEX_BUFFER = 4,
     OPENGPU_RESOURCE_VERTEX_SHADER = 5,
     OPENGPU_RESOURCE_VERTEX_KERNARG = 6,
+    OPENGPU_RESOURCE_COMPUTE_SHADER = 7,
+    OPENGPU_RESOURCE_COMPUTE_KERNARG = 8,
 };
 
 struct drm_opengpu_resource {
@@ -189,6 +191,23 @@ struct drm_opengpu_strided_blit {
     __u32 pad[2];
 };
 
+/* Ordered general-compute launch. The program and kernarg addresses are
+ * binding-relative offsets; the kernel validates and relocates both before
+ * submitting the launch through the unified command path. */
+struct drm_opengpu_compute {
+    __u32 context_id;
+    __u32 shader_slot;
+    __u32 kernarg_slot;
+    __u32 flags;
+    __u64 shader_offset;
+    __u64 kernarg_offset;
+    __u32 grid[3];
+    __u32 local[3];
+    __u32 in_syncobj;
+    __u32 out_syncobj;
+    __u32 pad[2];
+};
+
 #define OPENGPU_MAX_COMMANDS 64u
 
 /* Verification-only: defer fence signaling after hardware completion so the
@@ -205,6 +224,7 @@ struct drm_opengpu_strided_blit {
 #define DRM_OPENGPU_BLIT 0x06
 #define DRM_OPENGPU_FILL 0x07
 #define DRM_OPENGPU_STRIDED_BLIT 0x08
+#define DRM_OPENGPU_COMPUTE 0x09
 #define DRM_IOCTL_OPENGPU_SUBMIT \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_SUBMIT, \
              struct drm_opengpu_submit)
@@ -232,5 +252,8 @@ struct drm_opengpu_strided_blit {
 #define DRM_IOCTL_OPENGPU_STRIDED_BLIT \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_STRIDED_BLIT, \
              struct drm_opengpu_strided_blit)
+#define DRM_IOCTL_OPENGPU_COMPUTE \
+    DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_COMPUTE, \
+             struct drm_opengpu_compute)
 
 #endif /* OPENGPU_DRM_H */

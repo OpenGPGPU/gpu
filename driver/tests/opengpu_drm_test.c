@@ -622,6 +622,47 @@ static int submit_strided_blit(int fd, uint32_t context_id,
     return ioctl(fd, DRM_IOCTL_OPENGPU_STRIDED_BLIT, &blit);
 }
 
+static int submit_compute(int fd, uint32_t context_id, uint32_t shader_slot,
+                          uint32_t kernarg_slot, uint32_t local_x,
+                          uint32_t in_syncobj, uint32_t out_syncobj)
+{
+    struct drm_opengpu_compute compute = {
+        .context_id = context_id,
+        .shader_slot = shader_slot,
+        .kernarg_slot = kernarg_slot,
+        .grid = { 1, 1, 1 },
+        .local = { local_x, 1, 1 },
+        .in_syncobj = in_syncobj,
+        .out_syncobj = out_syncobj,
+    };
+
+    return ioctl(fd, DRM_IOCTL_OPENGPU_COMPUTE, &compute);
+}
+
+static int fill_resource(int fd, uint32_t context_id,
+                         const struct resource_buffer *destination,
+                         uint32_t pattern, uint32_t out_syncobj)
+{
+    struct drm_opengpu_fill fill = {
+        .context_id = context_id,
+        .destination_handle = destination->handle,
+        .pattern = pattern,
+        .bytes = 64,
+        .out_syncobj = out_syncobj,
+    };
+
+    return ioctl(fd, DRM_IOCTL_OPENGPU_FILL, &fill);
+}
+
+static void write_compute_shader(void *mapping)
+{
+    uint32_t *program = mapping;
+
+    program[0] = 0x0000a483u; /* lw x9,0(x1) */
+    program[1] = 0x0090a223u; /* sw x9,4(x1) */
+    program[2] = 0x30500073u; /* cease */
+}
+
 static int reject_unsafe_command(int fd, uint32_t context_id,
                                  struct command_buffer *commands,
                                  const struct dumb_fb *fb)
@@ -928,13 +969,15 @@ int main(void)
 {
     struct kms_ids ids = { 0 };
     struct dumb_fb first = { 0 }, second = { 0 };
+    struct dumb_fb strided_source = { 0 }, strided_destination = { 0 };
     struct command_buffer commands = { 0 };
     struct resource_buffer texture = { 0 };
     struct resource_buffer shader = { 0 }, kernarg = { 0 };
     struct resource_buffer vertex_buffer = { 0 };
     struct resource_buffer vertex_shader = { 0 }, vertex_kernarg = { 0 };
+    struct resource_buffer compute_shader = { 0 }, compute_kernarg = { 0 };
     struct drm_event_vblank event = { 0 };
-    uint32_t syncobjs[6] = { 0 };
+    uint32_t syncobjs[7] = { 0 };
     uint32_t output_syncobjs[2];
     uint64_t capabilities;
     uint32_t batch_capacity;
@@ -979,6 +1022,9 @@ int main(void)
     CHECK(find_kms_objects(fd, &ids), "resource discovery");
     CHECK(create_fb(fd, 0x000000ffu, &first), "first dumb buffer");
     CHECK(create_fb(fd, 0x000000ffu, &second), "second dumb buffer");
+    CHECK(create_fb(fd, 0, &strided_source), "strided source buffer");
+    CHECK(create_fb(fd, 0, &strided_destination),
+          "strided destination buffer");
     CHECK(create_command_buffer(fd, &commands), "command buffer");
     if (vert_core)
         convert_to_vertex_command(&commands);
@@ -996,7 +1042,13 @@ int main(void)
     CHECK(create_texture_buffer(fd, &texture), "texture buffer");
     CHECK(create_resource_buffer(fd, 128, &shader), "shader buffer");
     CHECK(create_resource_buffer(fd, 640, &kernarg), "kernarg buffer");
+    CHECK(create_resource_buffer(fd, 64, &compute_shader),
+          "compute shader buffer");
+    CHECK(create_resource_buffer(fd, 64, &compute_kernarg),
+          "compute kernarg buffer");
     write_vector_shader(shader.map);
+    write_compute_shader(compute_shader.map);
+    ((uint32_t *)compute_kernarg.map)[0] = 0xcafe0001u;
     if (vert_core) {
         CHECK(create_vertex_buffer(fd, &vertex_buffer), "vertex buffer");
         CHECK(create_resource_buffer(fd, 256, &vertex_shader),
@@ -1013,6 +1065,12 @@ int main(void)
                         OPENGPU_RESOURCE_SHADER, 128), "bind shader");
     CHECK(bind_resource(fd, context_id, 3, &kernarg,
                         OPENGPU_RESOURCE_KERNARG, 640), "bind kernarg");
+    CHECK(bind_resource(fd, context_id, 7, &compute_shader,
+                        OPENGPU_RESOURCE_COMPUTE_SHADER, 64),
+          "bind compute shader");
+    CHECK(bind_resource(fd, context_id, 8, &compute_kernarg,
+                        OPENGPU_RESOURCE_COMPUTE_KERNARG, 64),
+          "bind compute kernarg");
     if (vert_core) {
         CHECK(bind_resource(fd, context_id, 4, &vertex_buffer,
                             OPENGPU_RESOURCE_VERTEX_BUFFER,
@@ -1061,6 +1119,31 @@ int main(void)
     CHECK(create_syncobj(fd, &syncobjs[4]), "create fill output syncobj");
     CHECK(create_syncobj(fd, &syncobjs[5]),
           "create strided blit output syncobj");
+    CHECK(create_syncobj(fd, &syncobjs[6]),
+          "create compute output syncobj");
+    CHECK(fill_resource(fd, context_id, &compute_kernarg, 0xcafe0001u,
+                        syncobjs[4]),
+          "initialize compute kernarg through GPU");
+    errno = 0;
+    if (submit_compute(fd, context_id, 7, 8, 33, 0, syncobjs[6]) != -1 ||
+        errno != EINVAL) {
+        errno = EPROTO;
+        perror("OPENGPU USERSPACE DRM FAIL oversized workgroup accepted");
+        return 1;
+    }
+    CHECK(submit_compute(fd, context_id, 7, 8, 1, syncobjs[4], syncobjs[6]),
+          "queue general compute");
+    CHECK(wait_syncobjs(fd, &syncobjs[6], 1), "wait compute syncobj");
+    if (((uint32_t *)compute_kernarg.map)[1] != 0xcafe0001u) {
+        fprintf(stderr,
+                "compute kernarg input=0x%08x output=0x%08x "
+                "expected=0xcafe0001\n",
+                ((uint32_t *)compute_kernarg.map)[0],
+                ((uint32_t *)compute_kernarg.map)[1]);
+        errno = EIO;
+        perror("OPENGPU USERSPACE DRM FAIL compute kernarg result");
+        return 1;
+    }
     CHECK(submit_selected_render(
               fd, vert_core, context_id, &commands, &first, texture_slot,
               shader_slot, kernarg_slot, vertex_buffer_slot,
@@ -1167,13 +1250,14 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL strided blit capability");
         return 1;
     }
-    memset(second.map, 0x5a, second.size);
+    memset(strided_destination.map, 0x5a, strided_destination.size);
     for (uint32_t row = 0; row < 4; row++)
         for (uint32_t word = 0; word < 16; word++)
-            ((uint32_t *)((uint8_t *)first.map + row * 128))[word] =
+            ((uint32_t *)((uint8_t *)strided_source.map + row * 128))[word] =
                 0x10203040u + row * 0x100u + word;
     errno = 0;
-    if (submit_strided_blit(fd, context_id, &first, &second, 0, 0,
+    if (submit_strided_blit(fd, context_id, &strided_source,
+                            &strided_destination, 0, 0,
                             32, 4, 128, 192, syncobjs[4], syncobjs[5]) != -1 ||
         errno != EINVAL) {
         errno = EPROTO;
@@ -1181,7 +1265,8 @@ int main(void)
         return 1;
     }
     errno = 0;
-    if (submit_strided_blit(fd, context_id, &first, &second, 0, 0,
+    if (submit_strided_blit(fd, context_id, &strided_source,
+                            &strided_destination, 0, 0,
                             64, 4, 0, 192, syncobjs[4], syncobjs[5]) != -1 ||
         errno != EINVAL) {
         errno = EPROTO;
@@ -1189,7 +1274,9 @@ int main(void)
         return 1;
     }
     errno = 0;
-    if (submit_strided_blit(fd, context_id, &first, &second, 0, second.size,
+    if (submit_strided_blit(fd, context_id, &strided_source,
+                            &strided_destination, 0,
+                            strided_destination.size,
                             64, 1, 64, 64,
                             syncobjs[4], syncobjs[5]) != -1 ||
         errno != EINVAL) {
@@ -1197,16 +1284,17 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL out-of-range strided blit accepted");
         return 1;
     }
-    CHECK(submit_strided_blit(fd, context_id, &first, &second, 0, 0,
+    CHECK(submit_strided_blit(fd, context_id, &strided_source,
+                              &strided_destination, 0, 0,
                               64, 4, 128, 192,
                               syncobjs[4], syncobjs[5]),
           "queue ordered strided blit");
     CHECK(wait_syncobjs(fd, &syncobjs[5], 1),
           "wait strided blit syncobj");
     for (uint32_t row = 0; row < 4; row++) {
-        if (memcmp((uint8_t *)first.map + row * 128,
-                   (uint8_t *)second.map + row * 192, 64) ||
-            ((uint8_t *)second.map)[row * 192 + 64] != 0x5a) {
+        if (memcmp((uint8_t *)strided_source.map + row * 128,
+                   (uint8_t *)strided_destination.map + row * 192, 64) ||
+            ((uint8_t *)strided_destination.map)[row * 192 + 64] != 0x5a) {
             errno = EIO;
             perror("OPENGPU USERSPACE DRM FAIL strided blit result");
             return 1;
@@ -1243,7 +1331,8 @@ int main(void)
 
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
            "syncobj + %s sandbox + "
-           "validated context + ordered colour blit/fill/strided blit + "
+           "validated context + general compute + ordered colour "
+           "blit/fill/strided blit + "
            "vblank flip event sequence=%u\n",
            vert_core ? "vertex+fragment-core-backed" :
            frag_core ? "core-backed" : "texture",

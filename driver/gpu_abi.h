@@ -178,6 +178,12 @@
 #define GPU_UCMD_RESULT_OVERLAP_UNSUPPORTED 4u
 #define GPU_UCMD_RESULT_READ_FAULT          5u
 #define GPU_UCMD_RESULT_WRITE_FAULT         6u
+#define GPU_UCMD_KERNEL_EXECUTION_FAILED    1u
+#define GPU_UCMD_KERNEL_INVALID_PC          2u
+#define GPU_UCMD_KERNEL_INVALID_GRID        3u
+#define GPU_UCMD_KERNEL_INVALID_LOCAL_SIZE  4u
+#define GPU_UCMD_KERNEL_MISALIGNED_KERNARG  5u
+#define GPU_UCMD_KERNEL_DMA_DEPENDENCY      6u
 #define GPU_UCMD_EVENT(id, generation) \
     (((id) & 0xffu) | (((generation) & 0xffu) << 8))
 #define GPU_UCMD_DMA_DEP(source, id) \

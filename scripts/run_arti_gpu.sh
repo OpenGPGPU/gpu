@@ -11,6 +11,8 @@ LINUX_BUILD="${LINUX_BUILD:-/tmp/arti-linux-build}"
 LINUX_HEADERS="${LINUX_HEADERS:-/tmp/arti-linux-headers}"
 DRIVER_OUTPUT="${DRIVER_OUTPUT:-/tmp/opengpu-arti-driver}"
 QEMU_TOOLS="${QEMU_TOOLS:-/tmp/qemu-build-tools}"
+ARTI_SETUP_WORK="${WORK_DIR:-/tmp}"
+QEMU_BUILD="${QEMU_BUILD:-$ARTI_SETUP_WORK/qemu-arti-build}"
 QEMU_DISPLAY="${QEMU_DISPLAY:-none}"
 GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}"
 GPU_VERT_CORE="${GPU_VERT_CORE:-0}"
@@ -154,6 +156,33 @@ while IFS= read -r rtl_source; do
 done < "$GPU_DIR/generated/host/filelist.f"
 [ -n "$ARTI_RTL_SOURCE_LIST" ] || fail "generated RTL file list is empty"
 
+# ARTI releases that narrow the generated AXI-Lite address temporary to eight
+# bits alias every register above 0xff.  The unified command block extends to
+# 0x130, so widen both generated read/write temporaries before the embedded
+# model is compiled.  Calling this once before and once after setup covers
+# both cached and newly generated models.
+patch_arti_model_address_width() {
+    local model="$ARTI_SETUP_WORK/arti-embedded-gen/generated/embedded/arti_rtl_model.cpp"
+
+    [ -f "$model" ] || return 1
+    grep -q 'uint8_t addr_val = (uint8_t)(addr & 0xffffffff);' "$model" || \
+        return 1
+    python3 - "$model" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text()
+old = "uint8_t addr_val = (uint8_t)(addr & 0xffffffff);"
+new = "uint32_t addr_val = (uint32_t)(addr & 0xffffffff);"
+if source.count(old) != 2:
+    raise SystemExit("unexpected ARTI AXI-Lite address helper shape")
+path.write_text(source.replace(old, new))
+PY
+}
+
+patch_arti_model_address_width || true
+
 echo "=== 2/4 Prepare ARTI, QEMU and Linux ==="
 # The external module is built in the next step, after setup has prepared the
 # exact kernel build tree. Empty overrides prevent setup from expecting a stale
@@ -166,9 +195,17 @@ BUSYBOX_DIR="$BUSYBOX_DIR" \
 SLIRP_INSTALL="$SLIRP_INSTALL" \
 QEMU_TOOLS="$QEMU_TOOLS" \
 QEMU_SRC="$QEMU_SRC" \
+QEMU_BUILD="$QEMU_BUILD" \
+WORK_DIR="$ARTI_SETUP_WORK" \
 ARTI_RTL_SOURCE_LIST="$ARTI_RTL_SOURCE_LIST" \
 DRIVER_KO= DRIVER_MANIFEST= \
     "$ARTI_DIR/examples/linux_arti_driver/setup_env.sh"
+
+if patch_arti_model_address_width; then
+    echo "Rebuilding ARTI model after widening AXI-Lite register addresses"
+    QEMU_SRC="$QEMU_SRC" QEMU_BUILD="$QEMU_BUILD" \
+        "$ARTI_SETUP_WORK/arti-embedded-gen/generated/embedded/build_embedded.sh"
+fi
 
 echo "=== 3/4 Build gpu_drv.ko for the QEMU kernel ==="
 DRIVER_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/opengpu-driver.XXXXXX")"

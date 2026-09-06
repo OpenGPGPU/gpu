@@ -145,6 +145,20 @@ int main(void)
     assert(opengpu_shader_validate_words_with_texture(
         discard_valid, 21, 288, 8, true));
 
+    /* General compute may update any word in its bound kernarg range while
+     * retaining the same control-flow and address proof. */
+    program[0] = addi(10, 0, 42);
+    program[1] = sw(10, 0);
+    program[2] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_compute_shader_validate_words(program, 3, 64, 1));
+    assert(!opengpu_shader_validate_words(program, 3, 64, 1));
+    program[1] = sw(10, 64);
+    assert(!opengpu_compute_shader_validate_words(program, 3, 64, 1));
+    program[0] = vsetivli(4);
+    program[1] = vtexsample(2, 1, 1);
+    program[2] = OPENGPU_SHADER_CEASE;
+    assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
     /* Vertex stores target transformed attribute slices 8..15. */
     program[0] = lw(10, 0);
     program[1] = sw(10, 320);

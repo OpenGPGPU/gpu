@@ -52,6 +52,9 @@ Priority order:
 - Unified DMA jobs return scheduler fences immediately; IRQ handling validates
   and retires the common completion, with timeout, abort and emulator-poll
   recovery paths.
+- Linux general-compute jobs bind distinct shader and kernarg resources,
+  validate a bounded kernarg-only program sandbox, and use the same scheduler,
+  syncobj, unified-completion and IRQ fence path as DMA jobs.
 
 ## Next
 
@@ -59,8 +62,8 @@ Priority order:
 
 - Measure full-system cost by resolution and select a practical regression
   default.
-- Expose general compute jobs through Linux using the scheduler-owned unified
-  completion fence path.
+- Add explicit compute/DMA event dependencies to the Linux unified submission
+  ABI.
 
 ### Mid term
 

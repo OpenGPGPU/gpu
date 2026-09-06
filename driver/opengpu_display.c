@@ -248,6 +248,8 @@ static const struct drm_ioctl_desc opengpu_drm_ioctls[] = {
     DRM_IOCTL_DEF_DRV(OPENGPU_STRIDED_BLIT,
                       opengpu_compute_strided_blit_ioctl,
                       DRM_RENDER_ALLOW),
+    DRM_IOCTL_DEF_DRV(OPENGPU_COMPUTE, opengpu_compute_launch_ioctl,
+                      DRM_RENDER_ALLOW),
 };
 
 static const struct drm_driver opengpu_drm_driver = {

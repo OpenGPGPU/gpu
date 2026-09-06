@@ -283,4 +283,54 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
       assert((axiRead(dut, RenderHostRegs.IRQ) & 0x3L) == 0x1L)
     }
   }
+
+  it should "execute a unified kernel through the AXI memory master" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+
+      val programBase = 0x4000
+      val kernargBase = 0x8000
+      val lw = BigInt("0000a483", 16)
+      val sw = BigInt("0090a223", 16)
+      val cease = BigInt("30500073", 16)
+      val programLine = lw | (sw << 32) | (cease << 64)
+      val input = BigInt("cafe0001", 16)
+
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 11)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE,
+        GpuCommandOpcode.kernel.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.KERNEL_PC, programBase)
+      axiWrite(dut, GpuCommandMmioRegs.KERNARG, kernargBase)
+      Seq(GpuCommandMmioRegs.GRID_X, GpuCommandMmioRegs.GRID_Y,
+        GpuCommandMmioRegs.GRID_Z, GpuCommandMmioRegs.LOCAL_X,
+        GpuCommandMmioRegs.LOCAL_Y, GpuCommandMmioRegs.LOCAL_Z).foreach {
+          address => axiWrite(dut, address, 1)
+        }
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+
+      val instructionRead = acceptMemoryRead(dut, programLine)
+      assert(instructionRead._1 == programBase)
+      val kernargRead = acceptMemoryRead(dut, input)
+      assert(kernargRead._1 == kernargBase)
+      val kernargWrite = acceptMemoryWrite(dut)
+      assert(kernargWrite.address == kernargBase)
+      assert((kernargWrite.mask & 0xf0) == 0xf0)
+      assert(((kernargWrite.data >> 32) & 0xffffffffL) == input)
+
+      var cycles = 0
+      var status = axiRead(dut, GpuCommandMmioRegs.STATUS)
+      while ((status & 0x2L) == 0L && cycles < 80) {
+        status = axiRead(dut, GpuCommandMmioRegs.STATUS)
+        cycles += 1
+      }
+      assert((status & 0x2L) != 0L, "kernel completion did not reach MMIO")
+      val completion = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+      assert((completion & 0xffL) == 11L)
+      assert(((completion >> 8) & 0x7L) ==
+        GpuCommandOpcode.kernel.litValue)
+      assert(((completion >> 15) & 1L) == 1L)
+    }
+  }
 }

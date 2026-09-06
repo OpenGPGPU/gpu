@@ -126,6 +126,17 @@ are not accepted. The staging FIFO preserves submission order, while engines
 may finish independently and report their opcode and status in the common
 completion format.
 
+Linux exposes the kernel opcode through `DRM_IOCTL_OPENGPU_COMPUTE`.
+Applications bind separate `OPENGPU_RESOURCE_COMPUTE_SHADER` and
+`OPENGPU_RESOURCE_COMPUTE_KERNARG` resources to a render context, then submit
+binding-relative entry/kernarg offsets and three-dimensional grid and local
+sizes. The initial sandbox accepts bounded forward control flow and the
+supported scalar/RVV subset, permits memory access only inside the bound
+kernarg range, and limits a workgroup to the fixed 32 resident work-items.
+The driver snapshots and validates the program, tracks the kernarg GEM object
+for both reads and writes, and publishes completion through the context's
+normal scheduler and optional input/output sync objects.
+
 ### Shared-memory ABI
 
 The canonical layouts are defined in `driver/gpu_abi.h`.
@@ -258,11 +269,13 @@ result must be consumed before the interrupt is acknowledged.
   before signaling it; timeout and abort paths signal an error fence. A 5 ms
   progress poll is retained for MMIO-driven emulators, not for synchronous job
   execution.
+- Linux general-compute submission uses distinct shader/kernarg bindings,
+  immutable validated program snapshots and the same scheduler-owned unified
+  completion fence.
 
 ## Next
 
-- Add Linux general-compute descriptors on the existing asynchronous unified
-  completion path.
+- Add compute/DMA event dependency fields to the Linux unified-command ABI.
 - Define ABI-visible fault codes, reset recovery and timeout behavior.
 - Expand shader profiles and resource types only with matching hardware and
   validation.
