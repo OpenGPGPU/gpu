@@ -42,6 +42,14 @@ fail() {
     fail "ARTI Linux setup script not found under $ARTI_DIR"
 [ -f "$INTEGRATION_CONFIG" ] || fail "integration profile not found: $INTEGRATION_CONFIG"
 command -v sbt >/dev/null 2>&1 || fail "sbt is required to emit GpuHostSystemAxi RTL"
+if [ -z "${VERILATOR_INC:-}" ]; then
+    command -v verilator >/dev/null 2>&1 || \
+        fail "verilator is required to build the embedded RTL model"
+    VERILATOR_BIN="$(command -v verilator)"
+    VERILATOR_INC="$(dirname "$(dirname "$VERILATOR_BIN")")/share/verilator/include"
+fi
+[ -f "$VERILATOR_INC/verilated.h" ] || \
+    fail "Verilator headers not found under VERILATOR_INC=$VERILATOR_INC"
 [ "$GPU_FRAG_CORE" = "0" ] || [ "$GPU_FRAG_CORE" = "1" ] || \
     fail "GPU_FRAG_CORE must be 0 or 1"
 [ "$GPU_VERT_CORE" = "0" ] || [ "$GPU_VERT_CORE" = "1" ] || \
@@ -196,6 +204,7 @@ SLIRP_INSTALL="$SLIRP_INSTALL" \
 QEMU_TOOLS="$QEMU_TOOLS" \
 QEMU_SRC="$QEMU_SRC" \
 QEMU_BUILD="$QEMU_BUILD" \
+VERILATOR_INC="$VERILATOR_INC" \
 WORK_DIR="$ARTI_SETUP_WORK" \
 ARTI_RTL_SOURCE_LIST="$ARTI_RTL_SOURCE_LIST" \
 DRIVER_KO= DRIVER_MANIFEST= \
@@ -204,6 +213,7 @@ DRIVER_KO= DRIVER_MANIFEST= \
 if patch_arti_model_address_width; then
     echo "Rebuilding ARTI model after widening AXI-Lite register addresses"
     QEMU_SRC="$QEMU_SRC" QEMU_BUILD="$QEMU_BUILD" \
+    VERILATOR_INC="$VERILATOR_INC" \
         "$ARTI_SETUP_WORK/arti-embedded-gen/generated/embedded/build_embedded.sh"
 fi
 

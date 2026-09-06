@@ -55,8 +55,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
   cores have been removed.
 - Structure-of-arrays kernarg exchange, per-lane RVV output and dual staging
   banks.
-- Validated unmasked lane-local RVV integer ALU, comparison, saturation,
-  multiply, divide and remainder operations in `vv`, `vx` and legal `vi` forms.
+- Validated unmasked RVV integer ALU, comparison, saturation, gather, multiply,
+  divide and remainder operations in `vv`, `vx` and legal `vi` forms.
 - Ping-pong fragment batches overlapping rasterization and SIMT execution.
 - Bilinear and trilinear RGBA8888 sampling, repeat/clamp modes, packed mip
   chains, gradient LOD, bias and clamps.
@@ -116,7 +116,7 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 
 ### Product integration
 
-- Add high-value RVV reductions, widening/narrowing, slide/gather and richer
+- Add high-value RVV reductions, widening/narrowing, slide and richer
   memory operations, extending validation only with matching hardware support.
 - Measure full-system cost by resolution, remove avoidable host-memory work and
   establish a practical regression default.

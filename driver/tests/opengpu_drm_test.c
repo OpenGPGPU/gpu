@@ -675,14 +675,12 @@ static void write_compute_shader(void *mapping)
 {
     uint32_t *program = mapping;
 
-    program[0] = 0xc100f057u; /* vsetivli x0,1,e32,m1,ta,ma */
-    program[1] = 0x00008293u; /* addi x5,x1,0 */
-    program[2] = 0x0202e107u; /* vle32.v v2,(x5) */
-    program[3] = 0x00300313u; /* addi x6,x0,3 */
-    program[4] = 0x962361d7u; /* vmul.vx v3,v2,x6 */
-    program[5] = 0x00408293u; /* addi x5,x1,4 */
-    program[6] = 0x0202e1a7u; /* vse32.v v3,(x5) */
-    program[7] = 0x30500073u; /* cease */
+    program[0] = 0xc1027057u; /* vsetivli x0,4,e32,m1,ta,ma */
+    program[1] = 0x32113157u; /* vrgather.vi v2,v1,2: broadcast local ID 2 */
+    program[2] = 0x00300313u; /* addi x6,x0,3 */
+    program[3] = 0x962361d7u; /* vmul.vx v3,v2,x6 */
+    program[4] = 0x0200e1a7u; /* vse32.v v3,(x1) */
+    program[5] = 0x30500073u; /* cease */
 }
 
 static int reject_unsafe_command(int fd, uint32_t context_id,
@@ -1182,21 +1180,21 @@ int main(void)
         return 1;
     }
     CHECK(submit_compute(
-              fd, context_id, 7, 8, 1, 0, syncobjs[6],
+              fd, context_id, 7, 8, 4, 0, syncobjs[6],
               OPENGPU_COMMAND_WAIT_EVENT | OPENGPU_COMMAND_SIGNAL_EVENT,
               OPENGPU_COMMAND_EVENT(7, 1),
               OPENGPU_COMMAND_EVENT(8, 1)),
           "queue event-dependent general compute");
     CHECK(wait_syncobjs(fd, &syncobjs[6], 1), "wait compute syncobj");
-    if (((uint32_t *)compute_kernarg.map)[1] != 0x60fa0003u) {
-        fprintf(stderr,
-                "compute kernarg input=0x%08x output=0x%08x "
-                "expected=0x60fa0003\n",
-                ((uint32_t *)compute_kernarg.map)[0],
-                ((uint32_t *)compute_kernarg.map)[1]);
-        errno = EIO;
-        perror("OPENGPU USERSPACE DRM FAIL compute kernarg result");
-        return 1;
+    for (uint32_t lane = 0; lane < 4; lane++) {
+        if (((uint32_t *)compute_kernarg.map)[lane] != 6u) {
+            fprintf(stderr,
+                    "compute kernarg lane=%u output=0x%08x expected=6\n",
+                    lane, ((uint32_t *)compute_kernarg.map)[lane]);
+            errno = EIO;
+            perror("OPENGPU USERSPACE DRM FAIL gather compute result");
+            return 1;
+        }
     }
     CHECK(submit_selected_render(
               fd, vert_core, context_id, &commands, &first, texture_slot,
@@ -1401,7 +1399,7 @@ int main(void)
 
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
            "syncobj + %s sandbox + "
-           "validated context + event-chained RVV multiply compute + "
+           "validated context + event-chained RVV gather/multiply compute + "
            "ordered colour "
            "blit/fill/strided blit + "
            "fault-query ABI + vblank flip event sequence=%u\n",

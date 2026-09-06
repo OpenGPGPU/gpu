@@ -123,6 +123,7 @@ private object VectorDecodeTable {
     VectorInstruction("vand",   0x09, Seq(IVV, IVX, IVI)),
     VectorInstruction("vor",    0x0a, Seq(IVV, IVX, IVI)),
     VectorInstruction("vxor",   0x0b, Seq(IVV, IVX, IVI)),
+    VectorInstruction("vrgather", 0x0c, Seq(IVV, IVX, IVI)),
     VectorInstruction("vmseq",  0x18, Seq(IVV, IVX, IVI), unit = 7),
     VectorInstruction("vmsne",  0x19, Seq(IVV, IVX, IVI), unit = 7),
     VectorInstruction("vmsltu", 0x1a, Seq(IVV, IVX), unit = 7),

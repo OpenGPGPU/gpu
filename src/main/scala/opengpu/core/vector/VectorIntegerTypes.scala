@@ -18,6 +18,7 @@ class VectorIntegerRequest(config: GpuConfig) extends Bundle {
   val funct6 = UInt(6.W)
   val operandType = UInt(3.W)
   val vm = Bool()
+  val quad = Bool()
 }
 
 class VectorIntegerResult(config: GpuConfig) extends Bundle {

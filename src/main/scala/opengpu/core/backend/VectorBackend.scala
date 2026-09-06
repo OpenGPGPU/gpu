@@ -182,6 +182,8 @@ class VectorBackend(
   integerAlu.io.in.bits.operandType :=
     dispatch.io.alu.bits.decode.decoded.operandType
   integerAlu.io.in.bits.vm := dispatch.io.alu.bits.decode.decoded.vm
+  integerAlu.io.in.bits.quad :=
+    dispatch.io.alu.bits.decode.instruction(6, 0) === "b0101011".U
 
   multiplyAlu.io.in.valid := dispatch.io.multiply.valid
   dispatch.io.multiply.ready := multiplyAlu.io.in.ready
@@ -230,6 +232,7 @@ class VectorBackend(
     dispatch.io.divide.bits.decode.decoded.operandType
   divideAlu.io.in.bits.vm :=
     dispatch.io.divide.bits.decode.decoded.vm
+  divideAlu.io.in.bits.quad := false.B
 
   private val fpuIsArithmetic =
     dispatch.io.fpu.bits.decode.decoded.funct6 === "h00".U ||

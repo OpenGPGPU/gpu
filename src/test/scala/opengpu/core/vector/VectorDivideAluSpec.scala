@@ -24,6 +24,7 @@ class VectorDivideAluSpec extends AnyFlatSpec {
     dut.io.in.bits.funct6.poke("h20".U)
     dut.io.in.bits.operandType.poke("b010".U)
     dut.io.in.bits.vm.poke(true.B)
+    dut.io.in.bits.quad.poke(false.B)
     for (lane <- 0 until config.lanes) {
       dut.io.in.bits.oldVd(lane).poke((0x100 + lane).U)
       dut.io.in.bits.vs1(lane).poke(0.U)

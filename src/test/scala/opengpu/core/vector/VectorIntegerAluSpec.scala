@@ -25,6 +25,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     dut.io.in.bits.funct6.poke(0.U)
     dut.io.in.bits.operandType.poke(0.U)
     dut.io.in.bits.vm.poke(true.B)
+    dut.io.in.bits.quad.poke(false.B)
     for (lane <- 0 until config.lanes) {
       dut.io.in.bits.oldVd(lane).poke((100 + lane).U)
       dut.io.in.bits.vs1(lane).poke(0.U)
@@ -103,6 +104,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       }
 
       dut.io.in.bits.funct6.poke("h0c".U)
+      dut.io.in.bits.quad.poke(true.B)
       dut.io.in.valid.poke(true.B)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
@@ -119,6 +121,49 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       Seq(11, 15, 11, 15).zipWithIndex.foreach { case (value, lane) =>
         dut.io.out.bits.data(lane).expect(value.U)
       }
+    }
+  }
+
+  it should "gather vector elements with vv, vx, and vi indices" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      Seq(11, 22, 33, 44).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.in.bits.vs2(lane).poke(value.U)
+      }
+
+      dut.io.in.bits.funct6.poke("h0c".U)
+      dut.io.in.bits.operandType.poke("b000".U)
+      Seq(3, 0, 4, 1).zipWithIndex.foreach { case (index, lane) =>
+        dut.io.in.bits.vs1(lane).poke(index.U)
+      }
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(3)
+      Seq(44, 11, 0, 22).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.out.bits.data(lane).expect(value.U)
+      }
+
+      dut.io.in.bits.operandType.poke("b100".U)
+      dut.io.in.bits.scalar.poke(2.U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(3)
+      for (lane <- 0 until config.lanes)
+        dut.io.out.bits.data(lane).expect(33.U)
+
+      dut.io.in.bits.operandType.poke("b011".U)
+      dut.io.in.bits.immediate.poke(1.U)
+      dut.io.in.bits.activeMask.poke("b0011".U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(3)
+      dut.io.out.bits.data(0).expect(22.U)
+      dut.io.out.bits.data(1).expect(22.U)
+      dut.io.out.bits.data(2).expect(102.U)
+      dut.io.out.bits.data(3).expect(103.U)
     }
   }
 

@@ -132,6 +132,7 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x09: /* vand */
         case 0x0a: /* vor */
         case 0x0b: /* vxor */
+        case 0x0c: /* vrgather */
         case 0x18: /* vmseq */
         case 0x19: /* vmsne */
         case 0x1a: /* vmsltu */
@@ -160,6 +161,7 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x09: /* vand */
         case 0x0a: /* vor */
         case 0x0b: /* vxor */
+        case 0x0c: /* vrgather */
         case 0x18: /* vmseq */
         case 0x19: /* vmsne */
         case 0x1c: /* vmsleu */
@@ -187,6 +189,7 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x09: /* vand */
         case 0x0a: /* vor */
         case 0x0b: /* vxor */
+        case 0x0c: /* vrgather */
         case 0x18: /* vmseq */
         case 0x19: /* vmsne */
         case 0x1a: /* vmsltu */
@@ -217,8 +220,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * reachable path must terminate. x1 remains the immutable kernarg base.
  * Scalar lw/sw retain the v1
  * bounds. The RVV profile admits vsetivli e32,m1, the implemented lane-local
- * integer ALU, comparison, saturating, multiply, divide and remainder forms,
- * and unmasked unit-stride vle32/vse32. Defined-register tracking
+ * integer ALU, comparison, saturating, gather, multiply, divide and remainder
+ * forms, and unmasked unit-stride vle32/vse32. Defined-register tracking
  * prevents stale SGPR/VGPR data from being exported. A small abstract
  * interpreter recognizes x1 +
  * 4*x8 + constant, where x8 is the trusted warp localLinearBase, and proves

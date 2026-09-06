@@ -68,6 +68,11 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.valid.expect(true.B)
       dut.io.decoded.unit.expect(VectorUnit.multiply)
 
+      // vrgather.vi is a cross-lane integer ALU operation.
+      dut.io.instruction.poke("b001100_1_00010_00001_011_00011_1010111".U)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.unit.expect(VectorUnit.alu)
+
       // vsmul is enabled once vxrm is supplied by vector configuration state.
       dut.io.instruction.poke("b100111_1_00001_00010_000_00011_1010111".U)
       dut.io.decoded.recognized.expect(true.B)

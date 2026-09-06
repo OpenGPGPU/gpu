@@ -14,6 +14,7 @@ private class NormalizedVectorIntegerRequest(config: GpuConfig) extends Bundle {
   val rhs = Vec(config.lanes, UInt(config.xLen.W))
   val enabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
+  val quad = Bool()
 }
 
 private class VectorIntegerCandidates(config: GpuConfig) extends Bundle {
@@ -24,6 +25,7 @@ private class VectorIntegerCandidates(config: GpuConfig) extends Bundle {
   val oldVd = Vec(config.lanes, UInt(config.xLen.W))
   val enabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
+  val quad = Bool()
   val basic = Vec(config.lanes, UInt(config.xLen.W))
   val saturating = Vec(config.lanes, UInt(config.xLen.W))
   val saturationLimit = Vec(config.lanes, UInt(config.xLen.W))
@@ -40,6 +42,7 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
   val oldVd = Vec(config.lanes, UInt(config.xLen.W))
   val enabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
+  val quad = Bool()
   val lhs = Vec(config.lanes, UInt(config.xLen.W))
   val rhs = Vec(config.lanes, UInt(config.xLen.W))
   val add = Vec(config.lanes, UInt(config.xLen.W))
@@ -54,11 +57,12 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
   val saturationLimit = Vec(config.lanes, UInt(config.xLen.W))
 }
 
-/** Lane-local RVV integer ALU for the fixed SEW=32, LMUL=1 GPU profile.
+/** RVV integer ALU for the fixed SEW=32, LMUL=1 GPU profile.
   *
-  * The unit implements the precise funct6 encodings accepted by VectorDecoder.
-  * Inactive or masked-off lanes preserve oldVd. Results are held under output
-  * backpressure and the unit sustains one operation per cycle when unstalled.
+  * The unit implements the precise funct6 encodings accepted by VectorDecoder,
+  * including the vrgather cross-lane source selection. Inactive or masked-off
+  * lanes preserve oldVd. Results are held under output backpressure and the
+  * unit sustains one operation per cycle when unstalled.
   */
 class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   val io = IO(new Bundle {
@@ -118,7 +122,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       "h09".U -> (lhs & rhs),
       "h0a".U -> (lhs | rhs),
       "h0b".U -> (lhs ^ rhs),
-      "h0c".U -> quadDx,
+      "h0c".U -> Mux(partialBits.quad, quadDx, lhs),
       "h0d".U -> quadDy
     ))
     val saturatingResult = Mux(
@@ -204,6 +208,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       candidateBits.oldVd := partialBits.oldVd
       candidateBits.enabled := partialBits.enabled
       candidateBits.funct6 := partialBits.funct6
+      candidateBits.quad := partialBits.quad
       candidateBits.basic := basicCandidates
       candidateBits.saturating := saturatingCandidates
       candidateBits.saturationLimit := saturationLimits
@@ -223,6 +228,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       partialBits.oldVd := inputBits.oldVd
       partialBits.enabled := inputBits.enabled
       partialBits.funct6 := inputBits.funct6
+      partialBits.quad := inputBits.quad
       for (lane <- 0 until config.lanes) {
         val lhs = inputBits.lhs(lane)
         val rhs = inputBits.rhs(lane)
@@ -299,12 +305,28 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       inputBits.warpActiveMask := io.in.bits.warpActiveMask
       inputBits.vd := io.in.bits.vd
       inputBits.funct6 := io.in.bits.funct6
+      inputBits.quad := io.in.bits.quad
       inputBits.enabled :=
         io.in.bits.activeMask &
           Mux(io.in.bits.vm, Fill(config.lanes, 1.U), io.in.bits.predicateMask)
+      val gatherIndexWidth = math.max(1, log2Ceil(config.lanes))
       for (lane <- 0 until config.lanes) {
         inputBits.oldVd(lane) := io.in.bits.oldVd(lane)
-        inputBits.lhs(lane) := io.in.bits.vs2(lane)
+        val gatherIndex = Mux(
+          inputIsVv,
+          io.in.bits.vs1(lane),
+          Mux(inputIsVx, io.in.bits.scalar, io.in.bits.immediate)
+        )
+        val gathered = Mux(
+          gatherIndex < config.lanes.U,
+          io.in.bits.vs2(gatherIndex(gatherIndexWidth - 1, 0)),
+          0.U
+        )
+        inputBits.lhs(lane) := Mux(
+          io.in.bits.funct6 === "h0c".U && !io.in.bits.quad,
+          gathered,
+          io.in.bits.vs2(lane)
+        )
         inputBits.rhs(lane) := Mux(
           inputIsVv,
           io.in.bits.vs1(lane),
