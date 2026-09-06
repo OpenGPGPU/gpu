@@ -239,12 +239,16 @@ private object VectorDecodeTable {
         }
       }
 
-  // ELEN=32 implementation: exact, non-segmented unit-stride e8/e16/e32.
+  // ELEN=32 implementation: exact, non-segmented unit/strided e8/e16/e32.
   private val memoryPatterns = Seq("000", "101", "110").flatMap { width =>
     Seq(
       VectorPattern(s"vload_$width", s"000000?00000?????$width?????0000111", 5,
         readsScalar = true, writesVd = true, memoryRead = true),
       VectorPattern(s"vstore_$width", s"000000?00000?????$width?????0100111", 5,
+        readsScalar = true, memoryWrite = true),
+      VectorPattern(s"vstrided_load_$width", s"000010???????????$width?????0000111", 5,
+        readsScalar = true, writesVd = true, memoryRead = true),
+      VectorPattern(s"vstrided_store_$width", s"000010???????????$width?????0100111", 5,
         readsScalar = true, memoryWrite = true)
     )
   }

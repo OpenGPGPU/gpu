@@ -26,7 +26,9 @@ class VectorMemoryUnitSpec extends AnyFlatSpec {
       dut.io.in.bits.activeMask.poke("b0101".U)
       dut.io.in.bits.vd.poke(7.U)
       dut.io.in.bits.baseAddress.poke(0x200.U)
+      dut.io.in.bits.stride.poke(0.U)
       dut.io.in.bits.elementSize.poke(1.U)
+      dut.io.in.bits.strided.poke(false.B)
       dut.io.in.bits.isStore.poke(false.B)
       for (lane <- 0 until config.lanes) {
         dut.io.in.bits.storeData(lane).poke(0.U)
@@ -87,7 +89,9 @@ class VectorMemoryUnitSpec extends AnyFlatSpec {
       dut.io.in.bits.activeMask.poke("b1011".U)
       dut.io.in.bits.vd.poke(9.U)
       dut.io.in.bits.baseAddress.poke(0x400.U)
+      dut.io.in.bits.stride.poke(0.U)
       dut.io.in.bits.elementSize.poke(2.U)
+      dut.io.in.bits.strided.poke(false.B)
       dut.io.in.bits.isStore.poke(true.B)
       for (lane <- 0 until config.lanes) {
         dut.io.in.bits.storeData(lane).poke((0x40 + lane).U)
@@ -118,6 +122,43 @@ class VectorMemoryUnitSpec extends AnyFlatSpec {
       dut.io.out.valid.expect(true.B)
       dut.io.out.ready.poke(true.B)
       dut.clock.step()
+    }
+  }
+
+  it should "generate scalar-stride addresses across active lanes" in {
+    val config = GpuConfig(lanes = 4, warps = 1)
+    simulate(new VectorMemoryUnit(config)) { dut =>
+      dut.reset.poke(true.B)
+      dut.io.in.valid.poke(false.B)
+      dut.io.memoryRequest.ready.poke(false.B)
+      dut.io.memoryResponse.valid.poke(false.B)
+      dut.io.out.ready.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.warpId.poke(0.U)
+      dut.io.in.bits.pc.poke(0x500.U)
+      dut.io.in.bits.warpActiveMask.poke("b1111".U)
+      dut.io.in.bits.activeMask.poke("b1111".U)
+      dut.io.in.bits.vd.poke(8.U)
+      dut.io.in.bits.baseAddress.poke(0x230.U)
+      dut.io.in.bits.stride.poke("hfffffff0".U)
+      dut.io.in.bits.elementSize.poke(2.U)
+      dut.io.in.bits.strided.poke(true.B)
+      dut.io.in.bits.isStore.poke(false.B)
+      for (lane <- 0 until config.lanes) {
+        dut.io.in.bits.storeData(lane).poke(0.U)
+        dut.io.in.bits.oldVd(lane).poke(0.U)
+      }
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+
+      dut.io.memoryRequest.valid.expect(true.B)
+      for (lane <- 0 until config.lanes) {
+        dut.io.memoryRequest.bits.addresses(lane)
+          .expect((0x230 - lane * 0x10).U)
+      }
     }
   }
 }

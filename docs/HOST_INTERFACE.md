@@ -153,6 +153,11 @@ Unit-stride `vle32.v` and `vse32.v` may use `v0.t`. Masked loads require both
 target `v0`; masked stores require a defined `v0` and source VGPR. Bounds are
 proved for the complete vector range, so masking can only remove accesses from
 an already safe range.
+The RTL LSU additionally implements scalar-stride `vlse8/16/32.v` and
+`vsse8/16/32.v`, including sparse cache-line transactions and elements that
+cross a line boundary. These encodings remain outside the Linux shader sandbox
+until its abstract interpreter can prove the signed stride and every resulting
+lane address remain within the bound kernarg object.
 The driver snapshots and validates the program, tracks the kernarg GEM object
 for both reads and writes, and publishes completion through the context's
 normal scheduler and optional input/output sync objects.

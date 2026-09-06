@@ -74,6 +74,13 @@ loads and stores. Inactive load lanes preserve the old destination value; the
 driver validator therefore requires a defined destination before admitting a
 masked load.
 
+`VectorMemoryUnit` also generates `vlse8/16/32.v` and `vsse8/16/32.v` lane
+addresses from the signed two's-complement scalar byte stride. The coalescer
+deduplicates every cache line touched by active lanes, serializes those line
+requests, and reassembles elements that cross a line boundary. Driver shader
+validation for strided accesses remains disabled until constant-stride bounds
+proof is added.
+
 Texture sampling is routed as a separate elastic vector path. `vtex.sample`
 uses the warp active mask, `vl`, `vm`, and v0 predicate to select lanes; the
 sampler serializes those lane requests and commits one vector destination while

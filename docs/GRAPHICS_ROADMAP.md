@@ -60,6 +60,9 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
   `vx`, `vs` and legal `vi` forms.
 - Validated masked and unmasked unit-stride RVV word loads and stores, with
   preserved-destination and mask-register checks.
+- Hardware `vlse8/16/32.v` and `vsse8/16/32.v` address generation with sparse
+  cache-line coalescing and cross-line element reassembly; driver validation
+  remains pending constant-stride range proof.
 - Ping-pong fragment batches overlapping rasterization and SIMT execution.
 - Bilinear and trilinear RGBA8888 sampling, repeat/clamp modes, packed mip
   chains, gradient LOD, bias and clamps.
@@ -119,8 +122,9 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 
 ### Product integration
 
-- Add high-value RVV widening/narrowing and richer
-  memory operations, extending validation only with matching hardware support.
+- Add high-value RVV widening/narrowing, constant-stride shader range proof and
+  indexed memory operations, extending validation only with matching hardware
+  support.
 - Measure full-system cost by resolution, remove avoidable host-memory work and
   establish a practical regression default.
 - Add a safe unified-command reset that drains or invalidates in-flight memory

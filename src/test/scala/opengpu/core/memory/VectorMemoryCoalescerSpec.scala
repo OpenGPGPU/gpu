@@ -123,4 +123,56 @@ class VectorMemoryCoalescerSpec extends AnyFlatSpec {
       assert(((writeData >> 32) & 0xffff) == 0x1103)
     }
   }
+
+  it should "visit sparse lines and reassemble a crossing strided load" in {
+    val config = GpuConfig(lanes = 4, warps = 1)
+    val lineBytes = 16
+    simulate(new VectorMemoryCoalescer(config, lineBytes)) { dut =>
+      dut.reset.poke(true.B)
+      dut.io.in.valid.poke(false.B)
+      dut.io.cacheRequest.ready.poke(true.B)
+      dut.io.cacheResponse.valid.poke(false.B)
+      dut.io.out.ready.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      val addresses = Seq(0x0f, 0x24, 0x44, 0x64)
+      val lines = Seq(0x00, 0x10, 0x20, 0x40, 0x60)
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.warpId.poke(0.U)
+      dut.io.in.bits.laneMask.poke("b1111".U)
+      dut.io.in.bits.elementSize.poke(2.U)
+      dut.io.in.bits.isStore.poke(false.B)
+      addresses.zipWithIndex.foreach { case (address, lane) =>
+        dut.io.in.bits.addresses(lane).poke(address.U)
+        dut.io.in.bits.writeData(lane).poke(0.U)
+      }
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+
+      lines.foreach { line =>
+        dut.io.cacheRequest.valid.expect(true.B)
+        dut.io.cacheRequest.bits.lineAddress.expect(line.U)
+        dut.clock.step()
+        val contents = (0 until lineBytes).foldLeft(BigInt(0)) {
+          case (value, byte) =>
+            value | (BigInt(line + byte) << (byte * 8))
+        }
+        dut.io.cacheResponse.valid.poke(true.B)
+        dut.io.cacheResponse.bits.readData.poke(contents.U)
+        dut.io.cacheResponse.bits.fault.poke(false.B)
+        dut.io.cacheResponse.bits.pageFault.poke(false.B)
+        dut.clock.step()
+        dut.io.cacheResponse.valid.poke(false.B)
+      }
+
+      dut.io.out.valid.expect(true.B)
+      dut.io.out.bits.readData(0).expect("h1211100f".U)
+      dut.io.out.bits.readData(1).expect("h27262524".U)
+      dut.io.out.bits.readData(2).expect("h47464544".U)
+      dut.io.out.bits.readData(3).expect("h67666564".U)
+      dut.io.out.bits.faultMask.expect(0.U)
+      dut.io.out.bits.pageFault.expect(false.B)
+    }
+  }
 }
