@@ -87,6 +87,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 - General-compute DRM submissions with immutable validated shader snapshots,
   bounded read/write kernarg access, GEM reservation dependencies and syncobj
   completion fences.
+- Generation-tagged hardware event waits and signals for unified compute and
+  DMA ioctls, with failed dependencies surfaced through fence errors.
 - KMS scanout handoff, atomic modeset, page flip and virtual vblank.
 - ARTI/QEMU/Linux integration for the standard-AXI `GpuHostSystemAxi` product
   top in fixed-function, fragment-core and vertex-core configurations.
@@ -96,8 +98,7 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 
 ### Product integration
 
-- Extend Linux unified submissions with compute/DMA event dependencies and
-  broaden the compute sandbox alongside the supported RVV subset.
+- Broaden the compute sandbox alongside the supported RVV subset.
 - Establish practical resolution/performance budgets for full-system tests.
 
 ### Graphics capability

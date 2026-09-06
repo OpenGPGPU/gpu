@@ -137,6 +137,16 @@ The driver snapshots and validates the program, tracks the kernarg GEM object
 for both reads and writes, and publishes completion through the context's
 normal scheduler and optional input/output sync objects.
 
+The compute, fill, blit and strided-copy ioctls also expose hardware events.
+`OPENGPU_COMMAND_WAIT_EVENT` makes a command wait for the event encoded by
+`wait_event`; `OPENGPU_COMMAND_SIGNAL_EVENT` publishes `signal_event` with the
+command's success state. Each event word stores its ID in bits 7:0 and its
+generation in bits 15:8. Generations let users reuse an event ID without
+accidentally consuming an older completion. Event fields must be zero unless
+their corresponding flag is set, and DMA ioctls reject event flags on hardware
+without the unified-command capability. A failed waited event completes the
+dependent command with an error fence instead of dispatching it.
+
 ### Shared-memory ABI
 
 The canonical layouts are defined in `driver/gpu_abi.h`.
@@ -272,10 +282,11 @@ result must be consumed before the interrupt is acknowledged.
 - Linux general-compute submission uses distinct shader/kernarg bindings,
   immutable validated program snapshots and the same scheduler-owned unified
   completion fence.
+- Compute and DMA ioctls expose generation-tagged wait/signal hardware events;
+  event-dependency failures propagate as scheduler fence errors.
 
 ## Next
 
-- Add compute/DMA event dependency fields to the Linux unified-command ABI.
 - Define ABI-visible fault codes, reset recovery and timeout behavior.
 - Expand shader profiles and resource types only with matching hardware and
   validation.

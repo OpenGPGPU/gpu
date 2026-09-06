@@ -60,6 +60,7 @@ struct opengpu_sched_job {
     u32 dma_source_stride;
     u32 dma_destination_stride;
     u32 fill_pattern;
+    struct opengpu_command_events events;
     struct opengpu_kernel_launch kernel;
     struct opengpu_job hw;
     struct opengpu_buffer commands;
@@ -902,21 +903,22 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
     int ret;
 
     if (job->type == OPENGPU_SCHED_COMPUTE) {
-        ret = opengpu_hw_compute_async(job->gpu, &job->kernel, &fence);
+        ret = opengpu_hw_compute_async(job->gpu, &job->kernel,
+                                       &job->events, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_BLIT) {
         ret = opengpu_hw_blit_async(job->gpu,
                                     lower_32_bits(job->dma_source),
                                     lower_32_bits(job->dma_destination),
-                                    job->dma_bytes, &fence);
+                                    job->dma_bytes, &job->events, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_FILL) {
         ret = opengpu_hw_clear_async(job->gpu,
                                      lower_32_bits(job->dma_destination),
                                      job->dma_bytes, job->fill_pattern,
-                                     &fence);
+                                     &job->events, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_STRIDED_BLIT) {
@@ -924,7 +926,7 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
             job->gpu, lower_32_bits(job->dma_source),
             lower_32_bits(job->dma_destination), job->dma_bytes,
             job->dma_height, job->dma_source_stride,
-            job->dma_destination_stride, &fence);
+            job->dma_destination_stride, &job->events, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE)
@@ -1293,6 +1295,30 @@ out_command_object:
     return ret;
 }
 
+static int opengpu_command_events_init(
+    struct opengpu_device *gpu, struct opengpu_command_events *events,
+    u32 flags, u32 wait_event, u32 signal_event)
+{
+    const u32 known = OPENGPU_COMMAND_WAIT_EVENT |
+                      OPENGPU_COMMAND_SIGNAL_EVENT;
+
+    if ((flags & ~known) || (wait_event & ~0xffffu) ||
+        (signal_event & ~0xffffu) ||
+        (!(flags & OPENGPU_COMMAND_WAIT_EVENT) && wait_event) ||
+        (!(flags & OPENGPU_COMMAND_SIGNAL_EVENT) && signal_event))
+        return -EINVAL;
+    if (flags && !(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
+        return -EOPNOTSUPP;
+    events->flags = 0;
+    if (flags & OPENGPU_COMMAND_WAIT_EVENT)
+        events->flags |= GPU_UCMD_FLAG_WAIT_EVENT;
+    if (flags & OPENGPU_COMMAND_SIGNAL_EVENT)
+        events->flags |= GPU_UCMD_FLAG_SIGNAL_EVENT;
+    events->wait_event = wait_event;
+    events->signal_event = signal_event;
+    return 0;
+}
+
 int opengpu_compute_blit_ioctl(struct drm_device *drm, void *data,
                                struct drm_file *file)
 {
@@ -1307,6 +1333,7 @@ int opengpu_compute_blit_ioctl(struct drm_device *drm, void *data,
     struct drm_syncobj *out_sync = NULL;
     struct dma_fence *fence = NULL;
     struct drm_exec exec;
+    struct opengpu_command_events events;
     u64 source_end, destination_end;
     u64 source_address, destination_address;
     bool sched_initialized = false;
@@ -1314,10 +1341,14 @@ int opengpu_compute_blit_ioctl(struct drm_device *drm, void *data,
 
     if (!(gpu->hw.capabilities & GPU_CAP_BLIT_ENGINE))
         return -EOPNOTSUPP;
+    ret = opengpu_command_events_init(gpu, &events, args->flags,
+                                      args->wait_event,
+                                      args->signal_event);
+    if (ret)
+        return ret;
     if (!args->context_id || !args->source_handle ||
         !args->destination_handle ||
-        args->source_handle == args->destination_handle || args->flags ||
-        args->pad[0] || args->pad[1] || !args->bytes ||
+        args->source_handle == args->destination_handle || !args->bytes ||
         args->bytes > U32_MAX || (args->source_offset & 63) ||
         (args->destination_offset & 63) || (args->bytes & 63) ||
         check_add_overflow(args->source_offset, args->bytes, &source_end) ||
@@ -1389,6 +1420,7 @@ int opengpu_compute_blit_ioctl(struct drm_device *drm, void *data,
     sched_job->dma_source = source_address;
     sched_job->dma_destination = destination_address;
     sched_job->dma_bytes = args->bytes;
+    sched_job->events = events;
     ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
                              render_file, file->client_id);
     if (ret)
@@ -1458,14 +1490,19 @@ int opengpu_compute_fill_ioctl(struct drm_device *drm, void *data,
     struct drm_syncobj *out_sync = NULL;
     struct dma_fence *fence = NULL;
     struct drm_exec exec;
+    struct opengpu_command_events events;
     u64 destination_end, destination_address;
     bool sched_initialized = false;
     int ret;
 
     if (!(gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE))
         return -EOPNOTSUPP;
-    if (!args->context_id || !args->destination_handle || args->flags ||
-        args->pad[0] || args->pad[1] || !args->bytes ||
+    ret = opengpu_command_events_init(gpu, &events, args->flags,
+                                      args->wait_event,
+                                      args->signal_event);
+    if (ret)
+        return ret;
+    if (!args->context_id || !args->destination_handle || !args->bytes ||
         args->bytes > U32_MAX || (args->destination_offset & 63) ||
         (args->bytes & 63) ||
         check_add_overflow(args->destination_offset, args->bytes,
@@ -1524,6 +1561,7 @@ int opengpu_compute_fill_ioctl(struct drm_device *drm, void *data,
     sched_job->dma_destination = destination_address;
     sched_job->dma_bytes = args->bytes;
     sched_job->fill_pattern = args->pattern;
+    sched_job->events = events;
     ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
                              render_file, file->client_id);
     if (ret)
@@ -1595,6 +1633,7 @@ int opengpu_compute_strided_blit_ioctl(struct drm_device *drm, void *data,
     struct drm_syncobj *out_sync = NULL;
     struct dma_fence *fence = NULL;
     struct drm_exec exec;
+    struct opengpu_command_events events;
     u64 source_end, destination_end;
     u64 source_address, destination_address;
     bool sched_initialized = false;
@@ -1602,10 +1641,15 @@ int opengpu_compute_strided_blit_ioctl(struct drm_device *drm, void *data,
 
     if (!(gpu->hw.capabilities & GPU_CAP_STRIDED_ENGINE))
         return -EOPNOTSUPP;
+    ret = opengpu_command_events_init(gpu, &events, args->flags,
+                                      args->wait_event,
+                                      args->signal_event);
+    if (ret)
+        return ret;
     if (!args->context_id || !args->source_handle ||
         !args->destination_handle ||
-        args->source_handle == args->destination_handle || args->flags ||
-        args->pad[0] || args->pad[1] || !args->width_bytes ||
+        args->source_handle == args->destination_handle ||
+        !args->width_bytes ||
         !args->height || (args->source_offset & 63) ||
         (args->destination_offset & 63) || (args->width_bytes & 63) ||
         (args->source_stride & 63) || (args->destination_stride & 63) ||
@@ -1695,6 +1739,7 @@ int opengpu_compute_strided_blit_ioctl(struct drm_device *drm, void *data,
     sched_job->dma_height = args->height;
     sched_job->dma_source_stride = args->source_stride;
     sched_job->dma_destination_stride = args->destination_stride;
+    sched_job->events = events;
     ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
                              render_file, file->client_id);
     if (ret)
@@ -1763,6 +1808,7 @@ int opengpu_compute_launch_ioctl(struct drm_device *drm, void *data,
     struct drm_syncobj *out_sync = NULL;
     struct dma_fence *fence = NULL;
     struct drm_exec exec;
+    struct opengpu_command_events events;
     const u32 *program;
     u64 local_xy, local_items, available;
     u32 words;
@@ -1771,10 +1817,15 @@ int opengpu_compute_launch_ioctl(struct drm_device *drm, void *data,
 
     if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
         return -EOPNOTSUPP;
+    ret = opengpu_command_events_init(gpu, &events, args->flags,
+                                      args->wait_event,
+                                      args->signal_event);
+    if (ret)
+        return ret;
     if (!args->context_id || !args->shader_slot || !args->kernarg_slot ||
         args->shader_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
-        args->kernarg_slot > OPENGPU_MAX_RESOURCE_SLOTS || args->flags ||
-        args->pad[0] || args->pad[1] || (args->shader_offset & 3) ||
+        args->kernarg_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
+        (args->shader_offset & 3) ||
         (args->kernarg_offset & 3) || !args->grid[0] || !args->grid[1] ||
         !args->grid[2] || !args->local[0] || !args->local[1] ||
         !args->local[2] || args->local[0] > U16_MAX ||
@@ -1853,6 +1904,7 @@ int opengpu_compute_launch_ioctl(struct drm_device *drm, void *data,
     sched_job->kernel.kernel_pc = sched_job->shader.dma +
                                   args->shader_offset;
     sched_job->kernel.kernarg = kernarg->dma + args->kernarg_offset;
+    sched_job->events = events;
     memcpy(sched_job->kernel.grid, args->grid,
            sizeof(sched_job->kernel.grid));
     memcpy(sched_job->kernel.local, args->local,

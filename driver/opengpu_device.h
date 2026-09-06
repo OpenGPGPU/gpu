@@ -157,6 +157,12 @@ struct opengpu_kernel_launch {
     u32 local[3];
 };
 
+struct opengpu_command_events {
+    u32 flags;
+    u32 wait_event;
+    u32 signal_event;
+};
+
 struct opengpu_scanout {
     dma_addr_t base;
     u32 stride;
@@ -189,17 +195,22 @@ int opengpu_hw_strided_blit(struct opengpu_device *gpu, u32 source,
                             u32 destination, u32 width, u32 height,
                             u32 source_stride, u32 destination_stride);
 int opengpu_hw_clear_async(struct opengpu_device *gpu, u32 base, u32 bytes,
-                           u32 pattern, struct dma_fence **fence);
+                           u32 pattern,
+                           const struct opengpu_command_events *events,
+                           struct dma_fence **fence);
 int opengpu_hw_blit_async(struct opengpu_device *gpu, u32 source,
                           u32 destination, u32 bytes,
+                          const struct opengpu_command_events *events,
                           struct dma_fence **fence);
 int opengpu_hw_strided_blit_async(struct opengpu_device *gpu, u32 source,
                                   u32 destination, u32 width, u32 height,
                                   u32 source_stride,
                                   u32 destination_stride,
+                                  const struct opengpu_command_events *events,
                                   struct dma_fence **fence);
 int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              const struct opengpu_kernel_launch *launch,
+                             const struct opengpu_command_events *events,
                              struct dma_fence **fence);
 int opengpu_hw_display_commit(struct opengpu_device *gpu,
                               const struct opengpu_scanout *scanout);

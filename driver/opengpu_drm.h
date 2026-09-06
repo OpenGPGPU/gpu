@@ -155,7 +155,8 @@ struct drm_opengpu_blit {
     __u64 bytes;
     __u32 in_syncobj;
     __u32 out_syncobj;
-    __u32 pad[2];
+    __u32 wait_event;
+    __u32 signal_event;
 };
 
 /* Ordered whole-cache-line fill. The destination is a validated GEM-relative
@@ -169,7 +170,8 @@ struct drm_opengpu_fill {
     __u64 bytes;
     __u32 in_syncobj;
     __u32 out_syncobj;
-    __u32 pad[2];
+    __u32 wait_event;
+    __u32 signal_event;
 };
 
 /* Ordered two-dimensional cache-line copy. Width and both strides are
@@ -188,7 +190,8 @@ struct drm_opengpu_strided_blit {
     __u32 destination_stride;
     __u32 in_syncobj;
     __u32 out_syncobj;
-    __u32 pad[2];
+    __u32 wait_event;
+    __u32 signal_event;
 };
 
 /* Ordered general-compute launch. The program and kernarg addresses are
@@ -205,8 +208,16 @@ struct drm_opengpu_compute {
     __u32 local[3];
     __u32 in_syncobj;
     __u32 out_syncobj;
-    __u32 pad[2];
+    __u32 wait_event;
+    __u32 signal_event;
 };
+
+/* Hardware event controls shared by compute and DMA submissions. Event words
+ * encode ID in bits 7:0 and generation in bits 15:8. */
+#define OPENGPU_COMMAND_WAIT_EVENT   (1u << 0)
+#define OPENGPU_COMMAND_SIGNAL_EVENT (1u << 1)
+#define OPENGPU_COMMAND_EVENT(id, generation) \
+    (((id) & 0xffu) | (((generation) & 0xffu) << 8))
 
 #define OPENGPU_MAX_COMMANDS 64u
 

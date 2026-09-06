@@ -603,7 +603,8 @@ static int submit_strided_blit(int fd, uint32_t context_id,
                                uint32_t source_stride,
                                uint32_t destination_stride,
                                uint32_t in_syncobj,
-                               uint32_t out_syncobj)
+                               uint32_t out_syncobj, uint32_t flags,
+                               uint32_t wait_event, uint32_t signal_event)
 {
     struct drm_opengpu_strided_blit blit = {
         .context_id = context_id,
@@ -617,6 +618,9 @@ static int submit_strided_blit(int fd, uint32_t context_id,
         .destination_stride = destination_stride,
         .in_syncobj = in_syncobj,
         .out_syncobj = out_syncobj,
+        .flags = flags,
+        .wait_event = wait_event,
+        .signal_event = signal_event,
     };
 
     return ioctl(fd, DRM_IOCTL_OPENGPU_STRIDED_BLIT, &blit);
@@ -624,7 +628,9 @@ static int submit_strided_blit(int fd, uint32_t context_id,
 
 static int submit_compute(int fd, uint32_t context_id, uint32_t shader_slot,
                           uint32_t kernarg_slot, uint32_t local_x,
-                          uint32_t in_syncobj, uint32_t out_syncobj)
+                          uint32_t in_syncobj, uint32_t out_syncobj,
+                          uint32_t flags, uint32_t wait_event,
+                          uint32_t signal_event)
 {
     struct drm_opengpu_compute compute = {
         .context_id = context_id,
@@ -634,6 +640,9 @@ static int submit_compute(int fd, uint32_t context_id, uint32_t shader_slot,
         .local = { local_x, 1, 1 },
         .in_syncobj = in_syncobj,
         .out_syncobj = out_syncobj,
+        .flags = flags,
+        .wait_event = wait_event,
+        .signal_event = signal_event,
     };
 
     return ioctl(fd, DRM_IOCTL_OPENGPU_COMPUTE, &compute);
@@ -641,7 +650,8 @@ static int submit_compute(int fd, uint32_t context_id, uint32_t shader_slot,
 
 static int fill_resource(int fd, uint32_t context_id,
                          const struct resource_buffer *destination,
-                         uint32_t pattern, uint32_t out_syncobj)
+                         uint32_t pattern, uint32_t out_syncobj,
+                         uint32_t signal_event)
 {
     struct drm_opengpu_fill fill = {
         .context_id = context_id,
@@ -649,6 +659,8 @@ static int fill_resource(int fd, uint32_t context_id,
         .pattern = pattern,
         .bytes = 64,
         .out_syncobj = out_syncobj,
+        .flags = OPENGPU_COMMAND_SIGNAL_EVENT,
+        .signal_event = signal_event,
     };
 
     return ioctl(fd, DRM_IOCTL_OPENGPU_FILL, &fill);
@@ -1122,17 +1134,30 @@ int main(void)
     CHECK(create_syncobj(fd, &syncobjs[6]),
           "create compute output syncobj");
     CHECK(fill_resource(fd, context_id, &compute_kernarg, 0xcafe0001u,
-                        syncobjs[4]),
-          "initialize compute kernarg through GPU");
+                        syncobjs[4], OPENGPU_COMMAND_EVENT(7, 1)),
+          "initialize compute kernarg and signal hardware event");
     errno = 0;
-    if (submit_compute(fd, context_id, 7, 8, 33, 0, syncobjs[6]) != -1 ||
+    if (submit_compute(fd, context_id, 7, 8, 1, 0, syncobjs[6], 0,
+                       OPENGPU_COMMAND_EVENT(7, 1), 0) != -1 ||
+        errno != EINVAL) {
+        errno = EPROTO;
+        perror("OPENGPU USERSPACE DRM FAIL unflagged event accepted");
+        return 1;
+    }
+    errno = 0;
+    if (submit_compute(fd, context_id, 7, 8, 33, 0, syncobjs[6], 0, 0,
+                       0) != -1 ||
         errno != EINVAL) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL oversized workgroup accepted");
         return 1;
     }
-    CHECK(submit_compute(fd, context_id, 7, 8, 1, syncobjs[4], syncobjs[6]),
-          "queue general compute");
+    CHECK(submit_compute(
+              fd, context_id, 7, 8, 1, 0, syncobjs[6],
+              OPENGPU_COMMAND_WAIT_EVENT | OPENGPU_COMMAND_SIGNAL_EVENT,
+              OPENGPU_COMMAND_EVENT(7, 1),
+              OPENGPU_COMMAND_EVENT(8, 1)),
+          "queue event-dependent general compute");
     CHECK(wait_syncobjs(fd, &syncobjs[6], 1), "wait compute syncobj");
     if (((uint32_t *)compute_kernarg.map)[1] != 0xcafe0001u) {
         fprintf(stderr,
@@ -1258,7 +1283,8 @@ int main(void)
     errno = 0;
     if (submit_strided_blit(fd, context_id, &strided_source,
                             &strided_destination, 0, 0,
-                            32, 4, 128, 192, syncobjs[4], syncobjs[5]) != -1 ||
+                            32, 4, 128, 192, syncobjs[4], syncobjs[5],
+                            0, 0, 0) != -1 ||
         errno != EINVAL) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL unaligned strided blit accepted");
@@ -1267,7 +1293,8 @@ int main(void)
     errno = 0;
     if (submit_strided_blit(fd, context_id, &strided_source,
                             &strided_destination, 0, 0,
-                            64, 4, 0, 192, syncobjs[4], syncobjs[5]) != -1 ||
+                            64, 4, 0, 192, syncobjs[4], syncobjs[5],
+                            0, 0, 0) != -1 ||
         errno != EINVAL) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL short strided pitch accepted");
@@ -1278,7 +1305,7 @@ int main(void)
                             &strided_destination, 0,
                             strided_destination.size,
                             64, 1, 64, 64,
-                            syncobjs[4], syncobjs[5]) != -1 ||
+                            syncobjs[4], syncobjs[5], 0, 0, 0) != -1 ||
         errno != EINVAL) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL out-of-range strided blit accepted");
@@ -1287,8 +1314,10 @@ int main(void)
     CHECK(submit_strided_blit(fd, context_id, &strided_source,
                               &strided_destination, 0, 0,
                               64, 4, 128, 192,
-                              syncobjs[4], syncobjs[5]),
-          "queue ordered strided blit");
+                              syncobjs[4], syncobjs[5],
+                              OPENGPU_COMMAND_WAIT_EVENT,
+                              OPENGPU_COMMAND_EVENT(8, 1), 0),
+          "queue event-dependent ordered strided blit");
     CHECK(wait_syncobjs(fd, &syncobjs[5], 1),
           "wait strided blit syncobj");
     for (uint32_t row = 0; row < 4; row++) {
@@ -1331,7 +1360,8 @@ int main(void)
 
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
            "syncobj + %s sandbox + "
-           "validated context + general compute + ordered colour "
+           "validated context + event-chained general compute + "
+           "ordered colour "
            "blit/fill/strided blit + "
            "vblank flip event sequence=%u\n",
            vert_core ? "vertex+fragment-core-backed" :

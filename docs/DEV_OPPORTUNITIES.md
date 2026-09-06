@@ -55,6 +55,8 @@ Priority order:
 - Linux general-compute jobs bind distinct shader and kernarg resources,
   validate a bounded kernarg-only program sandbox, and use the same scheduler,
   syncobj, unified-completion and IRQ fence path as DMA jobs.
+- Linux compute and DMA jobs expose generation-tagged hardware event waits and
+  signals, including failed-dependency propagation through scheduler fences.
 
 ## Next
 
@@ -62,8 +64,7 @@ Priority order:
 
 - Measure full-system cost by resolution and select a practical regression
   default.
-- Add explicit compute/DMA event dependencies to the Linux unified submission
-  ABI.
+- Define ABI-visible fault reporting and reset recovery for unified commands.
 
 ### Mid term
 
