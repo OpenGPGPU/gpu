@@ -58,6 +58,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 - Validated unmasked RVV integer ALU, comparison, saturation, single-width
   reduction, gather, slide, multiply, divide and remainder operations in `vv`,
   `vx`, `vs` and legal `vi` forms.
+- Validated masked and unmasked unit-stride RVV word loads and stores, with
+  preserved-destination and mask-register checks.
 - Ping-pong fragment batches overlapping rasterization and SIMT execution.
 - Bilinear and trilinear RGBA8888 sampling, repeat/clamp modes, packed mip
   chains, gradient LOD, bias and clamps.

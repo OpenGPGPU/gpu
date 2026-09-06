@@ -322,9 +322,27 @@ int main(void)
 
     program[0] = vsetivli(4);
     program[1] = addi(5, 1, 192);
-    program[2] = vse32(2, 5) & ~(1u << 25); /* masked memory is not profile v2 */
+    program[2] = vse32(1, 5) & ~(1u << 25); /* v0 mask is undefined */
     program[3] = OPENGPU_SHADER_CEASE;
     assert(!opengpu_shader_validate_words(program, 4, 288, 8));
+
+    program[0] = vsetivli(4);
+    program[1] = vector_alu(0x18, 3, 0, 1, 1); /* vmseq.vi v0,v1,1 */
+    program[2] = addi(5, 1, 192);
+    program[3] = vse32(1, 5) & ~(1u << 25);
+    program[4] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_shader_validate_words(program, 5, 288, 8));
+
+    program[2] = addi(5, 1, 96);
+    program[3] = vle32(2, 5) & ~(1u << 25); /* old v2 is undefined */
+    assert(!opengpu_shader_validate_words(program, 5, 288, 8));
+    program[2] = vector_alu(0x00, 3, 2, 1, 0); /* define v2 */
+    program[3] = addi(5, 1, 96);
+    program[4] = vle32(2, 5) & ~(1u << 25);
+    program[5] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_shader_validate_words(program, 6, 288, 8));
+    program[4] = vle32(0, 5) & ~(1u << 25); /* destination overlaps v0 */
+    assert(!opengpu_shader_validate_words(program, 6, 288, 8));
 
     program[0] = vsetivli(0);
     assert(!opengpu_shader_validate_words(program, 4, 288, 8));

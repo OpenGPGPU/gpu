@@ -148,6 +148,11 @@ The `vredsum/and/or/xor/minu/min/maxu/max.vs` family combines active source
 lanes with the always-included `vs1[0]` seed and writes `vd[0]`. Because this
 implementation preserves the remaining destination elements, the validator
 requires the destination VGPR to be defined before a reduction.
+Unit-stride `vle32.v` and `vse32.v` may use `v0.t`. Masked loads require both
+`v0` and the partially preserved destination VGPR to be defined, and cannot
+target `v0`; masked stores require a defined `v0` and source VGPR. Bounds are
+proved for the complete vector range, so masking can only remove accesses from
+an already safe range.
 The driver snapshots and validates the program, tracks the kernarg GEM object
 for both reads and writes, and publishes completion through the context's
 normal scheduler and optional input/output sync objects.
@@ -314,6 +319,8 @@ result must be consumed before the interrupt is acknowledged.
 - The validator exposes the implemented RVV integer ALU, comparison,
   saturation, reduction, gather, slide, multiply, divide and remainder families
   with exact operand-form and defined-register checks.
+- Unit-stride vector loads and stores support validated `v0.t` predication,
+  including preserved-destination checks for masked loads.
 - Compute and DMA ioctls expose generation-tagged wait/signal hardware events;
   event-dependency failures propagate as scheduler fence errors.
 - `DRM_IOCTL_OPENGPU_GET_FAULT` exposes an atomic retained snapshot of the most

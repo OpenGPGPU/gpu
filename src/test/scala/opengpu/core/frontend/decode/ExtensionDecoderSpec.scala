@@ -118,6 +118,11 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.recognized.expect(true.B)
       dut.io.decoded.valid.expect(false.B)
 
+      // Masked unit-stride word loads are implemented by the vector LSU.
+      dut.io.instruction.poke("b0000_0_00_0_00000_00010_110_00011_0000111".U)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.vm.expect(false.B)
+
       // OP-V major opcode with a reserved/unsupported funct6.
       dut.io.instruction.poke("b111111_1_00000_00000_000_00000_1010111".U)
       dut.io.decoded.recognized.expect(true.B)

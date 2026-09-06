@@ -231,7 +231,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * Scalar lw/sw retain the v1
  * bounds. The RVV profile admits vsetivli e32,m1, the implemented lane-local
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
- * divide and remainder forms, and unmasked unit-stride vle32/vse32. Defined-register
+ * divide and remainder forms, and masked or unmasked unit-stride
+ * vle32/vse32. Defined-register
  * tracking prevents stale SGPR/VGPR data from being exported. A small abstract
  * interpreter recognizes x1 +
  * 4*x8 + constant, where x8 is the trusted warp localLinearBase, and proves
@@ -423,18 +424,21 @@ static inline bool opengpu_shader_validate_words_profile(
                 vector_defined[rd] = true;
             }
             break;
-        case 0x07: /* unmasked unit-stride vle32.v */
-            if ((insn & 0xfff0707fu) != 0x02006007u ||
+        case 0x07: /* unit-stride vle32.v */
+            if ((insn & 0xfdf0707fu) != 0x00006007u ||
                 !scalar_defined[rs1] ||
+                (!(insn & (1u << 25)) &&
+                 (!vector_defined[0] || rd == 0 || !vector_defined[rd])) ||
                 !opengpu_shader_vector_access_valid(
                     &values[rs1], state.vector_length, false, kernarg_size,
                     batch_capacity, output_start, output_end))
                 return false;
             vector_defined[rd] = true;
             break;
-        case 0x27: /* unmasked unit-stride vse32.v */
-            if ((insn & 0xfff0707fu) != 0x02006027u ||
+        case 0x27: /* unit-stride vse32.v */
+            if ((insn & 0xfdf0707fu) != 0x00006027u ||
                 !scalar_defined[rs1] || !vector_defined[rd] ||
+                (!(insn & (1u << 25)) && !vector_defined[0]) ||
                 !opengpu_shader_vector_access_valid(
                     &values[rs1], state.vector_length, true, kernarg_size,
                     batch_capacity, output_start, output_end))

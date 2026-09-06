@@ -684,8 +684,12 @@ static void write_compute_shader(void *mapping)
     program[6] = 0x324032d7u; /* vrgather.vi v5,v4,0: broadcast 3 */
     program[7] = 0x00200313u; /* addi x6,x0,2 */
     program[8] = 0x96536357u; /* vmul.vx v6,v5,x6 */
-    program[9] = 0x0200e327u; /* vse32.v v6,(x1) */
-    program[10] = 0x30500073u; /* cease */
+    program[9] = 0x7210b057u; /* vmsleu.vi v0,v1,1: enable lanes 0-1 */
+    program[10] = 0x0000e327u; /* vse32.v v6,(x1),v0.t */
+    program[11] = 0x021033d7u; /* vadd.vi v7,v1,0: define masked-load vd */
+    program[12] = 0x0000e387u; /* vle32.v v7,(x1),v0.t */
+    program[13] = 0x0200e3a7u; /* vse32.v v7,(x1) */
+    program[14] = 0x30500073u; /* cease */
 }
 
 static int reject_unsafe_command(int fd, uint32_t context_id,
@@ -1192,10 +1196,12 @@ int main(void)
           "queue event-dependent general compute");
     CHECK(wait_syncobjs(fd, &syncobjs[6], 1), "wait compute syncobj");
     for (uint32_t lane = 0; lane < 4; lane++) {
-        if (((uint32_t *)compute_kernarg.map)[lane] != 6u) {
+        uint32_t expected = lane < 2 ? 6u : lane;
+
+        if (((uint32_t *)compute_kernarg.map)[lane] != expected) {
             fprintf(stderr,
-                    "compute kernarg lane=%u output=0x%08x expected=6\n",
-                    lane, ((uint32_t *)compute_kernarg.map)[lane]);
+                    "compute kernarg lane=%u output=0x%08x expected=%u\n",
+                    lane, ((uint32_t *)compute_kernarg.map)[lane], expected);
             errno = EIO;
             perror("OPENGPU USERSPACE DRM FAIL reduction compute result");
             return 1;
@@ -1405,7 +1411,7 @@ int main(void)
     printf("OPENGPU USERSPACE DRM PASS: queued %s render + explicit "
            "syncobj + %s sandbox + "
            "validated context + event-chained RVV "
-           "slide/reduction/gather/multiply compute + "
+           "slide/reduction/gather/masked-memory compute + "
            "ordered colour "
            "blit/fill/strided blit + "
            "fault-query ABI + vblank flip event sequence=%u\n",
