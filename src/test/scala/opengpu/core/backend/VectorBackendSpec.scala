@@ -94,6 +94,40 @@ class VectorBackendSpec extends AnyFlatSpec {
       initialize(2, 0x20)
       initialize(3, 0x30)
 
+      // vsext.vf2 v6, v2: the backend executes fixed-profile integer widening.
+      val widenInstruction =
+        (BigInt(0x12) << 26) | (BigInt(1) << 25) |
+          (BigInt(2) << 20) | (BigInt(7) << 15) |
+          (BigInt(2) << 12) | (BigInt(6) << 7) | 0x57
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.instruction.poke(widenInstruction.U)
+      dut.io.in.bits.pc.poke(0x1000.U)
+      dut.io.in.bits.decoded.unit.poke(VectorUnit.alu)
+      dut.io.in.bits.decoded.funct6.poke("h12".U)
+      dut.io.in.bits.decoded.operandType.poke(2.U)
+      dut.io.in.bits.decoded.vm.poke(true.B)
+      dut.io.in.bits.decoded.readsVs1.poke(false.B)
+      dut.io.in.bits.decoded.readsVs2.poke(true.B)
+      dut.io.in.bits.decoded.readsScalar.poke(false.B)
+      dut.io.in.bits.decoded.writesVd.poke(true.B)
+      dut.io.in.bits.decoded.configure.poke(false.B)
+      dut.io.in.ready.expect(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      cycles = 0
+      while (
+        !dut.io.committedVectorWriteback.valid.peek().litToBoolean &&
+        cycles < 24
+      ) {
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(dut.io.committedVectorWriteback.valid.peek().litToBoolean)
+      dut.io.committedVectorWriteback.bits.vd.expect(6.U)
+      for (lane <- 0 until config.lanes)
+        dut.io.committedVectorWriteback.bits.data(lane)
+          .expect((0x20 + lane).U)
+
       // vadd.vx v3, v2, x1
       val addInstruction =
         (BigInt(1) << 25) | (BigInt(2) << 20) | (BigInt(1) << 15) |
