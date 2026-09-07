@@ -155,6 +155,48 @@ class VectorBackendSpec extends AnyFlatSpec {
       initialize(2, 0x20)
       dut.io.in.bits.activeMask.poke(15.U)
 
+      // Predicated arithmetic uses the same v0 and old-vd register paths
+      // across integer, multiply and divide execution units.
+      val maskedArithmetic = Seq(
+        (0x00, 0, VectorUnit.alu, 0x50),
+        (0x02, 4, VectorUnit.alu, 0x1d),
+        (0x0b, 3, VectorUnit.alu, 0x23),
+        (0x25, 2, VectorUnit.multiply, 0x600),
+        (0x20, 6, VectorUnit.divide, 10)
+      )
+      for ((funct6, form, unit, expected) <- maskedArithmetic) {
+        initialize(6, 100)
+        val instruction = (BigInt(funct6) << 26) | (BigInt(2) << 20) |
+          (BigInt(3) << 15) | (BigInt(form) << 12) |
+          (BigInt(6) << 7) | 0x57
+        dut.io.in.valid.poke(true.B)
+        dut.io.in.bits.instruction.poke(instruction.U)
+        dut.io.in.bits.activeMask.poke(3.U)
+        dut.io.in.bits.decoded.unit.poke(unit)
+        dut.io.in.bits.decoded.funct6.poke(funct6.U)
+        dut.io.in.bits.decoded.operandType.poke(form.U)
+        dut.io.in.bits.decoded.vm.poke(false.B)
+        dut.io.in.bits.decoded.readsVs1.poke((form == 0 || form == 2).B)
+        dut.io.in.bits.decoded.readsScalar.poke((form == 4 || form == 6).B)
+        dut.io.scalarRs1Data.poke(3.U)
+        dut.io.in.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+        cycles = 0
+        while (!dut.io.committedVectorWriteback.valid.peek().litToBoolean &&
+          cycles < 100) {
+          dut.clock.step()
+          cycles += 1
+        }
+        assert(dut.io.committedVectorWriteback.valid.peek().litToBoolean)
+        dut.io.committedVectorWriteback.bits.vd.expect(6.U)
+        dut.io.committedVectorWriteback.bits.data(0).expect(expected.U)
+        for (lane <- 1 until config.lanes)
+          dut.io.committedVectorWriteback.bits.data(lane).expect((100 + lane).U)
+        dut.clock.step()
+      }
+      dut.io.in.bits.activeMask.poke(15.U)
+
       // vadd.vx v3, v2, x1
       val addInstruction =
         (BigInt(1) << 25) | (BigInt(2) << 20) | (BigInt(1) << 15) |

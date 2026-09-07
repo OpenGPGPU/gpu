@@ -131,9 +131,13 @@ Applications bind separate `OPENGPU_RESOURCE_COMPUTE_SHADER` and
 `OPENGPU_RESOURCE_COMPUTE_KERNARG` resources to a render context, then submit
 binding-relative entry/kernarg offsets and three-dimensional grid and local
 sizes. The initial sandbox accepts bounded forward control flow and the
-supported scalar subset plus unmasked RVV integer ALU, comparison, saturating,
-single-width reduction, gather, slide, multiply, divide and remainder
-operations, plus masked and unmasked fixed-profile `vsext/vzext.vf2/vf4/vf8`.
+supported scalar subset plus masked and unmasked lane-local RVV integer ALU,
+saturating, multiply, divide and remainder operations. Comparisons,
+single-width reductions, gather and slide retain their unmasked profile.
+Masked arithmetic requires defined source, v0 and old destination registers,
+rejects destination v0, and preserves masked-off and inactive lanes.
+The sandbox also supports masked and unmasked fixed-profile
+`vsext/vzext.vf2/vf4/vf8`.
 These extensions use the low 16/8/4 bits of each 32-bit source lane. Masked
 forms require defined v0 and destination registers and preserve disabled
 lanes. Source/destination overlap and masked writes to v0 are rejected, in
@@ -172,7 +176,9 @@ The RTL also accepts ordered and unordered 32-bit indexed word operations
 `vluxei32/vloxei32/vsuxei32/vsoxei32`; each `vs2` lane is an unsigned byte
 offset from the scalar base and overlapping ordered stores resolve in element
 order. The Linux validator admits these instructions when the index vector is
-derived from trusted launch-time local IDs by exactly `vsll.vi ...,2`. It then
+derived from trusted launch-time local IDs by an unmasked `vsll.vi ...,2`.
+Masked shifts cannot establish this proof because disabled lanes retain old
+destination values. The validator then
 proves the fixed kernarg-relative base plus the complete batch byte span,
 including the writable output interval for stores; other index provenance is
 rejected.

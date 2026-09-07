@@ -176,10 +176,19 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
     opengpu_shader_u32 vd = (insn >> 7) & 0x1f;
     opengpu_shader_u32 vs2 = (insn >> 20) & 0x1f;
 
-    /* Only integer extensions currently admit masked ALU execution. */
-    if (!(insn & (1u << 25)) &&
-        (funct6 != 0x12 || form != 2 || vd == 0))
-        return false;
+    /* Masked lane-local arithmetic preserves old vd. Comparisons,
+     * reductions and cross-lane operations retain their unmasked profile.
+     * The form allow-list below still rejects reserved encodings. */
+    if (!(insn & (1u << 25))) {
+        bool lane_local =
+            ((form == 0 || form == 3 || form == 4) &&
+             (funct6 < 0x0c || funct6 >= 0x20)) ||
+            ((form == 2 || form == 6) && funct6 >= 0x20) ||
+            (form == 2 && funct6 == 0x12);
+
+        if (!lane_local || vd == 0)
+            return false;
+    }
     if (funct6 == 0x0e && vd == vs2) /* vslideup overlap is reserved */
         return false;
     if (funct6 == 0x12 && vd == vs2) /* widening source/destination overlap */
@@ -291,9 +300,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * Scalar lw/sw retain the v1
  * bounds. The RVV profile admits vsetivli e32,m1, the implemented lane-local
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
- * divide and remainder forms, masked integer extensions, and masked or
- * unmasked unit-, constant-stride,
- * and trusted-local-index word memory operations. Defined-register
+ * divide and remainder forms, masked lane-local integer arithmetic and
+ * extensions, and masked or unmasked unit-, constant-stride, and
+ * trusted-local-index word memory operations. Defined-register
  * tracking prevents stale SGPR/VGPR data from being exported. A small abstract
  * interpreter recognizes x1 +
  * 4*x8 + constant, where x8 is the trusted warp localLinearBase, and proves
@@ -493,7 +502,9 @@ static inline bool opengpu_shader_validate_words_profile(
                     return false;
                 state.vector_local_indices &= ~(1u << rd);
                 state.vector_local_bytes &= ~(1u << rd);
-                if ((insn >> 26) == 0x25 && funct3 == 3 && rs1 == 2 &&
+                /* A masked shift can retain arbitrary old destination lanes. */
+                if ((insn & (1u << 25)) &&
+                    (insn >> 26) == 0x25 && funct3 == 3 && rs1 == 2 &&
                     (state.vector_local_indices & (1u << rs2)))
                     state.vector_local_bytes |= 1u << rd;
                 vector_defined[rd] = true;

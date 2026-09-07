@@ -287,7 +287,7 @@ int main(void)
     }
     program[3] = vector_alu(0x12, 2, 3, 1, 1) & ~(1u << 25);
     assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
-    program[3] = vector_alu(0x00, 3, 3, 1, 0) & ~(1u << 25);
+    program[3] = vector_alu(0x18, 3, 3, 1, 0) & ~(1u << 25);
     assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
 
     /* A masked extension must discard previously trusted index provenance. */
@@ -298,6 +298,13 @@ int main(void)
     program[4] = vluxei32(3, 1, 2);
     program[5] = OPENGPU_SHADER_CEASE;
     assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
+
+    /* Masked shifts cannot establish complete-batch byte-index provenance. */
+    program[2] = vector_alu(0x00, 3, 2, 1, 0);
+    program[3] = vector_alu(0x25, 3, 2, 1, 2) & ~(1u << 25);
+    assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
+    program[3] |= 1u << 25;
+    assert(opengpu_compute_shader_validate_words(program, 6, 64, 4));
 
     /* Vertex stores target transformed attribute slices 8..15. */
     program[0] = lw(10, 0);
@@ -389,6 +396,67 @@ int main(void)
         program[6] = vse32(3, 5);
         program[7] = OPENGPU_SHADER_CEASE;
         assert(opengpu_shader_validate_words(program, 8, 288, 8));
+    }
+
+    /* Exercise every admitted masked lane-local opcode/form pair. */
+    {
+        const struct {
+            unsigned int funct6;
+            unsigned int forms; /* bitset of legal funct3 values */
+        } masked_arithmetic[] = {
+            { 0x00, 0x19 }, { 0x02, 0x11 }, { 0x03, 0x18 },
+            { 0x04, 0x11 }, { 0x05, 0x11 }, { 0x06, 0x11 },
+            { 0x07, 0x11 }, { 0x09, 0x19 }, { 0x0a, 0x19 },
+            { 0x0b, 0x19 }, { 0x20, 0x5d }, { 0x21, 0x5d },
+            { 0x22, 0x55 }, { 0x23, 0x55 }, { 0x24, 0x44 },
+            { 0x25, 0x5d }, { 0x26, 0x44 }, { 0x27, 0x55 },
+            { 0x28, 0x19 }, { 0x29, 0x19 },
+        };
+        unsigned int form;
+
+        for (i = 0; i < sizeof(masked_arithmetic) /
+                        sizeof(masked_arithmetic[0]); i++) {
+            for (form = 0; form < 8; form++) {
+                if (!(masked_arithmetic[i].forms & (1u << form)))
+                    continue;
+                program[0] = vsetivli(4);
+                program[1] = vector_alu(0x18, 0, 0, 1, 1);
+                program[2] = vector_alu(0x00, 3, 3, 1, 0);
+                program[3] = vector_alu(masked_arithmetic[i].funct6,
+                                        form, 3, 1, 1) & ~(1u << 25);
+                program[4] = OPENGPU_SHADER_CEASE;
+                assert(opengpu_compute_shader_validate_words(program, 5, 64, 4));
+                assert(opengpu_shader_validate_words(program, 5, 288, 8));
+                assert(opengpu_vertex_shader_validate_words(program, 5, 512, 8));
+
+                program[1] = vector_alu(0x18, 0, 2, 1, 1);
+                assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+                program[1] = vector_alu(0x18, 0, 0, 1, 1);
+                program[2] = vector_alu(0x00, 3, 2, 1, 0);
+                assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+                program[2] = vector_alu(0x00, 3, 3, 1, 0);
+                program[3] &= ~(31u << 7); /* destination v0 is reserved */
+                assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+                program[3] |= 3u << 7;
+                program[3] = (program[3] & ~(31u << 20)) | 4u << 20;
+                assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+                program[3] = (program[3] & ~(31u << 20)) | 1u << 20;
+                program[3] = (program[3] & ~(31u << 15)) | 31u << 15;
+                assert(opengpu_compute_shader_validate_words(program, 5, 64, 4)
+                       == (form == 3)); /* immediates are not registers */
+            }
+        }
+        /* These families still need their own masked validation contract. */
+        const unsigned int excluded[][2] = {
+            { 0x18, 0 }, { 0x1c, 3 }, { 0x1f, 4 },
+            { 0x00, 2 }, { 0x07, 2 }, { 0x0c, 0 },
+            { 0x0e, 3 }, { 0x0f, 4 }, { 0x02, 3 },
+        };
+        for (i = 0; i < sizeof(excluded) / sizeof(excluded[0]); i++) {
+            program[3] = vector_alu(excluded[i][0], excluded[i][1],
+                                    3, 1, 1) & ~(1u << 25);
+            assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        }
     }
 
     program[0] = vsetivli(4);

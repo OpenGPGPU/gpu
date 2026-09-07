@@ -55,9 +55,11 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
   cores have been removed.
 - Structure-of-arrays kernarg exchange, per-lane RVV output and dual staging
   banks.
-- Validated unmasked RVV integer ALU, comparison, saturation, single-width
-  reduction, gather, slide, multiply, divide and remainder operations in `vv`,
-  `vx`, `vs` and legal `vi` forms.
+- Validated masked and unmasked lane-local RVV integer ALU, saturation,
+  multiply, divide and remainder operations in `vv`, `vx` and legal `vi`
+  forms, with defined predicate/destination checks for masked execution.
+- Validated unmasked comparisons, single-width reductions, gather and slide
+  operations in their supported `vv`, `vx`, `vs` and legal `vi` forms.
 - Validated masked and unmasked lane-local `vsext/vzext.vf2/vf4/vf8`
   integer extensions in the fixed profile, with preserved inactive lanes,
   defined predicate/destination checks and reserved-overlap rejection.
@@ -69,7 +71,7 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
   lane remains in the bound kernarg and writable output range.
 - Hardware `vluxei32/vloxei32/vsuxei32/vsoxei32` byte-index address generation
   reuses the sparse-line coalescer. The driver tracks launch-time local-index
-  provenance through an exact `vsll.vi ...,2` and validates the resulting
+  provenance through an exact unmasked `vsll.vi ...,2` and validates the resulting
   complete-batch byte span before admitting indexed loads or stores.
 - Ping-pong fragment batches overlapping rasterization and SIMT execution.
 - Bilinear and trilinear RGBA8888 sampling, repeat/clamp modes, packed mip
