@@ -142,6 +142,15 @@ These extensions use the low 16/8/4 bits of each 32-bit source lane. Masked
 forms require defined v0 and destination registers and preserve disabled
 lanes. Source/destination overlap and masked writes to v0 are rejected, in
 line with the [RVV register overlap rules](https://docs.riscv.org/reference/isa/unpriv/v-st-ext).
+The sandbox also admits `vnsrl.wv/wx/wi` and `vnsra.wv/wx/wi` using a
+fixed lane-local 64-bit source `{v[vs2+1][lane], v[vs2][lane]}` and a 32-bit
+result. Vector/scalar shift amounts use six bits; immediates are unsigned
+five-bit values. Both source registers must be defined, `vs2` must be even,
+and `vd` must be disjoint from the pair. Masked forms additionally require
+defined v0 and old `vd`, reject destination v0, and preserve disabled lanes.
+Narrowing results cannot retain trusted byte-index provenance. Software must
+prepare separate low/high word vectors; this pair layout differs from RVV's
+general double-width register-group layout.
 This fixed lane layout does not implement general RVV register groups or
 variable-SEW extension semantics. The sandbox permits memory
 access only inside the bound kernarg range and limits a workgroup to the fixed 32
