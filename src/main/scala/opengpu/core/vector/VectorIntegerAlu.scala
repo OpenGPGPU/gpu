@@ -57,8 +57,8 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
   val add = Vec(config.lanes, UInt(config.xLen.W))
   val sub = Vec(config.lanes, UInt(config.xLen.W))
   val shift = Vec(config.lanes, UInt(config.xLen.W))
-  val narrowShift = Vec(config.lanes, UInt(64.W))
-  val narrowRound = Vec(config.lanes, Bool())
+  val fixedShift = Vec(config.lanes, UInt(64.W))
+  val fixedRound = Vec(config.lanes, Bool())
   val less = Vec(config.lanes, Bool())
   val lessSigned = Vec(config.lanes, Bool())
   val greater = Vec(config.lanes, Bool())
@@ -171,10 +171,13 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
     val clip = partialBits.funct6 === "h2e".U ||
       partialBits.funct6 === "h2f".U
     val signedClip = partialBits.funct6 === "h2f".U
+    val scaling = partialBits.funct6 === "h2a".U ||
+      partialBits.funct6 === "h2b".U
     // Keep the full shifted value through rounding before testing overflow.
-    val shifted = partialBits.narrowShift(lane)
-    val rounded = Cat(signedClip && shifted(63), shifted) +
-      partialBits.narrowRound(lane)
+    val shifted = partialBits.fixedShift(lane)
+    val signedRounding = signedClip || partialBits.funct6 === "h2b".U
+    val rounded = Cat(signedRounding && shifted(63), shifted) +
+      partialBits.fixedRound(lane)
     val clipOverflow = Mux(signedClip,
       rounded.asSInt > ((BigInt(1) << 31) - 1).S(65.W) ||
         rounded.asSInt < (-(BigInt(1) << 31)).S(65.W),
@@ -185,7 +188,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
     basicCandidates(lane) := basicResult
     saturatingCandidates(lane) := Mux(clip, rounded(31, 0), saturatingResult)
     saturationLimits(lane) := Mux(clip, clipLimit, partialBits.saturationLimit(lane))
-    shiftCandidates(lane) := partialBits.shift(lane)
+    shiftCandidates(lane) := Mux(scaling, rounded(31, 0), partialBits.shift(lane))
     laneComparisons(lane) := predicate
     laneSaturated(lane) := Mux(clip, clipOverflow, partialBits.saturated(lane))
   }
@@ -199,6 +202,8 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
     candidateBits.funct6 === "h25".U ||
       candidateBits.funct6 === "h28".U ||
       candidateBits.funct6 === "h29".U ||
+      candidateBits.funct6 === "h2a".U ||
+      candidateBits.funct6 === "h2b".U ||
       candidateBits.funct6 === "h2c".U ||
       candidateBits.funct6 === "h2d".U
   private val selectedResults = Wire(Vec(config.lanes, UInt(config.xLen.W)))
@@ -300,11 +305,17 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         partialBits.rhs(lane) := rhs
         partialBits.add(lane) := addResult
         partialBits.sub(lane) := subResult
-        val wide = Cat(inputBits.vs2Odd(lane), lhs)
-        val narrowAmount = rhs(5, 0)
-        val signedNarrow = inputBits.funct6 === "h2d".U ||
+        val scaling = inputBits.funct6 === "h2a".U ||
+          inputBits.funct6 === "h2b".U
+        val signedScaling = inputBits.funct6 === "h2b".U
+        // Single-width scaling shares the rounding datapath, with no odd
+        // source dependency and only five significant shift-amount bits.
+        val wide = Mux(scaling, Cat(Fill(32, signedScaling && lhs(31)), lhs),
+          Cat(inputBits.vs2Odd(lane), lhs))
+        val narrowAmount = Mux(scaling, Cat(0.U(1.W), shiftAmount), rhs(5, 0))
+        val signedNarrow = signedScaling || inputBits.funct6 === "h2d".U ||
           inputBits.funct6 === "h2f".U
-        val narrowShift = Mux(signedNarrow,
+        val fixedShift = Mux(signedNarrow,
           (wide.asSInt >> narrowAmount).asUInt, wide >> narrowAmount)
         // The guard bit and lower discarded bits implement vxrm for any
         // shift, including zero (which must never round).
@@ -314,20 +325,20 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         val stickyMask = ~(Fill(64, 1.U) << guardIndex)(63, 0)
         val sticky = (wide & stickyMask).orR
         val discarded = (wide & discardedMask).orR
-        partialBits.narrowShift(lane) := narrowShift
-        partialBits.narrowRound(lane) := MuxLookup(inputBits.vxrm, false.B)(Seq(
+        partialBits.fixedShift(lane) := fixedShift
+        partialBits.fixedRound(lane) := MuxLookup(inputBits.vxrm, false.B)(Seq(
           0.U -> guard,
-          1.U -> (guard && (sticky || narrowShift(0))),
+          1.U -> (guard && (sticky || fixedShift(0))),
           2.U -> false.B,
-          3.U -> (!narrowShift(0) && discarded)
+          3.U -> (!fixedShift(0) && discarded)
         ))
         partialBits.shift(lane) := MuxLookup(inputBits.funct6, 0.U(32.W))(Seq(
           "h25".U -> (lhs << shiftAmount)(31, 0),
           "h28".U -> (lhs >> shiftAmount),
           "h29".U -> (lhs.asSInt >> shiftAmount).asUInt,
           // vnsrl/vnsra narrow the 64-bit pair {vs2+1, vs2} to its low word.
-          "h2c".U -> narrowShift(31, 0),
-          "h2d".U -> narrowShift(31, 0)
+          "h2c".U -> fixedShift(31, 0),
+          "h2d".U -> fixedShift(31, 0)
         ))
         partialBits.less(lane) := less
         partialBits.lessSigned(lane) := lessSigned

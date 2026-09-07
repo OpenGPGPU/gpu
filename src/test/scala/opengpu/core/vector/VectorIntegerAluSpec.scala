@@ -252,6 +252,114 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     }
   }
 
+  it should "stream rounded scaling shifts with changing modes and output stalls" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      val mask32 = (BigInt(1) << 32) - 1
+      case class Operation(signed: Boolean, form: Int, mode: Int,
+        values: Seq[BigInt], amounts: Seq[Int], active: Int, predicate: Int,
+        vm: Boolean)
+      val values = Seq(
+        Seq("00000005", "00000007", "fffffffb", "fffffff9"),
+        Seq("ffffffff", "80000000", "7fffffff", "00000000"),
+        Seq("00000001", "00000002", "00000003", "fffffffe"),
+        Seq("80000001", "7ffffffe", "40000001", "bfffffff")
+      ).map(_.map(BigInt(_, 16)))
+      val amounts = Seq(Seq(0, 1, 31, 32), Seq(1, 1, 1, 1),
+        Seq(31, 63, 32, 0), Seq(33, 65, 255, 16))
+      val directed = for (signed <- Seq(false, true); mode <- 0 until 4;
+        form <- Seq(0, 3, 4); sample <- values.indices) yield
+        Operation(signed, form, mode, values(sample), amounts(sample),
+          if (sample == 2) 7 else 15, if (sample == 3) 5 else 15, sample != 3)
+      val random = new scala.util.Random(0x2a2b)
+      val randomized = (0 until 80).map { _ =>
+        Operation(random.nextBoolean(), Seq(0, 3, 4)(random.nextInt(3)),
+          random.nextInt(4), Seq.fill(4)(BigInt(32, random)),
+          Seq.fill(4)(random.nextInt(256)), random.nextInt(16),
+          random.nextInt(16), random.nextBoolean())
+      }
+      val operations = directed ++ randomized
+      def reference(op: Operation): Seq[BigInt] = op.values.zipWithIndex.map {
+        case (raw, lane) =>
+          val amount = (if (op.form == 0) op.amounts(lane) else op.amounts.head) & 31
+          val divisor = BigInt(1) << amount
+          val value = if (op.signed && raw.testBit(31)) raw - (BigInt(1) << 32) else raw
+          val quotient = if (value < 0) -((-value + divisor - 1) / divisor)
+            else value / divisor
+          val remainder = value - quotient * divisor
+          val round = op.mode match {
+            case 0 => 2 * remainder >= divisor
+            case 1 => 2 * remainder > divisor ||
+              (2 * remainder == divisor && quotient.testBit(0))
+            case 2 => false
+            case 3 => remainder != 0 && !quotient.testBit(0)
+          }
+          if ((op.active & (1 << lane)) == 0 ||
+            (!op.vm && (op.predicate & (1 << lane)) == 0)) BigInt(100 + lane)
+          else (quotient + (if (round) 1 else 0)) & mask32
+      }
+      val pending = scala.collection.mutable.Queue.empty[(Int, Seq[BigInt])]
+      var sent = 0
+      var received = 0
+      var cycles = 0
+      var blockedInput = false
+      var heldOutput = false
+      while (received < operations.size && cycles < 1500) {
+        val ready = cycles % 13 >= 6
+        dut.io.out.ready.poke(ready.B)
+        dut.io.in.valid.poke((sent < operations.size).B)
+        if (sent < operations.size) {
+          val op = operations(sent)
+          dut.io.in.bits.funct6.poke((if (op.signed) 0x2b else 0x2a).U)
+          dut.io.in.bits.operandType.poke(op.form.U)
+          dut.io.in.bits.vxrm.poke(op.mode.U)
+          dut.io.in.bits.warpId.poke((sent % 2).U)
+          dut.io.in.bits.pc.poke((0x1000 + 4 * sent).U)
+          dut.io.in.bits.vd.poke((sent % 32).U)
+          dut.io.in.bits.vm.poke(op.vm.B)
+          dut.io.in.bits.activeMask.poke(op.active.U)
+          dut.io.in.bits.predicateMask.poke(op.predicate.U)
+          dut.io.in.bits.scalar.poke(op.amounts.head.U)
+          dut.io.in.bits.immediate.poke((op.amounts.head & 31).U)
+          for (lane <- 0 until config.lanes) {
+            dut.io.in.bits.vs1(lane).poke(op.amounts(lane).U)
+            dut.io.in.bits.vs2(lane).poke(op.values(lane).U)
+            // Poison the unused pair half to catch accidental 64-bit scaling.
+            dut.io.in.bits.vs2Odd(lane).poke("hdeadbeef".U)
+          }
+          if (dut.io.in.ready.peek().litToBoolean) {
+            pending.enqueue((sent, reference(op)))
+            sent += 1
+          } else blockedInput = true
+        }
+        if (dut.io.out.valid.peek().litToBoolean) {
+          assert(pending.nonEmpty)
+          val (index, expected) = pending.front
+          dut.io.out.bits.warpId.expect((index % 2).U)
+          dut.io.out.bits.pc.expect((0x1000 + 4 * index).U)
+          dut.io.out.bits.vd.expect((index % 32).U)
+          dut.io.out.bits.writesMask.expect(false.B)
+          dut.io.out.bits.saturated.expect(false.B)
+          expected.zipWithIndex.foreach { case (value, lane) =>
+            dut.io.out.bits.data(lane).expect(value.U)
+          }
+          if (ready) {
+            pending.dequeue()
+            received += 1
+          } else heldOutput = true
+        }
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(received == operations.size && pending.isEmpty)
+      assert(blockedInput && heldOutput)
+      dut.io.in.valid.poke(false.B)
+      dut.io.out.ready.poke(true.B)
+      dut.clock.step()
+      dut.io.out.valid.expect(false.B)
+    }
+  }
+
   it should "round before clipping signed and unsigned pairs in every vxrm mode" in {
     simulate(new VectorIntegerAlu(config)) { dut =>
       defaults(dut)

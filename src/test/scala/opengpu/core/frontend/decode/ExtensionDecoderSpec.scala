@@ -188,6 +188,28 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
     }
   }
 
+  it should "decode single-width scaling shifts without source-pair restrictions" in {
+    simulate(new VectorDecoder) { dut =>
+      for (funct6 <- Seq(0x2a, 0x2b); form <- Seq(0, 3, 4);
+           vm <- Seq(0, 1); vd <- Seq(3, 31)) {
+        // Odd v31 is legal, and vd may overlap either input register.
+        val instruction = (BigInt(funct6) << 26) | (BigInt(vm) << 25) |
+          (BigInt(31) << 20) | (BigInt(3) << 15) |
+          (BigInt(form) << 12) | (BigInt(vd) << 7) | 0x57
+        dut.io.instruction.poke(instruction.U)
+        dut.io.decoded.recognized.expect(true.B)
+        dut.io.decoded.valid.expect(true.B)
+        dut.io.decoded.unit.expect(VectorUnit.alu)
+        dut.io.decoded.readsVs2.expect(true.B)
+        dut.io.decoded.readsVs2Pair.expect(false.B)
+        dut.io.decoded.readsVs1.expect((form == 0).B)
+        dut.io.decoded.readsScalar.expect((form == 4).B)
+        dut.io.decoded.vm.expect((vm == 1).B)
+        dut.io.decoded.writesVd.expect(true.B)
+      }
+    }
+  }
+
   it should "decode narrowing shifts and clips in wv, wx, and wi forms" in {
     simulate(new VectorDecoder) { dut =>
       def narrowing(vd: Int, vs2: Int, operand: Int, form: Int,

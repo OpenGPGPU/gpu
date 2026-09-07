@@ -12,6 +12,16 @@ subsystem. It is intentionally rewritten around the fixed GPU profile:
 
 `VectorIntegerAlu` implements the lane-local integer ALU, comparison/mask,
 saturating add/subtract, and shift instructions accepted by `VectorDecoder`.
+`vssrl.vv/vx/vi` and `vssra.vv/vx/vi` implement single-width scaling shifts:
+the unsigned or signed 32-bit source is shifted by the low five bits of the
+shift amount, then rounded according to `vxrm`. They share the fixed-point
+rounding pipeline with narrowing clips, but read only `vs2`, permit source
+and destination overlap, and never raise `vxsat`. Masked-off and inactive
+lanes preserve old `vd`. The driver admits all three forms, requiring defined
+register operands and, for masked forms, defined v0 and old `vd` with `vd != 0`.
+Scaling results discard trusted byte-index provenance. The current shader
+interface uses reset RNU, as for the other fixed-point operations.
+
 The eight single-width integer reductions combine the active `vs2` lanes with
 the scalar seed in `vs1[0]` and write the result to `vd[0]`. It also implements
 `vrgather.vv/vx/vi`; each destination lane selects a source element

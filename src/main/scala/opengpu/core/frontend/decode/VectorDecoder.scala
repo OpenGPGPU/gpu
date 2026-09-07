@@ -156,6 +156,8 @@ private object VectorDecodeTable {
     VectorInstruction("vsmul",  0x27, Seq(IVV, IVX), unit = 2),
     VectorInstruction("vsrl",   0x28, Seq(IVV, IVX, IVI)),
     VectorInstruction("vsra",   0x29, Seq(IVV, IVX, IVI)),
+    VectorInstruction("vssrl",  0x2a, Seq(IVV, IVX, IVI)),
+    VectorInstruction("vssra",  0x2b, Seq(IVV, IVX, IVI)),
     // Fixed-profile narrowing shifts consume the even/odd pair vs2/vs2+1
     // as one 64-bit source per lane.
     VectorInstruction("vnsrl",  0x2c, Seq(IVV, IVX, IVI), readsVs2Pair = true),

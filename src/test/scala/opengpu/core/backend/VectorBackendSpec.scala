@@ -197,6 +197,60 @@ class VectorBackendSpec extends AnyFlatSpec {
       }
       dut.io.in.bits.decoded.readsVs2Pair.poke(false.B)
 
+      // Scaling uses a single odd source and permits in-place writeback.
+      val scalingValues = Seq("ffffffff", "80000001", "00000005", "7fffffff")
+        .map(BigInt(_, 16))
+      initialize(3, 1) // vv shift amounts 1, 2, 3, 4
+      for (funct6 <- Seq(0x2a, 0x2b); form <- Seq(0, 3, 4);
+           masked <- Seq(false, true)) {
+        dut.io.initialize.valid.poke(true.B)
+        dut.io.initialize.bits.warpId.poke(1.U)
+        dut.io.initialize.bits.vd.poke(31.U)
+        scalingValues.zipWithIndex.foreach { case (value, lane) =>
+          dut.io.initialize.bits.data(lane).poke(value.U)
+        }
+        dut.io.initialize.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.initialize.valid.poke(false.B)
+        dut.io.scalarRs1Data.poke(33.U) // Only the low five bits apply.
+        val operand = if (form == 0) 3 else 1
+        val instruction = (BigInt(funct6) << 26) |
+          (if (masked) BigInt(0) else BigInt(1) << 25) |
+          (BigInt(31) << 20) | (BigInt(operand) << 15) |
+          (BigInt(form) << 12) | (BigInt(31) << 7) | 0x57
+        dut.io.in.bits.instruction.poke(instruction.U)
+        dut.io.in.bits.decoded.funct6.poke(funct6.U)
+        dut.io.in.bits.decoded.operandType.poke(form.U)
+        dut.io.in.bits.decoded.vm.poke((!masked).B)
+        dut.io.in.bits.decoded.readsVs1.poke((form == 0).B)
+        dut.io.in.bits.decoded.readsScalar.poke((form == 4).B)
+        dut.io.in.bits.activeMask.poke((if (masked) 3 else 15).U)
+        dut.io.in.valid.poke(true.B)
+        dut.io.in.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+        cycles = 0
+        while (!dut.io.committedVectorWriteback.valid.peek().litToBoolean &&
+          cycles < 24) {
+          dut.clock.step()
+          cycles += 1
+        }
+        dut.io.committedVectorWriteback.valid.expect(true.B)
+        dut.io.committedVectorWriteback.bits.warpId.expect(1.U)
+        dut.io.committedVectorWriteback.bits.vd.expect(31.U)
+        scalingValues.zipWithIndex.foreach { case (raw, lane) =>
+          val shift = if (form == 0) lane + 1 else 1
+          val value = if (funct6 == 0x2b && raw.testBit(31))
+            raw - (BigInt(1) << 32) else raw
+          val rounded = ((value + (BigInt(1) << (shift - 1))) >> shift) &
+            BigInt("ffffffff", 16) // reset vxrm is RNU
+          dut.io.committedVectorWriteback.bits.data(lane).expect(
+            (if (!masked || lane == 0) rounded else raw).U)
+        }
+        dut.clock.step()
+      }
+      initialize(3, 0x30)
+
       // Predicated arithmetic uses the same v0 and old-vd register paths
       // across integer, multiply and divide execution units.
       val maskedArithmetic = Seq(
