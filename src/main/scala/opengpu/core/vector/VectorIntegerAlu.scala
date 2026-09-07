@@ -10,13 +10,19 @@ private class NormalizedVectorIntegerRequest(config: GpuConfig) extends Bundle {
   val warpActiveMask = UInt(config.lanes.W)
   val vd = UInt(5.W)
   val oldVd = Vec(config.lanes, UInt(config.xLen.W))
+  // Raw operands cross the input boundary directly. Cross-lane selection is
+  // deliberately deferred to the following registered pipeline stage.
   val lhs = Vec(config.lanes, UInt(config.xLen.W))
+  val vs2 = Vec(config.lanes, UInt(config.xLen.W))
   val rhs = Vec(config.lanes, UInt(config.xLen.W))
+  val vs1 = Vec(config.lanes, UInt(config.xLen.W))
   // Odd half of the narrowing source pair; lhs carries the even half.
   val vs2Odd = Vec(config.lanes, UInt(config.xLen.W))
   val vxrm = UInt(2.W)
   val enabled = UInt(config.lanes.W)
+  val sourceEnabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
+  val operandType = UInt(3.W)
   val immediate = UInt(5.W)
   val quad = Bool()
   val reduction = Bool()
@@ -83,6 +89,12 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
 
   private val inputValid = RegInit(false.B)
   private val inputBits = Reg(new NormalizedVectorIntegerRequest(config))
+  // Isolate the cross-lane gather/slide/reduction network from both the
+  // external request boundary and the arithmetic/rounding stage.
+  private val preparedValid = RegInit(false.B)
+  private val preparedBits = Reg(new NormalizedVectorIntegerRequest(config))
+  private val reducedValid = RegInit(false.B)
+  private val reducedBits = Reg(new NormalizedVectorIntegerRequest(config))
   private val partialValid = RegInit(false.B)
   private val partialBits = Reg(new VectorIntegerPartial(config))
   private val candidateValid = RegInit(false.B)
@@ -92,7 +104,9 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   private val outputReady = !outputValid || io.out.ready
   private val candidateReady = !candidateValid || outputReady
   private val partialReady = !partialValid || candidateReady
-  private val inputReady = !inputValid || partialReady
+  private val reducedReady = !reducedValid || partialReady
+  private val preparedReady = !preparedValid || reducedReady
+  private val inputReady = !inputValid || preparedReady
 
   private val basicCandidates = Wire(Vec(config.lanes, UInt(config.xLen.W)))
   private val saturatingCandidates =
@@ -269,8 +283,9 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   }
 
   when(partialReady) {
-    partialValid := inputValid
-    when(inputValid) {
+    partialValid := reducedValid
+    when(reducedValid) {
+      val inputBits = reducedBits
       partialBits.warpId := inputBits.warpId
       partialBits.pc := inputBits.pc
       partialBits.warpActiveMask := inputBits.warpActiveMask
@@ -372,39 +387,91 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
     }
   }
 
+  when(preparedReady) {
+    preparedValid := inputValid
+    when(inputValid) {
+      preparedBits := inputBits
+      val inputIsVv = inputBits.operandType === "b000".U
+      val gatherIndexWidth = math.max(1, log2Ceil(config.lanes))
+      for (lane <- 0 until config.lanes) {
+        val gatherIndex = Mux(
+          inputIsVv,
+          inputBits.vs1(lane),
+          inputBits.rhs(lane)
+        )
+        val gathered = Mux(
+          gatherIndex < config.lanes.U,
+          inputBits.lhs(gatherIndex(gatherIndexWidth - 1, 0)),
+          0.U
+        )
+        val slideOffset = inputBits.rhs(lane)
+        val slideUpIndex = lane.U(config.xLen.W) - slideOffset
+        val slideUp = Mux(
+          slideOffset <= lane.U,
+          inputBits.lhs(slideUpIndex(gatherIndexWidth - 1, 0)),
+          inputBits.oldVd(lane)
+        )
+        val slideDownIndex = lane.U(config.xLen.W) +& slideOffset
+        val slideDown = Mux(
+          slideDownIndex < config.lanes.U,
+          inputBits.lhs(slideDownIndex(gatherIndexWidth - 1, 0)),
+          0.U
+        )
+        val crossLane = MuxCase(inputBits.lhs(lane), Seq(
+          (inputBits.funct6 === "h0c".U && !inputBits.quad) -> gathered,
+          (inputBits.funct6 === "h0e".U) -> slideUp,
+          (inputBits.funct6 === "h0f".U) -> slideDown
+        ))
+        preparedBits.lhs(lane) := crossLane
+      }
+    }
+  }
+
+  when(reducedReady) {
+    reducedValid := preparedValid
+    when(preparedValid) {
+      reducedBits := preparedBits
+      def combineReduction(left: UInt, right: UInt): UInt = MuxLookup(
+        preparedBits.funct6, left)(Seq(
+          "h00".U -> (left + right), "h01".U -> (left & right),
+          "h02".U -> (left | right), "h03".U -> (left ^ right),
+          "h04".U -> Mux(left < right, left, right),
+          "h05".U -> Mux(left.asSInt < right.asSInt, left, right),
+          "h06".U -> Mux(left > right, left, right),
+          "h07".U -> Mux(left.asSInt > right.asSInt, left, right)
+        ))
+      val reductionIdentity = MuxLookup(preparedBits.funct6, 0.U(32.W))(Seq(
+        "h01".U -> Fill(32, 1.U), "h04".U -> Fill(32, 1.U),
+        "h05".U -> ((BigInt(1) << 31) - 1).U(32.W),
+        "h07".U -> (BigInt(1) << 31).U(32.W)
+      ))
+      def reductionTree(values: Seq[UInt]): UInt = values match {
+        case Seq(value) => value
+        case _ => reductionTree(values.grouped(2).map {
+          case Seq(left, right) => combineReduction(left, right)
+          case Seq(left) => left
+        }.toSeq)
+      }
+      val reductionValues = (0 until config.lanes).map { sourceLane =>
+        Mux(preparedBits.sourceEnabled(sourceLane), preparedBits.vs2(sourceLane),
+          reductionIdentity)
+      }
+      reducedBits.lhs(0) := Mux(
+        preparedBits.reduction,
+        combineReduction(preparedBits.vs1(0), reductionTree(reductionValues)),
+        preparedBits.lhs(0)
+      )
+    }
+  }
+
   when(inputReady) {
     inputValid := io.in.valid
     when(io.in.valid) {
-      val inputIsVv = io.in.bits.operandType === "b000".U
-      val inputIsVx = io.in.bits.operandType === "b100".U
       val inputIsReduction =
         io.in.bits.operandType === "b010".U && io.in.bits.funct6 <= "h07".U
       val sourceEnabled =
         io.in.bits.activeMask &
           Mux(io.in.bits.vm, Fill(config.lanes, 1.U), io.in.bits.predicateMask)
-      val reductionResult = (0 until config.lanes).foldLeft(io.in.bits.vs1(0)) {
-        case (accumulator, lane) =>
-          val value = io.in.bits.vs2(lane)
-          val combined = MuxLookup(io.in.bits.funct6, accumulator)(Seq(
-            "h00".U -> (accumulator + value),
-            "h01".U -> (accumulator & value),
-            "h02".U -> (accumulator | value),
-            "h03".U -> (accumulator ^ value),
-            "h04".U -> Mux(accumulator < value, accumulator, value),
-            "h05".U -> Mux(
-              accumulator.asSInt < value.asSInt,
-              accumulator,
-              value
-            ),
-            "h06".U -> Mux(accumulator > value, accumulator, value),
-            "h07".U -> Mux(
-              accumulator.asSInt > value.asSInt,
-              accumulator,
-              value
-            )
-          ))
-          Mux(sourceEnabled(lane), combined, accumulator)
-      }
       val inputNarrowing = io.in.bits.funct6 >= "h2c".U &&
         io.in.bits.funct6 <= "h2f".U
       val inputImmediate =
@@ -418,59 +485,26 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       inputBits.warpActiveMask := io.in.bits.warpActiveMask
       inputBits.vd := io.in.bits.vd
       inputBits.funct6 := io.in.bits.funct6
+      inputBits.operandType := io.in.bits.operandType
       inputBits.immediate := io.in.bits.immediate
       inputBits.quad := io.in.bits.quad
       inputBits.reduction := inputIsReduction
+      inputBits.sourceEnabled := sourceEnabled
       inputBits.enabled := Mux(
         inputIsReduction,
         io.in.bits.activeMask.orR,
         sourceEnabled
       )
-      val gatherIndexWidth = math.max(1, log2Ceil(config.lanes))
-      val slideOffset = Mux(
-        inputIsVx,
-        io.in.bits.scalar,
-        io.in.bits.immediate
-      )
       for (lane <- 0 until config.lanes) {
         inputBits.oldVd(lane) := io.in.bits.oldVd(lane)
+        inputBits.vs1(lane) := io.in.bits.vs1(lane)
+        inputBits.vs2(lane) := io.in.bits.vs2(lane)
         inputBits.vs2Odd(lane) := io.in.bits.vs2Odd(lane)
-        val gatherIndex = Mux(
-          inputIsVv,
-          io.in.bits.vs1(lane),
-          Mux(inputIsVx, io.in.bits.scalar, io.in.bits.immediate)
-        )
-        val gathered = Mux(
-          gatherIndex < config.lanes.U,
-          io.in.bits.vs2(gatherIndex(gatherIndexWidth - 1, 0)),
-          0.U
-        )
-        val slideUpIndex = lane.U(config.xLen.W) - slideOffset
-        val slideUp = Mux(
-          slideOffset <= lane.U,
-          io.in.bits.vs2(slideUpIndex(gatherIndexWidth - 1, 0)),
-          io.in.bits.oldVd(lane)
-        )
-        val slideDownIndex = lane.U(config.xLen.W) +& slideOffset
-        val slideDown = Mux(
-          slideDownIndex < config.lanes.U,
-          io.in.bits.vs2(slideDownIndex(gatherIndexWidth - 1, 0)),
-          0.U
-        )
-        val crossLane = MuxCase(io.in.bits.vs2(lane), Seq(
-          (io.in.bits.funct6 === "h0c".U && !io.in.bits.quad) -> gathered,
-          (io.in.bits.funct6 === "h0e".U) -> slideUp,
-          (io.in.bits.funct6 === "h0f".U) -> slideDown
-        ))
-        inputBits.lhs(lane) := Mux(
-          inputIsReduction && lane.U === 0.U,
-          reductionResult,
-          crossLane
-        )
+        inputBits.lhs(lane) := io.in.bits.vs2(lane)
         inputBits.rhs(lane) := Mux(
-          inputIsVv,
+          io.in.bits.operandType === "b000".U,
           io.in.bits.vs1(lane),
-          Mux(inputIsVx, io.in.bits.scalar, inputImmediate)
+          Mux(io.in.bits.operandType === "b100".U, io.in.bits.scalar, inputImmediate)
         )
       }
     }

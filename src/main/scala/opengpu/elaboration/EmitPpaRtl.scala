@@ -29,6 +29,7 @@ import opengpu.core.execute.fpu.Fp32ExactUnit
 import opengpu.core.execute.fpu.Fp32DivLane
 import opengpu.system.{GpuHostSystemAxi, GpuSystem}
 import opengpu.core.vector.{
+  VectorIntegerAlu,
   VectorFcvtAlu,
   VectorFdivAlu,
   VectorFEstimateAlu,
@@ -47,6 +48,9 @@ object EmitPpaRtl {
     val firtoolArgs = Array(
       "--lowering-options=disallowLocalVariables,disallowPackedArrays")
     args(0) match {
+      case "vector-integer" =>
+        ChiselStage.emitSystemVerilogFile(
+          new VectorIntegerAlu(GpuConfig()), stageArgs, firtoolArgs)
       case "shared-l2-slice" =>
         ChiselStage.emitSystemVerilogFile(
           new SharedL2Slice(

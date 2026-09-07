@@ -27,15 +27,19 @@ for path in rtl_files:
 name = rtl_dir.name
 timing_effort = os.environ.get("GRAPHICS_PPA_TIMING_EFFORT", "closure_no_cts")
 effort_tag = "closure" if timing_effort.startswith("closure") else timing_effort
-out_dir = repo / "generated/ppa_runs" / f"head_{name}_tc_slvt_1ghz_{effort_tag}"
+core_utilization = int(os.environ.get("GRAPHICS_PPA_CORE_UTILIZATION", "25"))
+place_density = float(os.environ.get("GRAPHICS_PPA_PLACE_DENSITY", "0.6"))
+density_tag = f"d{int(place_density * 100):02d}"
+out_dir = repo / "generated/ppa_runs" / (
+    f"head_{name}_tc_slvt_1ghz_{effort_tag}_u{core_utilization}_{density_tag}")
 inputs = {
     "reg_code": "",
     "rtl_files": [str(p) for p in rtl_files],
     "module_name": module,
     "clock_port": "clock",
     "clock_period": 1000.0,
-    "core_utilization": 25,
-    "place_density": 0.6,
+    "core_utilization": core_utilization,
+    "place_density": place_density,
     "corner": "TC",
     "cell_vt": "SLVT",
     "output_dir": str(out_dir),
