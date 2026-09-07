@@ -151,6 +151,13 @@ defined v0 and old `vd`, reject destination v0, and preserve disabled lanes.
 Narrowing results cannot retain trusted byte-index provenance. Software must
 prepare separate low/high word vectors; this pair layout differs from RVV's
 general double-width register-group layout.
+`vnclipu.wv/wx/wi` and `vnclip.wv/wx/wi` use the same pair layout and
+validation rules. They round the shifted unsigned/signed 64-bit source
+before saturating to 32 bits. Enabled saturated lanes set the warp's sticky
+`vxsat` at commit; masked-off and inactive lanes preserve old `vd` and do
+not raise saturation. Hardware supports all four `vxrm` modes, while the
+current shader interface uses reset RNU and does not admit rounding-CSR
+writes. Clip results also discard trusted byte-index provenance.
 This fixed lane layout does not implement general RVV register groups or
 variable-SEW extension semantics. The sandbox permits memory
 access only inside the bound kernarg range and limits a workgroup to the fixed 32

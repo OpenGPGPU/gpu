@@ -193,9 +193,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         return false;
     if (funct6 == 0x12 && vd == vs2) /* widening source/destination overlap */
         return false;
-    if ((funct6 == 0x2c || funct6 == 0x2d) &&
+    if ((funct6 >= 0x2c && funct6 <= 0x2f) &&
         ((vs2 & 1) || vd == vs2 || vd == vs2 + 1))
-        return false; /* vnsrl/vnsra need an even vs2 pair disjoint from vd */
+        return false; /* narrowing needs an even vs2 pair disjoint from vd */
     switch (form) {
     case 0: /* integer vv */
         switch (funct6) {
@@ -225,6 +225,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x29: /* vsra */
         case 0x2c: /* vnsrl */
         case 0x2d: /* vnsra */
+        case 0x2e: /* vnclipu */
+        case 0x2f: /* vnclip */
             return true;
         default:
             return false;
@@ -257,6 +259,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x29: /* vsra */
         case 0x2c: /* vnsrl */
         case 0x2d: /* vnsra */
+        case 0x2e: /* vnclipu */
+        case 0x2f: /* vnclip */
             return true;
         default:
             return false;
@@ -294,6 +298,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x29: /* vsra */
         case 0x2c: /* vnsrl */
         case 0x2d: /* vnsra */
+        case 0x2e: /* vnclipu */
+        case 0x2f: /* vnclip */
             return true;
         default:
             return false;
@@ -311,7 +317,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
  * divide and remainder forms, masked lane-local integer arithmetic and
  * extensions, fixed-profile vnsrl/vnsra narrowing shifts over even/odd
- * register pairs, and masked or unmasked unit-, constant-stride, and
+ * register pairs, vnclipu/vnclip rounded saturating narrowing, and masked
+ * or unmasked unit-, constant-stride, and
  * trusted-local-index word memory operations. Defined-register
  * tracking prevents stale SGPR/VGPR data from being exported. A small abstract
  * interpreter recognizes x1 +
@@ -497,7 +504,7 @@ static inline bool opengpu_shader_validate_words_profile(
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
                     !vector_defined[rs2] ||
-                    (((insn >> 26) == 0x2c || (insn >> 26) == 0x2d) &&
+                    (((insn >> 26) >= 0x2c && (insn >> 26) <= 0x2f) &&
                      !vector_defined[rs2 + 1]) ||
                     (!(insn & (1u << 25)) &&
                      (!vector_defined[0] || !vector_defined[rd])) ||

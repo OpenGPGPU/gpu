@@ -135,8 +135,11 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 - Add further high-value RVV widening/narrowing operations, extending
   validation only with matching hardware support. The fixed profile now has
   masked and unmasked lane-local `vsext/vzext.vf2/vf4/vf8` and
-  `vnsrl/vnsra.wv/wx/wi` over explicit even/odd low/high word pairs, with
-  source-pair dependency tracking and matching shader validation.
+  `vnsrl/vnsra.wv/wx/wi` and rounded saturating `vnclipu/vnclip.wv/wx/wi`
+  over explicit even/odd low/high word pairs, with source-pair dependency
+  tracking and matching shader validation. Clip supports all four hardware
+  rounding modes and commit-time saturation; shader rounding-CSR writes
+  remain outside the current interface.
 - Measure full-system cost by resolution, remove avoidable host-memory work and
   establish a practical regression default.
 - Add a safe unified-command reset that drains or invalidates in-flight memory

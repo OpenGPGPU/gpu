@@ -245,7 +245,7 @@ int main(void)
     assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
 
     /* Narrowing uses a defined even/odd source pair in all three forms. */
-    for (unsigned int fn = 0x2c; fn <= 0x2d; fn++) {
+    for (unsigned int fn = 0x2c; fn <= 0x2f; fn++) {
         for (unsigned int form = 0; form < 8; form++) {
             bool legal = form == 0 || form == 3 || form == 4;
             program[0] = vsetivli(4);
