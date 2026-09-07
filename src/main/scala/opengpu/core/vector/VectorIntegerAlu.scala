@@ -93,6 +93,13 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   // external request boundary and the arithmetic/rounding stage.
   private val preparedValid = RegInit(false.B)
   private val preparedBits = Reg(new NormalizedVectorIntegerRequest(config))
+  // Reductions are split so no register-to-register path contains the full
+  // lane tree. This is particularly important for the 8-lane production
+  // configuration, where a single tree dominated the 1 GHz timing target.
+  private val reductionPairValid = RegInit(false.B)
+  private val reductionPairBits = Reg(new NormalizedVectorIntegerRequest(config))
+  private val reductionPairs =
+    Reg(Vec((config.lanes + 1) / 2, UInt(config.xLen.W)))
   private val reducedValid = RegInit(false.B)
   private val reducedBits = Reg(new NormalizedVectorIntegerRequest(config))
   private val partialValid = RegInit(false.B)
@@ -105,7 +112,8 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   private val candidateReady = !candidateValid || outputReady
   private val partialReady = !partialValid || candidateReady
   private val reducedReady = !reducedValid || partialReady
-  private val preparedReady = !preparedValid || reducedReady
+  private val reductionPairReady = !reductionPairValid || reducedReady
+  private val preparedReady = !preparedValid || reductionPairReady
   private val inputReady = !inputValid || preparedReady
 
   private val basicCandidates = Wire(Vec(config.lanes, UInt(config.xLen.W)))
@@ -427,10 +435,10 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
     }
   }
 
-  when(reducedReady) {
-    reducedValid := preparedValid
+  when(reductionPairReady) {
+    reductionPairValid := preparedValid
     when(preparedValid) {
-      reducedBits := preparedBits
+      reductionPairBits := preparedBits
       def combineReduction(left: UInt, right: UInt): UInt = MuxLookup(
         preparedBits.funct6, left)(Seq(
           "h00".U -> (left + right), "h01".U -> (left & right),
@@ -445,6 +453,34 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         "h05".U -> ((BigInt(1) << 31) - 1).U(32.W),
         "h07".U -> (BigInt(1) << 31).U(32.W)
       ))
+      for (pair <- 0 until (config.lanes + 1) / 2) {
+        val firstLane = pair * 2
+        val left = Mux(preparedBits.sourceEnabled(firstLane),
+          preparedBits.vs2(firstLane), reductionIdentity)
+        val right = if (firstLane + 1 < config.lanes) {
+          Mux(preparedBits.sourceEnabled(firstLane + 1),
+            preparedBits.vs2(firstLane + 1), reductionIdentity)
+        } else {
+          reductionIdentity
+        }
+        reductionPairs(pair) := combineReduction(left, right)
+      }
+    }
+  }
+
+  when(reducedReady) {
+    reducedValid := reductionPairValid
+    when(reductionPairValid) {
+      reducedBits := reductionPairBits
+      def combineReduction(left: UInt, right: UInt): UInt = MuxLookup(
+        reductionPairBits.funct6, left)(Seq(
+          "h00".U -> (left + right), "h01".U -> (left & right),
+          "h02".U -> (left | right), "h03".U -> (left ^ right),
+          "h04".U -> Mux(left < right, left, right),
+          "h05".U -> Mux(left.asSInt < right.asSInt, left, right),
+          "h06".U -> Mux(left > right, left, right),
+          "h07".U -> Mux(left.asSInt > right.asSInt, left, right)
+        ))
       def reductionTree(values: Seq[UInt]): UInt = values match {
         case Seq(value) => value
         case _ => reductionTree(values.grouped(2).map {
@@ -452,14 +488,10 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
           case Seq(left) => left
         }.toSeq)
       }
-      val reductionValues = (0 until config.lanes).map { sourceLane =>
-        Mux(preparedBits.sourceEnabled(sourceLane), preparedBits.vs2(sourceLane),
-          reductionIdentity)
-      }
       reducedBits.lhs(0) := Mux(
-        preparedBits.reduction,
-        combineReduction(preparedBits.vs1(0), reductionTree(reductionValues)),
-        preparedBits.lhs(0)
+        reductionPairBits.reduction,
+        combineReduction(reductionPairBits.vs1(0), reductionTree(reductionPairs)),
+        reductionPairBits.lhs(0)
       )
     }
   }
