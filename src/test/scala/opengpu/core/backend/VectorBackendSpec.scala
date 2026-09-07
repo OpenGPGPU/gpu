@@ -54,6 +54,7 @@ class VectorBackendSpec extends AnyFlatSpec {
       dut.io.in.bits.decoded.elementWidth.poke(7.U)
       dut.io.in.bits.decoded.readsVs1.poke(false.B)
       dut.io.in.bits.decoded.readsVs2.poke(false.B)
+      dut.io.in.bits.decoded.readsVs2Pair.poke(false.B)
       dut.io.in.bits.decoded.readsScalar.poke(false.B)
       dut.io.in.bits.decoded.readsFloat.poke(false.B)
       dut.io.in.bits.decoded.writesVd.poke(false.B)
@@ -154,6 +155,41 @@ class VectorBackendSpec extends AnyFlatSpec {
       dut.clock.step()
       initialize(2, 0x20)
       dut.io.in.bits.activeMask.poke(15.U)
+
+      // Exercise paired RF reads all the way through ALU and writeback.
+      for (masked <- Seq(false, true)) {
+        initialize(6, 100)
+        dut.io.scalarRs1Data.poke(32.U)
+        val narrowInstruction = (BigInt(0x2c) << 26) |
+          (if (masked) BigInt(0) else BigInt(1) << 25) |
+          (BigInt(2) << 20) | (BigInt(1) << 15) |
+          (BigInt(4) << 12) | (BigInt(6) << 7) | 0x57
+        dut.io.in.bits.instruction.poke(narrowInstruction.U)
+        dut.io.in.bits.decoded.funct6.poke(0x2c.U)
+        dut.io.in.bits.decoded.operandType.poke(4.U)
+        dut.io.in.bits.decoded.vm.poke((!masked).B)
+        dut.io.in.bits.decoded.readsVs2Pair.poke(true.B)
+        dut.io.in.bits.decoded.readsScalar.poke(true.B)
+        dut.io.in.bits.activeMask.poke((if (masked) 3 else 15).U)
+        dut.io.in.valid.poke(true.B)
+        dut.io.in.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+        cycles = 0
+        while (!dut.io.committedVectorWriteback.valid.peek().litToBoolean &&
+          cycles < 24) {
+          dut.clock.step()
+          cycles += 1
+        }
+        dut.io.committedVectorWriteback.valid.expect(true.B)
+        dut.io.committedVectorWriteback.bits.warpId.expect(1.U)
+        dut.io.committedVectorWriteback.bits.vd.expect(6.U)
+        for (lane <- 0 until config.lanes)
+          dut.io.committedVectorWriteback.bits.data(lane).expect(
+            (if (!masked || lane == 0) 0x30 + lane else 100 + lane).U)
+        dut.clock.step()
+      }
+      dut.io.in.bits.decoded.readsVs2Pair.poke(false.B)
 
       // Predicated arithmetic uses the same v0 and old-vd register paths
       // across integer, multiply and divide execution units.
@@ -282,6 +318,7 @@ class VectorBackendSpec extends AnyFlatSpec {
       dut.io.in.bits.decoded.vm.poke(true.B)
       dut.io.in.bits.decoded.readsVs1.poke(false.B)
       dut.io.in.bits.decoded.readsVs2.poke(false.B)
+      dut.io.in.bits.decoded.readsVs2Pair.poke(false.B)
       dut.io.in.bits.decoded.readsScalar.poke(true.B)
       dut.io.in.bits.decoded.writesVd.poke(true.B)
       dut.io.in.bits.decoded.memoryRead.poke(true.B)
@@ -417,6 +454,7 @@ class VectorBackendSpec extends AnyFlatSpec {
       dut.io.in.bits.decoded.elementWidth.poke(7.U)
       dut.io.in.bits.decoded.readsVs1.poke(false.B)
       dut.io.in.bits.decoded.readsVs2.poke(false.B)
+      dut.io.in.bits.decoded.readsVs2Pair.poke(false.B)
       dut.io.in.bits.decoded.readsScalar.poke(false.B)
       dut.io.in.bits.decoded.readsFloat.poke(false.B)
       dut.io.in.bits.decoded.writesVd.poke(false.B)
@@ -593,6 +631,7 @@ class VectorBackendSpec extends AnyFlatSpec {
       dut.io.in.bits.decoded.elementWidth.poke(7.U)
       dut.io.in.bits.decoded.readsVs1.poke(false.B)
       dut.io.in.bits.decoded.readsVs2.poke(false.B)
+      dut.io.in.bits.decoded.readsVs2Pair.poke(false.B)
       dut.io.in.bits.decoded.readsScalar.poke(false.B)
       dut.io.in.bits.decoded.readsFloat.poke(false.B)
       dut.io.in.bits.decoded.writesVd.poke(false.B)

@@ -17,6 +17,7 @@ class VectorRegisterFileSpec extends AnyFlatSpec {
     dut.io.read.warpId.poke(0.U)
     dut.io.read.vs1.poke(0.U)
     dut.io.read.vs2.poke(3.U)
+    dut.io.read.vs2Odd.poke(0.U)
     dut.io.read.vd.poke(0.U)
     dut.io.write.valid.poke(false.B)
     dut.clock.step()
@@ -29,6 +30,7 @@ class VectorRegisterFileSpec extends AnyFlatSpec {
     }
     for (lane <- 0 until config.lanes) {
       dut.io.vs1Data(lane).expect((0x10 + lane).U)
+      dut.io.vs2OddData(lane).expect((0x10 + lane).U)
       dut.io.oldVdData(lane).expect((0x10 + lane).U)
     }
     dut.io.predicateMask.expect(0.U)
@@ -44,10 +46,12 @@ class VectorRegisterFileSpec extends AnyFlatSpec {
     dut.io.read.warpId.poke(0.U)
     for (lane <- 0 until config.lanes) {
       dut.io.vs1Data(lane).expect((0x10 + lane).U)
+      dut.io.vs2OddData(lane).expect((0x10 + lane).U)
     }
     dut.io.read.warpId.poke(1.U)
     for (lane <- 0 until config.lanes) {
       dut.io.vs1Data(lane).expect((0x20 + lane).U)
+      dut.io.vs2OddData(lane).expect((0x20 + lane).U)
     }
     dut.io.predicateMask.expect(0.U)
   }

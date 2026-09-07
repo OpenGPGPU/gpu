@@ -50,6 +50,8 @@ class VectorDecodeSignals extends Bundle {
   val elementWidth = UInt(3.W)
   val readsVs1 = Bool()
   val readsVs2 = Bool()
+  // Narrowing operations consume the even/odd register pair vs2/vs2+1.
+  val readsVs2Pair = Bool()
   val readsScalar = Bool()
   val readsFloat = Bool()
   val writesVd = Bool()

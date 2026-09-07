@@ -11,6 +11,8 @@ class VectorRegisterReservation(config: GpuConfig) extends Bundle {
   val vd = UInt(5.W)
   val useVs1 = Bool()
   val useVs2 = Bool()
+  // Narrowing source pair: tracks the odd half vs2 + 1 (vs2 is even).
+  val useVs2Odd = Bool()
   val readVd = Bool()
   val useMask = Bool()
   val writeVd = Bool()
@@ -56,6 +58,8 @@ class VectorRegisterScoreboard(config: GpuConfig = GpuConfig()) extends Module {
   io.rawHazard :=
     (io.reserve.bits.useVs1 && effectiveBusy(io.reserve.bits.vs1)) ||
       (io.reserve.bits.useVs2 && effectiveBusy(io.reserve.bits.vs2)) ||
+      (io.reserve.bits.useVs2Odd &&
+        effectiveBusy((io.reserve.bits.vs2 + 1.U)(4, 0))) ||
       (io.reserve.bits.readVd && effectiveBusy(io.reserve.bits.vd)) ||
       (io.reserve.bits.useMask && effectiveBusy(0))
   io.wawHazard :=

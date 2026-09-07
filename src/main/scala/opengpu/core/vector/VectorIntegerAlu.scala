@@ -12,6 +12,8 @@ private class NormalizedVectorIntegerRequest(config: GpuConfig) extends Bundle {
   val oldVd = Vec(config.lanes, UInt(config.xLen.W))
   val lhs = Vec(config.lanes, UInt(config.xLen.W))
   val rhs = Vec(config.lanes, UInt(config.xLen.W))
+  // Odd half of the narrowing source pair; lhs carries the even half.
+  val vs2Odd = Vec(config.lanes, UInt(config.xLen.W))
   val enabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
   val immediate = UInt(5.W)
@@ -178,7 +180,9 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   private val outputShift =
     candidateBits.funct6 === "h25".U ||
       candidateBits.funct6 === "h28".U ||
-      candidateBits.funct6 === "h29".U
+      candidateBits.funct6 === "h29".U ||
+      candidateBits.funct6 === "h2c".U ||
+      candidateBits.funct6 === "h2d".U
   private val selectedResults = Wire(Vec(config.lanes, UInt(config.xLen.W)))
   for (lane <- 0 until config.lanes) {
     val saturatedResult = Mux(
@@ -281,7 +285,12 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         partialBits.shift(lane) := MuxLookup(inputBits.funct6, 0.U(32.W))(Seq(
           "h25".U -> (lhs << shiftAmount)(31, 0),
           "h28".U -> (lhs >> shiftAmount),
-          "h29".U -> (lhs.asSInt >> shiftAmount).asUInt
+          "h29".U -> (lhs.asSInt >> shiftAmount).asUInt,
+          // vnsrl/vnsra narrow the 64-bit pair {vs2+1, vs2} to its low word.
+          "h2c".U -> (Cat(inputBits.vs2Odd(lane), lhs) >> rhs(5, 0))(31, 0),
+          "h2d".U ->
+            (Cat(inputBits.vs2Odd(lane), lhs).asSInt >> rhs(5, 0))
+              .asUInt(31, 0)
         ))
         partialBits.less(lane) := less
         partialBits.lessSigned(lane) := lessSigned
@@ -348,9 +357,11 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
           ))
           Mux(sourceEnabled(lane), combined, accumulator)
       }
+      val inputNarrowing = io.in.bits.funct6 === "h2c".U ||
+        io.in.bits.funct6 === "h2d".U
       val inputImmediate =
         Cat(
-          Fill(config.xLen - 5, io.in.bits.immediate(4)),
+          Fill(config.xLen - 5, io.in.bits.immediate(4) && !inputNarrowing),
           io.in.bits.immediate
         )
       inputBits.warpId := io.in.bits.warpId
@@ -374,6 +385,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       )
       for (lane <- 0 until config.lanes) {
         inputBits.oldVd(lane) := io.in.bits.oldVd(lane)
+        inputBits.vs2Odd(lane) := io.in.bits.vs2Odd(lane)
         val gatherIndex = Mux(
           inputIsVv,
           io.in.bits.vs1(lane),

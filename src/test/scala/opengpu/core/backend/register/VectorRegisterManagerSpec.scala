@@ -39,6 +39,7 @@ class VectorRegisterManagerSpec extends AnyFlatSpec {
       dut.io.request.bits.vd.poke(3.U)
       dut.io.request.bits.useVs1.poke(true.B)
       dut.io.request.bits.useVs2.poke(true.B)
+      dut.io.request.bits.useVs2Odd.poke(false.B)
       dut.io.request.bits.readVd.poke(true.B)
       dut.io.request.bits.useMask.poke(false.B)
       dut.io.request.bits.writeVd.poke(true.B)

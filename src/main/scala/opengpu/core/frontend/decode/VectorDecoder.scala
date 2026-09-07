@@ -15,6 +15,7 @@ private case class VectorPattern(
   unit: Int,
   readsVs1: Boolean = false,
   readsVs2: Boolean = false,
+  readsVs2Pair: Boolean = false,
   readsScalar: Boolean = false,
   readsFloat: Boolean = false,
   writesVd: Boolean = false,
@@ -47,6 +48,10 @@ private object VectorDecodeTable {
   }
   object ReadsVs2 extends VectorBoolField("readsVs2") {
     override protected def value(pattern: VectorPattern): Boolean = pattern.readsVs2
+  }
+  object ReadsVs2Pair extends VectorBoolField("readsVs2Pair") {
+    override protected def value(pattern: VectorPattern): Boolean =
+      pattern.readsVs2Pair
   }
   object ReadsScalar extends VectorBoolField("readsScalar") {
     override protected def value(pattern: VectorPattern): Boolean = pattern.readsScalar
@@ -103,7 +108,8 @@ private object VectorDecodeTable {
     name: String,
     funct6: Int,
     forms: Seq[OperandForm],
-    unit: Int = 1
+    unit: Int = 1,
+    readsVs2Pair: Boolean = false
   )
 
   /*
@@ -149,7 +155,11 @@ private object VectorDecodeTable {
     VectorInstruction("vsll",   0x25, Seq(IVV, IVX, IVI)),
     VectorInstruction("vsmul",  0x27, Seq(IVV, IVX), unit = 2),
     VectorInstruction("vsrl",   0x28, Seq(IVV, IVX, IVI)),
-    VectorInstruction("vsra",   0x29, Seq(IVV, IVX, IVI))
+    VectorInstruction("vsra",   0x29, Seq(IVV, IVX, IVI)),
+    // Fixed-profile narrowing shifts consume the even/odd pair vs2/vs2+1
+    // as one 64-bit source per lane.
+    VectorInstruction("vnsrl",  0x2c, Seq(IVV, IVX, IVI), readsVs2Pair = true),
+    VectorInstruction("vnsra",  0x2d, Seq(IVV, IVX, IVI), readsVs2Pair = true)
   )
 
   private val integerMultiplyDivideInstructions = Seq(
@@ -245,6 +255,7 @@ private object VectorDecodeTable {
             unit = instruction.unit,
             readsVs1 = form.readsVs1,
             readsVs2 = true,
+            readsVs2Pair = instruction.readsVs2Pair,
             readsScalar = form.readsScalar,
             readsFloat = form.readsFloat,
             writesVd = true
@@ -313,6 +324,7 @@ private object VectorDecodeTable {
     Unit,
     ReadsVs1,
     ReadsVs2,
+    ReadsVs2Pair,
     ReadsScalar,
     ReadsFloat,
     WritesVd,
@@ -346,10 +358,25 @@ class VectorDecoder extends Module {
       (!io.instruction(25) && io.instruction(11, 7) === 0.U)
   )
 
+  // vnsrl/vnsra treat vs2/vs2+1 as one 64-bit source: vs2 must be even and
+  // vd must not overlap the pair. Masked forms cannot target v0.
+  val integerNarrowing = opcode === "b1010111".U &&
+    (io.instruction(31, 26) === "b101100".U ||
+      io.instruction(31, 26) === "b101101".U) &&
+    (io.instruction(14, 12) === "b000".U ||
+      io.instruction(14, 12) === "b011".U ||
+      io.instruction(14, 12) === "b100".U)
+  val narrowingOverlap = integerNarrowing && (
+    io.instruction(20) ||
+      io.instruction(11, 7) === io.instruction(24, 20) ||
+      io.instruction(11, 7) === (io.instruction(24, 20) + 1.U)(4, 0) ||
+      (!io.instruction(25) && io.instruction(11, 7) === 0.U)
+  )
+
   io.decoded := 0.U.asTypeOf(new VectorDecodeSignals)
   io.decoded.recognized := recognized
   io.decoded.valid := result(VectorDecodeTable.Legal) &&
-    !slideUpOverlap && !extensionOverlap
+    !slideUpOverlap && !extensionOverlap && !narrowingOverlap
   io.decoded.unit := decodedUnit
   io.decoded.funct6 := io.instruction(31, 26)
   io.decoded.operandType := io.instruction(14, 12)
@@ -359,6 +386,7 @@ class VectorDecoder extends Module {
   io.decoded.elementWidth := io.instruction(14, 12)
   io.decoded.readsVs1 := result(VectorDecodeTable.ReadsVs1)
   io.decoded.readsVs2 := result(VectorDecodeTable.ReadsVs2)
+  io.decoded.readsVs2Pair := result(VectorDecodeTable.ReadsVs2Pair)
   io.decoded.readsScalar := result(VectorDecodeTable.ReadsScalar)
   io.decoded.readsFloat := result(VectorDecodeTable.ReadsFloat)
   io.decoded.writesVd := result(VectorDecodeTable.WritesVd)

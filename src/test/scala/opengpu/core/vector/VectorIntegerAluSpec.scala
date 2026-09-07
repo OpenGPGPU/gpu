@@ -30,6 +30,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.oldVd(lane).poke((100 + lane).U)
       dut.io.in.bits.vs1(lane).poke(0.U)
       dut.io.in.bits.vs2(lane).poke(0.U)
+      dut.io.in.bits.vs2Odd(lane).poke(0.U)
     }
   }
 
@@ -163,6 +164,90 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
         dut.clock.step()
         dut.io.out.valid.expect(false.B)
       }
+    }
+  }
+
+  it should "narrow 64-bit register pairs with logical and arithmetic shifts" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      val lows = Seq(BigInt("80000000", 16), BigInt("12345678", 16),
+        BigInt("ffffffff", 16), BigInt(0))
+      val highs = Seq(BigInt("00000001", 16), BigInt("deadbeef", 16),
+        BigInt("ffffffff", 16), BigInt("7fffffff", 16))
+
+      def issue(
+        funct6: Int,
+        form: Int,
+        shiftAmounts: Seq[Long],
+        masked: Boolean = false,
+        predicate: Int = 0xf,
+        stall: Boolean = false
+      ): Unit = {
+        dut.io.in.bits.funct6.poke(funct6.U)
+        dut.io.in.bits.operandType.poke(form.U)
+        dut.io.in.bits.vm.poke((!masked).B)
+        dut.io.in.bits.predicateMask.poke(predicate.U)
+        dut.io.in.bits.scalar.poke(shiftAmounts(0).U)
+        dut.io.in.bits.immediate.poke((shiftAmounts(0) & 31).U)
+        lows.zip(highs).zipWithIndex.foreach { case ((low, high), lane) =>
+          dut.io.in.bits.vs2(lane).poke(low.U)
+          dut.io.in.bits.vs2Odd(lane).poke(high.U)
+          dut.io.in.bits.vs1(lane).poke(shiftAmounts(lane).U)
+        }
+        if (stall) dut.io.out.ready.poke(false.B)
+        dut.io.in.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+        dut.clock.step(3)
+        val expected = lows.zip(highs).zipWithIndex.map {
+          case ((low, high), lane) =>
+            val wide = (high << 32) | low
+            val narrowed = funct6 match {
+              case 0x2c =>
+                (wide >> (shiftAmounts(lane) & 63).toInt) &
+                  BigInt("ffffffff", 16)
+              case _ =>
+                val signed = wide - (if (wide.testBit(63)) BigInt(1) << 64
+                                     else BigInt(0))
+                (signed >> (shiftAmounts(lane) & 63).toInt) &
+                  BigInt("ffffffff", 16)
+            }
+            if (masked && (predicate & (1 << lane)) == 0) BigInt(100 + lane)
+            else narrowed
+        }
+        val checks = if (stall) 3 else 1
+        for (_ <- 0 until checks) {
+          dut.io.out.valid.expect(true.B)
+          dut.io.out.bits.writesMask.expect(false.B)
+          expected.zipWithIndex.foreach { case (value, lane) =>
+            dut.io.out.bits.data(lane).expect(value.U)
+          }
+          dut.clock.step()
+        }
+        if (stall) {
+          dut.io.out.ready.poke(true.B)
+          dut.clock.step()
+          dut.io.out.valid.expect(false.B)
+        }
+      }
+
+      // vnsrl.wv: per-lane shift amounts, including 0 and 31.
+      issue(0x2c, 0, Seq(1, 16, 0, 31))
+      // vnsra.wv: the 0xdeadbeef pair and both sign-extreme pairs.
+      issue(0x2d, 0, Seq(1, 16, 31, 5))
+      issue(0x2c, 0, Seq(32, 33, 63, 64))
+      issue(0x2d, 0, Seq(63, 32, 65, 127))
+      issue(0x2c, 4, Seq.fill(4)(63L))
+      issue(0x2d, 4, Seq.fill(4)(63L))
+      // vnsrl.wx/vnsra.wx: one scalar shift amount for every lane.
+      issue(0x2c, 4, Seq(4, 4, 4, 4))
+      issue(0x2d, 4, Seq(31, 31, 31, 31))
+      // vnsrl.wi/vnsra.wi: the immediate supplies the shift amount.
+      issue(0x2c, 3, Seq(31, 31, 31, 31))
+      issue(0x2d, 3, Seq(0, 0, 0, 0))
+      // Masked lanes keep their old destination under output backpressure.
+      issue(0x2c, 0, Seq(8, 8, 8, 8), masked = true, predicate = 5,
+        stall = true)
     }
   }
 

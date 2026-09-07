@@ -60,14 +60,26 @@ for masked extensions. Full RVV
 register-group and variable-SEW widening semantics remain outside this
 profile.
 
+The fixed profile also implements masked and unmasked `vnsrl.wv/wx/wi`
+and `vnsra.wv/wx/wi`. Each lane forms a 64-bit source as
+`{v[vs2+1][lane], v[vs2][lane]}` and keeps the low 32 bits after the shift.
+Vector and scalar shift amounts use their low six bits; the five-bit
+immediate is zero-extended. The source base must be even and the destination
+must be disjoint from both source registers. Disabled lanes preserve old
+`vd`; masked writes to v0 are rejected. Both source halves participate in
+scoreboard hazards and must be defined for driver validation. This is a
+lane-local pair layout, not the general RVV double-width register-group
+layout; software must explicitly prepare the low and high word vectors.
+
 The backend now contains a behavioral per-warp vector register file and issue
-boundary. Each warp owns 32 VLEN-wide registers with `vs1`, `vs2`, old-`vd`,
+boundary. Each warp owns 32 VLEN-wide registers with `vs1`, `vs2`, `vs2+1`, old-`vd`,
 and dedicated v0 predicate reads plus one write port. The accompanying vector
 scoreboard tracks all registers including v0 and supports same-cycle release
 and re-issue. This behavioral storage is the architectural reference; a
 multi-port macro wrapper is now available through
 `VectorRegisterFile(useBlackBox = true)`: each warp bank mirrors ASAP7 1RW
-SRAM macros for the three read ports and the write port, keeping writes
+SRAM macros for four operand reads plus the dedicated predicate read,
+replicating writes across all copies and keeping them
 visible to same-cycle reads through a write-through bypass. `GpuCore` selects
 this physical file when `useBlackBoxes = true`.
 

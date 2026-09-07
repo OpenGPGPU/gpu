@@ -12,6 +12,7 @@ class VectorIssueOperands(config: GpuConfig) extends Bundle {
   val request = new VectorRegisterReservation(config)
   val vs1Data = Vec(config.lanes, UInt(config.xLen.W))
   val vs2Data = Vec(config.lanes, UInt(config.xLen.W))
+  val vs2OddData = Vec(config.lanes, UInt(config.xLen.W))
   val oldVdData = Vec(config.lanes, UInt(config.xLen.W))
   val predicateMask = UInt(config.lanes.W)
 }
@@ -48,6 +49,7 @@ class VectorRegisterManager(
   registerFile.io.read.warpId := requestBits.warpId
   registerFile.io.read.vs1 := requestBits.vs1
   registerFile.io.read.vs2 := requestBits.vs2
+  registerFile.io.read.vs2Odd := (requestBits.vs2 + 1.U)(4, 0)
   registerFile.io.read.vd := requestBits.vd
   registerFile.io.write := io.writeback
 
@@ -69,6 +71,7 @@ class VectorRegisterManager(
       issueBits.request := requestBits
       issueBits.vs1Data := registerFile.io.vs1Data
       issueBits.vs2Data := registerFile.io.vs2Data
+      issueBits.vs2OddData := registerFile.io.vs2OddData
       issueBits.oldVdData := registerFile.io.oldVdData
       issueBits.predicateMask := registerFile.io.predicateMask
     }

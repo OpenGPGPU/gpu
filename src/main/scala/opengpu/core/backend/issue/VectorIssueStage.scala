@@ -24,6 +24,7 @@ class VectorIssuedInstruction(config: GpuConfig) extends Bundle {
   val decode = new VectorDecodeResponse(config)
   val vs1Data = Vec(config.lanes, UInt(config.xLen.W))
   val vs2Data = Vec(config.lanes, UInt(config.xLen.W))
+  val vs2OddData = Vec(config.lanes, UInt(config.xLen.W))
   val oldVdData = Vec(config.lanes, UInt(config.xLen.W))
   val predicateMask = UInt(config.lanes.W)
   val scalarRs1Data = UInt(config.xLen.W)
@@ -31,7 +32,7 @@ class VectorIssuedInstruction(config: GpuConfig) extends Bundle {
   val scalarFpData = UInt(32.W)
 }
 
-/** Couples vector decode metadata to three-port vector RF operand issue.
+/** Couples vector decode metadata to four-operand vector RF operand issue.
   *
   * The scalar read request is exposed so the eventual unified backend can
   * arbitrate the scalar RF ports between scalar and vector issue. Scalar
@@ -122,6 +123,7 @@ class VectorIssueStage(
   reservationQueue.io.enq.bits.vd := skidVd
   reservationQueue.io.enq.bits.useVs1 := inDecode.decoded.readsVs1
   reservationQueue.io.enq.bits.useVs2 := inDecode.decoded.readsVs2
+  reservationQueue.io.enq.bits.useVs2Odd := inDecode.decoded.readsVs2Pair
   // RVV stores encode their source vector as vs3 in the vd field.
   reservationQueue.io.enq.bits.readVd :=
     inDecode.decoded.writesVd || inDecode.decoded.memoryWrite
@@ -152,6 +154,7 @@ class VectorIssueStage(
       outputBits.scalarFpData := metadata.io.deq.bits.scalarFpData
       outputBits.vs1Data := registers.io.issue.bits.vs1Data
       outputBits.vs2Data := registers.io.issue.bits.vs2Data
+      outputBits.vs2OddData := registers.io.issue.bits.vs2OddData
       outputBits.oldVdData := registers.io.issue.bits.oldVdData
       outputBits.predicateMask := registers.io.issue.bits.predicateMask
     }

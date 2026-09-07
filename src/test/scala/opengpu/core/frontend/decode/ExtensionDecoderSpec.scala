@@ -187,4 +187,64 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.valid.expect(false.B)
     }
   }
+
+  it should "decode vnsrl and vnsra in wv, wx, and wi forms" in {
+    simulate(new VectorDecoder) { dut =>
+      def narrowing(vd: Int, vs2: Int, operand: Int, form: Int,
+                    funct6: Int): BigInt =
+        (BigInt(funct6) << 26) | (BigInt(1) << 25) |
+          (BigInt(vs2) << 20) | (BigInt(operand) << 15) |
+          (BigInt(form) << 12) | (BigInt(vd) << 7) | 0x57
+
+      for (funct6 <- Seq(0x2c, 0x2d); form <- Seq(0, 4, 3)) {
+        dut.io.instruction.poke(narrowing(6, 4, 1, form, funct6).U)
+        dut.io.decoded.recognized.expect(true.B)
+        dut.io.decoded.valid.expect(true.B)
+        dut.io.decoded.unit.expect(VectorUnit.alu)
+        dut.io.decoded.readsVs2.expect(true.B)
+        dut.io.decoded.readsVs2Pair.expect(true.B)
+        dut.io.decoded.readsVs1.expect((form == 0).B)
+        dut.io.decoded.readsScalar.expect((form == 4).B)
+        dut.io.decoded.writesVd.expect(true.B)
+
+        dut.io.instruction.poke(
+          (narrowing(6, 4, 1, form, funct6) & ~(BigInt(1) << 25)).U)
+        dut.io.decoded.valid.expect(true.B)
+        dut.io.decoded.vm.expect(false.B)
+        dut.io.decoded.readsVs2Pair.expect(true.B)
+        dut.io.instruction.poke(narrowing(6, 30, 1, form, funct6).U)
+        dut.io.decoded.valid.expect(true.B)
+        dut.io.instruction.poke(narrowing(6, 31, 1, form, funct6).U)
+        dut.io.decoded.valid.expect(false.B)
+
+        // vs2 must be even: the 64-bit source spans the vs2/vs2+1 pair.
+        dut.io.instruction.poke(narrowing(6, 3, 1, form, funct6).U)
+        dut.io.decoded.recognized.expect(true.B)
+        dut.io.decoded.valid.expect(false.B)
+
+        // vd must not overlap either half of the source pair.
+        dut.io.instruction.poke(narrowing(4, 4, 1, form, funct6).U)
+        dut.io.decoded.valid.expect(false.B)
+        dut.io.instruction.poke(narrowing(5, 4, 1, form, funct6).U)
+        dut.io.decoded.valid.expect(false.B)
+        dut.io.instruction.poke(narrowing(6, 4, 1, form, funct6).U)
+        dut.io.decoded.valid.expect(true.B)
+
+        // A masked narrowing shift cannot target v0.
+        dut.io.instruction.poke(
+          (narrowing(0, 4, 1, form, funct6) & ~(BigInt(1) << 25)).U
+        )
+        dut.io.decoded.recognized.expect(true.B)
+        dut.io.decoded.valid.expect(false.B)
+        // An unmasked write to v0 with a legal pair stays valid.
+        dut.io.instruction.poke(narrowing(0, 4, 1, form, funct6).U)
+        dut.io.decoded.valid.expect(true.B)
+      }
+
+      // Other instructions keep the pair read flag clear.
+      dut.io.instruction.poke(narrowing(6, 4, 1, 4, 0x28).U)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.readsVs2Pair.expect(false.B)
+    }
+  }
 }

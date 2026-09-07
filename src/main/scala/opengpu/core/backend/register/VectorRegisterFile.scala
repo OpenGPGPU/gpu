@@ -9,6 +9,8 @@ class VectorRegisterRead(config: GpuConfig) extends Bundle {
   val warpId = UInt(config.warpIdWidth.W)
   val vs1 = UInt(5.W)
   val vs2 = UInt(5.W)
+  // Odd half of the narrowing source pair; driven as vs2 + 1 by issue.
+  val vs2Odd = UInt(5.W)
   val vd = UInt(5.W)
 }
 
@@ -23,10 +25,10 @@ class VectorRegisterBankWrite(config: GpuConfig) extends Bundle {
   val data = Vec(config.lanes, UInt(config.xLen.W))
 }
 
-/** One warp-local 32 x VLEN vector register bank with three reads and one write.
+/** One warp-local 32 x VLEN vector register bank with four operand reads, a predicate read and one write.
   *
-  * The physical bank mirrors one 1RW macro set per read port plus one macro
-  * set for writes. Writes remain visible to the same-cycle read via bypass,
+  * The physical bank mirrors one 1RW macro set per read port and broadcasts
+  * writes to every copy. Writes remain visible to same-cycle reads via bypass,
   * preserving the latency contract of the behavioral register file.
   *
   * `predicateMask` is the architectural v0 mask: the low `lanes` bits of v0's
@@ -41,9 +43,11 @@ class VectorRegisterBank(config: GpuConfig, useBlackBox: Boolean = false)
   val io = IO(new Bundle {
     val vs1 = Input(UInt(5.W))
     val vs2 = Input(UInt(5.W))
+    val vs2Odd = Input(UInt(5.W))
     val vd = Input(UInt(5.W))
     val vs1Data = Output(Vec(config.lanes, UInt(config.xLen.W)))
     val vs2Data = Output(Vec(config.lanes, UInt(config.xLen.W)))
+    val vs2OddData = Output(Vec(config.lanes, UInt(config.xLen.W)))
     val oldVdData = Output(Vec(config.lanes, UInt(config.xLen.W)))
     val predicateMask = Output(UInt(config.lanes.W))
     val write = Flipped(Valid(new VectorRegisterBankWrite(config)))
@@ -96,6 +100,7 @@ class VectorRegisterBank(config: GpuConfig, useBlackBox: Boolean = false)
 
     io.vs1Data := readPort(io.vs1, true)
     io.vs2Data := readPort(io.vs2, true)
+    io.vs2OddData := readPort(io.vs2Odd, true)
     io.oldVdData := readPort(io.vd, true)
     io.predicateMask :=
       readPort(0.U, true).asUInt(config.lanes - 1, 0)
@@ -113,6 +118,7 @@ class VectorRegisterBank(config: GpuConfig, useBlackBox: Boolean = false)
 
     io.vs1Data := readPort(io.vs1)
     io.vs2Data := readPort(io.vs2)
+    io.vs2OddData := readPort(io.vs2Odd)
     io.oldVdData := readPort(io.vd)
     io.predicateMask := readPort(0.U).asUInt(config.lanes - 1, 0)
   }
@@ -127,6 +133,7 @@ class VectorRegisterFile(
     val read = Input(new VectorRegisterRead(config))
     val vs1Data = Output(Vec(config.lanes, UInt(config.xLen.W)))
     val vs2Data = Output(Vec(config.lanes, UInt(config.xLen.W)))
+    val vs2OddData = Output(Vec(config.lanes, UInt(config.xLen.W)))
     val oldVdData = Output(Vec(config.lanes, UInt(config.xLen.W)))
     val predicateMask = Output(UInt(config.lanes.W))
     val write = Flipped(Valid(new VectorRegisterWrite(config)))
@@ -141,6 +148,7 @@ class VectorRegisterFile(
     val bank = Module(new VectorRegisterBank(config, useBlackBox))
     bank.io.vs1 := io.read.vs1
     bank.io.vs2 := io.read.vs2
+    bank.io.vs2Odd := io.read.vs2Odd
     bank.io.vd := io.read.vd
     bank.io.write.valid :=
       io.write.valid && writeWarpValid && io.write.bits.warpId === warp.U
@@ -159,6 +167,7 @@ class VectorRegisterFile(
 
   io.vs1Data := select(banks.map(_.io.vs1Data))
   io.vs2Data := select(banks.map(_.io.vs2Data))
+  io.vs2OddData := select(banks.map(_.io.vs2OddData))
   io.oldVdData := select(banks.map(_.io.oldVdData))
   private val masksByWarp = VecInit(banks.map(_.io.predicateMask))
   private val selectedMask =
