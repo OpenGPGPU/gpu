@@ -14,6 +14,7 @@ private class NormalizedVectorIntegerRequest(config: GpuConfig) extends Bundle {
   val rhs = Vec(config.lanes, UInt(config.xLen.W))
   // Odd half of the narrowing source pair; lhs carries the even half.
   val vs2Odd = Vec(config.lanes, UInt(config.xLen.W))
+  val vxrm = UInt(2.W)
   val enabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
   val immediate = UInt(5.W)
@@ -56,6 +57,8 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
   val add = Vec(config.lanes, UInt(config.xLen.W))
   val sub = Vec(config.lanes, UInt(config.xLen.W))
   val shift = Vec(config.lanes, UInt(config.xLen.W))
+  val narrowShift = Vec(config.lanes, UInt(64.W))
+  val narrowRound = Vec(config.lanes, Bool())
   val less = Vec(config.lanes, Bool())
   val lessSigned = Vec(config.lanes, Bool())
   val greater = Vec(config.lanes, Bool())
@@ -165,18 +168,33 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       "h1f".U -> partialBits.greaterSigned(lane)
     ))
 
+    val clip = partialBits.funct6 === "h2e".U ||
+      partialBits.funct6 === "h2f".U
+    val signedClip = partialBits.funct6 === "h2f".U
+    // Keep the full shifted value through rounding before testing overflow.
+    val shifted = partialBits.narrowShift(lane)
+    val rounded = Cat(signedClip && shifted(63), shifted) +
+      partialBits.narrowRound(lane)
+    val clipOverflow = Mux(signedClip,
+      rounded.asSInt > ((BigInt(1) << 31) - 1).S(65.W) ||
+        rounded.asSInt < (-(BigInt(1) << 31)).S(65.W),
+      rounded(64, 32).orR)
+    val clipLimit = Mux(signedClip,
+      Mux(rounded(64), signedMin, signedMax), Fill(32, 1.U))
+
     basicCandidates(lane) := basicResult
-    saturatingCandidates(lane) := saturatingResult
-    saturationLimits(lane) := partialBits.saturationLimit(lane)
+    saturatingCandidates(lane) := Mux(clip, rounded(31, 0), saturatingResult)
+    saturationLimits(lane) := Mux(clip, clipLimit, partialBits.saturationLimit(lane))
     shiftCandidates(lane) := partialBits.shift(lane)
     laneComparisons(lane) := predicate
-    laneSaturated(lane) := partialBits.saturated(lane)
+    laneSaturated(lane) := Mux(clip, clipOverflow, partialBits.saturated(lane))
   }
 
   private val outputComparison =
     candidateBits.funct6 >= "h18".U && candidateBits.funct6 <= "h1f".U
   private val outputSaturating =
-    candidateBits.funct6 >= "h20".U && candidateBits.funct6 <= "h23".U
+    (candidateBits.funct6 >= "h20".U && candidateBits.funct6 <= "h23".U) ||
+      candidateBits.funct6 === "h2e".U || candidateBits.funct6 === "h2f".U
   private val outputShift =
     candidateBits.funct6 === "h25".U ||
       candidateBits.funct6 === "h28".U ||
@@ -282,15 +300,34 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         partialBits.rhs(lane) := rhs
         partialBits.add(lane) := addResult
         partialBits.sub(lane) := subResult
+        val wide = Cat(inputBits.vs2Odd(lane), lhs)
+        val narrowAmount = rhs(5, 0)
+        val signedNarrow = inputBits.funct6 === "h2d".U ||
+          inputBits.funct6 === "h2f".U
+        val narrowShift = Mux(signedNarrow,
+          (wide.asSInt >> narrowAmount).asUInt, wide >> narrowAmount)
+        // The guard bit and lower discarded bits implement vxrm for any
+        // shift, including zero (which must never round).
+        val discardedMask = ~(Fill(64, 1.U) << narrowAmount)(63, 0)
+        val guardIndex = (narrowAmount - 1.U)(5, 0)
+        val guard = narrowAmount =/= 0.U && wide(guardIndex)
+        val stickyMask = ~(Fill(64, 1.U) << guardIndex)(63, 0)
+        val sticky = (wide & stickyMask).orR
+        val discarded = (wide & discardedMask).orR
+        partialBits.narrowShift(lane) := narrowShift
+        partialBits.narrowRound(lane) := MuxLookup(inputBits.vxrm, false.B)(Seq(
+          0.U -> guard,
+          1.U -> (guard && (sticky || narrowShift(0))),
+          2.U -> false.B,
+          3.U -> (!narrowShift(0) && discarded)
+        ))
         partialBits.shift(lane) := MuxLookup(inputBits.funct6, 0.U(32.W))(Seq(
           "h25".U -> (lhs << shiftAmount)(31, 0),
           "h28".U -> (lhs >> shiftAmount),
           "h29".U -> (lhs.asSInt >> shiftAmount).asUInt,
           // vnsrl/vnsra narrow the 64-bit pair {vs2+1, vs2} to its low word.
-          "h2c".U -> (Cat(inputBits.vs2Odd(lane), lhs) >> rhs(5, 0))(31, 0),
-          "h2d".U ->
-            (Cat(inputBits.vs2Odd(lane), lhs).asSInt >> rhs(5, 0))
-              .asUInt(31, 0)
+          "h2c".U -> narrowShift(31, 0),
+          "h2d".U -> narrowShift(31, 0)
         ))
         partialBits.less(lane) := less
         partialBits.lessSigned(lane) := lessSigned
@@ -357,13 +394,14 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
           ))
           Mux(sourceEnabled(lane), combined, accumulator)
       }
-      val inputNarrowing = io.in.bits.funct6 === "h2c".U ||
-        io.in.bits.funct6 === "h2d".U
+      val inputNarrowing = io.in.bits.funct6 >= "h2c".U &&
+        io.in.bits.funct6 <= "h2f".U
       val inputImmediate =
         Cat(
           Fill(config.xLen - 5, io.in.bits.immediate(4) && !inputNarrowing),
           io.in.bits.immediate
         )
+      inputBits.vxrm := io.in.bits.vxrm
       inputBits.warpId := io.in.bits.warpId
       inputBits.pc := io.in.bits.pc
       inputBits.warpActiveMask := io.in.bits.warpActiveMask

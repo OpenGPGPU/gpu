@@ -159,7 +159,9 @@ private object VectorDecodeTable {
     // Fixed-profile narrowing shifts consume the even/odd pair vs2/vs2+1
     // as one 64-bit source per lane.
     VectorInstruction("vnsrl",  0x2c, Seq(IVV, IVX, IVI), readsVs2Pair = true),
-    VectorInstruction("vnsra",  0x2d, Seq(IVV, IVX, IVI), readsVs2Pair = true)
+    VectorInstruction("vnsra",  0x2d, Seq(IVV, IVX, IVI), readsVs2Pair = true),
+    VectorInstruction("vnclipu", 0x2e, Seq(IVV, IVX, IVI), readsVs2Pair = true),
+    VectorInstruction("vnclip",  0x2f, Seq(IVV, IVX, IVI), readsVs2Pair = true)
   )
 
   private val integerMultiplyDivideInstructions = Seq(
@@ -358,11 +360,11 @@ class VectorDecoder extends Module {
       (!io.instruction(25) && io.instruction(11, 7) === 0.U)
   )
 
-  // vnsrl/vnsra treat vs2/vs2+1 as one 64-bit source: vs2 must be even and
-  // vd must not overlap the pair. Masked forms cannot target v0.
+  // Narrowing shifts and clips treat vs2/vs2+1 as one 64-bit source.
+  // vs2 must be even and vd disjoint from the pair; masked vd cannot be v0.
   val integerNarrowing = opcode === "b1010111".U &&
-    (io.instruction(31, 26) === "b101100".U ||
-      io.instruction(31, 26) === "b101101".U) &&
+    (io.instruction(31, 26) >= "h2c".U &&
+      io.instruction(31, 26) <= "h2f".U) &&
     (io.instruction(14, 12) === "b000".U ||
       io.instruction(14, 12) === "b011".U ||
       io.instruction(14, 12) === "b100".U)

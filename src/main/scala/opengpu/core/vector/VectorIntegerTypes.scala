@@ -13,7 +13,7 @@ class VectorIntegerRequest(config: GpuConfig) extends Bundle {
   val oldVd = Vec(config.lanes, UInt(config.xLen.W))
   val vs1 = Vec(config.lanes, UInt(config.xLen.W))
   val vs2 = Vec(config.lanes, UInt(config.xLen.W))
-  // Odd half of the vnsrl/vnsra 64-bit source pair (v[vs2+1]).
+  // Odd half of the narrowing 64-bit source pair (v[vs2+1]).
   val vs2Odd = Vec(config.lanes, UInt(config.xLen.W))
   val scalar = UInt(config.xLen.W)
   val immediate = UInt(5.W)
@@ -21,6 +21,7 @@ class VectorIntegerRequest(config: GpuConfig) extends Bundle {
   val operandType = UInt(3.W)
   val vm = Bool()
   val quad = Bool()
+  val vxrm = UInt(2.W)
 }
 
 class VectorIntegerResult(config: GpuConfig) extends Bundle {

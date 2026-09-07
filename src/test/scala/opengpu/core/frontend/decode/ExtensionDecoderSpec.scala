@@ -188,7 +188,7 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
     }
   }
 
-  it should "decode vnsrl and vnsra in wv, wx, and wi forms" in {
+  it should "decode narrowing shifts and clips in wv, wx, and wi forms" in {
     simulate(new VectorDecoder) { dut =>
       def narrowing(vd: Int, vs2: Int, operand: Int, form: Int,
                     funct6: Int): BigInt =
@@ -196,7 +196,7 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
           (BigInt(vs2) << 20) | (BigInt(operand) << 15) |
           (BigInt(form) << 12) | (BigInt(vd) << 7) | 0x57
 
-      for (funct6 <- Seq(0x2c, 0x2d); form <- Seq(0, 4, 3)) {
+      for (funct6 <- Seq(0x2c, 0x2d, 0x2e, 0x2f); form <- Seq(0, 4, 3)) {
         dut.io.instruction.poke(narrowing(6, 4, 1, form, funct6).U)
         dut.io.decoded.recognized.expect(true.B)
         dut.io.decoded.valid.expect(true.B)

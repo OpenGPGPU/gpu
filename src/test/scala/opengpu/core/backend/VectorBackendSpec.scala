@@ -157,15 +157,16 @@ class VectorBackendSpec extends AnyFlatSpec {
       dut.io.in.bits.activeMask.poke(15.U)
 
       // Exercise paired RF reads all the way through ALU and writeback.
-      for (masked <- Seq(false, true)) {
+      for (funct6 <- Seq(0x2c, 0x2e, 0x2f); masked <- Seq(false, true);
+           shift <- Seq(0, 32)) {
         initialize(6, 100)
-        dut.io.scalarRs1Data.poke(32.U)
-        val narrowInstruction = (BigInt(0x2c) << 26) |
+        dut.io.scalarRs1Data.poke(shift.U)
+        val narrowInstruction = (BigInt(funct6) << 26) |
           (if (masked) BigInt(0) else BigInt(1) << 25) |
           (BigInt(2) << 20) | (BigInt(1) << 15) |
           (BigInt(4) << 12) | (BigInt(6) << 7) | 0x57
         dut.io.in.bits.instruction.poke(narrowInstruction.U)
-        dut.io.in.bits.decoded.funct6.poke(0x2c.U)
+        dut.io.in.bits.decoded.funct6.poke(funct6.U)
         dut.io.in.bits.decoded.operandType.poke(4.U)
         dut.io.in.bits.decoded.vm.poke((!masked).B)
         dut.io.in.bits.decoded.readsVs2Pair.poke(true.B)
@@ -184,9 +185,14 @@ class VectorBackendSpec extends AnyFlatSpec {
         dut.io.committedVectorWriteback.valid.expect(true.B)
         dut.io.committedVectorWriteback.bits.warpId.expect(1.U)
         dut.io.committedVectorWriteback.bits.vd.expect(6.U)
-        for (lane <- 0 until config.lanes)
+        for (lane <- 0 until config.lanes) {
+          val value = if (shift == 32) BigInt(0x30 + lane)
+            else if (funct6 == 0x2c) BigInt(0x20 + lane)
+            else if (funct6 == 0x2e) BigInt("ffffffff", 16)
+            else BigInt("7fffffff", 16)
           dut.io.committedVectorWriteback.bits.data(lane).expect(
-            (if (!masked || lane == 0) 0x30 + lane else 100 + lane).U)
+            (if (!masked || lane == 0) value else BigInt(100 + lane)).U)
+        }
         dut.clock.step()
       }
       dut.io.in.bits.decoded.readsVs2Pair.poke(false.B)

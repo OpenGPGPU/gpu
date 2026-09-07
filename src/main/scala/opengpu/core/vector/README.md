@@ -71,6 +71,16 @@ scoreboard hazards and must be defined for driver validation. This is a
 lane-local pair layout, not the general RVV double-width register-group
 layout; software must explicitly prepare the low and high word vectors.
 
+`vnclipu.wv/wx/wi` and `vnclip.wv/wx/wi` reuse this source-pair layout and
+its decode, scoreboard and driver restrictions. They shift the unsigned or
+signed 64-bit value, round using `vxrm` (RNU, RNE, RDN or ROD), then saturate
+to the unsigned or signed 32-bit range. Rounding occurs before the overflow
+check, so rounding across a limit also saturates. Only enabled lanes can
+raise the result's saturation flag; the backend sets the warp's sticky
+`vxsat` on commit. The ALU captures `vxrm` with each request and preserves
+results and flags under backpressure. The current shader interface uses the
+reset RNU mode; it does not expose software writes to `vxrm`.
+
 The backend now contains a behavioral per-warp vector register file and issue
 boundary. Each warp owns 32 VLEN-wide registers with `vs1`, `vs2`, `vs2+1`, old-`vd`,
 and dedicated v0 predicate reads plus one write port. The accompanying vector

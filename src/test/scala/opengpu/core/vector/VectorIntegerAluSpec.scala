@@ -26,6 +26,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     dut.io.in.bits.operandType.poke(0.U)
     dut.io.in.bits.vm.poke(true.B)
     dut.io.in.bits.quad.poke(false.B)
+    dut.io.in.bits.vxrm.poke(0.U)
     for (lane <- 0 until config.lanes) {
       dut.io.in.bits.oldVd(lane).poke((100 + lane).U)
       dut.io.in.bits.vs1(lane).poke(0.U)
@@ -248,6 +249,111 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       // Masked lanes keep their old destination under output backpressure.
       issue(0x2c, 0, Seq(8, 8, 8, 8), masked = true, predicate = 5,
         stall = true)
+    }
+  }
+
+  it should "round before clipping signed and unsigned pairs in every vxrm mode" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      val wordMask = (BigInt(1) << 32) - 1
+      val wideMask = (BigInt(1) << 64) - 1
+      val signedMax = (BigInt(1) << 31) - 1
+      val signedMin = -(BigInt(1) << 31)
+      val random = new scala.util.Random(0x2e2f)
+
+      def issue(values: Seq[BigInt], shifts: Seq[Int], signed: Boolean,
+                form: Int, mode: Int, active: Int = 15, predicate: Int = 15,
+                masked: Boolean = false): Unit = {
+        dut.io.in.bits.funct6.poke((if (signed) 0x2f else 0x2e).U)
+        dut.io.in.bits.operandType.poke(form.U)
+        dut.io.in.bits.vxrm.poke(mode.U)
+        dut.io.in.bits.vm.poke((!masked).B)
+        dut.io.in.bits.activeMask.poke(active.U)
+        dut.io.in.bits.predicateMask.poke(predicate.U)
+        dut.io.in.bits.scalar.poke(shifts.head.U)
+        dut.io.in.bits.immediate.poke((shifts.head & 31).U)
+        for (lane <- 0 until config.lanes) {
+          val wide = values(lane) & wideMask
+          dut.io.in.bits.vs2(lane).poke((wide & wordMask).U)
+          dut.io.in.bits.vs2Odd(lane).poke((wide >> 32).U)
+          dut.io.in.bits.vs1(lane).poke(shifts(lane).U)
+        }
+        val expected = values.zipWithIndex.map { case (value, lane) =>
+          val raw = value & wideMask
+          val number = if (signed && raw.testBit(63)) raw - (BigInt(1) << 64) else raw
+          val amount = if (form == 0) shifts(lane) & 63
+            else shifts.head & (if (form == 3) 31 else 63)
+          val divisor = BigInt(1) << amount
+          // Mathematical floor division, independent of the RTL bit equations.
+          val quotient = if (number < 0) -((-number + divisor - 1) / divisor)
+            else number / divisor
+          val remainder = number - quotient * divisor
+          val increment = mode match {
+            case 0 => remainder * 2 >= divisor
+            case 1 => remainder * 2 > divisor ||
+              (remainder * 2 == divisor && quotient.testBit(0))
+            case 2 => false
+            case 3 => remainder != 0 && !quotient.testBit(0)
+          }
+          val rounded = quotient + (if (increment) 1 else 0)
+          val minimum = if (signed) signedMin else BigInt(0)
+          val maximum = if (signed) signedMax else wordMask
+          val clipped = rounded.max(minimum).min(maximum)
+          val enabled = (active & (1 << lane)) != 0 &&
+            (!masked || (predicate & (1 << lane)) != 0)
+          (if (enabled) clipped & wordMask else BigInt(100 + lane),
+            enabled && clipped != rounded)
+        }
+        dut.io.out.ready.poke(false.B)
+        dut.io.in.ready.expect(true.B)
+        dut.io.in.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+        // Rounding metadata must be captured with its instruction.
+        dut.io.in.bits.vxrm.poke(((mode + 1) & 3).U)
+        var cycles = 0
+        while (!dut.io.out.valid.peek().litToBoolean && cycles < 8) {
+          dut.clock.step()
+          cycles += 1
+        }
+        for (_ <- 0 until 3) {
+          dut.io.out.valid.expect(true.B)
+          dut.io.out.bits.writesMask.expect(false.B)
+          dut.io.out.bits.saturated.expect(expected.exists(_._2).B)
+          expected.zipWithIndex.foreach { case ((value, _), lane) =>
+            dut.io.out.bits.data(lane).expect(value.U)
+          }
+          dut.clock.step()
+        }
+        dut.io.out.ready.poke(true.B)
+        dut.clock.step()
+        dut.io.out.valid.expect(false.B)
+      }
+
+      for (signed <- Seq(false, true); mode <- 0 until 4) {
+        val maximum = if (signed) signedMax else wordMask
+        val minimum = if (signed) signedMin else BigInt(0)
+        // Rounding can create positive overflow or remove negative overflow.
+        issue(Seq(maximum * 2 + 1, minimum * 2 - 1, 5, 7),
+          Seq.fill(4)(1), signed, 0, mode)
+        issue(Seq(-5, -7, -8, -9).map(BigInt(_)),
+          Seq.fill(4)(1), signed, 0, mode)
+        issue(Seq(maximum, maximum + 1, minimum, minimum - 1),
+          Seq.fill(4)(0), signed, 0, mode)
+        issue(Seq(wideMask, BigInt(1) << 63, (BigInt(1) << 63) - 1, 0),
+          Seq(63, 32, 64, 127), signed, 0, mode)
+        for (form <- Seq(3, 4); shift <- Seq(0, 1, 16, 31, 32, 63)) {
+          issue(Seq.fill(4)(BigInt(64, random)), Seq.fill(4)(shift),
+            signed, form, mode)
+        }
+        // Overflow in disabled lanes must not set the aggregate saturation bit.
+        issue(Seq(0, maximum + 1, 1, minimum - 1), Seq.fill(4)(0),
+          signed, 0, mode, active = 7, predicate = 5, masked = true)
+        issue(Seq.fill(4)(maximum + 1), Seq.fill(4)(0), signed, 0, mode,
+          active = 0)
+        issue(Seq.fill(4)(maximum + 1), Seq.fill(4)(0), signed, 0, mode,
+          predicate = 0, masked = true)
+      }
     }
   }
 
