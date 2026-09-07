@@ -7,7 +7,7 @@ with `scripts/run_graphics_ppa.py` (env `GRAPHICS_PPA_TIMING_EFFORT` selects
 `closure_no_cts` (default) or `explore`; the output directory suffix follows
 the effort). Timing: 1.0 GHz target unless noted, TC corner.
 
-Current state per block, 2026-09-04. Intermediate candidate/attempt history
+Current state per block, 2026-09-07. Intermediate candidate/attempt history
 has been pruned; only the latest closed result per block is kept.
 
 ## SharedL2Slice
@@ -55,7 +55,7 @@ and the noted util/density, no retime:
 
 | Block | Effort | Status | Worst setup slack |
 |---|---|---|---:|
-| VectorIntegerAlu | closure_no_cts, density 0.5 | PASS | +330.7 ps |
+| VectorIntegerAlu | closure_no_cts, util 25, density 0.60 | PASS | +5.08 ps |
 | VectorDivideAlu | closure_no_cts, density 0.5 | PASS | +296.7 ps |
 | VectorMemoryUnit | closure_no_cts, density 0.5 | PASS | +243.5 ps |
 | VectorConfigurationUnit | closure_no_cts, density 0.5 | PASS | +435.3 ps |
@@ -64,6 +64,10 @@ and the noted util/density, no retime:
 | VectorRegisterFile | closure, density 0.6 | PASS | +28.3 ps |
 | VectorIssueStage | closure, density 0.6 | PASS | +68.4 ps |
 | VectorRegisterManager | closure, util 25, density 0.6, 3x16 grid | PASS | +71.4 ps |
+
+VectorIntegerAlu post-route result: 1005.11 MHz core Fmax, 9826.54 um^2,
+83.02 mW, zero hold violations, DRC errors, and antenna violations.
+Artifacts: `generated/ppa_runs/head_ppa_scaling_pair_vector_integer_tc_slvt_1ghz_closure_u25_d60/`.
 
 ## Graphics blocks
 
