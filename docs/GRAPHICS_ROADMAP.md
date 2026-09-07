@@ -139,7 +139,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
   over explicit even/odd low/high word pairs, with source-pair dependency
   tracking and matching shader validation. Clip supports all four hardware
   rounding modes and commit-time saturation; shader rounding-CSR writes
-  remain outside the current interface.
+  remain outside the current interface. Single-width `vssrl/vssra.vv/vx/vi`
+  now share the rounding path, with masked execution and matching validation.
 - Measure full-system cost by resolution, remove avoidable host-memory work and
   establish a practical regression default.
 - Add a safe unified-command reset that drains or invalidates in-flight memory

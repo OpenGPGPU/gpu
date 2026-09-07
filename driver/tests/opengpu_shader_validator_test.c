@@ -244,6 +244,47 @@ int main(void)
     program[2] = addi(5, 1, 0);
     assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
 
+    /* Scaling shifts need one source, accept odd registers and in-place vd. */
+    for (unsigned int fn = 0x2a; fn <= 0x2b; fn++) {
+        for (unsigned int form = 0; form < 8; form++) {
+            bool legal = form == 0 || form == 3 || form == 4;
+            program[0] = vsetivli(4);
+            program[1] = vector_alu(0x00, 3, 31, 1, 0);
+            program[2] = vector_alu(fn, form, 31, 31, 1);
+            program[3] = OPENGPU_SHADER_CEASE;
+            assert(opengpu_compute_shader_validate_words(program, 4, 64, 4) == legal);
+            assert(opengpu_shader_validate_words(program, 4, 288, 8) == legal);
+            assert(opengpu_vertex_shader_validate_words(program, 4, 512, 8) == legal);
+            if (!legal)
+                continue;
+            program[2] = vector_alu(fn, form, 0, 31, 1); /* unmasked vd=v0 */
+            assert(opengpu_compute_shader_validate_words(program, 4, 64, 4));
+            program[2] = vector_alu(fn, form, 31, 30, 1); /* undefined vs2 */
+            assert(!opengpu_compute_shader_validate_words(program, 4, 64, 4));
+            program[2] = vector_alu(fn, form, 31, 31, 9); /* undefined register, valid imm */
+            assert(opengpu_compute_shader_validate_words(program, 4, 64, 4) == (form == 3));
+            program[2] = vector_alu(fn, form, 31, 31, 1) & ~(1u << 25);
+            assert(!opengpu_compute_shader_validate_words(program, 4, 64, 4)); /* no v0 */
+            program[2] = vector_alu(0x18, 0, 0, 1, 1);
+            program[3] = vector_alu(fn, form, 31, 31, 1) & ~(1u << 25);
+            program[4] = OPENGPU_SHADER_CEASE;
+            assert(opengpu_compute_shader_validate_words(program, 5, 64, 4));
+            assert(opengpu_shader_validate_words(program, 5, 288, 8));
+            assert(opengpu_vertex_shader_validate_words(program, 5, 512, 8));
+            program[3] = vector_alu(fn, form, 4, 31, 1) & ~(1u << 25); /* no old vd */
+            assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+            program[3] = vector_alu(fn, form, 0, 31, 1) & ~(1u << 25); /* masked vd=v0 */
+            assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        }
+        /* Even a zero scaling shift discards trusted byte-index provenance. */
+        program[0] = vsetivli(4);
+        program[1] = vector_alu(0x25, 3, 2, 1, 2);
+        program[2] = vector_alu(fn, 3, 2, 2, 0);
+        program[3] = vluxei32(3, 1, 2);
+        program[4] = OPENGPU_SHADER_CEASE;
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    }
+
     /* Narrowing uses a defined even/odd source pair in all three forms. */
     for (unsigned int fn = 0x2c; fn <= 0x2f; fn++) {
         for (unsigned int form = 0; form < 8; form++) {

@@ -223,6 +223,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x27: /* vsmul */
         case 0x28: /* vsrl */
         case 0x29: /* vsra */
+        case 0x2a: /* vssrl */
+        case 0x2b: /* vssra */
         case 0x2c: /* vnsrl */
         case 0x2d: /* vnsra */
         case 0x2e: /* vnclipu */
@@ -257,6 +259,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x25: /* vsll */
         case 0x28: /* vsrl */
         case 0x29: /* vsra */
+        case 0x2a: /* vssrl */
+        case 0x2b: /* vssra */
         case 0x2c: /* vnsrl */
         case 0x2d: /* vnsra */
         case 0x2e: /* vnclipu */
@@ -296,6 +300,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x27: /* vsmul */
         case 0x28: /* vsrl */
         case 0x29: /* vsra */
+        case 0x2a: /* vssrl */
+        case 0x2b: /* vssra */
         case 0x2c: /* vnsrl */
         case 0x2d: /* vnsra */
         case 0x2e: /* vnclipu */
@@ -315,7 +321,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * Scalar lw/sw retain the v1
  * bounds. The RVV profile admits vsetivli e32,m1, the implemented lane-local
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
- * divide and remainder forms, masked lane-local integer arithmetic and
+ * divide and remainder forms, vssrl/vssra rounded scaling shifts,
+ * masked lane-local integer arithmetic and
  * extensions, fixed-profile vnsrl/vnsra narrowing shifts over even/odd
  * register pairs, vnclipu/vnclip rounded saturating narrowing, and masked
  * or unmasked unit-, constant-stride, and

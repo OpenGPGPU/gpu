@@ -136,6 +136,12 @@ saturating, multiply, divide and remainder operations. Comparisons,
 single-width reductions, gather and slide retain their unmasked profile.
 Masked arithmetic requires defined source, v0 and old destination registers,
 rejects destination v0, and preserves masked-off and inactive lanes.
+The sandbox admits `vssrl.vv/vx/vi` and `vssra.vv/vx/vi` scaling right shifts
+with rounding. They use one 32-bit vector source and the low five shift-amount
+bits, support source/destination overlap, and do not set `vxsat`. Masked
+forms follow the defined-register and destination-v0 restrictions above.
+Hardware honors `vxrm`; the current shader interface uses reset RNU. Scaling
+results invalidate trusted byte-index provenance.
 The sandbox also supports masked and unmasked fixed-profile
 `vsext/vzext.vf2/vf4/vf8`.
 These extensions use the low 16/8/4 bits of each 32-bit source lane. Masked
