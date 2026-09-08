@@ -689,6 +689,10 @@ class SharedL2Slice(
   * Hits and coherence work in different slices proceed independently. The
   * lower-memory adapter allocates global transaction IDs and restores each
   * slice's original MSHR/blocking ID on an out-of-order response.
+  *
+  * L2 shared by GPU clients, independent of the host CPU's L2.
+  * Invalidation and atomic channels provide GPU-internal coherence only.
+  * The memoryRequest/memoryResponse port connects to the lower memory hierarchy.
   */
 class SharedL2Cache(
   config: GpuConfig = GpuConfig(),

@@ -13,11 +13,14 @@ clipping, texture filtering and output merging remain fixed-function blocks.
 - Rendering: immediate mode with 2x2 fragment quads.
 - Memory: command, shader, texture, colour and depth buffers live in shared
   software-managed DRAM. There is no v1 GPU-local VRAM.
-- Integration: an on-die RV64 Linux host and GPU share the SoC fabric and L2.
+- Integration: the on-die RV64 Linux CPU and GPU have separate L2 caches and
+  access shared DRAM through the SoC fabric. The GPU L2 is shared only by GPU
+  clients (graphics, compute and DMA); the CPU does not access it.
 - Host interface: one AXI4 control slave and one AXI4 memory master expose the
   integrated graphics, compute and DMA product surface.
 - Synchronization: driver-managed cache maintenance, job fences and interrupts;
-  no v1 hardware snooping protocol.
+  no v1 CPU/GPU hardware snooping protocol. GPU-internal L1 invalidation and
+  global atomics do not provide coherence with CPU caches.
 - Colour: RGBA8888. Depth: D24 in a 32-bit word.
 - Coordinates: top-left origin, y down, CCW front faces and top-left fill rule.
 - Interpolation: perspective-correct by default, with flat interpolation where
@@ -35,7 +38,9 @@ vertex fetch -> SIMT vertex shader -> clip -> viewport
       |
 quad rasterizer -> interpolation -> SIMT fragment shader -> texture sampler
       |
-parallel output merger -> shared L2/DRAM -> scanout handoff
+parallel output merger -> GPU L2 -> AXI4 / SoC fabric -> shared DRAM
+                                                           |
+                                                     scanout handoff
 ```
 
 ## Implemented
@@ -82,7 +87,8 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 
 - Parallel in-flight output merging with same-pixel hazard ordering.
 - Programmable depth test/write and rounded source-over blending.
-- Shared L2 arbitration for command, shader, texture and framebuffer traffic.
+- GPU-internal shared L2 arbitration for command, shader, texture and
+  framebuffer traffic.
 - Multi-CU dispatch plus copy, fill and strided DMA share the integrated memory
   hierarchy, with collision-free transaction-ID ranges for private clients.
 - Internal command-buffer, framebuffer and texture word-to-line bridges remove
@@ -125,7 +131,7 @@ parallel output merger -> shared L2/DRAM -> scanout handoff
 - ARTI/QEMU/Linux integration for the standard-AXI `GpuHostSystemAxi` product
   top in fixed-function, fragment-core and vertex-core configurations.
 - Bounded fixed-function and vertex-core PPA emitters cover the complete AXI
-  host, graphics, compute/DMA and shared-L2 integration top.
+  host, graphics, compute/DMA and GPU-internal shared-L2 integration top.
 - Parameterized power-of-two render targets of at least 16x16.
 
 ## Next

@@ -10,7 +10,12 @@ import opengpu.graphics.{
   OmWordToLinePort
 }
 
-/** AXI-controlled graphics host attached to the compute system's shared L2.
+/** AXI-controlled graphics host attached to the GPU-internal shared L2.
+  *
+  * CPU and GPU L2 caches are separate. The AXI memory master carries GPU L2
+  * lower-memory traffic to the SoC fabric and shared DRAM; the control slave
+  * provides no CPU data-access path into the GPU L2. Coherence below is limited
+  * to GPU clients and does not snoop CPU caches.
   *
   * The graphics host's eight-ID cache-line port and the compute/DMA clients
   * share one lower-memory port. Command-buffer, framebuffer and texture word

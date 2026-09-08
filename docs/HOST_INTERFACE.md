@@ -6,8 +6,9 @@
 
 OpenGPU is an integrated shared-memory accelerator. An RV64 Linux host accesses
 an AXI4 slave control port; the GPU accesses command, shader, texture, colour
-and depth buffers in host DRAM through an AXI4 master port behind its shared
-L2. There is no v1 GPU-local VRAM.
+and depth buffers in shared DRAM through an AXI4 master port behind its GPU
+L2. The CPU and GPU have separate L2 caches and share the SoC fabric and DRAM.
+There is no v1 GPU-local VRAM or CPU access port into the GPU L2.
 
 `opengpu.graphics.GpuHostAxi` exposes `s_axi_*` AXI4 control signals and the
 `m_irq` completion interrupt. The register file accepts 32-bit accesses and
@@ -28,10 +29,17 @@ elaboration-time configurable to 4, 8, 16, 32 or 64 bytes with
 transactions while preserving their AXI IDs.
 
 Internally, the graphics host's line and word clients, compute units and DMA
-engines all converge on one shared L2. The graphics shader is an additional
-coherent L2 client, including private-cache invalidation and global atomics.
+engines all converge on one GPU-internal shared L2. The graphics shader is an
+additional coherent L2 client, including private-cache invalidation and global
+atomics.
 Private `ComputeMemoryRequest/Response` bundles stop at the AXI master adapter
 and are not part of the SoC ABI.
+
+The memory master exposes the GPU L2's lower-memory traffic; the control slave
+provides MMIO, not a CPU data path into that L2. GPU-internal cache coherence
+does not extend to CPU caches. CPU/GPU buffer handoff uses driver-managed cache
+maintenance, job fences and interrupts; v1 has no CPU/GPU hardware snooping
+protocol.
 
 ### Register ABI
 

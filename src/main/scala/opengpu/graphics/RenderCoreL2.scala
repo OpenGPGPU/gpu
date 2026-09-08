@@ -16,7 +16,9 @@ import opengpu.core.memory.{
   * framebuffer, and the core-backed shader kernel (program fetch / kernarg /
   * output write) all arbitrate onto ONE physical memory port.  This is the
   * integrated-SoC morphology: the graphics fixed-function stages and the SIMT
-  * shader kernel are separate engines that share a single coherent L2, and the
+  * shader kernel are separate engines that share a GPU-internal coherent L2,
+  * separate from the CPU L2. The CPU and GPU share DRAM through the SoC fabric;
+  * GPU-internal coherence does not extend to CPU caches, and the
   * host driver treats the command ring, render targets, and kernarg regions as
   * ordinary software-allocated memory in that shared region.
   *
