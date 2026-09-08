@@ -7,22 +7,34 @@ with `scripts/run_graphics_ppa.py` (env `GRAPHICS_PPA_TIMING_EFFORT` selects
 `closure_no_cts` (default) or `explore`; the output directory suffix follows
 the effort). Timing: 1.0 GHz target unless noted, TC corner.
 
-Current state per block, 2026-09-07. Intermediate candidate/attempt history
+Current state per block, 2026-09-08. Intermediate candidate/attempt history
 has been pruned; only the latest closed result per block is kept.
 
 ## SharedL2Slice
 
-1 GHz target met: LVT cells, `closure_no_cts` timing repair, targeted fanout
-splitting of `storeTable.pendingEntry`.
+Not closed at 1 GHz. Two post-route attempts on record:
 
-| VT / effort | Core Fmax | Core slack | Area | Power |
-|---|---:|---:|---:|---:|
-| LVT closure_no_cts | 1069.09 MHz | +64.62 ps | 20329.2 um^2 | 125.067 mW |
+| Recipe | Core Fmax | Worst setup (all groups) | Worst hold | Area | Power | DRC |
+|---|---:|---:|---:|---:|---:|---:|
+| LVT closure_no_cts, `syn` engine, pendingEntry fanout split (no explicit io_delay) | 1069.09 MHz | -748.10 ps (1322 viol.) | -17.94 ps (4 viol.) | 20329.2 um^2 | 125.07 mW | 455 |
+| LVT closure_no_cts, yosys no-retime, io_delay 20%, margin 50 ps, util 15 / density 0.30 | 986.36 MHz | -378.07 ps (1142 viol.) | -16.20 ps (12 viol.) | 20729.9 um^2 | 129.85 mW | 469 |
 
-Artifacts: `generated/ppa_runs/025_shared_l2_slice_lvt_closure_no_cts_pendingentry_tc_lvt_1ghz/`
-(SUMMARY.md, flow_manifest.json, 6_final.odb/def). The ORFS GDS export step
-fails in the local image because the KLayout merge artifact is not produced;
-DEF/ODB and post-route SPEF STA remain valid.
+The `syn`-engine run closes the reg-to-reg core (+64.62 ps core slack) but
+fails the virtual-IO groups wholesale; the yosys rerun fixes most of the IO
+gap but its core path degrades (`missEngine.table_0.valid_1 ->
+data_1.memory_6`, a miss-table register to SRAM-macro access, core slack
+-13.8 ps) and GRT `repair_timing` plateaus at -91.6 ps WNS. Routing DRC is
+structural (~455-469 errors both runs) at this util/density. Next levers:
+pipeline/register the missEngine SRAM access path in RTL, and revisit the
+SRAM macro channel.
+
+Artifacts:
+
+- `generated/ppa_runs/025_shared_l2_slice_lvt_closure_no_cts_pendingentry_tc_lvt_1ghz/`
+- `generated/ppa_runs/head_shared_l2_slice_tc_lvt_1ghz_yosys_noretime_closure_u15_d30_margin50/`
+
+The ORFS GDS export step fails in the local image because the KLayout merge
+artifact is not produced; DEF/ODB and post-route SPEF STA remain valid.
 
 ## ScalarBackend / FPU / Vector pipeline blocks
 
@@ -32,14 +44,21 @@ SRAM macro placement keeps a 10 um routing channel
 
 | Block | Effort | Core Fmax | Worst setup slack | DRC |
 |---|---|---:|---:|---:|
-| ScalarBackend | LVT closure_no_cts | 1023.3 MHz | -28.4 ps | 57 |
+| ScalarBackend | closure_no_cts, no retime, util 30, density 0.50, margin 50 ps | 1433.9 MHz | +61.3 ps | 0 |
 | Fp32FmaLane | closure, no retime | 1284.9 MHz | +204.9 ps | 0 |
 | FpuBackend | closure, no retime, density 0.60 | 1152.3 MHz | +19.7 ps | 0 |
 | VectorFmaAlu | closure_no_cts, no retime | 1018.8 MHz | +18.4 ps | 0 |
 | VectorFcvtAlu | closure_no_cts, no retime | 1124.1 MHz | +110.4 ps | 0 |
 
+ScalarBackend post-route result: 1433.94 MHz core Fmax, +61.33 ps setup /
++19.29 ps hold (all groups, zero violations), 7297.55 um^2, 63.51 mW,
+DRC 0 / antenna 0. This replaces the older LVT `syn`-engine attempt
+(`032_scalar_backend_tc_lvt_1ghz_closure`, -28.4 ps, DRC 57), which never
+signed off.
+
 Artifact directories:
 
+- `generated/ppa_runs/head_scalar_backend_tc_slvt_1ghz_yosys_noretime_closure_u30_d50_margin50/`
 - `generated/ppa_runs/095_vectorfmaalu_tc_slvt_1ghz_yosys_noretime_closure/`
 - `generated/ppa_runs/100_vectorfcvtalu_tc_slvt_1ghz_yosys_noretime_pipe5_closure/`
 - `generated/ppa_runs/113_fp32fmalane_tc_slvt_1ghz_yosys_noretime_infsign_closure/`
@@ -91,19 +110,43 @@ scripts/run_graphics_ppa.py generated/ppa_refresh_head/gpu_host_system_vc GpuHos
 |---|---|---|
 | CommandBufferStage (scene/scalar) | post-route PASS | 1779.42 MHz, +55.829 ps, 5412.91 um^2, 29.10 mW, DRC 0 |
 | CommandBufferStage (vertex) | post-route PASS | 1859.66 MHz, +70.154 ps, 1828.67 um^2, 10.02 mW, DRC 0 |
-| KernelFragStage | post-route PASS (explore) | 606.2 MHz, -783 ps, 39318.6 um^2, 383.27 mW, DRC 0 |
+| TriangleRasterizer | post-route PASS | 1011.01 MHz, +10.895 ps, 8185.10 um^2, 411.18 mW, DRC 0 |
+| KernelFragStage | post-route FAIL on timing (explore), DRC clean | 777.2 MHz, setup -551 ps, hold -141.7 ps, 40581.3 um^2, 510.59 mW, DRC 0 |
 
 KernelFragStage request-queue registers: sequential cell count 29906
 (+6.6% vs the pre-queue state), total instances 870016, IO-virtual-clock
 Fmax 1421 MHz (> 1 GHz target, IO/ready boundary register closure holds),
-0 DRC / 0 antenna. The critical path is now intra-core
-(`prodSlot -> fragE0_0_27`), so the request/ready boundary registers are not
-critical. Core clock is below the 1 GHz target; the next lever is splitting
-the `prodSlot -> fragE0_0_27` data path.
+0 DRC / 0 antenna. Two pipeline stages have been added on the staging path
+(10/10 KernelFragStageSpec tests pass after each):
+
+1. Producer write pipe: quad + resolved slot + pre-computed lane indices
+   captured at accept, slot arrays written one cycle later. Removed the old
+   `prodSlot -> fragE0_0_27` critical path (606.2 -> 667.4 MHz,
+   `head_kernel_frag_stage_wp_tc_slvt_1ghz_explore_u25_d60/`).
+2. Consumer word-request register: a 1-deep queue between the staging FSM
+   and the word->line bridge. Removed the `index -> execLane/field mux ->
+   bridge -> wordMemReqPipe.ram` critical path (667.4 -> 777.2 MHz, setup
+   violations 7594 -> 4977,
+   `head_kernel_frag_stage_wp2_tc_slvt_1ghz_explore_u25_d60/`).
+
+The critical path is now the write-pipe drain (`wpLaneIdx(2) ->
+fragE0_0_8`, 1262 ps / 18 cells, ~50% net delay): the per-entry write
+decode fans out over 2 slots x 32 entries x 10 arrays spread across the
+die. The next lever is a one-hot slot/quad-group write strobe (statically
+indexed array writes) behind a second pipe register.
+
+Graphics artifact directories:
+
+- `generated/ppa_runs/head_command_buffer_scalar_tc_slvt_1ghz_closure/`
+- `generated/ppa_runs/head_command_buffer_vert_tc_slvt_1ghz_closure/`
+- `generated/ppa_runs/raster_quad_incr_edges_1ghz_yosys_noretime_closure_util25_density60/`
+- `generated/ppa_runs/head_kernel_frag_stage_wp2_tc_slvt_1ghz_explore_u25_d60/`
 
 `closure_no_cts` / `closure` note for large blocks: `repair_timing
 -repair_tns 100` does not converge on KernelFragStage (~870k instances; WNS
-plateaus and the stage spins indefinitely). Use `explore` for this scale.
+plateaus and the stage spins indefinitely; the Sep-4 closure attempt
+`head_kernel_frag_stage_tc_slvt_1ghz_closure` died mid-flow with no metrics).
+Use `explore` for this scale.
 
 ## Whole-block physical-flow limit (current)
 

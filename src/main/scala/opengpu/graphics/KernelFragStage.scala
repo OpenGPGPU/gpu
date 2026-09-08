@@ -201,8 +201,17 @@ class KernelFragStage(
   io.globalAtomicRequest.bits := 0.U.asTypeOf(io.globalAtomicRequest.bits)
   io.globalAtomicResponse.ready := false.B
 
-  bridge.io.in.valid := wordValid
-  bridge.io.in.bits := wordBits
+  // Register the word request at the FSM output before it enters the
+  // word->line bridge.  The index/execSlot -> slot-array read mux -> field
+  // mux -> bridge -> staging mux -> line-request queue chain was the
+  // post-route critical path after the producer write pipe; the bridge and
+  // everything downstream already absorb one cycle of request latency, and
+  // the FSM only advances on the response, so the extra pipe stage costs one
+  // cycle per word without changing the protocol.
+  private val wordReqQ = Module(new Queue(new OmMemoryRequest, 1, pipe = false, flow = false))
+  wordReqQ.io.enq.valid := wordValid
+  wordReqQ.io.enq.bits := wordBits
+  bridge.io.in <> wordReqQ.io.deq
   bridge.io.out.ready := true.B
 
   // ---------------------------------------------------------------------
@@ -293,6 +302,38 @@ class KernelFragStage(
   private val pendingCarries = RegInit(false.B)
   private val pendingEntryIdx = Reg(UInt(1.W))
 
+  // ---------------------------------------------------------------------
+  // Producer write pipe.  The accepted quad, its resolved slot and its four
+  // pre-computed lane indices are captured here; the staging arrays are
+  // written one cycle later.  This splits the prodSlot/prodCount ->
+  // write-decode -> slot-register path that dominates the core clock: the
+  // capture side is a slot mux plus a small adder into a few registers, the
+  // drain side is a per-entry index compare against registered operands.
+  // ---------------------------------------------------------------------
+  private val wpValid = RegInit(false.B)
+  private val wpSlot = Reg(UInt(1.W))
+  private val wpFirst = Reg(Bool())
+  private val wpLaneIdx = Reg(Vec(4, UInt((countWidth - 1).W)))
+  private val wpX = Reg(Vec(4, SInt(gfxConfig.coordWidth.W)))
+  private val wpY = Reg(Vec(4, SInt(gfxConfig.coordWidth.W)))
+  private val wpDepth = Reg(Vec(4, SInt(32.W)))
+  private val wpColor = Reg(Vec(4, UInt(32.W)))
+  private val wpU = Reg(Vec(4, UInt(32.W)))
+  private val wpV = Reg(Vec(4, UInt(32.W)))
+  private val wpCovered = Reg(Vec(4, Bool()))
+  private val wpE0 = Reg(Vec(4, SInt(64.W)))
+  private val wpE1 = Reg(Vec(4, SInt(64.W)))
+  private val wpE2 = Reg(Vec(4, SInt(64.W)))
+  private val wpShaderPc = Reg(UInt(32.W))
+  private val wpKernarg = Reg(UInt(32.W))
+  private val wpTexBase = Reg(UInt(32.W))
+  private val wpTexWidth = Reg(UInt(14.W))
+  private val wpTexHeight = Reg(UInt(14.W))
+  private val wpTexWrapClamp = Reg(Bool())
+  private val wpTexMaxLevel = Reg(UInt(4.W))
+  private val wpTexLodBias = Reg(SInt(5.W))
+  private val wpTexMinLevel = Reg(UInt(4.W))
+
   io.fragIn.ready := !pendingValid && prodCount < batchCap.U
   io.drained := state === sIdle && !pendingValid
 
@@ -326,46 +367,80 @@ class KernelFragStage(
   when(flushRise) { assert(qCount =/= 2.U, "retire queue overflow") }
 
   // Producer accumulation (data always; count frozen on a take-commit).
-  // Each fire stages all four lanes of the presented quad at the next
-  // 4-aligned index range.
+  // Each fire captures all four lanes of the presented quad plus the
+  // resolved slot and per-lane indices into the write pipe; the staging
+  // arrays are written when the pipe drains one cycle later.
+  wpValid := io.fragIn.fire
   when(io.fragIn.fire) {
+    wpSlot := prodSlot
+    wpFirst := prodCount === 0.U
     for (k <- 0 until 4) {
       // Fires only happen with prodCount <= batchCap-4, so the sum stays in
       // range; the explicit truncation keeps the dynamic index at Vec width.
-      val laneIdx = (prodCountIdx + k.U)(countWidth - 2, 0)
-      fragX(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).x
-      fragY(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).y
-      fragDepth(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).depth
-      packedColor(prodSlot)(laneIdx) := Cat(
+      wpLaneIdx(k) := (prodCountIdx + k.U)(countWidth - 2, 0)
+      wpX(k) := io.fragIn.bits.lanes(k).x
+      wpY(k) := io.fragIn.bits.lanes(k).y
+      wpDepth(k) := io.fragIn.bits.lanes(k).depth
+      wpColor(k) := Cat(
         io.fragIn.bits.lanes(k).color.r,
         io.fragIn.bits.lanes(k).color.g,
         io.fragIn.bits.lanes(k).color.b,
         0xff.U(8.W))
-      fragU(prodSlot)(laneIdx) := io.fragUv(k).u
-      fragV(prodSlot)(laneIdx) := io.fragUv(k).v
-      fragCovered(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).covered
-      fragE0(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).e0
-      fragE1(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).e1
-      fragE2(prodSlot)(laneIdx) := io.fragIn.bits.lanes(k).e2
+      wpU(k) := io.fragUv(k).u
+      wpV(k) := io.fragUv(k).v
+      wpCovered(k) := io.fragIn.bits.lanes(k).covered
+      wpE0(k) := io.fragIn.bits.lanes(k).e0
+      wpE1(k) := io.fragIn.bits.lanes(k).e1
+      wpE2(k) := io.fragIn.bits.lanes(k).e2
     }
-    when(prodCount === 0.U) {
-      slotShaderPc(prodSlot) := io.shaderPc
-      slotKernarg(prodSlot) := bankedKernarg(prodSlot)
-      slotTexBase(prodSlot) := io.texBase
-      slotTexWidth(prodSlot) := io.texWidth
-      slotTexHeight(prodSlot) := io.texHeight
-      slotTexWrapClamp(prodSlot) := io.texWrapClamp
-      slotTexMaxLevel(prodSlot) := io.texMaxLevel
-      slotTexLodBias(prodSlot) := io.texLodBias
-      slotTexMinLevel(prodSlot) := io.texMinLevel
-    }.otherwise {
+    wpShaderPc := io.shaderPc
+    wpKernarg := bankedKernarg(prodSlot)
+    wpTexBase := io.texBase
+    wpTexWidth := io.texWidth
+    wpTexHeight := io.texHeight
+    wpTexWrapClamp := io.texWrapClamp
+    wpTexMaxLevel := io.texMaxLevel
+    wpTexLodBias := io.texLodBias
+    wpTexMinLevel := io.texMinLevel
+    when(prodCount =/= 0.U) {
+      // The first quad's descriptor snapshot may still be in the pipe on
+      // back-to-back fires, so compare against whichever copy is live.
+      val snapLive = wpValid && wpFirst && wpSlot === prodSlot
       assert(
-        io.shaderPc === slotShaderPc(prodSlot) &&
-          bankedKernarg(prodSlot) === slotKernarg(prodSlot),
+        io.shaderPc === Mux(snapLive, wpShaderPc, slotShaderPc(prodSlot)) &&
+          bankedKernarg(prodSlot) === Mux(snapLive, wpKernarg, slotKernarg(prodSlot)),
         "a fragment batch must not mix draw descriptors")
     }
     when(!(commitAny && state === sIdle)) {
       slotCount(prodSlot) := prodCountNext
+    }
+  }
+
+  // Write-pipe drain: stage the captured quad into the resolved slot.  The
+  // drain always fires, so the pipe never back-pressures `fragIn`.
+  when(wpValid) {
+    for (k <- 0 until 4) {
+      fragX(wpSlot)(wpLaneIdx(k)) := wpX(k)
+      fragY(wpSlot)(wpLaneIdx(k)) := wpY(k)
+      fragDepth(wpSlot)(wpLaneIdx(k)) := wpDepth(k)
+      packedColor(wpSlot)(wpLaneIdx(k)) := wpColor(k)
+      fragU(wpSlot)(wpLaneIdx(k)) := wpU(k)
+      fragV(wpSlot)(wpLaneIdx(k)) := wpV(k)
+      fragCovered(wpSlot)(wpLaneIdx(k)) := wpCovered(k)
+      fragE0(wpSlot)(wpLaneIdx(k)) := wpE0(k)
+      fragE1(wpSlot)(wpLaneIdx(k)) := wpE1(k)
+      fragE2(wpSlot)(wpLaneIdx(k)) := wpE2(k)
+    }
+    when(wpFirst) {
+      slotShaderPc(wpSlot) := wpShaderPc
+      slotKernarg(wpSlot) := wpKernarg
+      slotTexBase(wpSlot) := wpTexBase
+      slotTexWidth(wpSlot) := wpTexWidth
+      slotTexHeight(wpSlot) := wpTexHeight
+      slotTexWrapClamp(wpSlot) := wpTexWrapClamp
+      slotTexMaxLevel(wpSlot) := wpTexMaxLevel
+      slotTexLodBias(wpSlot) := wpTexLodBias
+      slotTexMinLevel(wpSlot) := wpTexMinLevel
     }
   }
 
@@ -478,7 +553,7 @@ class KernelFragStage(
       // until the first commit flips it).
     }
     is(sWrite) {
-      when(!wordPending && bridge.io.in.fire) { wordPending := true.B }
+      when(!wordPending && wordReqQ.io.enq.fire) { wordPending := true.B }
       when(wordPending && bridge.io.out.fire) {
         wordPending := false.B
         when(field =/= 7.U) {
@@ -508,7 +583,7 @@ class KernelFragStage(
       }
     }
     is(sRead) {
-      when(!wordPending && bridge.io.in.fire) { wordPending := true.B }
+      when(!wordPending && wordReqQ.io.enq.fire) { wordPending := true.B }
       when(wordPending && bridge.io.out.fire) {
         wordPending := false.B
         when(field === 0.U) {
