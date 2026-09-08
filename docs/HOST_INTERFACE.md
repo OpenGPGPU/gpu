@@ -316,8 +316,10 @@ properties use matching driver defaults.
 ### ARTI integration
 
 `scripts/run_arti_gpu.sh` emits `GpuHostSystemAxi`, builds the driver and guest
-test, and runs the generated device under QEMU/Linux. `GPU_FRAG_CORE=1` selects
-the fragment-core configuration; adding `GPU_VERT_CORE=1` selects vertex-core
+test, and runs the generated device under QEMU/Linux. `GPU_SIM=verilator`
+(default) embeds a Verilator model; `GPU_SIM=flashsim` embeds FlashSim instead
+(`FLASHSIM_DIR` defaults to `../FlashSim`). `GPU_FRAG_CORE=1` selects the
+fragment-core configuration; adding `GPU_VERT_CORE=1` selects vertex-core
 records. `GPU_WIDTH` and `GPU_HEIGHT` select a matching RTL and guest mode.
 
 ARTI drives the AXI control slave and implements an AXI memory slave for the

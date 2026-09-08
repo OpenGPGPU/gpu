@@ -2,6 +2,8 @@
 #
 # ARTI parses the emitted SystemVerilog top (GpuHostSystemAxi), drives its AXI4
 # control slave, and services its AXI4 memory master from guest physical RAM.
+# `scripts/run_arti_gpu.sh` selects the embedded RTL backend with GPU_SIM=
+# verilator (default) or flashsim.
 # This profile keeps the integration metadata next to the driver so it can be
 # copied into any project.
 #

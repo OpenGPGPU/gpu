@@ -2,16 +2,26 @@
 # Emit the GPU RTL, build the embedded ARTI/QEMU model, Linux driver and guest
 # KMS test, then boot the end-to-end Linux test. The ARTI setup is incremental
 # after the first run, so this remains the normal development entry point.
+#
+# GPU_SIM=verilator (default) compiles the embedded model with Verilator.
+# GPU_SIM=flashsim compiles it with FlashSim (set FLASHSIM_DIR if it is not
+# ../FlashSim). QEMU, Linux and the driver stay the same.
 set -euo pipefail
 
 GPU_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ARTI_DIR="${ARTI_DIR:-$GPU_DIR/../arti}"
+FLASHSIM_DIR="${FLASHSIM_DIR:-$GPU_DIR/../FlashSim}"
+GPU_SIM="${GPU_SIM:-verilator}"
 INTEGRATION_CONFIG="${INTEGRATION_CONFIG:-$GPU_DIR/driver/gpu_integration.yaml}"
-LINUX_BUILD="${LINUX_BUILD:-/tmp/arti-linux-build}"
-LINUX_HEADERS="${LINUX_HEADERS:-/tmp/arti-linux-headers}"
-DRIVER_OUTPUT="${DRIVER_OUTPUT:-/tmp/opengpu-arti-driver}"
-QEMU_TOOLS="${QEMU_TOOLS:-/tmp/qemu-build-tools}"
-ARTI_SETUP_WORK="${WORK_DIR:-/tmp}"
+# Durable cache next to gpu/arti/FlashSim. /tmp is reaped on macOS.
+ARTI_WORK="${ARTI_WORK:-$(cd "$GPU_DIR/.." && pwd)/arti-work}"
+mkdir -p "$ARTI_WORK"
+export ARTI_WORK
+LINUX_BUILD="${LINUX_BUILD:-$ARTI_WORK/arti-linux-build}"
+LINUX_HEADERS="${LINUX_HEADERS:-$ARTI_WORK/linux-headers}"
+DRIVER_OUTPUT="${DRIVER_OUTPUT:-$ARTI_WORK/opengpu-driver}"
+QEMU_TOOLS="${QEMU_TOOLS:-$ARTI_WORK/qemu-build-tools}"
+ARTI_SETUP_WORK="${WORK_DIR:-$ARTI_WORK}"
 QEMU_BUILD="${QEMU_BUILD:-$ARTI_SETUP_WORK/qemu-arti-build}"
 QEMU_DISPLAY="${QEMU_DISPLAY:-none}"
 GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}"
@@ -23,8 +33,8 @@ GPU_HEIGHT="${GPU_HEIGHT:-16}"
 ARTI_GPU_DRAW_WAIT_MS="${ARTI_GPU_DRAW_WAIT_MS:-$((60000 * GPU_WIDTH * GPU_HEIGHT / 256))}"
 QEMU_VERSION="${QEMU_VERSION:-11.1.0}"
 LINUX_VERSION="${LINUX_VERSION:-7.2}"
-BUSYBOX_DIR="${BUSYBOX_DIR:-/tmp/busybox-1.36.1}"
-SLIRP_INSTALL="${SLIRP_INSTALL:-/tmp/slirp-install}"
+BUSYBOX_DIR="${BUSYBOX_DIR:-$ARTI_WORK/busybox-1.36.1}"
+SLIRP_INSTALL="${SLIRP_INSTALL:-$ARTI_WORK/slirp-install}"
 
 if [ "$QEMU_DISPLAY" = "none" ]; then
     HOLD_AFTER_TEST="${HOLD_AFTER_TEST:-1}"
@@ -42,14 +52,28 @@ fail() {
     fail "ARTI Linux setup script not found under $ARTI_DIR"
 [ -f "$INTEGRATION_CONFIG" ] || fail "integration profile not found: $INTEGRATION_CONFIG"
 command -v sbt >/dev/null 2>&1 || fail "sbt is required to emit GpuHostSystemAxi RTL"
-if [ -z "${VERILATOR_INC:-}" ]; then
-    command -v verilator >/dev/null 2>&1 || \
-        fail "verilator is required to build the embedded RTL model"
-    VERILATOR_BIN="$(command -v verilator)"
-    VERILATOR_INC="$(dirname "$(dirname "$VERILATOR_BIN")")/share/verilator/include"
-fi
-[ -f "$VERILATOR_INC/verilated.h" ] || \
-    fail "Verilator headers not found under VERILATOR_INC=$VERILATOR_INC"
+case "$GPU_SIM" in
+    verilator)
+        if [ -z "${VERILATOR_INC:-}" ]; then
+            command -v verilator >/dev/null 2>&1 || \
+                fail "verilator is required to build the embedded RTL model"
+            VERILATOR_BIN="$(command -v verilator)"
+            VERILATOR_INC="$(dirname "$(dirname "$VERILATOR_BIN")")/share/verilator/include"
+        fi
+        [ -f "$VERILATOR_INC/verilated.h" ] || \
+            fail "Verilator headers not found under VERILATOR_INC=$VERILATOR_INC"
+        ;;
+    flashsim)
+        [ -d "$FLASHSIM_DIR/flashsim" ] || \
+            fail "FlashSim not found at $FLASHSIM_DIR (set FLASHSIM_DIR)"
+        command -v python3 >/dev/null 2>&1 || fail "python3 is required for FlashSim"
+        ;;
+    *)
+        fail "GPU_SIM must be verilator or flashsim, got $GPU_SIM"
+        ;;
+esac
+echo "RTL sim     : $GPU_SIM"
+echo "ARTI work   : $ARTI_WORK"
 [ "$GPU_FRAG_CORE" = "0" ] || [ "$GPU_FRAG_CORE" = "1" ] || \
     fail "GPU_FRAG_CORE must be 0 or 1"
 [ "$GPU_VERT_CORE" = "0" ] || [ "$GPU_VERT_CORE" = "1" ] || \
@@ -65,10 +89,11 @@ pow2 "$GPU_WIDTH" && pow2 "$GPU_HEIGHT" || \
 # ARTI supports an isolated Ninja install under QEMU_TOOLS. Prefer the system
 # executable when one is already available; this avoids an unnecessary pip
 # download and works around Python installations whose ninja wheel omits the
-# bin/ninja launcher under --target.
-if [ ! -f "$QEMU_TOOLS/bin/ninja" ] && command -v ninja >/dev/null 2>&1; then
+# bin/ninja launcher under --target. Always relink so a leftover /tmp
+# symlink does not go stale after macOS reaps /tmp.
+if command -v ninja >/dev/null 2>&1; then
     mkdir -p "$QEMU_TOOLS/bin"
-    ln -s "$(command -v ninja)" "$QEMU_TOOLS/bin/ninja"
+    ln -sfn "$(command -v ninja)" "$QEMU_TOOLS/bin/ninja"
 fi
 
 # ---------------------------------------------------------------------------
@@ -86,7 +111,10 @@ qemu_src_valid() {
 }
 
 if [ -z "${QEMU_SRC:-}" ]; then
-    for qemu_candidate in "/tmp/qemu-${QEMU_VERSION}" \
+    for qemu_candidate in "$ARTI_WORK/qemu-${QEMU_VERSION}" \
+                          "$ARTI_WORK/qemu-src/qemu-${QEMU_VERSION}" \
+                          "$ARTI_WORK/qemu-src" \
+                          "/tmp/qemu-${QEMU_VERSION}" \
                           "/tmp/qemu-src/qemu-${QEMU_VERSION}" \
                           "/tmp/qemu-src"; do
         if qemu_src_valid "$qemu_candidate"; then
@@ -94,41 +122,64 @@ if [ -z "${QEMU_SRC:-}" ]; then
             break
         fi
     done
-    QEMU_SRC="${QEMU_SRC:-/tmp/qemu-${QEMU_VERSION}}"
+    QEMU_SRC="${QEMU_SRC:-$ARTI_WORK/qemu-${QEMU_VERSION}}"
 fi
 if ! qemu_src_valid "$QEMU_SRC"; then
     command -v curl >/dev/null 2>&1 || fail "curl is required to download the QEMU source"
     echo "=== 0/4 Downloading QEMU v$QEMU_VERSION source (missing or invalid at $QEMU_SRC) ==="
-    QEMU_DL_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/arti-qemu-dl.XXXXXX")"
-    curl -sSL "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz" | tar xJ -C "$QEMU_DL_STAGE"
+    QEMU_TARBALL="$ARTI_WORK/qemu-${QEMU_VERSION}.tar.xz"
+    if [ ! -f "$QEMU_TARBALL" ]; then
+        curl -fL --retry 5 --retry-all-errors --http1.1 \
+            -o "$QEMU_TARBALL.partial" \
+            "https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz"
+        mv "$QEMU_TARBALL.partial" "$QEMU_TARBALL"
+    fi
+    QEMU_DL_STAGE="$(mktemp -d "$ARTI_WORK/dl-qemu.XXXXXX")"
+    tar xJf "$QEMU_TARBALL" -C "$QEMU_DL_STAGE"
     qemu_src_valid "$QEMU_DL_STAGE/qemu-${QEMU_VERSION}" || fail "QEMU source download failed"
     rm -rf "$QEMU_SRC"
     mv "$QEMU_DL_STAGE/qemu-${QEMU_VERSION}" "$QEMU_SRC"
     rm -rf "$QEMU_DL_STAGE"
 fi
 echo "QEMU source : $QEMU_SRC (valid)"
+if [ -f "$QEMU_SRC/pc-bios/efi-virtio.rom" ]; then
+    rm -rf "$ARTI_WORK/qemu-pc-bios"
+    mkdir -p "$ARTI_WORK/qemu-pc-bios"
+    cp -RL "$QEMU_SRC/pc-bios/." "$ARTI_WORK/qemu-pc-bios/"
+fi
 
 linux_src_valid() {
-    [ -n "$1" ] && [ -f "$1/Makefile" ]
+    [ -n "$1" ] && [ -f "$1/Makefile" ] && \
+        [ -f "$1/usr/gen_init_cpio.c" ] && [ -f "$1/scripts/mod/modpost.c" ]
 }
 
 if [ -z "${LINUX_SRC:-}" ]; then
-    for linux_candidate in "/tmp/linux-src/linux-${LINUX_VERSION}" \
+    for linux_candidate in "$ARTI_WORK/linux-src" \
+                           "$ARTI_WORK/linux-src/linux-${LINUX_VERSION}" \
+                           "/tmp/linux-src/linux-${LINUX_VERSION}" \
                            "/tmp/linux-src"; do
         if linux_src_valid "$linux_candidate"; then
             LINUX_SRC="$linux_candidate"
             break
         fi
     done
-    LINUX_SRC="${LINUX_SRC:-/tmp/linux-src/linux-${LINUX_VERSION}}"
+    LINUX_SRC="${LINUX_SRC:-$ARTI_WORK/linux-src}"
 fi
 if ! linux_src_valid "$LINUX_SRC"; then
     command -v curl >/dev/null 2>&1 || fail "curl is required to download the Linux source"
     echo "=== 0/4 Downloading Linux v$LINUX_VERSION source (missing or invalid at $LINUX_SRC) ==="
-    LINUX_DL_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/arti-linux-dl.XXXXXX")"
-    curl -sSL "https://cdn.kernel.org/pub/linux/kernel/v${LINUX_VERSION%%.*}.x/linux-${LINUX_VERSION}.tar.xz" \
-        | tar xJ -C "$LINUX_DL_STAGE"
+    LINUX_TARBALL="$ARTI_WORK/linux-${LINUX_VERSION}.tar.xz"
+    if [ ! -f "$LINUX_TARBALL" ]; then
+        curl -fL --retry 5 --retry-all-errors --http1.1 \
+            -o "$LINUX_TARBALL.partial" \
+            "https://cdn.kernel.org/pub/linux/kernel/v${LINUX_VERSION%%.*}.x/linux-${LINUX_VERSION}.tar.xz"
+        mv "$LINUX_TARBALL.partial" "$LINUX_TARBALL"
+    fi
+    LINUX_DL_STAGE="$(mktemp -d "$ARTI_WORK/dl-linux.XXXXXX")"
+    tar xJf "$LINUX_TARBALL" -C "$LINUX_DL_STAGE"
     linux_src_valid "$LINUX_DL_STAGE/linux-${LINUX_VERSION}" || fail "Linux source download failed"
+    [ -f "$LINUX_DL_STAGE/linux-${LINUX_VERSION}/usr/gen_init_cpio.c" ] || \
+        fail "Linux source extract is incomplete"
     rm -rf "$LINUX_SRC"
     mv "$LINUX_DL_STAGE/linux-${LINUX_VERSION}" "$LINUX_SRC"
     rm -rf "$LINUX_DL_STAGE"
@@ -191,12 +242,16 @@ PY
 
 patch_arti_model_address_width || true
 
-echo "=== 2/4 Prepare ARTI, QEMU and Linux ==="
+echo "=== 2/4 Prepare ARTI, QEMU and Linux ($GPU_SIM) ==="
 # The external module is built in the next step, after setup has prepared the
 # exact kernel build tree. Empty overrides prevent setup from expecting a stale
 # module from a previous run.
 INTEGRATION_CONFIG="$INTEGRATION_CONFIG" \
 ARTI_DIR="$ARTI_DIR" \
+ARTI_RTL_BACKEND="$GPU_SIM" \
+ARTI_RTL_TOP=GpuHostSystemAxi \
+ARTI_RTL_SOURCE="$GPU_DIR/generated/host/GpuHostSystemAxi.sv" \
+FLASHSIM_DIR="$FLASHSIM_DIR" \
 LINUX_BUILD="$LINUX_BUILD" \
 LINUX_SRC="$LINUX_SRC" \
 BUSYBOX_DIR="$BUSYBOX_DIR" \
@@ -204,13 +259,13 @@ SLIRP_INSTALL="$SLIRP_INSTALL" \
 QEMU_TOOLS="$QEMU_TOOLS" \
 QEMU_SRC="$QEMU_SRC" \
 QEMU_BUILD="$QEMU_BUILD" \
-VERILATOR_INC="$VERILATOR_INC" \
+VERILATOR_INC="${VERILATOR_INC:-}" \
 WORK_DIR="$ARTI_SETUP_WORK" \
 ARTI_RTL_SOURCE_LIST="$ARTI_RTL_SOURCE_LIST" \
 DRIVER_KO= DRIVER_MANIFEST= \
     "$ARTI_DIR/examples/linux_arti_driver/setup_env.sh"
 
-if patch_arti_model_address_width; then
+if [ "$GPU_SIM" = "verilator" ] && patch_arti_model_address_width; then
     echo "Rebuilding ARTI model after widening AXI-Lite register addresses"
     QEMU_SRC="$QEMU_SRC" QEMU_BUILD="$QEMU_BUILD" \
     VERILATOR_INC="$VERILATOR_INC" \
@@ -287,7 +342,7 @@ GUEST_DRM_TEST="$DRIVER_OUTPUT/opengpu_drm_test"
 # ARTI's generic runner deliberately owns initramfs construction. Use a
 # temporary harness view with our external-driver init, while keeping ARTI
 # itself unmodified and allowing it to stage module dependencies normally.
-WORK="${WORK:-/tmp/arti-linux-test}"
+WORK="${WORK:-$ARTI_WORK/linux-test}"
 mkdir -p "$WORK"
 cp "$GUEST_DRM_TEST" "$WORK/opengpu_drm_test"
 HARNESS_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/opengpu-harness.XXXXXX")"
@@ -301,5 +356,13 @@ cp "$GPU_DIR/driver/tests/arti-linux-init.c" "$HARNESS_STAGE/arti-linux-init.c"
 
 export ARTI_DIR INTEGRATION_CONFIG LINUX_BUILD DRIVER_KO DRIVER_MANIFEST WORK
 export QEMU_DISPLAY HOLD_AFTER_TEST TIMEOUT
-export QEMU_SRC QEMU_FW_DIR="$QEMU_SRC/pc-bios"
+export QEMU_SRC
+if [ -z "${QEMU_FW_DIR:-}" ]; then
+    if [ -f "$ARTI_WORK/qemu-pc-bios/efi-virtio.rom" ]; then
+        QEMU_FW_DIR="$ARTI_WORK/qemu-pc-bios"
+    else
+        QEMU_FW_DIR="$QEMU_SRC/pc-bios"
+    fi
+fi
+export QEMU_FW_DIR
 "$HARNESS_STAGE/run_linux_test.sh"
