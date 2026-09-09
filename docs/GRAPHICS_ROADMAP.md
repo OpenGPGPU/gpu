@@ -68,6 +68,13 @@ parallel output merger -> GPU L2 -> AXI4 / SoC fabric -> shared DRAM
 - Validated masked and unmasked lane-local `vsext/vzext.vf2/vf4/vf8`
   integer extensions in the fixed profile, with preserved inactive lanes,
   defined predicate/destination checks and reserved-overlap rejection.
+- Masked and unmasked `vnsrl/vnsra.wv/wx/wi` and rounded saturating
+  `vnclipu/vnclip.wv/wx/wi` over explicit even/odd low/high word pairs,
+  with source-pair dependency tracking and matching shader validation.
+  Clip supports all four hardware rounding modes and commit-time saturation.
+- Masked and unmasked single-width `vssrl/vssra.vv/vx/vi` share the
+  rounding path, with matching shader validation. The shader interface uses
+  reset RNU; rounding-CSR writes are not admitted.
 - Validated masked and unmasked unit-stride RVV word loads and stores, with
   preserved-destination and mask-register checks.
 - Hardware `vlse8/16/32.v` and `vsse8/16/32.v` address generation with sparse
@@ -79,6 +86,8 @@ parallel output merger -> GPU L2 -> AXI4 / SoC fabric -> shared DRAM
   provenance through an exact unmasked `vsll.vi ...,2` and validates the resulting
   complete-batch byte span before admitting indexed loads or stores.
 - Ping-pong fragment batches overlapping rasterization and SIMT execution.
+- Packed 2x2 fragment staging records and a dedicated consumer word-request
+  register in KernelFragStage; physical timing closure is ongoing.
 - Bilinear and trilinear RGBA8888 sampling, repeat/clamp modes, packed mip
   chains, gradient LOD, bias and clamps.
 - Quad derivatives, helper lanes, shader depth output and fragment discard.
@@ -130,6 +139,8 @@ parallel output merger -> GPU L2 -> AXI4 / SoC fabric -> shared DRAM
 - KMS scanout handoff, atomic modeset, page flip and virtual vblank.
 - ARTI/QEMU/Linux integration for the standard-AXI `GpuHostSystemAxi` product
   top in fixed-function, fragment-core and vertex-core configurations.
+- Selectable Verilator and FlashSim backends in the ARTI runner; QEMU,
+  Linux and the driver use the same integration path.
 - Bounded fixed-function and vertex-core PPA emitters cover the complete AXI
   host, graphics, compute/DMA and GPU-internal shared-L2 integration top.
 - Parameterized power-of-two render targets of at least 16x16.
@@ -139,26 +150,28 @@ parallel output merger -> GPU L2 -> AXI4 / SoC fabric -> shared DRAM
 ### Product integration
 
 - Add further high-value RVV widening/narrowing operations, extending
-  validation only with matching hardware support. The fixed profile now has
-  masked and unmasked lane-local `vsext/vzext.vf2/vf4/vf8` and
-  `vnsrl/vnsra.wv/wx/wi` and rounded saturating `vnclipu/vnclip.wv/wx/wi`
-  over explicit even/odd low/high word pairs, with source-pair dependency
-  tracking and matching shader validation. Clip supports all four hardware
-  rounding modes and commit-time saturation; shader rounding-CSR writes
-  remain outside the current interface. Single-width `vssrl/vssra.vv/vx/vi`
-  now share the rounding path, with masked execution and matching validation.
+  validation only with matching hardware support.
 - Measure full-system cost by resolution, remove avoidable host-memory work and
   establish a practical regression default.
 - Add a safe unified-command reset that drains or invalidates in-flight memory
-  transactions and define its DRM recovery semantics.
+  transactions and define its DRM recovery semantics. Existing timeout/abort
+  error fences and fault records do not establish that in-flight memory
+  transactions have stopped.
 
 ### Graphics capability
 
 - Add stencil, more blend modes and MSAA.
 - Broaden the shader/RVV subset together with its validator.
-- Complete precise host-visible fault, timeout and reset behavior after the ABI
-  contract is defined.
-- Close timing and area on the complete integrated graphics top.
+- Extend the existing host-visible fault and timeout ABI with safe reset and
+  recovery behavior.
+- Close timing and area on the complete integrated graphics top. Current
+  measured blockers are KernelFragStage (best measured 807.9 MHz after packed
+  quad records and a single request register; a later micro-op register
+  experiment regressed to 711.6 MHz) and SharedL2Slice (SRAM access timing and
+  routing DRC).
+  VectorIntegerAlu has passed the documented 1 GHz physical recipe.
+  See `timing/README.md` for recipes, limitations and measured results;
+  per-block closure does not establish full-top closure.
 
 ### Deferred
 

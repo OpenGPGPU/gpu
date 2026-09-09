@@ -17,6 +17,14 @@ import opengpu.core.memory.{
 import opengpu.core.trap.CoreTrapEvent
 import opengpu.dispatch.KernelCompletion
 
+/** Packed producer-side quad record. Keeping the four lanes together reduces
+  * the number of independent dynamic array reads in the consumer path. */
+private class KernelFragQuadRecord(gfxConfig: GraphicsConfig) extends Bundle {
+  val lanes = Vec(4, new RasterFragment(gfxConfig))
+  val u = Vec(4, UInt(32.W))
+  val v = Vec(4, UInt(32.W))
+}
+
 /** Core-backed fragment shader stage (Phase D), batched quad dispatch with
   * per-draw overlap.
   *
@@ -201,33 +209,20 @@ class KernelFragStage(
   io.globalAtomicRequest.bits := 0.U.asTypeOf(io.globalAtomicRequest.bits)
   io.globalAtomicResponse.ready := false.B
 
-  // Register the word request at the FSM output before it enters the
-  // word->line bridge.  The index/execSlot -> slot-array read mux -> field
-  // mux -> bridge -> staging mux -> line-request queue chain was the
-  // post-route critical path after the producer write pipe; the bridge and
-  // everything downstream already absorb one cycle of request latency, and
-  // the FSM only advances on the response, so the extra pipe stage costs one
-  // cycle per word without changing the protocol.
-  private val wordReqQ = Module(new Queue(new OmMemoryRequest, 1, pipe = false, flow = false))
-  wordReqQ.io.enq.valid := wordValid
-  wordReqQ.io.enq.bits := wordBits
-  bridge.io.in <> wordReqQ.io.deq
+  // Only one word transaction is issued at a time. A dedicated request
+  // register is sufficient and avoids the large index/field -> Queue RAM
+  // write path created by a one-entry Queue.
+  private val wordReqReg = Reg(new OmMemoryRequest)
+  private val wordReqValid = RegInit(false.B)
+  bridge.io.in.valid := wordReqValid
+  bridge.io.in.bits := wordReqReg
   bridge.io.out.ready := true.B
 
   // ---------------------------------------------------------------------
-  // Ping-pong staging slots.  Slot registers are indexed dynamically by
-  // prodSlot (producer accumulation) and execSlot (consumer execution).
+  // Ping-pong staging slots. Producer writes use registered slot/quad
+  // strobes; consumer reads are indexed dynamically by execSlot and index.
   // ---------------------------------------------------------------------
-  private val fragX = Reg(Vec(2, Vec(batchCap, SInt(gfxConfig.coordWidth.W))))
-  private val fragY = Reg(Vec(2, Vec(batchCap, SInt(gfxConfig.coordWidth.W))))
-  private val fragDepth = Reg(Vec(2, Vec(batchCap, SInt(32.W))))
-  private val packedColor = Reg(Vec(2, Vec(batchCap, UInt(32.W))))
-  private val fragU = Reg(Vec(2, Vec(batchCap, UInt(32.W))))
-  private val fragV = Reg(Vec(2, Vec(batchCap, UInt(32.W))))
-  private val fragCovered = Reg(Vec(2, Vec(batchCap, Bool())))
-  private val fragE0 = Reg(Vec(2, Vec(batchCap, SInt(64.W))))
-  private val fragE1 = Reg(Vec(2, Vec(batchCap, SInt(64.W))))
-  private val fragE2 = Reg(Vec(2, Vec(batchCap, SInt(64.W))))
+  private val fragRecords = Reg(Vec(2, Vec(batchCap / 4, new KernelFragQuadRecord(gfxConfig))))
   // Output staging is consumer-only (one batch reads/emit at a time).
   private val outWords = Reg(Vec(batchCap, UInt(32.W)))
   private val outDepth = Reg(Vec(batchCap, SInt(32.W)))
@@ -276,8 +271,26 @@ class KernelFragStage(
   // Select the lane inside each statically addressed slot before muxing the
   // scalar values.  Muxing the outer Vec first creates a packed-array mux
   // that firtool cannot lower with ARTI's disallowPackedArrays setting.
-  private def execLane[T <: Data](slots: Vec[Vec[T]]): T =
-    Mux(execSlot.asBool, slots(1)(indexIdx), slots(0)(indexIdx))
+  private val quadIdx = indexIdx >> 2
+  private val laneIdx = index(1, 0)
+  // Select fields individually; muxing a Bundle/Vec as a packed aggregate is
+  // rejected by the target FIRRTL flow and also creates a needlessly wide
+  // packed-array mux.
+  private def slotField[T <: Data](f: KernelFragQuadRecord => T): T =
+    Mux(execSlot.asBool, f(fragRecords(1)(quadIdx)), f(fragRecords(0)(quadIdx)))
+  private val execX = slotField(r => r.lanes(laneIdx).x)
+  private val execY = slotField(r => r.lanes(laneIdx).y)
+  private val execDepth = slotField(r => r.lanes(laneIdx).depth)
+  private val execR = slotField(r => r.lanes(laneIdx).color.r)
+  private val execG = slotField(r => r.lanes(laneIdx).color.g)
+  private val execB = slotField(r => r.lanes(laneIdx).color.b)
+  private val execAlpha = slotField(r => r.lanes(laneIdx).alpha)
+  private val execE0 = slotField(r => r.lanes(laneIdx).e0)
+  private val execE1 = slotField(r => r.lanes(laneIdx).e1)
+  private val execE2 = slotField(r => r.lanes(laneIdx).e2)
+  private val execCovered = slotField(r => r.lanes(laneIdx).covered)
+  private val execU = slotField(r => r.u(laneIdx))
+  private val execV = slotField(r => r.v(laneIdx))
   // One bridge transaction at a time keeps the staging FSM simple; the bridge
   // itself supports more outstanding transactions for other clients.
   private val wordPending = RegInit(false.B)
@@ -292,7 +305,6 @@ class KernelFragStage(
   // fragment lands at the 4-aligned index the quad derivative ops expect.
   // ---------------------------------------------------------------------
   private val prodCount = slotCount(prodSlot)
-  private val prodCountIdx = prodCount(countWidth - 2, 0)
   // Count including a quad accepted this cycle (commit-by-fullness takes
   // the batch with the firing quad; a flush commit has no fire).
   private val prodCountNext = prodCount + Mux(io.fragIn.fire, 4.U, 0.U)
@@ -303,27 +315,17 @@ class KernelFragStage(
   private val pendingEntryIdx = Reg(UInt(1.W))
 
   // ---------------------------------------------------------------------
-  // Producer write pipe.  The accepted quad, its resolved slot and its four
-  // pre-computed lane indices are captured here; the staging arrays are
-  // written one cycle later.  This splits the prodSlot/prodCount ->
-  // write-decode -> slot-register path that dominates the core clock: the
-  // capture side is a slot mux plus a small adder into a few registers, the
-  // drain side is a per-entry index compare against registered operands.
+  // Producer write pipe. Capture a one-hot slot/quad write strobe alongside
+  // the quad, then write statically indexed entries one cycle later. Quad
+  // alignment fixes each lane's destination within its group, eliminating
+  // the binary lane-index decode and dynamic Vec write muxes at the drain.
   // ---------------------------------------------------------------------
   private val wpValid = RegInit(false.B)
   private val wpSlot = Reg(UInt(1.W))
   private val wpFirst = Reg(Bool())
-  private val wpLaneIdx = Reg(Vec(4, UInt((countWidth - 1).W)))
-  private val wpX = Reg(Vec(4, SInt(gfxConfig.coordWidth.W)))
-  private val wpY = Reg(Vec(4, SInt(gfxConfig.coordWidth.W)))
-  private val wpDepth = Reg(Vec(4, SInt(32.W)))
-  private val wpColor = Reg(Vec(4, UInt(32.W)))
-  private val wpU = Reg(Vec(4, UInt(32.W)))
-  private val wpV = Reg(Vec(4, UInt(32.W)))
-  private val wpCovered = Reg(Vec(4, Bool()))
-  private val wpE0 = Reg(Vec(4, SInt(64.W)))
-  private val wpE1 = Reg(Vec(4, SInt(64.W)))
-  private val wpE2 = Reg(Vec(4, SInt(64.W)))
+  private val wpWrite = RegInit(VecInit(Seq.fill(2)(
+    VecInit(Seq.fill(batchCap / 4)(false.B)))))
+  private val wpRecord = Reg(new KernelFragQuadRecord(gfxConfig))
   private val wpShaderPc = Reg(UInt(32.W))
   private val wpKernarg = Reg(UInt(32.W))
   private val wpTexBase = Reg(UInt(32.W))
@@ -368,30 +370,23 @@ class KernelFragStage(
 
   // Producer accumulation (data always; count frozen on a take-commit).
   // Each fire captures all four lanes of the presented quad plus the
-  // resolved slot and per-lane indices into the write pipe; the staging
+  // resolved slot and quad write strobe into the write pipe; the staging
   // arrays are written when the pipe drains one cycle later.
   wpValid := io.fragIn.fire
+  for (slot <- 0 until 2; group <- 0 until batchCap / 4) {
+    wpWrite(slot)(group) := io.fragIn.fire && prodSlot === slot.U &&
+      prodCount === (4 * group).U
+  }
   when(io.fragIn.fire) {
     wpSlot := prodSlot
     wpFirst := prodCount === 0.U
     for (k <- 0 until 4) {
-      // Fires only happen with prodCount <= batchCap-4, so the sum stays in
-      // range; the explicit truncation keeps the dynamic index at Vec width.
-      wpLaneIdx(k) := (prodCountIdx + k.U)(countWidth - 2, 0)
-      wpX(k) := io.fragIn.bits.lanes(k).x
-      wpY(k) := io.fragIn.bits.lanes(k).y
-      wpDepth(k) := io.fragIn.bits.lanes(k).depth
-      wpColor(k) := Cat(
-        io.fragIn.bits.lanes(k).color.r,
-        io.fragIn.bits.lanes(k).color.g,
-        io.fragIn.bits.lanes(k).color.b,
-        0xff.U(8.W))
-      wpU(k) := io.fragUv(k).u
-      wpV(k) := io.fragUv(k).v
-      wpCovered(k) := io.fragIn.bits.lanes(k).covered
-      wpE0(k) := io.fragIn.bits.lanes(k).e0
-      wpE1(k) := io.fragIn.bits.lanes(k).e1
-      wpE2(k) := io.fragIn.bits.lanes(k).e2
+      wpRecord.lanes(k) := io.fragIn.bits.lanes(k)
+      // The graphics ABI uses opaque RGBA8888 fragment inputs; the raster
+      // quad source carries RGB varyings and leaves alpha unspecified.
+      wpRecord.lanes(k).alpha := 0xff.U
+      wpRecord.u(k) := io.fragUv(k).u
+      wpRecord.v(k) := io.fragUv(k).v
     }
     wpShaderPc := io.shaderPc
     wpKernarg := bankedKernarg(prodSlot)
@@ -418,19 +413,12 @@ class KernelFragStage(
 
   // Write-pipe drain: stage the captured quad into the resolved slot.  The
   // drain always fires, so the pipe never back-pressures `fragIn`.
-  when(wpValid) {
-    for (k <- 0 until 4) {
-      fragX(wpSlot)(wpLaneIdx(k)) := wpX(k)
-      fragY(wpSlot)(wpLaneIdx(k)) := wpY(k)
-      fragDepth(wpSlot)(wpLaneIdx(k)) := wpDepth(k)
-      packedColor(wpSlot)(wpLaneIdx(k)) := wpColor(k)
-      fragU(wpSlot)(wpLaneIdx(k)) := wpU(k)
-      fragV(wpSlot)(wpLaneIdx(k)) := wpV(k)
-      fragCovered(wpSlot)(wpLaneIdx(k)) := wpCovered(k)
-      fragE0(wpSlot)(wpLaneIdx(k)) := wpE0(k)
-      fragE1(wpSlot)(wpLaneIdx(k)) := wpE1(k)
-      fragE2(wpSlot)(wpLaneIdx(k)) := wpE2(k)
+  for (slot <- 0 until 2; group <- 0 until batchCap / 4) {
+    when(wpWrite(slot)(group)) {
+      fragRecords(slot)(group) := wpRecord
     }
+  }
+  when(wpValid) {
     when(wpFirst) {
       slotShaderPc(wpSlot) := wpShaderPc
       slotKernarg(wpSlot) := wpKernarg
@@ -510,7 +498,7 @@ class KernelFragStage(
   // Consumer FSM: stream the executing slot's batch into its kernarg bank,
   // launch, wait, read back, emit — then swap in the parked batch.
   // ---------------------------------------------------------------------
-  wordValid := (state === sWrite || state === sRead) && !wordPending
+  wordValid := (state === sWrite || state === sRead) && !wordPending && !wordReqValid
   wordBits.write := state === sWrite
   private val writeSlice = MuxLookup(field, 8.U)(Seq(
     0.U -> 0.U, 1.U -> 1.U, 2.U -> 2.U, 3.U -> 3.U,
@@ -520,28 +508,29 @@ class KernelFragStage(
     slotKernarg(execSlot) + writeSlice * arrayStride.U + (index << 2),
     slotKernarg(execSlot) + ((6.U + field) * arrayStride.U) + (index << 2)
   )
-  wordBits.data := MuxLookup(field, execLane(fragCovered).asUInt)(
+  wordBits.data := MuxLookup(field, execCovered.asUInt)(
     Seq(
-      0.U -> execLane(fragX).pad(32).asUInt,
-      1.U -> execLane(fragY).pad(32).asUInt,
-      2.U -> execLane(fragDepth).asUInt,
-      3.U -> execLane(packedColor),
-      4.U -> execLane(fragU),
-      5.U -> execLane(fragV),
-      6.U -> execLane(fragDepth).asUInt
+      0.U -> execX.pad(32).asUInt,
+      1.U -> execY.pad(32).asUInt,
+      2.U -> execDepth.asUInt,
+      3.U -> Cat(execR, execG,
+        execB, execAlpha),
+      4.U -> execU,
+      5.U -> execV,
+      6.U -> execDepth.asUInt
     )
   )
 
   io.kernelLaunch.valid := state === sLaunch
 
   io.out.valid := state === sEmit && outValid(indexIdx)
-  io.out.bits.x := execLane(fragX)
-  io.out.bits.y := execLane(fragY)
+  io.out.bits.x := execX
+  io.out.bits.y := execY
   io.out.bits.depth := outDepth(indexIdx)
-  io.out.bits.e0 := execLane(fragE0)
-  io.out.bits.e1 := execLane(fragE1)
-  io.out.bits.e2 := execLane(fragE2)
-  io.out.bits.covered := execLane(fragCovered)
+  io.out.bits.e0 := execE0
+  io.out.bits.e1 := execE1
+  io.out.bits.e2 := execE2
+  io.out.bits.covered := execCovered
   io.out.bits.color.r := outWords(indexIdx)(31, 24)
   io.out.bits.color.g := outWords(indexIdx)(23, 16)
   io.out.bits.color.b := outWords(indexIdx)(15, 8)
@@ -553,7 +542,11 @@ class KernelFragStage(
       // until the first commit flips it).
     }
     is(sWrite) {
-      when(!wordPending && wordReqQ.io.enq.fire) { wordPending := true.B }
+      when(!wordPending && !wordReqValid && bridge.io.in.ready) {
+        wordReqReg := wordBits
+        wordReqValid := true.B
+      }
+      when(wordReqValid && bridge.io.in.fire) { wordReqValid := false.B; wordPending := true.B }
       when(wordPending && bridge.io.out.fire) {
         wordPending := false.B
         when(field =/= 7.U) {
@@ -583,7 +576,11 @@ class KernelFragStage(
       }
     }
     is(sRead) {
-      when(!wordPending && wordReqQ.io.enq.fire) { wordPending := true.B }
+      when(!wordPending && !wordReqValid && bridge.io.in.ready) {
+        wordReqReg := wordBits
+        wordReqValid := true.B
+      }
+      when(wordReqValid && bridge.io.in.fire) { wordReqValid := false.B; wordPending := true.B }
       when(wordPending && bridge.io.out.fire) {
         wordPending := false.B
         when(field === 0.U) {
@@ -596,7 +593,7 @@ class KernelFragStage(
           // Helper lanes execute the shader and may participate in quad
           // derivatives, but no shader store can promote one into an OM write.
           outValid(indexIdx) := bridge.io.out.bits.data =/= 0.U &&
-            execLane(fragCovered)
+            execCovered
           field := 0.U
           when(index === execCount - 1.U) {
             index := 0.U

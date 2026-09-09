@@ -129,11 +129,40 @@ Fmax 1421 MHz (> 1 GHz target, IO/ready boundary register closure holds),
    violations 7594 -> 4977,
    `head_kernel_frag_stage_wp2_tc_slvt_1ghz_explore_u25_d60/`).
 
-The critical path is now the write-pipe drain (`wpLaneIdx(2) ->
+The `wp2` critical path was the write-pipe drain (`wpLaneIdx(2) ->
 fragE0_0_8`, 1262 ps / 18 cells, ~50% net delay): the per-entry write
 decode fans out over 2 slots x 32 entries x 10 arrays spread across the
-die. The next lever is a one-hot slot/quad-group write strobe (statically
-indexed array writes) behind a second pipe register.
+die.
+
+The 2026-09-09 RTL candidate replaces the binary lane indices with registered
+one-hot slot/quad-group write strobes and statically indexed array writes.
+The strobes are decoded at quad acceptance, alongside the existing data
+registers, preserving the one-cycle producer write latency and one quad per
+cycle throughput. Its full `explore` physical result is now available under
+`generated/ppa_runs/head_kernel_frag_stage_onehot_tc_slvt_1ghz_explore_u25_d60/`:
+724.69 MHz core Fmax, -379.90 ps core setup slack, -78.69 ps hold slack,
+24,937 um^2 area, 304.01 mW, and zero DRC/antenna errors. This is 52.47 MHz
+slower than the 777.16 MHz `wp2` baseline; the critical path moved to
+`index -> wordReqQ.ram[31]`, so the one-hot write change did not address the
+dominant post-route path.
+Emitted RTL is under `generated/ppa_refresh_head/kernel_frag_stage_onehot/`.
+Validation: all 10 existing KernelFragStageSpec cases pass, as does a new
+case covering consecutive quad acceptance, full batches, both slots and
+slot reuse, stalled memory/output, and per-lane staging/edge preservation.
+
+The packed-record follow-up removes the one-entry `wordReqQ` and stores each
+2x2 quad as one producer-side record, while selecting consumer fields
+individually to keep FIRRTL legal. Its full physical result is
+807.91 MHz, -237.77 ps core setup slack, -83.04 ps hold slack, 26,245 um^2,
+324.65 mW, and zero DRC/antenna errors. This improves on the one-hot result
+by 83.22 MHz and moves the critical path to `index[2] -> wordReqReg_data[16]`.
+
+The subsequent micro-op register experiment is complete and regresses to
+711.60 MHz (core setup -405.29 ps, hold -87.32 ps, 26,228 um^2,
+318.35 mW, DRC/antenna 0). Its critical path is `index[3] ->
+microReqReg_data[18]` at 1383.94 ps, showing that an extra register only moves
+the existing field/index mux cone; it does not reduce the cone. The packed
+record version remains the best measured implementation.
 
 Graphics artifact directories:
 
@@ -141,6 +170,8 @@ Graphics artifact directories:
 - `generated/ppa_runs/head_command_buffer_vert_tc_slvt_1ghz_closure/`
 - `generated/ppa_runs/raster_quad_incr_edges_1ghz_yosys_noretime_closure_util25_density60/`
 - `generated/ppa_runs/head_kernel_frag_stage_wp2_tc_slvt_1ghz_explore_u25_d60/`
+- `generated/ppa_runs/head_kernel_frag_stage_onehot_tc_slvt_1ghz_explore_u25_d60/`
+- `generated/ppa_runs/head_kernel_frag_stage_packed_tc_slvt_1ghz_explore_u25_d60/`
 
 `closure_no_cts` / `closure` note for large blocks: `repair_timing
 -repair_tns 100` does not converge on KernelFragStage (~870k instances; WNS

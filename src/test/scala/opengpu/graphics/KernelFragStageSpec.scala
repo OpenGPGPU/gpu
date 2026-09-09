@@ -192,6 +192,75 @@ class KernelFragStageSpec extends AnyFlatSpec {
     }
   }
 
+  it should "preserve consecutive quad writes across full batches and slot reuse under backpressure" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
+      val mem = new MemModel
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.shaderPc.poke(0x1000.U)
+      dut.io.kernargBase.poke(0x8000.U)
+      dut.io.kernargBankStride.poke(0x200.U)
+      mem.putWord(0x1000L, 0, cease)
+
+      // Three complete batches visit both slots and overwrite the first.
+      // A cease-only shader leaves staging's depth/valid initialization intact.
+      for (batch <- 0 until 3) {
+        val base = 0x8000L + (batch % 2) * 0x200L
+        dut.io.wordMemReq.ready.poke(false.B)
+        dut.io.out.ready.poke(false.B)
+        for (group <- 0 until 2) {
+          dut.io.fragIn.ready.expect(true.B)
+          pokeQuadLanes(dut, Seq.tabulate(4) { k =>
+            val i = 4 * group + k
+            Frag(batch * 16 + i, -i - 1, 100 + batch * 8 + i,
+              r = 20 + batch * 8 + i, g = i, b = 255 - i)
+          }, Seq.tabulate(4)(k => (1000 + batch * 8 + 4 * group + k,
+            2000 + batch * 8 + 4 * group + k)))
+          for (k <- 0 until 4) {
+            val edge = batch * 8 + group * 4 + k + 1
+            dut.io.fragIn.bits.lanes(k).e0.poke(edge.S)
+            dut.io.fragIn.bits.lanes(k).e1.poke((-edge).S)
+            dut.io.fragIn.bits.lanes(k).e2.poke((edge * 3).S)
+          }
+          dut.io.fragIn.valid.poke(true.B)
+          dut.clock.step()
+        }
+        dut.io.fragIn.valid.poke(false.B)
+        dut.io.flush.poke(true.B); dut.clock.step(); dut.io.flush.poke(false.B)
+        dut.clock.step(5)
+        dut.io.wordMemReq.ready.poke(true.B)
+        assert(pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean, 4000),
+          s"batch $batch did not produce output")
+        for (i <- 0 until 8) {
+          val edge = batch * 8 + i + 1
+          dut.io.out.valid.expect(true.B)
+          dut.io.out.bits.x.expect((batch * 16 + i).S)
+          dut.io.out.bits.y.expect((-i - 1).S)
+          dut.io.out.bits.depth.expect((100 + batch * 8 + i).S)
+          dut.io.out.bits.e0.expect(edge.S)
+          dut.io.out.bits.e1.expect((-edge).S)
+          dut.io.out.bits.e2.expect((edge * 3).S)
+          dut.clock.step(2)
+          dut.io.out.bits.x.expect((batch * 16 + i).S)
+          dut.io.out.ready.poke(true.B); dut.clock.step()
+          dut.io.out.ready.poke(false.B)
+          val expected = Seq(
+            BigInt(batch * 16 + i), BigInt(-i - 1) & 0xffffffffL,
+            BigInt(100 + batch * 8 + i),
+            (BigInt(20 + batch * 8 + i) << 24) | (BigInt(i) << 16) |
+              (BigInt(255 - i) << 8) | 255,
+            BigInt(1000 + batch * 8 + i), BigInt(2000 + batch * 8 + i))
+          for (field <- expected.indices)
+            assert(mem.getWord(base + field * 32 + i * 4) == expected(field),
+              s"batch $batch lane $i field $field staging mismatch")
+        }
+        dut.io.drained.expect(true.B)
+        dut.clock.step()
+      }
+    }
+  }
+
   /** Shader program snippet helpers (RV32I + the RVV subset). */
   private def lw(rd: Int, rs1: Int, imm: Int): BigInt =
     ((BigInt(imm & 0xfff)) << 20) | ((BigInt(rs1 & 0x1f)) << 15) |
