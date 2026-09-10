@@ -268,6 +268,11 @@ class KernelFragStage(
   // comparison, so they keep the wider width and are narrowed when used to
   // index a Vec.
   private val indexIdx = index(countWidth - 2, 0)
+  private val quadIdxWidth = math.max(1, log2Ceil(batchCap / 4))
+  // These selectors drive the staging request data path. They advance with
+  // the transaction response, decoupling the request muxes from `index`.
+  private val requestQuadIdx = RegInit(0.U(quadIdxWidth.W))
+  private val requestLaneIdx = RegInit(0.U(2.W))
   // Select the lane inside each statically addressed slot before muxing the
   // scalar values.  Muxing the outer Vec first creates a packed-array mux
   // that firtool cannot lower with ARTI's disallowPackedArrays setting.
@@ -276,21 +281,31 @@ class KernelFragStage(
   // Select fields individually; muxing a Bundle/Vec as a packed aggregate is
   // rejected by the target FIRRTL flow and also creates a needlessly wide
   // packed-array mux.
-  private def slotField[T <: Data](f: KernelFragQuadRecord => T): T =
-    Mux(execSlot.asBool, f(fragRecords(1)(quadIdx)), f(fragRecords(0)(quadIdx)))
-  private val execX = slotField(r => r.lanes(laneIdx).x)
-  private val execY = slotField(r => r.lanes(laneIdx).y)
-  private val execDepth = slotField(r => r.lanes(laneIdx).depth)
-  private val execR = slotField(r => r.lanes(laneIdx).color.r)
-  private val execG = slotField(r => r.lanes(laneIdx).color.g)
-  private val execB = slotField(r => r.lanes(laneIdx).color.b)
-  private val execAlpha = slotField(r => r.lanes(laneIdx).alpha)
-  private val execE0 = slotField(r => r.lanes(laneIdx).e0)
-  private val execE1 = slotField(r => r.lanes(laneIdx).e1)
-  private val execE2 = slotField(r => r.lanes(laneIdx).e2)
-  private val execCovered = slotField(r => r.lanes(laneIdx).covered)
-  private val execU = slotField(r => r.u(laneIdx))
-  private val execV = slotField(r => r.v(laneIdx))
+  private def slotField[T <: Data](quad: UInt, lane: UInt)(f: KernelFragQuadRecord => T): T =
+    Mux(execSlot.asBool, f(fragRecords(1)(quad)), f(fragRecords(0)(quad)))
+  private val execX = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).x)
+  private val execY = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).y)
+  private val execDepth = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).depth)
+  private val execR = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).color.r)
+  private val execG = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).color.g)
+  private val execB = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).color.b)
+  private val execAlpha = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).alpha)
+  private val execE0 = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).e0)
+  private val execE1 = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).e1)
+  private val execE2 = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).e2)
+  private val execCovered = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).covered)
+  private val execU = slotField(quadIdx, laneIdx)(r => r.u(laneIdx))
+  private val execV = slotField(quadIdx, laneIdx)(r => r.v(laneIdx))
+  private val requestX = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).x)
+  private val requestY = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).y)
+  private val requestDepth = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).depth)
+  private val requestR = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).color.r)
+  private val requestG = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).color.g)
+  private val requestB = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).color.b)
+  private val requestAlpha = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).alpha)
+  private val requestCovered = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).covered)
+  private val requestU = slotField(requestQuadIdx, requestLaneIdx)(r => r.u(requestLaneIdx))
+  private val requestV = slotField(requestQuadIdx, requestLaneIdx)(r => r.v(requestLaneIdx))
   // One bridge transaction at a time keeps the staging FSM simple; the bridge
   // itself supports more outstanding transactions for other clients.
   private val wordPending = RegInit(false.B)
@@ -447,6 +462,8 @@ class KernelFragStage(
       slotCount(prodSlot) := 0.U
       prodSlot := ~prodSlot
       index := 0.U
+      requestQuadIdx := 0.U
+      requestLaneIdx := 0.U
       field := 0.U
       wordPending := false.B
       state := sWrite
@@ -508,16 +525,16 @@ class KernelFragStage(
     slotKernarg(execSlot) + writeSlice * arrayStride.U + (index << 2),
     slotKernarg(execSlot) + ((6.U + field) * arrayStride.U) + (index << 2)
   )
-  wordBits.data := MuxLookup(field, execCovered.asUInt)(
+  wordBits.data := MuxLookup(field, requestCovered.asUInt)(
     Seq(
-      0.U -> execX.pad(32).asUInt,
-      1.U -> execY.pad(32).asUInt,
-      2.U -> execDepth.asUInt,
-      3.U -> Cat(execR, execG,
-        execB, execAlpha),
-      4.U -> execU,
-      5.U -> execV,
-      6.U -> execDepth.asUInt
+      0.U -> requestX.pad(32).asUInt,
+      1.U -> requestY.pad(32).asUInt,
+      2.U -> requestDepth.asUInt,
+      3.U -> Cat(requestR, requestG,
+        requestB, requestAlpha),
+      4.U -> requestU,
+      5.U -> requestV,
+      6.U -> requestDepth.asUInt
     )
   )
 
@@ -555,9 +572,17 @@ class KernelFragStage(
           field := 0.U
           when(index === execCount - 1.U) {
             index := 0.U
+            requestQuadIdx := 0.U
+            requestLaneIdx := 0.U
             state := sLaunch
           }.otherwise {
             index := index + 1.U
+            when(requestLaneIdx === 3.U) {
+              requestLaneIdx := 0.U
+              requestQuadIdx := requestQuadIdx + 1.U
+            }.otherwise {
+              requestLaneIdx := requestLaneIdx + 1.U
+            }
           }
         }
       }
@@ -571,6 +596,8 @@ class KernelFragStage(
     is(sRun) {
       when(io.kernelCompletion.valid) {
         index := 0.U
+        requestQuadIdx := 0.U
+        requestLaneIdx := 0.U
         wordPending := false.B
         state := sRead
       }
@@ -597,9 +624,17 @@ class KernelFragStage(
           field := 0.U
           when(index === execCount - 1.U) {
             index := 0.U
+            requestQuadIdx := 0.U
+            requestLaneIdx := 0.U
             state := sEmit
           }.otherwise {
             index := index + 1.U
+            when(requestLaneIdx === 3.U) {
+              requestLaneIdx := 0.U
+              requestQuadIdx := requestQuadIdx + 1.U
+            }.otherwise {
+              requestLaneIdx := requestLaneIdx + 1.U
+            }
           }
         }
       }
@@ -619,6 +654,8 @@ class KernelFragStage(
             pendingValid := false.B
             prodSlot := execSlot
             index := 0.U
+            requestQuadIdx := 0.U
+            requestLaneIdx := 0.U
             field := 0.U
             wordPending := false.B
             state := sWrite

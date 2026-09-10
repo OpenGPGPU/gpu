@@ -164,6 +164,14 @@ microReqReg_data[18]` at 1383.94 ps, showing that an extra register only moves
 the existing field/index mux cone; it does not reduce the cone. The packed
 record version remains the best measured implementation.
 
+The next selector-register experiment keeps separate quad and lane selectors
+for the staging request data path, advancing them with each word response so
+`index` no longer drives the packed-record muxes. It reaches 846.21 MHz,
+-181.75 ps core setup slack, -87.13 ps hold slack, 26,590 um^2, 311.21 mW,
+and zero DRC/antenna errors. The critical path is now
+`requestQuadIdx[1] -> wordReqReg_data[3]`; this is the best measured
+KernelFragStage result so far, though it remains below the 1 GHz target.
+
 Graphics artifact directories:
 
 - `generated/ppa_runs/head_command_buffer_scalar_tc_slvt_1ghz_closure/`
@@ -172,6 +180,7 @@ Graphics artifact directories:
 - `generated/ppa_runs/head_kernel_frag_stage_wp2_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_onehot_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_packed_tc_slvt_1ghz_explore_u25_d60/`
+- `generated/ppa_runs/head_kernel_frag_stage_selectors_tc_slvt_1ghz_explore_u25_d60/`
 
 `closure_no_cts` / `closure` note for large blocks: `repair_timing
 -repair_tns 100` does not converge on KernelFragStage (~870k instances; WNS

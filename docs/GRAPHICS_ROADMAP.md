@@ -165,10 +165,10 @@ parallel output merger -> GPU L2 -> AXI4 / SoC fabric -> shared DRAM
 - Extend the existing host-visible fault and timeout ABI with safe reset and
   recovery behavior.
 - Close timing and area on the complete integrated graphics top. Current
-  measured blockers are KernelFragStage (best measured 807.9 MHz after packed
-  quad records and a single request register; a later micro-op register
-  experiment regressed to 711.6 MHz) and SharedL2Slice (SRAM access timing and
-  routing DRC).
+  measured blockers are KernelFragStage (best measured 846.2 MHz after packed
+  quad records, a single request register and registered request selectors; a
+  later micro-op register experiment regressed to 711.6 MHz) and SharedL2Slice
+  (SRAM access timing and routing DRC).
   VectorIntegerAlu has passed the documented 1 GHz physical recipe.
   See `timing/README.md` for recipes, limitations and measured results;
   per-block closure does not establish full-top closure.
