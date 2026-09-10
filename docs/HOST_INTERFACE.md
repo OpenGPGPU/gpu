@@ -322,6 +322,14 @@ test, and runs the generated device under QEMU/Linux. `GPU_SIM=verilator`
 fragment-core configuration; adding `GPU_VERT_CORE=1` selects vertex-core
 records. `GPU_WIDTH` and `GPU_HEIGHT` select a matching RTL and guest mode.
 
+For an interactive Debian rootfs (persistent qcow2, apt, manual `insmod`), use
+`scripts/run_arti_debian.sh`. It builds a tiny cloud-init ISO plus a separate
+`opengpu-modules.iso` (DRM deps + `/root/load_opengpu.sh`), then boots
+`run_debian.sh`. Large modules are not embedded in cloud-init YAML. The script
+does not re-run `setup_env.sh`, so a FlashSim-linked QEMU is left alone. In the
+guest: `/root/load_opengpu.sh` or `/root/load_opengpu.sh test`
+(login `root` / `arti`).
+
 ARTI drives the AXI control slave and implements an AXI memory slave for the
 GPU's `m_axi_*` master. AXI masters are discovered from channel shape and port
 direction, not from GPU-specific names such as `kernelMemReq` or
