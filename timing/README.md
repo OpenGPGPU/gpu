@@ -111,7 +111,7 @@ scripts/run_graphics_ppa.py generated/ppa_refresh_head/gpu_host_system_vc GpuHos
 | CommandBufferStage (scene/scalar) | post-route PASS | 1779.42 MHz, +55.829 ps, 5412.91 um^2, 29.10 mW, DRC 0 |
 | CommandBufferStage (vertex) | post-route PASS | 1859.66 MHz, +70.154 ps, 1828.67 um^2, 10.02 mW, DRC 0 |
 | TriangleRasterizer | post-route PASS | 1011.01 MHz, +10.895 ps, 8185.10 um^2, 411.18 mW, DRC 0 |
-| KernelFragStage | post-route FAIL on timing (explore), DRC clean | 951.8 MHz, setup -109.5 ps, hold -107.0 ps, 27538.4 um^2, 320.63 mW, DRC 0 |
+| KernelFragStage | post-route FAIL on timing (explore), DRC clean | 997.7 MHz, core setup -2.3 ps (all groups -117.1 ps), hold -104.8 ps, 26968.6 um^2, 295.52 mW, DRC 0 |
 
 KernelFragStage request-queue registers: sequential cell count 29906
 (+6.6% vs the pre-queue state), total instances 870016, IO-virtual-clock
@@ -188,13 +188,31 @@ into a register selected by the batch-derived index and improves to 928.76 MHz,
 but the cache-fill select is still `index`-derived. Replacing that select with a
 dedicated registered counter (`emitptr`) keeps the increment and the
 `index`-derived mux off the wide cache-fill read and collapses the per-cycle
-output selection to a 4:1 mux over the 2-bit lane index. This is the current
-best: 951.78 MHz core Fmax, -109.51 ps setup / -106.98 ps hold (all groups; core
+output selection to a 4:1 mux over the 2-bit lane index. It reaches 951.78 MHz
+core Fmax, -109.51 ps setup / -106.98 ps hold (all groups; core
 critical-path slack -50.67 ps), 27,538.4 um^2, 320.63 mW, and zero DRC/antenna
 errors. The critical path is now `requestQuadIdx[2] ->
 requestQuad_lanes_1_depth[6]`. All 11 KernelFragStageSpec cases pass. Emitted
-RTL is under `generated/ppa_refresh_head/kernel_frag_stage_emitptr/`; the result
-remains below the 1 GHz target.
+RTL is under `generated/ppa_refresh_head/kernel_frag_stage_emitptr/`.
+
+The `emitptr` critical path exposed the real limit of the staging read: the
+binary `requestQuadIdx` bit fanned out to every field mux of every quad entry
+(8 quads x 4 lanes x ~10 fields, ~4k loads), so the resizer built a chain of
+~10 BUFx16f cells (~856 ps) between the register and the mux. Replacing the
+binary read index with a registered one-hot selector (`requestQuadSel`, shifted
+once per quad and re-armed per write burst) gives each entry its own select net,
+cutting the fanout per net by the entry count; `execSlot` moves after the
+one-hot mux so it drives one load per output bit. This `onehotread` variant
+reaches 997.72 MHz core Fmax, -2.28 ps core setup slack (all groups -117.08 ps,
+the virtual-IO path), -104.81 ps hold, 26,968.6 um^2, 295.52 mW, and zero
+DRC/antenna errors. Setup violations drop 56 -> 2 and setup TNS -832 -> -119 ps,
+a +45.9 MHz gain that essentially reaches the 1 GHz target on the core clock.
+The staging path no longer appears in the timing report at all: the new core
+critical path is inside the texture unit
+(`texUnit.texWidthReg[4] -> texUnit.gradReg_1[44]`, 37 cells, 84.8% cell delay),
+so the remaining core headroom is in the sampler's gradient path, not the
+fragment staging. All 11 KernelFragStageSpec cases pass. Emitted RTL is under
+`generated/ppa_refresh_head/kernel_frag_stage_onehotread/`.
 
 Graphics artifact directories:
 
@@ -209,6 +227,7 @@ Graphics artifact directories:
 - `generated/ppa_runs/head_kernel_frag_stage_outreg2_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_emitquad_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_emitptr_tc_slvt_1ghz_explore_u25_d60/`
+- `generated/ppa_runs/head_kernel_frag_stage_onehotread_tc_slvt_1ghz_explore_u25_d60/`
 
 `closure_no_cts` / `closure` note for large blocks: `repair_timing
 -repair_tns 100` does not converge on KernelFragStage (~870k instances; WNS

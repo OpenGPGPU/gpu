@@ -291,7 +291,8 @@ class KernelFragStage(
   // comparison, so they keep the wider width and are narrowed when used to
   // index a Vec.
   private val indexIdx = index(countWidth - 2, 0)
-  private val quadIdxWidth = math.max(1, log2Ceil(batchCap / 4))
+  private val quadCount = batchCap / 4
+  private val quadIdxWidth = math.max(1, log2Ceil(quadCount))
   // Emit-cache fill selector.  The emit walk loads its quad cache in order, so
   // the fill index is a plain counter instead of `index` arithmetic: the
   // selection then leaves a register directly, keeping the increment and the
@@ -301,6 +302,14 @@ class KernelFragStage(
   // the transaction response, decoupling the request muxes from `index`.
   private val requestQuadIdx = RegInit(0.U(quadIdxWidth.W))
   private val requestLaneIdx = RegInit(0.U(2.W))
+  // One-hot read selector for the staging record array.  A binary index fans
+  // its bits out to every field mux of every quad entry (`quadCount` records
+  // of four lanes), so one selected bit drives thousands of mux inputs and the
+  // resizer builds a long buffer chain on it (the `emitptr` post-route critical
+  // path).  A registered one-hot selector gives each entry its own select net,
+  // cutting the fanout per net by `quadCount`.  It steps with the request walk
+  // (one shift per quad) and is re-armed at the start of each write burst.
+  private val requestQuadSel = RegInit(1.U(quadCount.W))
   // Capture the selected quad before issuing its words.  This keeps the
   // dynamic record-array selection out of the word-request data path; only
   // the small four-lane mux remains while streaming a quad's fields.
@@ -316,9 +325,18 @@ class KernelFragStage(
   // packed-array mux.
   private def slotField[T <: Data](quad: UInt, lane: UInt)(f: KernelFragQuadRecord => T): T =
     Mux(execSlot.asBool, f(fragRecords(1)(quad)), f(fragRecords(0)(quad)))
-  private def requestQuadField[T <: Data](f: KernelFragQuadRecord => T): T =
-    Mux(execSlot.asBool, f(fragRecords(1)(requestQuadIdx)),
-      f(fragRecords(0)(requestQuadIdx)))
+  // Staging record read selected by the registered one-hot `requestQuadSel`.
+  // The entry is indexed statically (a Scala `Int`) so no binary decode is
+  // generated; `Mux1H` then only routes the one selected entry's fields, and
+  // the slot select sits after the one-hot mux so `execSlot` drives one load
+  // per output bit rather than one per entry.
+  private def requestQuadField[T <: Data](f: KernelFragQuadRecord => T): T = {
+    val sel = requestQuadSel.asBools
+    Mux(
+      execSlot.asBool,
+      Mux1H(sel, VecInit(Seq.tabulate(quadCount)(q => f(fragRecords(1)(q))))),
+      Mux1H(sel, VecInit(Seq.tabulate(quadCount)(q => f(fragRecords(0)(q))))))
+  }
   // Lane-static record field read for the emit quad cache: `lane` is a Scala
   // Int so only the quad (and slot) is selected dynamically, and the lane
   // select is free wiring.  This keeps the cache fill muxes off the 2-bit
@@ -495,6 +513,7 @@ class KernelFragStage(
       prodSlot := ~prodSlot
       index := 0.U
       requestQuadIdx := 0.U
+      requestQuadSel := 1.U
       requestLaneIdx := 0.U
       requestQuadLoaded := false.B
       field := 0.U
@@ -696,6 +715,7 @@ class KernelFragStage(
             when(requestLaneIdx === 3.U) {
               requestLaneIdx := 0.U
               requestQuadIdx := requestQuadIdx + 1.U
+              requestQuadSel := requestQuadSel << 1
               requestQuadLoaded := false.B
             }.otherwise {
               requestLaneIdx := requestLaneIdx + 1.U
@@ -778,6 +798,7 @@ class KernelFragStage(
             prodSlot := execSlot
             index := 0.U
             requestQuadIdx := 0.U
+            requestQuadSel := 1.U
             requestLaneIdx := 0.U
             requestQuadLoaded := false.B
             field := 0.U
