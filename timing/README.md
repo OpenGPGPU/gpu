@@ -111,7 +111,7 @@ scripts/run_graphics_ppa.py generated/ppa_refresh_head/gpu_host_system_vc GpuHos
 | CommandBufferStage (scene/scalar) | post-route PASS | 1779.42 MHz, +55.829 ps, 5412.91 um^2, 29.10 mW, DRC 0 |
 | CommandBufferStage (vertex) | post-route PASS | 1859.66 MHz, +70.154 ps, 1828.67 um^2, 10.02 mW, DRC 0 |
 | TriangleRasterizer | post-route PASS | 1011.01 MHz, +10.895 ps, 8185.10 um^2, 411.18 mW, DRC 0 |
-| KernelFragStage | post-route FAIL on timing (explore), DRC clean | 999.8 MHz, core setup -0.2 ps (all groups -103.4 ps), hold -107.7 ps, 27428.4 um^2, 320.31 mW, DRC 0 |
+| KernelFragStage | post-route FAIL on timing (explore), DRC clean | 995.2 MHz, core setup -4.9 ps (all groups -4.9 ps, vclk MET), hold -84.6 ps, 27148.8 um^2, 313.62 mW, DRC 0 |
 
 KernelFragStage request-queue registers: sequential cell count 29906
 (+6.6% vs the pre-queue state), total instances 870016, IO-virtual-clock
@@ -234,6 +234,25 @@ a BUFx16f/BUFx6f chain driven by the binary `emitQuadPtr` fanout). All 11
 KernelFragStageSpec and 3 TexSampleUnitSpec cases pass. Emitted RTL is under
 `generated/ppa_refresh_head/kernel_frag_stage_gradsplit/`.
 
+The `emitquadsel` variant applies the same one-hot-selector fix to the emit
+cache: the binary `emitQuadPtr` selected the quad loaded into the emit cache,
+and its bit drove the fill enable of every field register of every quad entry
+(~4 lanes x 6 fields x ~40 bits x 8 quads), so the resizer built a ~680 ps
+BUFx16f/BUFx6f chain on it. A registered one-hot `emitQuadSel` (shifted once per
+loaded quad, re-armed when the walk restarts) gives each entry its own select
+net, mirroring `requestQuadSel`. This is the largest single result so far:
+worst setup slack across all groups improves -103.44 -> -4.86 ps and setup TNS
+-103.62 -> -6.92 ps (5 violations), so the virtual-IO groups now close and the
+core clock is the sole remaining setup limiter. It also lowers area
+27,428.4 -> 27,148.8 um^2, power 320.31 -> 313.62 mW, and hold -107.67 ->
+-84.59 ps; DRC/antenna stay 0. The reported core-clock Fmax dips slightly to
+995.17 MHz (from 999.82) because removing the large buffer tree shifted
+placement and the new core critical path is `execSlot -> texUnit.sampler.lodFracReg[5]`
+(28 cells, 238 ps of BUFx16f), a 2:1 `execSlot` mux into the sampler LOD cone
+that was previously hidden behind the emit path. All 11 KernelFragStageSpec and
+3 TexSampleUnitSpec cases pass. Emitted RTL is under
+`generated/ppa_refresh_head/kernel_frag_stage_emitquadsel/`.
+
 Graphics artifact directories:
 
 - `generated/ppa_runs/head_command_buffer_scalar_tc_slvt_1ghz_closure/`
@@ -249,6 +268,7 @@ Graphics artifact directories:
 - `generated/ppa_runs/head_kernel_frag_stage_emitptr_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_onehotread_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_gradsplit_tc_slvt_1ghz_explore_u25_d60/`
+- `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u25_d60/`
 
 `closure_no_cts` / `closure` note for large blocks: `repair_timing
 -repair_tns 100` does not converge on KernelFragStage (~870k instances; WNS

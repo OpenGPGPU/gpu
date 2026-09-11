@@ -298,6 +298,13 @@ class KernelFragStage(
   // selection then leaves a register directly, keeping the increment and the
   // `index`-derived mux off the wide cache-fill read.
   private val emitQuadPtr = RegInit(0.U(quadIdxWidth.W))
+  // One-hot companion for the cache-fill read, same rationale as
+  // `requestQuadSel` below: a binary `emitQuadPtr` bit fans its selected half
+  // out to every field mux of every quad entry, so the resizer inserts a long
+  // BUFx16f chain on it (the `gradsplit` post-route core critical path).  The
+  // one-hot selector gives each entry its own select net; it shifts once per
+  // loaded quad and is re-armed when the emit walk restarts.
+  private val emitQuadSel = RegInit(1.U(quadCount.W))
   // These selectors drive the staging request data path. They advance with
   // the transaction response, decoupling the request muxes from `index`.
   private val requestQuadIdx = RegInit(0.U(quadIdxWidth.W))
@@ -340,11 +347,17 @@ class KernelFragStage(
   // Lane-static record field read for the emit quad cache: `lane` is a Scala
   // Int so only the quad (and slot) is selected dynamically, and the lane
   // select is free wiring.  This keeps the cache fill muxes off the 2-bit
-  // per-cycle lane selector.
-  private def loadQuadField[T <: Data](quad: UInt, lane: Int)(
-      f: RasterFragment => T): T =
-    Mux(execSlot.asBool, f(fragRecords(1)(quad).lanes(lane)),
-      f(fragRecords(0)(quad).lanes(lane)))
+  // per-cycle lane selector.  The quad is selected by the registered one-hot
+  // `emitQuadSel` (statically indexed entries) so the binary `emitQuadPtr`
+  // no longer drives thousands of mux inputs.
+  private def loadQuadField[T <: Data](lane: Int)(
+      f: RasterFragment => T): T = {
+    val sel = emitQuadSel.asBools
+    Mux(
+      execSlot.asBool,
+      Mux1H(sel, VecInit(Seq.tabulate(quadCount)(q => f(fragRecords(1)(q).lanes(lane))))),
+      Mux1H(sel, VecInit(Seq.tabulate(quadCount)(q => f(fragRecords(0)(q).lanes(lane))))))
+  }
   private val execCovered = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).covered)
   private val requestX = requestQuad.lanes(requestLaneIdx).x
   private val requestY = requestQuad.lanes(requestLaneIdx).y
@@ -635,13 +648,14 @@ class KernelFragStage(
   when(emitLoad) {
     emitQuadValid := true.B
     emitQuadPtr := emitQuadPtr + 1.U
+    emitQuadSel := emitQuadSel << 1
     for (lane <- 0 until 4) {
-      emitQuad(lane).x := loadQuadField(emitQuadPtr, lane)(_.x)
-      emitQuad(lane).y := loadQuadField(emitQuadPtr, lane)(_.y)
-      emitQuad(lane).e0 := loadQuadField(emitQuadPtr, lane)(_.e0)
-      emitQuad(lane).e1 := loadQuadField(emitQuadPtr, lane)(_.e1)
-      emitQuad(lane).e2 := loadQuadField(emitQuadPtr, lane)(_.e2)
-      emitQuad(lane).covered := loadQuadField(emitQuadPtr, lane)(_.covered)
+      emitQuad(lane).x := loadQuadField(lane)(_.x)
+      emitQuad(lane).y := loadQuadField(lane)(_.y)
+      emitQuad(lane).e0 := loadQuadField(lane)(_.e0)
+      emitQuad(lane).e1 := loadQuadField(lane)(_.e1)
+      emitQuad(lane).e2 := loadQuadField(lane)(_.e2)
+      emitQuad(lane).covered := loadQuadField(lane)(_.covered)
       val emitOutIdx = (emitQuadPtr << 2) + lane.U
       emitColorQ(lane) := outWords(emitOutIdx)
       emitDepthQ(lane) := outDepth(emitOutIdx)
@@ -768,6 +782,7 @@ class KernelFragStage(
             // The emit cache refills from quad 0 on entry to sEmit.
             emitQuadValid := false.B
             emitQuadPtr := 0.U
+            emitQuadSel := 1.U
             state := sEmit
           }.otherwise {
             index := index + 1.U
