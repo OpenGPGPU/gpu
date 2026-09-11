@@ -14,9 +14,12 @@ case class GraphicsConfig(
   screenWidth: Int = 128,
   screenHeight: Int = 128,
   subPixelBits: Int = 8,
-  drawFifoDepth: Int = 8
+  drawFifoDepth: Int = 8,
+  maxSampleCount: Int = 4
 ) {
   require(drawFifoDepth >= 2, "draw FIFO must hold at least two records")
+  require(Set(1, 2, 4)(maxSampleCount),
+    "maxSampleCount must be 1, 2, or 4")
   def coordWidth: Int = 32
   def edgeWidth: Int = 64
 
@@ -70,6 +73,8 @@ class RasterPixel(config: GraphicsConfig) extends Bundle {
   val area = SInt(config.edgeWidth.W)
   /** True for covered samples; false identifies a fragment-shader helper lane. */
   val covered = Bool()
+  /** Per-sample coverage; bit 0 is exactly `covered` in sample mode 0. */
+  val coverageMask = UInt(config.maxSampleCount.W)
 }
 
 /** A full 2x2 quad emitted in one beat: lane 0=TL, 1=TR, 2=BL, 3=BR.  The
@@ -294,6 +299,8 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   val io = IO(new Bundle {
     val draw = Flipped(Decoupled(new TriangleVertices(config)))
     val cullMode = Input(UInt(2.W))
+    /** 0=1x, 1=2x, 2=4x fixed sample positions (see [[Msaa.positions]]). */
+    val sampleMode = Input(UInt(2.W))
     val pixel = Decoupled(new RasterPixel(config))
     val quad = Decoupled(new RasterQuad(config))
   })
@@ -417,6 +424,30 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   quadCov.io.front := frontReg
   quadCov.io.topLeft.zipWithIndex.foreach { case (flag, i) => flag := tlReg(i) }
 
+  // Sample coverage: per-sample positions are quarter-pixel offsets, so the
+  // per-sample edge delta is +/- one quarter of the one-pixel gradient
+  // (dxReg/dyReg, exact powers of two at the fixed-point scale).
+  private val quarterDx = VecInit((0 until 3).map(i => dxReg.e(i) >> 2))
+  private val quarterDy = VecInit((0 until 3).map(i => dyReg.e(i) >> 2))
+
+  private def sampleCoverage(edges: Vec[SInt]): UInt = {
+    val cov = Module(new SampleCoverage(config.maxSampleCount, config.edgeWidth))
+    cov.io.sampleMode := io.sampleMode
+    cov.io.edges.zipWithIndex.foreach { case (e, i) => e := edges(i) }
+    cov.io.quarterDx.zipWithIndex.foreach { case (e, i) => e := quarterDx(i) }
+    cov.io.quarterDy.zipWithIndex.foreach { case (e, i) => e := quarterDy(i) }
+    cov.io.front := frontReg
+    cov.io.topLeft.zipWithIndex.foreach { case (flag, i) => flag := tlReg(i) }
+    cov.io.mask
+  }
+
+  private val curCoverage = sampleCoverage(edgeReg.e)
+  private val curCoveredAny = curCoverage.orR
+  private val quadCoverage =
+    VecInit((0 until 4).map(k =>
+      sampleCoverage(VecInit(quadCov.io.e0(k), quadCov.io.e1(k),
+        quadCov.io.e2(k)))))
+
   if (quadMode) {
     // Whole-quad emission: all four lanes of the current 2x2 group per beat,
     // each with its own screen-bounds test as the helper-lane mask.
@@ -433,14 +464,16 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
       io.quad.bits.lanes(k).e1 := quadCov.io.e1(k)
       io.quad.bits.lanes(k).e2 := quadCov.io.e2(k)
       io.quad.bits.lanes(k).area := areaReg
-      io.quad.bits.lanes(k).covered := quadCov.io.inside(k) &&
-        laneX < config.screenWidth.U && laneY < config.screenHeight.U
+      val inBounds = laneX < config.screenWidth.U && laneY < config.screenHeight.U
+      io.quad.bits.lanes(k).covered := quadCov.io.inside(k) && inBounds
+      io.quad.bits.lanes(k).coverageMask :=
+        Mux(inBounds, quadCoverage(k), 0.U(config.maxSampleCount.W))
     }
   } else {
     io.quad.valid := false.B
     io.quad.bits := 0.U.asTypeOf(new RasterQuad(config))
 
-    io.pixel.valid := active && curInside
+    io.pixel.valid := active && curCoveredAny
     io.pixel.bits.x := curX.asSInt
     io.pixel.bits.y := curY.asSInt
     io.pixel.bits.e0 := edgeReg.e(0)
@@ -448,6 +481,7 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
     io.pixel.bits.e2 := edgeReg.e(2)
     io.pixel.bits.area := areaReg
     io.pixel.bits.covered := curInside
+    io.pixel.bits.coverageMask := curCoverage
   }
 
   // ---------------------------------------------------------------------
@@ -477,8 +511,8 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
     }
   } else {
     when(active) {
-      // Advance on a fire or a miss; never stall on an inside sample.
-      when(!curInside || io.pixel.fire) {
+      // Advance on a fire or a miss; never stall on a covered sample.
+      when(!curCoveredAny || io.pixel.fire) {
         when(curX < maxX) {
           curX := curX + 1.U
           edgeReg.e.zipWithIndex.foreach { case (r, i) => r := edgeNextCol(i) }
@@ -514,6 +548,12 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   private val bboxMaxYW =
     Seq(vHold.v0.y, vHold.v1.y, vHold.v2.y).reduce(_ max _)
 
+  // Multi-sample positions extend at most a quarter pixel past the covered
+  // pixel centre, so pad the bounding box by one integer pixel whenever a
+  // sample mode other than 1x is active.  In 1x mode this is exactly zero and
+  // the box (and every emitted pixel) is unchanged.
+  private val bboxPad = Mux(io.sampleMode === 0.U, 0.S, (1 << config.subPixelBits).S)
+
   when(io.draw.fire) {
     vHold := io.draw.bits
     cullReg := io.cullMode
@@ -523,14 +563,14 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   when(setupState === stCoeffs) {
     setupState := stSetup
     // Clamp against the JUST-CAPTURED vertices (vHold registered last edge).
-    minX := (if (quadMode) clampPixN(bboxMinXW, config.screenWidth) & "hfffe".U
-      else clampPixN(bboxMinXW, config.screenWidth))
-    minY := (if (quadMode) clampPixN(bboxMinYW, config.screenHeight) & "hfffe".U
-      else clampPixN(bboxMinYW, config.screenHeight))
-    maxX := (if (quadMode) clampPixN(bboxMaxXW, config.screenWidth) & "hfffe".U
-      else clampPixN(bboxMaxXW, config.screenWidth))
-    maxY := (if (quadMode) clampPixN(bboxMaxYW, config.screenHeight) & "hfffe".U
-      else clampPixN(bboxMaxYW, config.screenHeight))
+    minX := (if (quadMode) clampPixN(bboxMinXW - bboxPad, config.screenWidth) & "hfffe".U
+      else clampPixN(bboxMinXW - bboxPad, config.screenWidth))
+    minY := (if (quadMode) clampPixN(bboxMinYW - bboxPad, config.screenHeight) & "hfffe".U
+      else clampPixN(bboxMinYW - bboxPad, config.screenHeight))
+    maxX := (if (quadMode) clampPixN(bboxMaxXW + bboxPad, config.screenWidth) & "hfffe".U
+      else clampPixN(bboxMaxXW + bboxPad, config.screenWidth))
+    maxY := (if (quadMode) clampPixN(bboxMaxYW + bboxPad, config.screenHeight) & "hfffe".U
+      else clampPixN(bboxMaxYW + bboxPad, config.screenHeight))
     coeffReg.a.zipWithIndex.foreach { case (r, i) => r := linesN(i)._1 }
     coeffReg.b.zipWithIndex.foreach { case (r, i) => r := linesN(i)._2 }
     coeffReg.c.zipWithIndex.foreach { case (r, i) => r := linesN(i)._3 }

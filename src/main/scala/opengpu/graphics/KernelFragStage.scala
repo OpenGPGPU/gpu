@@ -35,6 +35,7 @@ private class KernelFragEmitLane(gfxConfig: GraphicsConfig) extends Bundle {
   val e1 = SInt(gfxConfig.edgeWidth.W)
   val e2 = SInt(gfxConfig.edgeWidth.W)
   val covered = Bool()
+  val coverageMask = UInt(gfxConfig.maxSampleCount.W)
 }
 
 /** Core-backed fragment shader stage (Phase D), batched quad dispatch with
@@ -656,6 +657,7 @@ class KernelFragStage(
       emitQuad(lane).e1 := loadQuadField(lane)(_.e1)
       emitQuad(lane).e2 := loadQuadField(lane)(_.e2)
       emitQuad(lane).covered := loadQuadField(lane)(_.covered)
+      emitQuad(lane).coverageMask := loadQuadField(lane)(_.coverageMask)
       val emitOutIdx = (emitQuadPtr << 2) + lane.U
       emitColorQ(lane) := outWords(emitOutIdx)
       emitDepthQ(lane) := outDepth(emitOutIdx)
@@ -676,6 +678,7 @@ class KernelFragStage(
     outBitsReg.e1 := emitQuad(laneIdx).e1
     outBitsReg.e2 := emitQuad(laneIdx).e2
     outBitsReg.covered := emitQuad(laneIdx).covered
+    outBitsReg.coverageMask := emitQuad(laneIdx).coverageMask
     outBitsReg.color.r := emitColorQ(laneIdx)(31, 24)
     outBitsReg.color.g := emitColorQ(laneIdx)(23, 16)
     outBitsReg.color.b := emitColorQ(laneIdx)(15, 8)
@@ -701,6 +704,8 @@ class KernelFragStage(
           requestQuad.lanes(lane).color.b := requestQuadField(_.lanes(lane).color.b)
           requestQuad.lanes(lane).alpha := requestQuadField(_.lanes(lane).alpha)
           requestQuad.lanes(lane).covered := requestQuadField(_.lanes(lane).covered)
+          requestQuad.lanes(lane).coverageMask :=
+            requestQuadField(_.lanes(lane).coverageMask)
           requestQuad.u(lane) := requestQuadField(_.u(lane))
           requestQuad.v(lane) := requestQuadField(_.v(lane))
         }

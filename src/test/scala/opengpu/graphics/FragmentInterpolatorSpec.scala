@@ -61,6 +61,7 @@ class FragmentInterpolatorSpec extends AnyFlatSpec {
       dut.reset.poke(true.B)
       dut.clock.step()
       dut.reset.poke(false.B)
+      dut.io.sampleMode.poke(0.U)
 
       // Full-colour triangle: v0 red, v1 green, v2 blue.
       dut.io.colors(0).r.poke(255.U); dut.io.colors(0).g.poke(0.U); dut.io.colors(0).b.poke(0.U)
@@ -112,6 +113,7 @@ class FragmentInterpolatorSpec extends AnyFlatSpec {
       dut.reset.poke(true.B)
       dut.clock.step()
       dut.reset.poke(false.B)
+      dut.io.sampleMode.poke(0.U)
 
       // Full-colour triangle: v0 red, v1 green, v2 blue.
       dut.io.colors(0).r.poke(255.U); dut.io.colors(0).g.poke(0.U); dut.io.colors(0).b.poke(0.U)

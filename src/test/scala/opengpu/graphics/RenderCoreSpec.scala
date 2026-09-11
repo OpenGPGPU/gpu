@@ -110,7 +110,7 @@ class RenderCoreSpec extends AnyFlatSpec {
       // address-tagged responses presented on a later cycle (the parallel
       // output merger keeps several reads in flight).
       val cbQ = scala.collection.mutable.Queue.empty[(Int, Long)]
-      val fbQ = scala.collection.mutable.Queue.empty[(Int, Long)]
+      val fbQ = scala.collection.mutable.Queue.empty[(Boolean, Int, Long)]
       var guard = 0
       while (!dut.io.done.peek().litToBoolean && guard < 20000) {
         dut.io.cbMem.req.ready.poke(true.B)
@@ -127,8 +127,9 @@ class RenderCoreSpec extends AnyFlatSpec {
         }
         dut.io.fbMem.req.ready.poke(true.B)
         if (fbQ.nonEmpty) {
-          val (a, d) = fbQ.head
+          val (write, a, d) = fbQ.head
           dut.io.fbMem.resp.valid.poke(true.B)
+          dut.io.fbMem.resp.bits.write.poke(write.B)
           dut.io.fbMem.resp.bits.data.poke(d.U)
           dut.io.fbMem.resp.bits.addr.poke(a.U)
         } else dut.io.fbMem.resp.valid.poke(false.B)
@@ -138,7 +139,7 @@ class RenderCoreSpec extends AnyFlatSpec {
           val write = dut.io.fbMem.req.bits.write.peek().litToBoolean
           val data = dut.io.fbMem.req.bits.data.peek().litValue.toInt
           if (write) fbMem(a / 4) = data
-          else fbQ.enqueue((a, fbMem(a / 4) & 0xffffffffL))
+          fbQ.enqueue((write, a, fbMem(a / 4) & 0xffffffffL))
         }
         dut.clock.step()
         guard += 1
@@ -264,7 +265,7 @@ class RenderCoreSpec extends AnyFlatSpec {
       // responses presented later (the parallel output merger keeps several
       // reads in flight).
       val cbQ = scala.collection.mutable.Queue.empty[(Long, Long)]
-      val fbQ = scala.collection.mutable.Queue.empty[(Long, Long)]
+      val fbQ = scala.collection.mutable.Queue.empty[(Boolean, Long, Long)]
       var guard = 0
       while (!dut.io.done.peek().litToBoolean && guard < 60000) {
         dut.io.cbMem.req.ready.poke(true.B)
@@ -283,8 +284,9 @@ class RenderCoreSpec extends AnyFlatSpec {
 
         dut.io.fbMem.req.ready.poke(true.B)
         if (fbQ.nonEmpty) {
-          val (a, d) = fbQ.head
+          val (write, a, d) = fbQ.head
           dut.io.fbMem.resp.valid.poke(true.B)
+          dut.io.fbMem.resp.bits.write.poke(write.B)
           dut.io.fbMem.resp.bits.data.poke(d.U)
           dut.io.fbMem.resp.bits.addr.poke(a.U)
         } else dut.io.fbMem.resp.valid.poke(false.B)
@@ -293,7 +295,7 @@ class RenderCoreSpec extends AnyFlatSpec {
           val a = dut.io.fbMem.req.bits.addr.peek().litValue.toLong
           val w = dut.io.fbMem.req.bits.write.peek().litToBoolean
           if (w) wwrite(a, dut.io.fbMem.req.bits.data.peek().litValue.toInt)
-          else fbQ.enqueue((a, word(a)))
+          fbQ.enqueue((w, a, word(a)))
         }
 
         // compute-unit line port response
@@ -462,7 +464,7 @@ class RenderCoreSpec extends AnyFlatSpec {
       // responses presented later (the parallel output merger keeps several
       // reads in flight).
       val cbQ = scala.collection.mutable.Queue.empty[(Long, Long)]
-      val fbQ = scala.collection.mutable.Queue.empty[(Long, Long)]
+      val fbQ = scala.collection.mutable.Queue.empty[(Boolean, Long, Long)]
       var guard = 0
       while (!dut.io.done.peek().litToBoolean && guard < 120000) {
         dut.io.cbMem.req.ready.poke(true.B)
@@ -481,8 +483,9 @@ class RenderCoreSpec extends AnyFlatSpec {
 
         dut.io.fbMem.req.ready.poke(true.B)
         if (fbQ.nonEmpty) {
-          val (a, d) = fbQ.head
+          val (write, a, d) = fbQ.head
           dut.io.fbMem.resp.valid.poke(true.B)
+          dut.io.fbMem.resp.bits.write.poke(write.B)
           dut.io.fbMem.resp.bits.data.poke(d.U)
           dut.io.fbMem.resp.bits.addr.poke(a.U)
         } else dut.io.fbMem.resp.valid.poke(false.B)
@@ -491,7 +494,7 @@ class RenderCoreSpec extends AnyFlatSpec {
           val a = dut.io.fbMem.req.bits.addr.peek().litValue.toLong
           val w = dut.io.fbMem.req.bits.write.peek().litToBoolean
           if (w) { wwrite(a, dut.io.fbMem.req.bits.data.peek().litValue.toInt) }
-          else { fbQ.enqueue((a, word(a))) }
+          fbQ.enqueue((w, a, word(a)))
         }
 
         if (kuQ.nonEmpty) {

@@ -71,6 +71,8 @@ class RasterFragment(config: GraphicsConfig) extends Bundle {
   val e1 = SInt(config.edgeWidth.W)
   val e2 = SInt(config.edgeWidth.W)
   val covered = Bool()
+  /** Per-sample coverage carried from the rasterizer to the sample expander. */
+  val coverageMask = UInt(config.maxSampleCount.W)
 }
 
 /** A shaded 2x2 quad emitted in one beat: lane 0=TL, 1=TR, 2=BL, 3=BR.  The
@@ -98,6 +100,7 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
     val colors = Input(Vec(3, new Varyings))
     val depths = Input(Vec(3, SInt(32.W)))
     val cullMode = Input(UInt(2.W))
+    val sampleMode = Input(UInt(2.W))
     val done = Output(Bool())
     val pixel = Decoupled(new RasterFragment(config))
     val quad = Decoupled(new FragmentQuad(config))
@@ -107,6 +110,7 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
 
   raster.io.draw <> io.draw
   raster.io.cullMode := io.cullMode
+  raster.io.sampleMode := io.sampleMode
   io.done := raster.io.draw.ready
 
   if (quadMode) {
@@ -132,6 +136,8 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
       io.quad.bits.lanes(k).e1 := raster.io.quad.bits.lanes(k).e1
       io.quad.bits.lanes(k).e2 := raster.io.quad.bits.lanes(k).e2
       io.quad.bits.lanes(k).covered := raster.io.quad.bits.lanes(k).covered
+      io.quad.bits.lanes(k).coverageMask :=
+        raster.io.quad.bits.lanes(k).coverageMask
     }
     io.quad.valid := raster.io.quad.valid
     raster.io.quad.ready := io.quad.ready
@@ -162,6 +168,7 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
     io.pixel.bits.e1 := raster.io.pixel.bits.e1
     io.pixel.bits.e2 := raster.io.pixel.bits.e2
     io.pixel.bits.covered := raster.io.pixel.bits.covered
+    io.pixel.bits.coverageMask := raster.io.pixel.bits.coverageMask
     raster.io.pixel.ready := io.pixel.ready
 
     io.quad.valid := false.B

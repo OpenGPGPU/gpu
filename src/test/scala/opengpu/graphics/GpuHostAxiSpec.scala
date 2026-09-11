@@ -262,11 +262,11 @@ class GpuHostAxiSpec extends AnyFlatSpec {
       // AXI CONTROL handshake is still answered even though its request beat
       // has already been accepted.
       val cbQ = scala.collection.mutable.Queue.empty[Long]
-      val fbQ = scala.collection.mutable.Queue.empty[Long]
+      val fbQ = scala.collection.mutable.Queue.empty[(Boolean, Long)]
       // Reads captured this cycle become presentable the next one (one cycle
       // of memory latency, matching the OM's sWaitDepth contract).
       val cbCap = scala.collection.mutable.Queue.empty[Long]
-      val fbCap = scala.collection.mutable.Queue.empty[Long]
+      val fbCap = scala.collection.mutable.Queue.empty[(Boolean, Long)]
       var guard = 0
       while (!dut.io.m_irq.peek().litToBoolean && guard < 60000) {
         dut.io.cbMem.req.ready.poke(true.B)
@@ -287,9 +287,9 @@ class GpuHostAxiSpec extends AnyFlatSpec {
         dut.io.fbMem.req.ready.poke(true.B)
         if (fbQ.nonEmpty) {
           dut.io.fbMem.resp.valid.poke(true.B)
-          dut.io.fbMem.resp.bits.data.poke(m.word(fbQ.head).U)
-          dut.io.fbMem.resp.bits.write.poke(false.B)
-          dut.io.fbMem.resp.bits.addr.poke(fbQ.head.U)
+          dut.io.fbMem.resp.bits.data.poke(m.word(fbQ.head._2).U)
+          dut.io.fbMem.resp.bits.write.poke(fbQ.head._1.B)
+          dut.io.fbMem.resp.bits.addr.poke(fbQ.head._2.U)
           if (dut.io.fbMem.resp.ready.peek().litToBoolean) fbQ.dequeue()
         } else dut.io.fbMem.resp.valid.poke(false.B)
         if (dut.io.fbMem.req.valid.peek().litToBoolean &&
@@ -297,7 +297,8 @@ class GpuHostAxiSpec extends AnyFlatSpec {
           if (dut.io.fbMem.req.bits.write.peek().litToBoolean)
             m.wwrite(dut.io.fbMem.req.bits.addr.peek().litValue.toLong,
               dut.io.fbMem.req.bits.data.peek().litValue.toInt)
-          else fbCap.enqueue(dut.io.fbMem.req.bits.addr.peek().litValue.toLong)
+          fbCap.enqueue((dut.io.fbMem.req.bits.write.peek().litToBoolean,
+            dut.io.fbMem.req.bits.addr.peek().litValue.toLong))
         }
 
         dut.clock.step()

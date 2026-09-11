@@ -97,6 +97,7 @@ class TexturedFragStage(
     val interpolatedUvQuad = Output(Vec(4, new TexUV))
 
     val out = Decoupled(new RasterFragment(gfxConfig))
+    val drained = Output(Bool())
     val mem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
@@ -149,6 +150,10 @@ class TexturedFragStage(
 
   private val sWait :: sOut :: Nil = Enum(2)
   private val state = RegInit(sWait)
+  private val pending = RegInit(false.B)
+  when(io.fragIn.fire) { pending := true.B }
+  when(io.out.fire) { pending := false.B }
+  io.drained := !pending
 
   // Sampler results are always consumed while waiting for a fragment.
   sampler.io.result.ready := state === sWait
@@ -158,6 +163,7 @@ class TexturedFragStage(
   private val heldY = RegInit(0.S(gfxConfig.coordWidth.W))
   private val heldDepth = RegInit(0.S(32.W))
   private val heldCovered = RegInit(false.B)
+  private val heldCoverageMask = RegInit(0.U(gfxConfig.maxSampleCount.W))
   private val heldAlpha = RegInit(0xff.U(8.W))
   private val heldColor = Reg(Vec(3, UInt(8.W))) // fragment colour
   private val texelWord = RegInit(0.U(32.W))
@@ -183,6 +189,7 @@ class TexturedFragStage(
   io.out.bits.e1 := heldE(1)
   io.out.bits.e2 := heldE(2)
   io.out.bits.covered := heldCovered
+  io.out.bits.coverageMask := heldCoverageMask
   io.out.bits.color.r := modulate(heldColor(0), texelWord(31, 24))
   io.out.bits.color.g := modulate(heldColor(1), texelWord(23, 16))
   io.out.bits.color.b := modulate(heldColor(2), texelWord(15, 8))
@@ -198,6 +205,7 @@ class TexturedFragStage(
         heldY := io.fragIn.bits.y
         heldDepth := io.fragIn.bits.depth
         heldCovered := io.fragIn.bits.covered
+        heldCoverageMask := io.fragIn.bits.coverageMask
         heldAlpha := io.fragIn.bits.alpha
         heldE(0) := io.fragIn.bits.e0
         heldE(1) := io.fragIn.bits.e1

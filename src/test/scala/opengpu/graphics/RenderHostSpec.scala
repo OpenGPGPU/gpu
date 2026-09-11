@@ -128,7 +128,7 @@ class RenderHostSpec extends AnyFlatSpec {
         val a = dut.io.fbMem.req.bits.addr.peek().litValue.toLong
         if (dut.io.fbMem.req.bits.write.peek().litToBoolean)
           m.wwrite(a, dut.io.fbMem.req.bits.data.peek().litValue.toInt)
-        else fbQ.enqueue((false, a, m.word(a)))
+        fbQ.enqueue((dut.io.fbMem.req.bits.write.peek().litToBoolean, a, m.word(a)))
       }
 
       // Shared line port used by core staging, fill, blit and strided copy.

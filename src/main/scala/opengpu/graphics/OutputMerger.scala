@@ -37,6 +37,7 @@ class OmFragment extends Bundle {
   val y = UInt(16.W)
   val color = UInt(32.W) // RGBA8888
   val depth = UInt(30.W) // D24 in the low 24 bits of a 32-bit word
+  val sampleIndex = UInt(2.W)
 }
 
 /** Depth-test / output-merge read-modify-write with an in-flight pixel table.
@@ -54,8 +55,8 @@ class OmFragment extends Bundle {
   * never merged concurrently.  Read responses are attributed by the echoed
   * `OmMemoryResponse.addr` (unique per in-flight entry: same-pixel fragments
   * are excluded, and the colour/depth buffers are disjoint by the driver
-  * contract); write acknowledgements are fire-and-forget and popped wherever
-  * they arrive.
+  * contract). Write acknowledgements retire their address-matched entry;
+  * reservations remain live until both writes are acknowledged.
   *
   * Every entry latches the fragment payload, the pixel addresses, and the
   * test/blend configuration at acceptance, so the programmer-visible
@@ -89,6 +90,7 @@ class OutputMerger(
     val colorBase = Input(UInt(32.W))
     val depthBase = Input(UInt(32.W))
     val stride = Input(UInt(32.W)) // bytes per row
+    val sampleMode = Input(UInt(2.W))
     val depthTestEnable = Input(Bool())
     val depthFunc = Input(UInt(3.W))
     val depthWriteEnable = Input(Bool())
@@ -96,10 +98,9 @@ class OutputMerger(
     val accepted = Output(Bool())
     val wroteDepth = Output(Bool())
     val wroteColor = Output(Bool())
-    /** No in-flight entry: every accepted fragment's writes have been issued
-      * (and fire-and-forget acknowledgements are all that may remain in the
-      * memory system).  A completion signal must wait for this, since
-      * `fragIn.ready` only reports slot availability.
+    /** Every accepted fragment has retired, including all write responses.
+      * The memory adapter must acknowledge writes only after visibility at
+      * the shared memory completion point; ready only reports capacity.
       */
     val drained = Output(Bool())
   })
@@ -110,6 +111,8 @@ class OutputMerger(
   private def sWaitColor = 3.U(3.W)
   private def sWriteColor = 4.U(3.W)
   private def sWriteDepth = 5.U(3.W)
+  private def sWaitColorWrite = 6.U(3.W)
+  private def sWaitDepthWrite = 7.U(3.W)
 
   private class Entry extends Bundle {
     val valid = Bool()
@@ -161,12 +164,15 @@ class OutputMerger(
   private val freeVec = VecInit(entries.map(e => !e.valid))
   private val anyFree = freeVec.asUInt.orR
   private val freeIdx = PriorityEncoder(freeVec)
+  private val sampleOffset = (io.fragIn.bits.x << io.sampleMode) +
+    Mux(io.sampleMode === 0.U, 0.U, io.fragIn.bits.sampleIndex)
   private val newColorAddr = (io.colorBase +
-    (io.fragIn.bits.y * io.stride) + io.fragIn.bits.x * bppColor.U)(31, 0)
+    (io.fragIn.bits.y * io.stride) + sampleOffset * bppColor.U)(31, 0)
   private val newDepthAddr = (io.depthBase +
-    (io.fragIn.bits.y * io.stride) + io.fragIn.bits.x * bppDepth.U)(31, 0)
+    (io.fragIn.bits.y * io.stride) + sampleOffset * bppDepth.U)(31, 0)
   private val addrConflict = VecInit(entries.map(e => e.valid &&
-    (e.colorAddr === newColorAddr || e.depthAddr === newDepthAddr))).asUInt.orR
+    (e.colorAddr === newColorAddr || e.depthAddr === newDepthAddr ||
+      e.colorAddr === newDepthAddr || e.depthAddr === newColorAddr))).asUInt.orR
 
   io.fragIn.ready := anyFree && !addrConflict
   io.accepted := io.fragIn.fire
@@ -200,8 +206,8 @@ class OutputMerger(
   // ---------------------------------------------------------------------
   // Response attribution: a read response belongs to the one entry waiting
   // for that address (same-pixel fragments are excluded at acceptance, and
-  // the colour/depth buffers are disjoint by the driver contract).  Write
-  // acknowledgements are popped wherever they arrive.
+  // the colour/depth buffers are disjoint by the driver contract). Write
+  // acknowledgements are matched independently below.
   // ---------------------------------------------------------------------
   private val respRead = io.mem.resp.fire && !io.mem.resp.bits.write
   private val depthMatchers = VecInit(entries.map(e =>
@@ -218,7 +224,8 @@ class OutputMerger(
     when(!e.valid) {
       when(io.fragIn.fire && freeIdx === i.U) {
         e.valid := true.B
-        e.state := sReadDepth
+        e.state := Mux(io.depthTestEnable, sReadDepth,
+          Mux(io.blendEnable, sReadColor, sWriteColor))
         e.colorAddr := newColorAddr
         e.depthAddr := newDepthAddr
         e.color := io.fragIn.bits.color
@@ -234,10 +241,18 @@ class OutputMerger(
         when(e.state === sReadDepth) { e.state := sWaitDepth }
         when(e.state === sReadColor) { e.state := sWaitColor }
         when(e.state === sWriteColor) {
-          e.valid := Mux(e.writeDepth, true.B, false.B)
-          when(e.writeDepth) { e.state := sWriteDepth }
+          e.state := sWaitColorWrite
         }
-        when(e.state === sWriteDepth) { e.valid := false.B }
+        when(e.state === sWriteDepth) { e.state := sWaitDepthWrite }
+      }
+      when(io.mem.resp.fire && io.mem.resp.bits.write) {
+        when(e.state === sWaitColorWrite && e.colorAddr === io.mem.resp.bits.addr) {
+          when(e.writeDepth) { e.state := sWriteDepth }
+            .otherwise { e.valid := false.B }
+        }
+        when(e.state === sWaitDepthWrite && e.depthAddr === io.mem.resp.bits.addr) {
+          e.valid := false.B
+        }
       }
       when(respRead && depthMatchers(i)) {
         val pass = Mux(!e.depthTestEnable, true.B,

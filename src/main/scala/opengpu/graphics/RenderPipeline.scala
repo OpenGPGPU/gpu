@@ -129,8 +129,15 @@ class RenderPipeline(
   private val geo = Module(new GeometryStage(config))
   private val shader = Module(new RasterShader(config, quadMode = fragCore || vertCore))
   private val om = Module(new OutputMerger(config))
+  // Sample mode is elaboration-staged: the 1x value keeps coverage, addressing
+  // and the expander bit-identical to the single-sample pipeline.  State
+  // plumbing to program modes 1/2 is a later phase.
+  private val sampleMode = 0.U(2.W)
+  om.io.sampleMode := sampleMode
+  shader.io.sampleMode := sampleMode
   private val textured =
     Module(new TexturedFragStage(config, quadUv = fragCore || vertCore))
+  private val expander = Module(new SampleExpander(config.maxSampleCount))
 
   // Triangle source: when vertCore=true, triangles come from KernelVertStage;
   // otherwise they come from io.draw directly.
@@ -364,10 +371,10 @@ class RenderPipeline(
   textured.io.texMaxLevel := drawState.texMaxLevel
   io.texMem <> textured.io.mem
 
-  // Whole-bundle payload + consumer ready live outside the fragCore branches
-  // so both elaborations fully initialize the stage.
+  // Whole-bundle payload lives outside the fragCore branches so both
+  // elaborations fully initialize the stage; the consumer ready and the
+  // sample expander sit on the fixed-function branch only.
   textured.io.fragIn.bits := shader.io.pixel.bits
-  textured.io.out.ready := om.io.fragIn.ready
 
   io.mem <> om.io.mem
 
@@ -520,7 +527,15 @@ class RenderPipeline(
       kernelFrag.io.out.bits.color.b,
       kernelFrag.io.out.bits.alpha)
     om.io.fragIn.bits.depth := kernelFrag.io.out.bits.depth(29, 0).asUInt
+    om.io.fragIn.bits.sampleIndex := 0.U
     kernelFrag.io.out.ready := om.io.fragIn.ready
+
+    // The expander serves the fixed-function path only; its own coverage mask
+    // is carried in the fragment record but 1x mode never engages it here.
+    expander.io.in.valid := false.B
+    expander.io.in.bits := 0.U.asTypeOf(new SamplePixel(config.maxSampleCount))
+    expander.io.out.ready := false.B
+    textured.io.out.ready := om.io.fragIn.ready
 
     // Preserve each bridge's four local IDs by prefixing vertex requests with
     // one.  The resulting eight-ID port allows both bridges to sustain their
@@ -580,7 +595,7 @@ class RenderPipeline(
     // admitted draw retired, so an in-flight batch or an unpresented retire
     // event is never mistaken for an idle pipeline at a draw boundary.
     io.done := !drawHoldValid && shader.io.done && kernelFrag.io.drained &&
-      om.io.fragIn.ready && !ctxFifo.io.headValid
+      om.io.drained && !ctxFifo.io.headValid
   } else {
     shader.io.draw.valid := drawHoldValid && !clipTriangleActive && clipper.io.done &&
       clipEmitIndex < clipper.io.outValid
@@ -593,9 +608,10 @@ class RenderPipeline(
     om.io.blendEnable := drawState.blendEnable
     // As in the core-backed path, wait for the final fragment's serialized
     // depth/color RMW to retire (in-flight entries drained) before declaring
-    // done; admission stays additionally gated on OM slot availability.
+    // done; admission stays additionally gated on OM slot availability and on
+    // the sample expander having emitted its last sample.
     io.draw.ready := triSource.ready && shader.io.draw.ready && shader.io.done &&
-      om.io.fragIn.ready
+      textured.io.drained && expander.io.drained && om.io.drained
     // Fragment stream: sampled-and-modulated when texturing is enabled, else
     // straight from the interpolator.  The bypass path keeps disabled draws
     // free of sampler latency and frees its memory port entirely.
@@ -603,21 +619,44 @@ class RenderPipeline(
 
     textured.io.fragIn.valid := drawState.texEnable && shader.io.pixel.valid
 
-    om.io.fragIn.valid := Mux(drawState.texEnable, textured.io.out.valid,
-      shader.io.pixel.valid)
-    om.io.fragIn.bits.x := Mux(drawState.texEnable,
+    // The sample expander is the per-pixel/per-sample boundary: it visits the
+    // set coverage bits and presents each as its own OM fragment.  In 1x mode
+    // the mask is a single bit, so this is one input and one output.
+    val fragX = Mux(drawState.texEnable,
       textured.io.out.bits.x, shader.io.pixel.bits.x)(15, 0).asUInt
-    om.io.fragIn.bits.y := Mux(drawState.texEnable,
+    val fragY = Mux(drawState.texEnable,
       textured.io.out.bits.y, shader.io.pixel.bits.y)(15, 0).asUInt
-    om.io.fragIn.bits.color := Mux(drawState.texEnable,
+    val fragColor = Mux(drawState.texEnable,
       packColor(textured.io.out.bits.color.r, textured.io.out.bits.color.g,
         textured.io.out.bits.color.b, textured.io.out.bits.alpha),
       Cat(shader.io.pixel.bits.color.r, shader.io.pixel.bits.color.g,
         shader.io.pixel.bits.color.b, shader.io.pixel.bits.alpha))
-    om.io.fragIn.bits.depth := Mux(drawState.texEnable,
+    val fragDepth = Mux(drawState.texEnable,
       textured.io.out.bits.depth, shader.io.pixel.bits.depth)(29, 0).asUInt
+    // Per-sample depth gradients are not yet specified, so every sample shares
+    // the pixel-centre depth; 1x mode reads only entry 0 either way.
+    val fragCoverage = Mux(drawState.texEnable,
+      textured.io.out.bits.coverageMask, shader.io.pixel.bits.coverageMask)
+
+    expander.io.in.valid := Mux(drawState.texEnable, textured.io.out.valid,
+      shader.io.pixel.valid)
+    expander.io.in.bits.x := fragX
+    expander.io.in.bits.y := fragY
+    expander.io.in.bits.color := fragColor
+    expander.io.in.bits.coverageMask := fragCoverage
+    expander.io.in.bits.depths := VecInit(
+      Seq.fill(config.maxSampleCount)(fragDepth))
+
+    om.io.fragIn.valid := expander.io.out.valid
+    om.io.fragIn.bits.x := expander.io.out.bits.x
+    om.io.fragIn.bits.y := expander.io.out.bits.y
+    om.io.fragIn.bits.color := expander.io.out.bits.color
+    om.io.fragIn.bits.depth := expander.io.out.bits.depth
+    om.io.fragIn.bits.sampleIndex := expander.io.out.bits.sampleIndex
+    expander.io.out.ready := om.io.fragIn.ready
+    textured.io.out.ready := expander.io.in.ready
     shader.io.pixel.ready := Mux(drawState.texEnable, textured.io.fragIn.ready,
-      om.io.fragIn.ready)
+      expander.io.in.ready)
     shader.io.quad.ready := false.B // scalar mode: quad port is tied off
 
     io.kernelMemReq.valid := false.B
@@ -634,6 +673,7 @@ class RenderPipeline(
     io.kernelGlobalAtomicRequest.bits :=
       0.U.asTypeOf(io.kernelGlobalAtomicRequest.bits)
     io.kernelGlobalAtomicResponse.ready := true.B
-    io.done := !drawHoldValid && shader.io.done && om.io.fragIn.ready
+    io.done := !drawHoldValid && shader.io.done && textured.io.drained &&
+      expander.io.drained && om.io.drained
   }
 }

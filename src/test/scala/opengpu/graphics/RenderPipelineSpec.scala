@@ -107,11 +107,12 @@ class RenderPipelineSpec extends AnyFlatSpec {
           val write = dut.io.mem.req.bits.write.peek().litToBoolean
           val data = dut.io.mem.req.bits.data.peek().litValue.toInt
           if (write) mem(addr / 4) = data
-          else captured.enqueue((false, addr, mem(addr / 4) & 0xffffffffL))
+          captured.enqueue((write, addr, mem(addr / 4) & 0xffffffffL))
         }
         if (respQ.nonEmpty) {
           val (isWrite, addr, data) = respQ.head
           dut.io.mem.resp.valid.poke(true.B)
+          dut.io.mem.resp.bits.write.poke(isWrite.B)
           dut.io.mem.resp.bits.data.poke(data.U)
           dut.io.mem.resp.bits.addr.poke(addr.U)
           if (dut.io.mem.resp.ready.peek().litToBoolean) respQ.dequeue()
@@ -243,8 +244,8 @@ class RenderPipelineSpec extends AnyFlatSpec {
       dut.clock.step()
       dut.io.draw.valid.poke(false.B)
 
-      val responses = scala.collection.mutable.Queue.empty[(Int, Long)]
-      val captured = scala.collection.mutable.Queue.empty[(Int, Long)]
+      val responses = scala.collection.mutable.Queue.empty[(Boolean, Int, Long)]
+      val captured = scala.collection.mutable.Queue.empty[(Boolean, Int, Long)]
       var cycles = 0
       while (!dut.io.done.peek().litToBoolean && cycles < 4000) {
         while (captured.nonEmpty) responses.enqueue(captured.dequeue())
@@ -252,13 +253,15 @@ class RenderPipelineSpec extends AnyFlatSpec {
           val address = dut.io.mem.req.bits.addr.peek().litValue.toInt
           if (dut.io.mem.req.bits.write.peek().litToBoolean) {
             mem(address / 4) = dut.io.mem.req.bits.data.peek().litValue.toInt
+            captured.enqueue((true, address, 0L))
           } else {
-            captured.enqueue((address, mem(address / 4) & 0xffffffffL))
+            captured.enqueue((false, address, mem(address / 4) & 0xffffffffL))
           }
         }
         if (responses.nonEmpty) {
-          val (address, data) = responses.head
+          val (write, address, data) = responses.head
           dut.io.mem.resp.valid.poke(true.B)
+          dut.io.mem.resp.bits.write.poke(write.B)
           dut.io.mem.resp.bits.addr.poke(address.U)
           dut.io.mem.resp.bits.data.poke(data.U)
           if (dut.io.mem.resp.ready.peek().litToBoolean) responses.dequeue()

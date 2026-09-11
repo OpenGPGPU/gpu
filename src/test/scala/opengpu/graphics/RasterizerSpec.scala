@@ -60,6 +60,7 @@ class RasterizerSpec extends AnyFlatSpec {
       dut.reset.poke(true.B)
       dut.clock.step()
       dut.reset.poke(false.B)
+      dut.io.sampleMode.poke(0.U)
       dut.io.pixel.ready.poke(true.B)
       dut.io.draw.valid.poke(true.B)
       dut.io.draw.bits.v0.x.poke(v0._1.S)
@@ -123,6 +124,7 @@ class RasterizerSpec extends AnyFlatSpec {
     simulate(new TriangleRasterizer(config)) { dut =>
       def drain(t: ((Int, Int), (Int, Int), (Int, Int))): Set[(Int, Int)] = {
         dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        dut.io.sampleMode.poke(0.U)
         dut.io.pixel.ready.poke(true.B)
         dut.io.cullMode.poke(0.U)
         dut.io.draw.valid.poke(true.B)
@@ -154,6 +156,7 @@ class RasterizerSpec extends AnyFlatSpec {
       subPixelBits = 8)
     simulate(new TriangleRasterizer(config, quadMode = true)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.sampleMode.poke(0.U)
       dut.io.quad.ready.poke(true.B)
       dut.io.cullMode.poke(0.U)
       dut.io.draw.valid.poke(true.B)
@@ -209,6 +212,7 @@ class RasterizerSpec extends AnyFlatSpec {
     val tri = ((config.toFixed(2), config.toFixed(2)), (config.toFixed(2), config.toFixed(14)), (config.toFixed(14), config.toFixed(2)))
     simulate(new TriangleRasterizer(config)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.sampleMode.poke(0.U)
       dut.io.pixel.ready.poke(true.B)
       dut.io.cullMode.poke(1.U) // cull back-facing
       dut.io.draw.valid.poke(true.B)
@@ -259,6 +263,7 @@ class RasterizerSpec extends AnyFlatSpec {
               tri: Seq[(Int, Int)],
               cull: Int): Set[(Int, Int)] = {
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.sampleMode.poke(0.U)
       dut.io.pixel.ready.poke(true.B)
       dut.io.cullMode.poke(cull.U)
       dut.io.draw.valid.poke(true.B)
@@ -298,6 +303,76 @@ class RasterizerSpec extends AnyFlatSpec {
         assert(got == exp,
           s"triangle $t $tri mismatch: hw-only=${(got -- exp).take(6)} " +
             s"sw-only=${(exp -- got).take(6)}")
+      }
+    }
+  }
+
+  it should "match a software sample reference in multisample modes" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    val verts = Seq(
+      (config.toFixed(2), config.toFixed(6)),
+      (config.toFixed(14), config.toFixed(7)),
+      (config.toFixed(3), config.toFixed(13)))
+
+    def plane(ax: Long, ay: Long, bx: Long, by: Long): (Long, Long, Long) =
+      ((ay - by), (bx - ax), (ax * by - bx * ay))
+    val planes = Array(
+      plane(verts(1)._1, verts(1)._2, verts(2)._1, verts(2)._2),
+      plane(verts(2)._1, verts(2)._2, verts(0)._1, verts(0)._2),
+      plane(verts(0)._1, verts(0)._2, verts(1)._1, verts(1)._2))
+    val area0 = { val (a, b, c) = planes(0); a * verts(0)._1 + b * verts(0)._2 + c }
+    val front = area0 >= 0
+    val tl = planes.map { case (a, b, _) =>
+      val af = if (front) a else -a
+      val bf = if (front) b else -b
+      af < 0 || (af == 0 && bf < 0)
+    }
+    // Per-sample edge delta is one quarter of the one-pixel gradient.
+    val qdx = planes.map { case (a, _, _) => (a << config.subPixelBits) / 4 }
+    val qdy = planes.map { case (_, b, _) => (b << config.subPixelBits) / 4 }
+
+    def expected(mode: Int): Set[(Int, Int)] =
+      (0 until 16).flatMap { py => (0 until 16).flatMap { px =>
+        val x = px.toLong << config.subPixelBits
+        val y = py.toLong << config.subPixelBits
+        val e = planes.map { case (a, b, c) => a * x + b * y + c }
+        val any = Msaa.positions(mode).exists { case (sx, sy) =>
+          (0 until 3).forall { i =>
+            val v = e(i) + sx.toLong * qdx(i) + sy.toLong * qdy(i)
+            if (front) v > 0 || (v == 0 && tl(i)) else v < 0 || (v == 0 && tl(i))
+          }
+        }
+        if (any) Some((px, py)) else None
+      } }.toSet
+
+    for (mode <- 1 to 2) {
+      simulate(new TriangleRasterizer(config)) { dut =>
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        dut.io.sampleMode.poke(mode.U)
+        dut.io.pixel.ready.poke(true.B)
+        dut.io.cullMode.poke(0.U)
+        dut.io.draw.valid.poke(true.B)
+        dut.io.draw.bits.v0.x.poke(verts(0)._1.S)
+        dut.io.draw.bits.v0.y.poke(verts(0)._2.S)
+        dut.io.draw.bits.v1.x.poke(verts(1)._1.S)
+        dut.io.draw.bits.v1.y.poke(verts(1)._2.S)
+        dut.io.draw.bits.v2.x.poke(verts(2)._1.S)
+        dut.io.draw.bits.v2.y.poke(verts(2)._2.S)
+        dut.clock.step(); dut.io.draw.valid.poke(false.B)
+
+        val got = collection.mutable.Set.empty[(Int, Int)]
+        var guard = 0
+        while (!dut.io.draw.ready.peek().litToBoolean && guard < 10000) {
+          if (dut.io.pixel.valid.peek().litToBoolean)
+            got += ((dut.io.pixel.bits.x.peek().litValue.toInt,
+              dut.io.pixel.bits.y.peek().litValue.toInt))
+          dut.clock.step(); guard += 1
+        }
+        assert(guard < 10000, s"multisample mode $mode did not drain")
+        val exp = expected(mode)
+        assert(got.toSet == exp,
+          s"mode $mode mismatch: hw-only=${(got.toSet -- exp).take(6)} " +
+            s"sw-only=${(exp -- got.toSet).take(6)}")
       }
     }
   }

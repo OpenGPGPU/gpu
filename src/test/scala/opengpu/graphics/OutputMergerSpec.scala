@@ -38,12 +38,11 @@ class OutputMergerSpec extends AnyFlatSpec {
     def capture(addr: Int, write: Boolean, data: Int): Unit = {
       if (write) {
         mem(addr) = data
-        heldAcks += 1
+        inflight.enqueue((true, addr, 0L))
       } else {
         if (pending.exists(p => !p._1)) sawConcurrentReads = true
         // Release every held write ack ahead of this read's response, so an
         // ack can overtake the read (the L2's out-of-order path).
-        while (heldAcks > 0) { inflight.enqueue((true, 0, 0L)); heldAcks -= 1 }
         inflight.enqueue((false, addr, mem(addr) & 0xffffffffL))
       }
     }
@@ -97,6 +96,7 @@ class OutputMergerSpec extends AnyFlatSpec {
       g += 1
     }
     assert(g < guard, "OM did not drain")
+    dut.io.drained.expect(true.B)
     dut.io.mem.resp.valid.poke(false.B)
   }
 
@@ -125,6 +125,47 @@ class OutputMergerSpec extends AnyFlatSpec {
 
   private def newDut(dut: OutputMerger): Unit = {
     dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+  }
+
+  it should "hold reservations and completion until delayed writes are acknowledged" in {
+    simulate(new OutputMerger(GraphicsConfig())) { dut =>
+      newDut(dut)
+      pokeConfig(dut, false, 0, true, false)
+      pokeFrag(dut, 1, 1, 0x11223344, 0x10)
+      dut.io.fragIn.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.fragIn.valid.poke(false.B)
+      // Depth testing is disabled: no unnecessary depth read.
+      dut.io.mem.req.valid.expect(true.B)
+      dut.io.mem.req.bits.write.expect(true.B)
+      dut.io.mem.req.bits.addr.expect(addrOf(colorBase, 1, 1).U)
+      dut.clock.step()
+      for (_ <- 0 until 12) {
+        dut.io.drained.expect(false.B)
+        dut.io.fragIn.ready.expect(false.B)
+        dut.io.mem.req.valid.expect(false.B)
+        dut.clock.step()
+      }
+      // A distinct pixel can still be admitted while this write is pending.
+      pokeFrag(dut, 2, 1, 0, 0)
+      dut.io.fragIn.ready.expect(true.B)
+      dut.io.drained.expect(false.B)
+      dut.io.mem.resp.valid.poke(true.B)
+      dut.io.mem.resp.bits.write.poke(true.B)
+      dut.io.mem.resp.bits.addr.poke(addrOf(colorBase, 1, 1).U)
+      dut.clock.step()
+      dut.io.mem.resp.valid.poke(false.B)
+      dut.io.mem.req.bits.addr.expect(addrOf(depthBase, 1, 1).U)
+      dut.io.mem.req.valid.expect(true.B)
+      dut.clock.step()
+      dut.clock.step(12)
+      dut.io.drained.expect(false.B)
+      dut.io.mem.resp.valid.poke(true.B)
+      dut.io.mem.resp.bits.addr.poke(addrOf(depthBase, 1, 1).U)
+      dut.clock.step()
+      dut.io.mem.resp.valid.poke(false.B)
+      dut.io.drained.expect(true.B)
+    }
   }
 
   it should "write color and depth for a passing fragment" in {
