@@ -111,7 +111,7 @@ scripts/run_graphics_ppa.py generated/ppa_refresh_head/gpu_host_system_vc GpuHos
 | CommandBufferStage (scene/scalar) | post-route PASS | 1779.42 MHz, +55.829 ps, 5412.91 um^2, 29.10 mW, DRC 0 |
 | CommandBufferStage (vertex) | post-route PASS | 1859.66 MHz, +70.154 ps, 1828.67 um^2, 10.02 mW, DRC 0 |
 | TriangleRasterizer | post-route PASS | 1011.01 MHz, +10.895 ps, 8185.10 um^2, 411.18 mW, DRC 0 |
-| KernelFragStage | post-route FAIL on timing (explore), DRC clean | 997.7 MHz, core setup -2.3 ps (all groups -117.1 ps), hold -104.8 ps, 26968.6 um^2, 295.52 mW, DRC 0 |
+| KernelFragStage | post-route FAIL on timing (explore), DRC clean | 999.8 MHz, core setup -0.2 ps (all groups -103.4 ps), hold -107.7 ps, 27428.4 um^2, 320.31 mW, DRC 0 |
 
 KernelFragStage request-queue registers: sequential cell count 29906
 (+6.6% vs the pre-queue state), total instances 870016, IO-virtual-clock
@@ -214,6 +214,26 @@ so the remaining core headroom is in the sampler's gradient path, not the
 fragment staging. All 11 KernelFragStageSpec cases pass. Emitted RTL is under
 `generated/ppa_refresh_head/kernel_frag_stage_onehotread/`.
 
+The `gradsplit` variant pipelines the texture-unit extent multiply in
+`TexSampleUnit`, which was the new core critical path after `onehotread`. The
+32x14 gradient product (`diffReg(i) * texWidthReg/texHeightReg`) sat in one
+cycle; its post-route path ran `texWidthReg[4]` through a 6-deep BUFx16f fanout
+chain (~286 ps), a ~7-stage FA carry chain plus one HAxp5 (~440 ps), and a
+prefix-adder tail (~200 ps) into `gradReg[44]`. Splitting the 32-bit difference
+into two 16-bit halves gives two 16x14 partial products per entry (registered in
+`gradLoReg`/`gradHiReg`, exact: `diff = diffLo + diffHi*2^16`) that recombine into
+`gradReg` one cycle later in a new `sAdd` FSM state. It reaches 999.82 MHz core
+Fmax, -0.18 ps core setup slack (all groups -103.44 ps), -107.67 ps hold,
+27,428.4 um^2, 320.31 mW, and zero DRC/antenna errors: setup TNS improves
+-119.36 -> -103.62 ps and the virtual-IO all-groups worst path gains 13.6 ps.
+Cost is +459.8 um^2 and +24.8 mW for the extra partial-product registers and
+recombine adder. The texture gradient path is no longer in the timing report;
+the new core critical path is the emit-cache fill mux
+(`emitQuadPtr[0] -> emitQuad_3_e2[54]`, 29 cells, ~680 ps of the 978 ps path in
+a BUFx16f/BUFx6f chain driven by the binary `emitQuadPtr` fanout). All 11
+KernelFragStageSpec and 3 TexSampleUnitSpec cases pass. Emitted RTL is under
+`generated/ppa_refresh_head/kernel_frag_stage_gradsplit/`.
+
 Graphics artifact directories:
 
 - `generated/ppa_runs/head_command_buffer_scalar_tc_slvt_1ghz_closure/`
@@ -228,6 +248,7 @@ Graphics artifact directories:
 - `generated/ppa_runs/head_kernel_frag_stage_emitquad_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_emitptr_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_onehotread_tc_slvt_1ghz_explore_u25_d60/`
+- `generated/ppa_runs/head_kernel_frag_stage_gradsplit_tc_slvt_1ghz_explore_u25_d60/`
 
 `closure_no_cts` / `closure` note for large blocks: `repair_timing
 -repair_tns 100` does not converge on KernelFragStage (~870k instances; WNS
