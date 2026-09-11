@@ -253,6 +253,17 @@ that was previously hidden behind the emit path. All 11 KernelFragStageSpec and
 3 TexSampleUnitSpec cases pass. Emitted RTL is under
 `generated/ppa_refresh_head/kernel_frag_stage_emitquadsel/`.
 
+A `texcfg` attempt tried to remove that `execSlot` fanout by registering the
+selected sampler configuration (`RegNext(slotTex*(execSlot))` for all seven
+fields) so the sampler would not depend on `execSlot` combinationally. It
+regressed hard and was reverted: worst setup slack -4.86 -> -119.72 ps, setup
+TNS -6.92 -> -16,536.6 ps (399 violations), core Fmax 995.17 -> 893.08 MHz
+(area 27,148.8 -> 27,084.8 um^2, power 313.62 -> 311.80 mW). The added
+registers shifted placement and exposed a much worse path in the write-pipe
+drain (`wpWrite_0_0 -> fragRecords_0_0_v_1[10]`, 1090 ps, 499 ps of BUFx16f and
+45% net delay), so the config-register idea is not viable as-is. The
+`emitquadsel` RTL remains checked in and is the best measured implementation.
+
 Graphics artifact directories:
 
 - `generated/ppa_runs/head_command_buffer_scalar_tc_slvt_1ghz_closure/`
@@ -269,6 +280,7 @@ Graphics artifact directories:
 - `generated/ppa_runs/head_kernel_frag_stage_onehotread_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_gradsplit_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u25_d60/`
+- `generated/ppa_runs/head_kernel_frag_stage_texcfg_tc_slvt_1ghz_explore_u25_d60/` (reverted)
 
 `closure_no_cts` / `closure` note for large blocks: `repair_timing
 -repair_tns 100` does not converge on KernelFragStage (~870k instances; WNS
