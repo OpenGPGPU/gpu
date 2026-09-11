@@ -163,7 +163,14 @@ private object VectorDecodeTable {
     VectorInstruction("vnsrl",  0x2c, Seq(IVV, IVX, IVI), readsVs2Pair = true),
     VectorInstruction("vnsra",  0x2d, Seq(IVV, IVX, IVI), readsVs2Pair = true),
     VectorInstruction("vnclipu", 0x2e, Seq(IVV, IVX, IVI), readsVs2Pair = true),
-    VectorInstruction("vnclip",  0x2f, Seq(IVV, IVX, IVI), readsVs2Pair = true)
+    VectorInstruction("vnclip",  0x2f, Seq(IVV, IVX, IVI), readsVs2Pair = true),
+    // Widening integer operations: take the lower 16 bits of each 32-bit lane,
+    // sign/zero-extend to 32 bits, and perform the operation.
+    VectorInstruction("vwadd",  0x30, Seq(IVV, IVX, IVI)),
+    VectorInstruction("vwsub",  0x31, Seq(IVV, IVX)),
+    VectorInstruction("vwmul",  0x32, Seq(IVV, IVX)),
+    VectorInstruction("vwmulu", 0x33, Seq(IVV, IVX)),
+    VectorInstruction("vwmulsu",0x34, Seq(IVV))
   )
 
   private val integerMultiplyDivideInstructions = Seq(

@@ -72,6 +72,7 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
   val equal = Vec(config.lanes, Bool())
   val saturated = Vec(config.lanes, Bool())
   val saturationLimit = Vec(config.lanes, UInt(config.xLen.W))
+  val widening = Vec(config.lanes, UInt(config.xLen.W))
 }
 
 /** RVV integer ALU for the fixed SEW=32, LMUL=1 GPU profile.
@@ -170,7 +171,13 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
           4.U -> Cat(0.U(24.W), lhs(7, 0)),
           3.U -> Cat(Fill(28, lhs(3)), lhs(3, 0)),
           2.U -> Cat(0.U(28.W), lhs(3, 0))
-        ))
+        )),
+        // Widening add/subtract/multiply operate on sign-extended 16-bit halves.
+        "h30".U -> partialBits.widening(lane),
+        "h31".U -> partialBits.widening(lane),
+        "h32".U -> partialBits.widening(lane),
+        "h33".U -> partialBits.widening(lane),
+        "h34".U -> partialBits.widening(lane)
       ))
     )
     val saturatingResult = Mux(
@@ -311,6 +318,25 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         val unsignedAdd = lhs +& rhs
         val addResult = unsignedAdd(31, 0)
         val subResult = lhs - rhs
+        // Widening operations: sign/zero extend lower 16 bits and operate.
+        val lhs16se = Cat(Fill(16, lhs(15)), lhs(15, 0)).asSInt
+        val rhs16se = Cat(Fill(16, rhs(15)), rhs(15, 0)).asSInt
+        val lhs16u = Cat(0.U(16.W), lhs(15, 0))
+        val rhs16u = Cat(0.U(16.W), rhs(15, 0))
+        val widenAdd = (lhs16se +& rhs16se)(31, 0)
+        val widenSub = (lhs16se -& rhs16se)(31, 0)
+        val widenMulS = (lhs16se * rhs16se).asUInt
+        val widenMulU = (lhs16u * rhs16u)(31, 0)
+        val widenMulSU = (lhs16se * rhs16u.asSInt).asUInt
+        partialBits.widening(lane) := MuxLookup(
+          inputBits.funct6, 0.U(32.W)
+        )(Seq(
+          "h30".U -> widenAdd,
+          "h31".U -> widenSub,
+          "h32".U -> widenMulS,
+          "h33".U -> widenMulU,
+          "h34".U -> widenMulSU
+        ))
         val signedAddOverflow =
           !lhs(31) && !rhs(31) && addResult(31)
         val signedAddUnderflow =

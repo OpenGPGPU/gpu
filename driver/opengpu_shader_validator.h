@@ -229,6 +229,11 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x2d: /* vnsra */
         case 0x2e: /* vnclipu */
         case 0x2f: /* vnclip */
+        case 0x30: /* vwadd */
+        case 0x31: /* vwsub */
+        case 0x32: /* vwmul */
+        case 0x33: /* vwmulu */
+        case 0x34: /* vwmulsu */
             return true;
         default:
             return false;
@@ -265,6 +270,7 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x2d: /* vnsra */
         case 0x2e: /* vnclipu */
         case 0x2f: /* vnclip */
+        case 0x30: /* vwadd.vi */
             return true;
         default:
             return false;
@@ -306,6 +312,10 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x2d: /* vnsra */
         case 0x2e: /* vnclipu */
         case 0x2f: /* vnclip */
+        case 0x30: /* vwadd.vx */
+        case 0x31: /* vwsub.vx */
+        case 0x32: /* vwmul.vx */
+        case 0x33: /* vwmulu.vx */
             return true;
         default:
             return false;

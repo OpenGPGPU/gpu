@@ -692,4 +692,132 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.out.bits.saturated.expect(true.B)
     }
   }
+
+  it should "widen sign-extended 16-bit halves with add, sub, and multiply" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+
+      // vwadd.vv (0x30): sext(lhs[15:0]) + sext(rhs[15:0])
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.funct6.poke("h30".U)
+      dut.io.in.bits.operandType.poke("b000".U) // VV
+      dut.io.in.bits.vs2(0).poke("h00007fff".U) // +32767
+      dut.io.in.bits.vs2(1).poke("h00008001".U) // -32767 (as signed 16-bit)
+      dut.io.in.bits.vs2(2).poke("hffff0001".U) // only lower 16 bits: 0x0001 = 1
+      dut.io.in.bits.vs2(3).poke("h1234abcd".U) // lower 16: 0xabcd = -21555
+      dut.io.in.bits.vs1(0).poke("h00000002".U) // +2
+      dut.io.in.bits.vs1(1).poke("h00000002".U) // +2
+      dut.io.in.bits.vs1(2).poke("h00000003".U) // +3
+      dut.io.in.bits.vs1(3).poke("h00001234".U) // lower 16: 0x1234 = 4660
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(6)
+      // sext(0x7fff)=32767, sext(0x0002)=2, sum=32769=0x8001
+      dut.io.out.bits.data(0).expect("h00008001".U) // 32767 + 2 = 32769
+
+      // vwsub.vv (0x31): sext(lhs[15:0]) - sext(rhs[15:0])
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.funct6.poke("h31".U)
+      dut.io.in.bits.vs2(0).poke("h00007fff".U) // +32767
+      dut.io.in.bits.vs1(0).poke("h00008000".U) // lower16: 0x8000 = -32768 as signed
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(6)
+      // sext(0x7fff)=32767, sext(0x8000)=-32768, diff=32767-(-32768)=65535=0x0000ffff
+      dut.io.out.bits.data(0).expect("h0000ffff".U)
+
+      // vwmul.vv (0x32): sext(lhs[15:0]) * sext(rhs[15:0])
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.funct6.poke("h32".U)
+      dut.io.in.bits.vs2(0).poke("h00000003".U) // lower16: +3
+      dut.io.in.bits.vs1(0).poke("h00000005".U) // lower16: +5
+      dut.io.in.bits.vs2(1).poke("h0000fffe".U) // lower16: 0xfffe = -2
+      dut.io.in.bits.vs1(1).poke("h00000003".U) // lower16: +3
+      dut.io.in.bits.vs2(2).poke("h00007fff".U) // lower16: +32767
+      dut.io.in.bits.vs1(2).poke("h00007fff".U) // lower16: +32767
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(6)
+      dut.io.out.bits.data(0).expect("h0000000f".U)  // 3 * 5 = 15
+      dut.io.out.bits.data(1).expect("hfffffffa".U)  // -2 * 3 = -6
+      dut.io.out.bits.data(2).expect("h3fff0001".U)  // 32767 * 32767 = 1073676289 = 0x3FFF0001
+
+      // vwmulu.vv (0x33): zext(lhs[15:0]) * zext(rhs[15:0])
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.funct6.poke("h33".U)
+      dut.io.in.bits.vs2(0).poke("h0000fffe".U) // lower16: 65534
+      dut.io.in.bits.vs1(0).poke("h00000003".U) // lower16: 3
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(6)
+      // 65534 * 3 = 196602 = 0x2fffa
+      dut.io.out.bits.data(0).expect("h0002fffa".U)
+
+      // vwmulsu.vv (0x34): sext(lhs[15:0]) * zext(rhs[15:0])
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.funct6.poke("h34".U)
+      dut.io.in.bits.vs2(0).poke("h0000fffe".U) // lower16: -2 (signed)
+      dut.io.in.bits.vs1(0).poke("h00000003".U) // lower16: 3 (unsigned)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(6)
+      // -2 * 3 = -6 = 0xfffffffa
+      dut.io.out.bits.data(0).expect("hfffffffa".U)
+
+      // Widening add.vx (0x30, form vx)
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.funct6.poke("h30".U)
+      dut.io.in.bits.operandType.poke("b100".U) // VX
+      dut.io.in.bits.vs2(0).poke("h00000010".U) // lower16: +16
+      dut.io.in.bits.scalar.poke("h00000005".U)  // lower16: +5
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(6)
+      dut.io.out.bits.data(0).expect("h00000015".U) // 16 + 5 = 21
+
+      // Widening add.vi (0x30, form vi)
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.funct6.poke("h30".U)
+      dut.io.in.bits.operandType.poke("b011".U) // VI
+      dut.io.in.bits.vs2(0).poke("h00000010".U) // lower16: +16
+      dut.io.in.bits.immediate.poke("b00101".U)  // imm = 5
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(6)
+      dut.io.out.bits.data(0).expect("h00000015".U) // 16 + 5 = 21
+    }
+  }
+
+  it should "mask widening operations and preserve inactive lanes" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+
+      // Masked vwadd.vv
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.funct6.poke("h30".U)
+      dut.io.in.bits.operandType.poke("b000".U) // VV
+      dut.io.in.bits.vm.poke(false.B) // masked
+      dut.io.in.bits.predicateMask.poke("b1010".U) // lanes 1,3 active
+      dut.io.in.bits.activeMask.poke("b1111".U)
+      dut.io.in.bits.vs2(0).poke("h00000010".U)
+      dut.io.in.bits.vs2(1).poke("h00000010".U)
+      dut.io.in.bits.vs2(2).poke("h00000010".U)
+      dut.io.in.bits.vs2(3).poke("h00000010".U)
+      dut.io.in.bits.vs1(0).poke("h00000001".U)
+      dut.io.in.bits.vs1(1).poke("h00000001".U)
+      dut.io.in.bits.vs1(2).poke("h00000001".U)
+      dut.io.in.bits.vs1(3).poke("h00000001".U)
+      dut.io.in.bits.oldVd(0).poke(100.U)
+      dut.io.in.bits.oldVd(1).poke(101.U)
+      dut.io.in.bits.oldVd(2).poke(102.U)
+      dut.io.in.bits.oldVd(3).poke(103.U)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(6)
+      dut.io.out.bits.data(0).expect(100.U) // inactive: old vd
+      dut.io.out.bits.data(1).expect("h00000011".U) // active: 16+1=17
+      dut.io.out.bits.data(2).expect(102.U) // inactive: old vd
+      dut.io.out.bits.data(3).expect("h00000011".U) // active: 16+1=17
+    }
+  }
 }

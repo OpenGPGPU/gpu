@@ -172,6 +172,12 @@ int main(void)
         { 0x20, 4 }, { 0x23, 0 }, { 0x25, 3 }, { 0x29, 4 },
         { 0x25, 2 }, { 0x24, 6 }, /* vmul.vv, vmulhu.vx */
         { 0x20, 2 }, { 0x23, 6 }, /* vdivu.vv, vrem.vx */
+        /* Widening integer operations: vwadd, vwsub, vwmul, vwmulu, vwmulsu */
+        { 0x30, 0 }, { 0x30, 3 }, { 0x30, 4 }, /* vwadd.vv, vwadd.vi, vwadd.vx */
+        { 0x31, 0 }, { 0x31, 4 },               /* vwsub.vv, vwsub.vx */
+        { 0x32, 0 }, { 0x32, 4 },               /* vwmul.vv, vwmul.vx */
+        { 0x33, 0 }, { 0x33, 4 },               /* vwmulu.vv, vwmulu.vx */
+        { 0x34, 0 },                             /* vwmulsu.vv */
     };
     const unsigned int branch_forms[] = { 0, 1, 4, 5, 6, 7 };
     uint32_t program[64];
@@ -345,6 +351,84 @@ int main(void)
         program[6] = OPENGPU_SHADER_CEASE;
         assert(!opengpu_compute_shader_validate_words(program, 7, 64, 4));
     }
+
+    /* Widening integer operations: vwadd, vwsub, vwmul, vwmulu, vwmulsu.
+     * These sign/zero extend the lower 16 bits of each lane and operate. */
+    program[0] = vsetivli(4);
+    program[1] = vector_alu(0x30, 0, 2, 1, 1); /* vwadd.vv v2,v1,v1 */
+    program[2] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_compute_shader_validate_words(program, 3, 64, 4));
+    assert(opengpu_shader_validate_words(program, 3, 288, 8));
+    assert(opengpu_vertex_shader_validate_words(program, 3, 512, 8));
+
+    program[1] = vector_alu(0x30, 4, 2, 1, 0); /* vwadd.vx v2,v1,x1 */
+    assert(opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[1] = vector_alu(0x30, 3, 2, 1, 5); /* vwadd.vi v2,v1,5 */
+    assert(opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[1] = vector_alu(0x31, 0, 2, 1, 1); /* vwsub.vv v2,v1,v1 */
+    assert(opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[1] = vector_alu(0x31, 4, 2, 1, 0); /* vwsub.vx v2,v1,x1 */
+    assert(opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[1] = vector_alu(0x32, 0, 2, 1, 1); /* vwmul.vv v2,v1,v1 */
+    assert(opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[1] = vector_alu(0x32, 4, 2, 1, 0); /* vwmul.vx v2,v1,x1 */
+    assert(opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[1] = vector_alu(0x33, 0, 2, 1, 1); /* vwmulu.vv v2,v1,v1 */
+    assert(opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[1] = vector_alu(0x33, 4, 2, 1, 0); /* vwmulu.vx v2,v1,x1 */
+    assert(opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[1] = vector_alu(0x34, 0, 2, 1, 1); /* vwmulsu.vv v2,v1,v1 */
+    assert(opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    /* Invalid widening forms are rejected. */
+    program[1] = vector_alu(0x31, 3, 2, 1, 1); /* vwsub.vi is invalid */
+    assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[1] = vector_alu(0x32, 3, 2, 1, 1); /* vwmul.vi is invalid */
+    assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[1] = vector_alu(0x33, 3, 2, 1, 1); /* vwmulu.vi is invalid */
+    assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[1] = vector_alu(0x34, 3, 2, 1, 1); /* vwmulsu.vi is invalid */
+    assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[1] = vector_alu(0x34, 4, 2, 1, 0); /* vwmulsu.vx is invalid */
+    assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    /* Undefined source registers are rejected. */
+    program[1] = vector_alu(0x30, 0, 2, 4, 1); /* undefined vs2 */
+    assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    program[1] = vector_alu(0x30, 0, 2, 1, 4); /* undefined vs1 */
+    assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
+
+    /* Masked widening requires defined predicate and old destination. */
+    program[0] = vsetivli(4);
+    program[1] = vector_alu(0x18, 0, 0, 1, 1); /* vmseq.vv v0,v1,v1 */
+    program[2] = vector_alu(0x00, 3, 3, 1, 0); /* define old v3 */
+    program[3] = vector_alu(0x30, 0, 3, 1, 1) & ~(1u << 25); /* masked vwadd */
+    program[4] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    assert(opengpu_shader_validate_words(program, 5, 288, 8));
+    assert(opengpu_vertex_shader_validate_words(program, 5, 512, 8));
+
+    program[1] = vector_alu(0x18, 0, 2, 1, 1); /* undefined v0 */
+    assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    program[1] = vector_alu(0x18, 0, 0, 1, 1);
+    program[2] = vector_alu(0x00, 3, 2, 1, 0); /* undefined old v3 */
+    assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    program[2] = vector_alu(0x00, 3, 3, 1, 0);
+    program[3] = vector_alu(0x30, 0, 0, 1, 1) & ~(1u << 25); /* masked vd=v0 */
+    assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
 
     /* Fixed-profile vsext.vf2/vzext.vf2 widen low 16-bit integer lanes. */
     program[0] = vsetivli(4);
