@@ -25,6 +25,18 @@ private class KernelFragQuadRecord(gfxConfig: GraphicsConfig) extends Bundle {
   val v = Vec(4, UInt(32.W))
 }
 
+/** Consumer-side emit payload of one lane.  The whole 2x2 quad is captured
+  * into a register at a quad boundary, so the emit/output muxes are driven by
+  * the 2-bit lane selector instead of the full batch index. */
+private class KernelFragEmitLane(gfxConfig: GraphicsConfig) extends Bundle {
+  val x = SInt(gfxConfig.coordWidth.W)
+  val y = SInt(gfxConfig.coordWidth.W)
+  val e0 = SInt(gfxConfig.edgeWidth.W)
+  val e1 = SInt(gfxConfig.edgeWidth.W)
+  val e2 = SInt(gfxConfig.edgeWidth.W)
+  val covered = Bool()
+}
+
 /** Core-backed fragment shader stage (Phase D), batched quad dispatch with
   * per-draw overlap.
   *
@@ -228,6 +240,17 @@ class KernelFragStage(
   private val outDepth = Reg(Vec(batchCap, SInt(32.W)))
   private val outValid = Reg(Vec(batchCap, Bool()))
 
+  // Emit quad cache: one whole quad of emit payload captured at a quad
+  // boundary.  It is selected by a quad index (`emitQuadPtr`) so the cache
+  // fill muxes are one level shallower than a full batch-index read, and the
+  // per-cycle output selection collapses to a 4:1 mux over the 2-bit lane
+  // index.
+  private val emitQuad = Reg(Vec(4, new KernelFragEmitLane(gfxConfig)))
+  private val emitColorQ = Reg(Vec(4, UInt(32.W)))
+  private val emitDepthQ = Reg(Vec(4, SInt(32.W)))
+  private val emitHitQ = Reg(Vec(4, Bool()))
+  private val emitQuadValid = RegInit(false.B)
+
   private val slotCount = RegInit(VecInit(0.U(countWidth.W), 0.U(countWidth.W)))
   private val prodSlot = RegInit(0.U(1.W))
   private val execSlot = RegInit(0.U(1.W))
@@ -269,10 +292,20 @@ class KernelFragStage(
   // index a Vec.
   private val indexIdx = index(countWidth - 2, 0)
   private val quadIdxWidth = math.max(1, log2Ceil(batchCap / 4))
+  // Emit-cache fill selector.  The emit walk loads its quad cache in order, so
+  // the fill index is a plain counter instead of `index` arithmetic: the
+  // selection then leaves a register directly, keeping the increment and the
+  // `index`-derived mux off the wide cache-fill read.
+  private val emitQuadPtr = RegInit(0.U(quadIdxWidth.W))
   // These selectors drive the staging request data path. They advance with
   // the transaction response, decoupling the request muxes from `index`.
   private val requestQuadIdx = RegInit(0.U(quadIdxWidth.W))
   private val requestLaneIdx = RegInit(0.U(2.W))
+  // Capture the selected quad before issuing its words.  This keeps the
+  // dynamic record-array selection out of the word-request data path; only
+  // the small four-lane mux remains while streaming a quad's fields.
+  private val requestQuad = Reg(new KernelFragQuadRecord(gfxConfig))
+  private val requestQuadLoaded = RegInit(false.B)
   // Select the lane inside each statically addressed slot before muxing the
   // scalar values.  Muxing the outer Vec first creates a packed-array mux
   // that firtool cannot lower with ARTI's disallowPackedArrays setting.
@@ -283,29 +316,28 @@ class KernelFragStage(
   // packed-array mux.
   private def slotField[T <: Data](quad: UInt, lane: UInt)(f: KernelFragQuadRecord => T): T =
     Mux(execSlot.asBool, f(fragRecords(1)(quad)), f(fragRecords(0)(quad)))
-  private val execX = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).x)
-  private val execY = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).y)
-  private val execDepth = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).depth)
-  private val execR = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).color.r)
-  private val execG = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).color.g)
-  private val execB = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).color.b)
-  private val execAlpha = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).alpha)
-  private val execE0 = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).e0)
-  private val execE1 = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).e1)
-  private val execE2 = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).e2)
+  private def requestQuadField[T <: Data](f: KernelFragQuadRecord => T): T =
+    Mux(execSlot.asBool, f(fragRecords(1)(requestQuadIdx)),
+      f(fragRecords(0)(requestQuadIdx)))
+  // Lane-static record field read for the emit quad cache: `lane` is a Scala
+  // Int so only the quad (and slot) is selected dynamically, and the lane
+  // select is free wiring.  This keeps the cache fill muxes off the 2-bit
+  // per-cycle lane selector.
+  private def loadQuadField[T <: Data](quad: UInt, lane: Int)(
+      f: RasterFragment => T): T =
+    Mux(execSlot.asBool, f(fragRecords(1)(quad).lanes(lane)),
+      f(fragRecords(0)(quad).lanes(lane)))
   private val execCovered = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).covered)
-  private val execU = slotField(quadIdx, laneIdx)(r => r.u(laneIdx))
-  private val execV = slotField(quadIdx, laneIdx)(r => r.v(laneIdx))
-  private val requestX = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).x)
-  private val requestY = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).y)
-  private val requestDepth = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).depth)
-  private val requestR = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).color.r)
-  private val requestG = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).color.g)
-  private val requestB = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).color.b)
-  private val requestAlpha = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).alpha)
-  private val requestCovered = slotField(requestQuadIdx, requestLaneIdx)(r => r.lanes(requestLaneIdx).covered)
-  private val requestU = slotField(requestQuadIdx, requestLaneIdx)(r => r.u(requestLaneIdx))
-  private val requestV = slotField(requestQuadIdx, requestLaneIdx)(r => r.v(requestLaneIdx))
+  private val requestX = requestQuad.lanes(requestLaneIdx).x
+  private val requestY = requestQuad.lanes(requestLaneIdx).y
+  private val requestDepth = requestQuad.lanes(requestLaneIdx).depth
+  private val requestR = requestQuad.lanes(requestLaneIdx).color.r
+  private val requestG = requestQuad.lanes(requestLaneIdx).color.g
+  private val requestB = requestQuad.lanes(requestLaneIdx).color.b
+  private val requestAlpha = requestQuad.lanes(requestLaneIdx).alpha
+  private val requestCovered = requestQuad.lanes(requestLaneIdx).covered
+  private val requestU = requestQuad.u(requestLaneIdx)
+  private val requestV = requestQuad.v(requestLaneIdx)
   // One bridge transaction at a time keeps the staging FSM simple; the bridge
   // itself supports more outstanding transactions for other clients.
   private val wordPending = RegInit(false.B)
@@ -464,6 +496,7 @@ class KernelFragStage(
       index := 0.U
       requestQuadIdx := 0.U
       requestLaneIdx := 0.U
+      requestQuadLoaded := false.B
       field := 0.U
       wordPending := false.B
       state := sWrite
@@ -515,16 +548,32 @@ class KernelFragStage(
   // Consumer FSM: stream the executing slot's batch into its kernarg bank,
   // launch, wait, read back, emit — then swap in the parked batch.
   // ---------------------------------------------------------------------
-  wordValid := (state === sWrite || state === sRead) && !wordPending && !wordReqValid
+  wordValid := ((state === sWrite && requestQuadLoaded) || state === sRead) &&
+    !wordPending && !wordReqValid
   wordBits.write := state === sWrite
   private val writeSlice = MuxLookup(field, 8.U)(Seq(
     0.U -> 0.U, 1.U -> 1.U, 2.U -> 2.U, 3.U -> 3.U,
     4.U -> 4.U, 5.U -> 5.U, 6.U -> 7.U))
-  wordBits.addr := Mux(
+  // Per-word byte offset within the kernarg bank: slice * arrayStride, where
+  // the write slice is [0,1,2,3,4,5,7,8] and the read slice is 6 + field.
+  private val sliceOffset = MuxLookup(field, (8 * arrayStride).U)(Seq(
+    0.U -> 0.U,
+    1.U -> arrayStride.U,
+    2.U -> (2 * arrayStride).U,
+    3.U -> (3 * arrayStride).U,
+    4.U -> (4 * arrayStride).U,
+    5.U -> (5 * arrayStride).U,
+    6.U -> (7 * arrayStride).U))
+  // `wordBase` tracks slotKernarg + index*4 in a register, so `index` never
+  // drives the request address adder: each word is a 2-operand add of a
+  // registered base and the small slice-offset mux.  It re-bases at index 0
+  // (once per kernarg write/read burst) and steps by one fragment (4 bytes)
+  // whenever `index` advances.
+  private val wordBase = Reg(UInt(32.W))
+  wordBits.addr := wordBase + Mux(
     state === sWrite,
-    slotKernarg(execSlot) + writeSlice * arrayStride.U + (index << 2),
-    slotKernarg(execSlot) + ((6.U + field) * arrayStride.U) + (index << 2)
-  )
+    sliceOffset,
+    (6 * arrayStride).U +& sliceOffset)
   wordBits.data := MuxLookup(field, requestCovered.asUInt)(
     Seq(
       0.U -> requestX.pad(32).asUInt,
@@ -540,18 +589,65 @@ class KernelFragStage(
 
   io.kernelLaunch.valid := state === sLaunch
 
-  io.out.valid := state === sEmit && outValid(indexIdx)
-  io.out.bits.x := execX
-  io.out.bits.y := execY
-  io.out.bits.depth := outDepth(indexIdx)
-  io.out.bits.e0 := execE0
-  io.out.bits.e1 := execE1
-  io.out.bits.e2 := execE2
-  io.out.bits.covered := execCovered
-  io.out.bits.color.r := outWords(indexIdx)(31, 24)
-  io.out.bits.color.g := outWords(indexIdx)(23, 16)
-  io.out.bits.color.b := outWords(indexIdx)(15, 8)
-  io.out.bits.alpha := outWords(indexIdx)(7, 0)
+  // Output register: the emit lane index selects the widest mux in the block
+  // (a whole RasterFragment), so presenting it combinationally at the port
+  // turns the lane-select distribution into the top-level output path against
+  // the virtual-I/O output delay.  Presenting from a register keeps that mux on
+  // an internal flop-to-flop path and leaves only a short register-to-port hop.
+  // The payload is held until the consumer accepts it, so `bits` stays stable
+  // while `valid && !ready`.
+  private val outValidReg = RegInit(false.B)
+  private val outBitsReg = Reg(new RasterFragment(gfxConfig))
+  io.out.valid := outValidReg
+  io.out.bits := outBitsReg
+
+  // Emit cache fill: capture quad 0 on entry to sEmit, then reload quad N+1 on
+  // the edge that steps out of quad N's last lane.  `execCount` is always a
+  // multiple of four, so lane three is always the end of a quad; loading on
+  // that edge keeps the current lane-3 payload stable while it is presented
+  // and makes the next quad visible exactly at lane 0.
+  // Advance the lane presentation once the output register can take the next
+  // fragment (it is empty, or its current payload fires this cycle).
+  private val outCanStep = !outValidReg || io.out.ready
+  private val emitAdvance = state === sEmit && emitQuadValid && outCanStep
+  private val emitQuadEnd = emitAdvance && laneIdx === 3.U &&
+    index =/= (execCount - 1.U)
+  private val emitLoad = state === sEmit && (!emitQuadValid || emitQuadEnd)
+  when(emitLoad) {
+    emitQuadValid := true.B
+    emitQuadPtr := emitQuadPtr + 1.U
+    for (lane <- 0 until 4) {
+      emitQuad(lane).x := loadQuadField(emitQuadPtr, lane)(_.x)
+      emitQuad(lane).y := loadQuadField(emitQuadPtr, lane)(_.y)
+      emitQuad(lane).e0 := loadQuadField(emitQuadPtr, lane)(_.e0)
+      emitQuad(lane).e1 := loadQuadField(emitQuadPtr, lane)(_.e1)
+      emitQuad(lane).e2 := loadQuadField(emitQuadPtr, lane)(_.e2)
+      emitQuad(lane).covered := loadQuadField(emitQuadPtr, lane)(_.covered)
+      val emitOutIdx = (emitQuadPtr << 2) + lane.U
+      emitColorQ(lane) := outWords(emitOutIdx)
+      emitDepthQ(lane) := outDepth(emitOutIdx)
+      emitHitQ(lane) := outValid(emitOutIdx)
+    }
+  }
+
+  // Load the presented fragment into the output register.  Clearing on the
+  // accept edge after the load keeps the last fragment of a batch visible
+  // after the FSM has already left sEmit.
+  when(io.out.fire) { outValidReg := false.B }
+  when(emitAdvance) {
+    outValidReg := emitHitQ(laneIdx)
+    outBitsReg.x := emitQuad(laneIdx).x
+    outBitsReg.y := emitQuad(laneIdx).y
+    outBitsReg.depth := emitDepthQ(laneIdx)
+    outBitsReg.e0 := emitQuad(laneIdx).e0
+    outBitsReg.e1 := emitQuad(laneIdx).e1
+    outBitsReg.e2 := emitQuad(laneIdx).e2
+    outBitsReg.covered := emitQuad(laneIdx).covered
+    outBitsReg.color.r := emitColorQ(laneIdx)(31, 24)
+    outBitsReg.color.g := emitColorQ(laneIdx)(23, 16)
+    outBitsReg.color.b := emitColorQ(laneIdx)(15, 8)
+    outBitsReg.alpha := emitColorQ(laneIdx)(7, 0)
+  }
 
   switch(state) {
     is(sIdle) {
@@ -559,7 +655,25 @@ class KernelFragStage(
       // until the first commit flips it).
     }
     is(sWrite) {
-      when(!wordPending && !wordReqValid && bridge.io.in.ready) {
+      when(!requestQuadLoaded) {
+        // Re-base the request address at the start of the burst.  The slot's
+        // kernarg snapshot has been staged by this point.
+        when(requestQuadIdx === 0.U) { wordBase := slotKernarg(execSlot) }
+        for (lane <- 0 until 4) {
+          requestQuad.lanes(lane).x := requestQuadField(_.lanes(lane).x)
+          requestQuad.lanes(lane).y := requestQuadField(_.lanes(lane).y)
+          requestQuad.lanes(lane).depth := requestQuadField(_.lanes(lane).depth)
+          requestQuad.lanes(lane).color.r := requestQuadField(_.lanes(lane).color.r)
+          requestQuad.lanes(lane).color.g := requestQuadField(_.lanes(lane).color.g)
+          requestQuad.lanes(lane).color.b := requestQuadField(_.lanes(lane).color.b)
+          requestQuad.lanes(lane).alpha := requestQuadField(_.lanes(lane).alpha)
+          requestQuad.lanes(lane).covered := requestQuadField(_.lanes(lane).covered)
+          requestQuad.u(lane) := requestQuadField(_.u(lane))
+          requestQuad.v(lane) := requestQuadField(_.v(lane))
+        }
+        requestQuadLoaded := true.B
+      }
+      when(requestQuadLoaded && !wordPending && !wordReqValid && bridge.io.in.ready) {
         wordReqReg := wordBits
         wordReqValid := true.B
       }
@@ -574,12 +688,15 @@ class KernelFragStage(
             index := 0.U
             requestQuadIdx := 0.U
             requestLaneIdx := 0.U
+            requestQuadLoaded := false.B
             state := sLaunch
           }.otherwise {
             index := index + 1.U
+            wordBase := wordBase + 4.U
             when(requestLaneIdx === 3.U) {
               requestLaneIdx := 0.U
               requestQuadIdx := requestQuadIdx + 1.U
+              requestQuadLoaded := false.B
             }.otherwise {
               requestLaneIdx := requestLaneIdx + 1.U
             }
@@ -596,6 +713,8 @@ class KernelFragStage(
     is(sRun) {
       when(io.kernelCompletion.valid) {
         index := 0.U
+        // Reads start from the same bank base as the writes.
+        wordBase := slotKernarg(execSlot)
         requestQuadIdx := 0.U
         requestLaneIdx := 0.U
         wordPending := false.B
@@ -626,9 +745,13 @@ class KernelFragStage(
             index := 0.U
             requestQuadIdx := 0.U
             requestLaneIdx := 0.U
+            // The emit cache refills from quad 0 on entry to sEmit.
+            emitQuadValid := false.B
+            emitQuadPtr := 0.U
             state := sEmit
           }.otherwise {
             index := index + 1.U
+            wordBase := wordBase + 4.U
             when(requestLaneIdx === 3.U) {
               requestLaneIdx := 0.U
               requestQuadIdx := requestQuadIdx + 1.U
@@ -640,7 +763,7 @@ class KernelFragStage(
       }
     }
     is(sEmit) {
-      when(!outValid(indexIdx) || io.out.fire) {
+      when(emitAdvance) {
         when(index === execCount - 1.U) {
           when(execCarries) { qDone(execEntryIdx) := true.B }
           execCarries := false.B
@@ -656,6 +779,7 @@ class KernelFragStage(
             index := 0.U
             requestQuadIdx := 0.U
             requestLaneIdx := 0.U
+            requestQuadLoaded := false.B
             field := 0.U
             wordPending := false.B
             state := sWrite

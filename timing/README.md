@@ -7,7 +7,7 @@ with `scripts/run_graphics_ppa.py` (env `GRAPHICS_PPA_TIMING_EFFORT` selects
 `closure_no_cts` (default) or `explore`; the output directory suffix follows
 the effort). Timing: 1.0 GHz target unless noted, TC corner.
 
-Current state per block, 2026-09-08. Intermediate candidate/attempt history
+Current state per block, 2026-09-11. Intermediate candidate/attempt history
 has been pruned; only the latest closed result per block is kept.
 
 ## SharedL2Slice
@@ -111,7 +111,7 @@ scripts/run_graphics_ppa.py generated/ppa_refresh_head/gpu_host_system_vc GpuHos
 | CommandBufferStage (scene/scalar) | post-route PASS | 1779.42 MHz, +55.829 ps, 5412.91 um^2, 29.10 mW, DRC 0 |
 | CommandBufferStage (vertex) | post-route PASS | 1859.66 MHz, +70.154 ps, 1828.67 um^2, 10.02 mW, DRC 0 |
 | TriangleRasterizer | post-route PASS | 1011.01 MHz, +10.895 ps, 8185.10 um^2, 411.18 mW, DRC 0 |
-| KernelFragStage | post-route FAIL on timing (explore), DRC clean | 777.2 MHz, setup -551 ps, hold -141.7 ps, 40581.3 um^2, 510.59 mW, DRC 0 |
+| KernelFragStage | post-route FAIL on timing (explore), DRC clean | 951.8 MHz, setup -109.5 ps, hold -107.0 ps, 27538.4 um^2, 320.63 mW, DRC 0 |
 
 KernelFragStage request-queue registers: sequential cell count 29906
 (+6.6% vs the pre-queue state), total instances 870016, IO-virtual-clock
@@ -169,8 +169,32 @@ for the staging request data path, advancing them with each word response so
 `index` no longer drives the packed-record muxes. It reaches 846.21 MHz,
 -181.75 ps core setup slack, -87.13 ps hold slack, 26,590 um^2, 311.21 mW,
 and zero DRC/antenna errors. The critical path is now
-`requestQuadIdx[1] -> wordReqReg_data[3]`; this is the best measured
-KernelFragStage result so far, though it remains below the 1 GHz target.
+`requestQuadIdx[1] -> wordReqReg_data[3]`.
+
+The selector-quad experiment captures the whole 4-lane record (`requestQuad`)
+into a register before issuing its words, so the dynamic record-array select
+leaves the word-request data path. It measures 864.12 MHz core Fmax, -157.25 ps
+core setup slack, 332.43 mW, DRC 0 — above `selectors` but below the
+output-register variants described next.
+
+Registering the output port (`outreg`) removes the emit lane-select mux from
+the top-level output cone: 898.15 MHz core Fmax, -113.40 ps core setup slack,
+-101.63 ps hold, 327.93 mW, DRC 0. Rerunning with the request-record capture
+reverted (the register-only `outreg2` variant) reaches 937.11 MHz, -67.11 ps
+core setup slack, -100.70 ps hold, 325.40 mW, DRC 0.
+
+The split emit-cache variant (`emitquad`) captures a whole quad of emit payload
+into a register selected by the batch-derived index and improves to 928.76 MHz,
+but the cache-fill select is still `index`-derived. Replacing that select with a
+dedicated registered counter (`emitptr`) keeps the increment and the
+`index`-derived mux off the wide cache-fill read and collapses the per-cycle
+output selection to a 4:1 mux over the 2-bit lane index. This is the current
+best: 951.78 MHz core Fmax, -109.51 ps setup / -106.98 ps hold (all groups; core
+critical-path slack -50.67 ps), 27,538.4 um^2, 320.63 mW, and zero DRC/antenna
+errors. The critical path is now `requestQuadIdx[2] ->
+requestQuad_lanes_1_depth[6]`. All 11 KernelFragStageSpec cases pass. Emitted
+RTL is under `generated/ppa_refresh_head/kernel_frag_stage_emitptr/`; the result
+remains below the 1 GHz target.
 
 Graphics artifact directories:
 
@@ -181,6 +205,10 @@ Graphics artifact directories:
 - `generated/ppa_runs/head_kernel_frag_stage_onehot_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_packed_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_selectors_tc_slvt_1ghz_explore_u25_d60/`
+- `generated/ppa_runs/head_kernel_frag_stage_selected_quad_tc_slvt_1ghz_explore_u25_d60/`
+- `generated/ppa_runs/head_kernel_frag_stage_outreg2_tc_slvt_1ghz_explore_u25_d60/`
+- `generated/ppa_runs/head_kernel_frag_stage_emitquad_tc_slvt_1ghz_explore_u25_d60/`
+- `generated/ppa_runs/head_kernel_frag_stage_emitptr_tc_slvt_1ghz_explore_u25_d60/`
 
 `closure_no_cts` / `closure` note for large blocks: `repair_timing
 -repair_tns 100` does not converge on KernelFragStage (~870k instances; WNS
