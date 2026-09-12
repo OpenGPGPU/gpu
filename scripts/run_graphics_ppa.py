@@ -30,8 +30,12 @@ effort_tag = "closure" if timing_effort.startswith("closure") else timing_effort
 core_utilization = int(os.environ.get("GRAPHICS_PPA_CORE_UTILIZATION", "25"))
 place_density = float(os.environ.get("GRAPHICS_PPA_PLACE_DENSITY", "0.6"))
 density_tag = f"d{int(place_density * 100):02d}"
+run_tag = os.environ.get("GRAPHICS_PPA_RUN_TAG", "")
 out_dir = repo / "generated/ppa_runs" / (
-    f"head_{name}_tc_slvt_1ghz_{effort_tag}_u{core_utilization}_{density_tag}")
+    f"head_{name}_tc_slvt_1ghz_{effort_tag}_u{core_utilization}_{density_tag}{run_tag}")
+io_false_path_ports = [
+    p for p in os.environ.get("GRAPHICS_PPA_IO_FALSE_PATH_PORTS", "").split(",")
+    if p.strip()] or None
 inputs = {
     "reg_code": "",
     "rtl_files": [str(p) for p in rtl_files],
@@ -56,6 +60,7 @@ inputs = {
     # budget without changing the reproducible default used by the small
     # standalone blocks.
     "io_delay_percent": float(os.environ.get("GRAPHICS_PPA_IO_DELAY_PERCENT", "0.2")),
+    "io_false_path_ports": io_false_path_ports,
     "synthesis_only": len(sys.argv) == 4 and sys.argv[3] == "synthesis-only",
 }
 tool = ASAP7PhysicalFlowTool()

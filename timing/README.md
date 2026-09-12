@@ -264,6 +264,46 @@ drain (`wpWrite_0_0 -> fragRecords_0_0_v_1[10]`, 1090 ps, 499 ps of BUFx16f and
 45% net delay), so the config-register idea is not viable as-is. The
 `emitquadsel` RTL remains checked in and is the best measured implementation.
 
+Core utilization is a larger lever than any remaining RTL change. The block had
+always been run at 25%; sweeping util at fixed density 0.60 with the
+`emitquadsel` RTL and `explore` gives:
+
+| util | core Fmax | vclk Fmax | setup (all groups) | setup viol. | setup TNS | hold | hold viol. | hold TNS | area | power |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 25% | 995.17 | 1264.21 | -4.86 ps | 5 | -6.92 | -84.59 ps | 2553 | -127693 | 27148.8 | 313.62 |
+| 35% | 1025.50 | 1121.07 | -67.22 ps | 32 | -1686.6 | -67.15 ps | 2158 | -44387 | 26979.7 | 313.64 |
+| 45% | 995.02 | 1084.07 | -5.00 ps | 1 | -5.00 | -39.85 ps | 1350 | -12627 | 26839.7 | 310.81 |
+| 50% | 1022.98 | 1079.55 | +13.27 ps | 0 | 0 | -34.79 ps | 990 | -6938 | 26784.6 | 310.03 |
+
+u35 is a non-monotonic bad point: the core clock is pushed past 1 GHz
+(+24.87 ps) but the virtual-IO input->register group collapses to -67.22 ps.
+Clock leaf insertion drops (306 -> 231 ps) yet the input data arrival rises
+~95 ps, so the cross-domain group regresses. u45 and u50 dominate the 25%
+baseline across the board, with u50 the first point to close setup on every
+group: worst slack +13.27 ps, 0 setup violations, both clocks > 1 GHz, hold
+violations down 2553 -> 990 (TNS -127693 -> -6938 ps), lowest area (26784.6
+um^2) and power (310.03 mW), DRC/antenna 0. The setup bottleneck also changes
+character: at 25% the reported path was the `execSlot` fanout/buffer mux into
+`texUnit.sampler.lodFracReg`, while at u50 the critical path is
+`prodSlot -> wpRecord_lanes_2_e2[60]` and is MET (+22.47 ps, 963 ps data path),
+so no further RTL pipelining is required for the core clock. 55% was also
+attempted and abandoned: detailed-route iteration 0 climbed to 19,380 DRC
+violations in 48 min (u50 converged 18 -> 8 -> 5 -> 0), so 50% sits at the
+congestion cliff and higher utilization is not viable. All 990 remaining
+hold violations are the virtual-IO boundary class (worst
+`io_texLodBias[0] -> wpTexLodBias[0]`: ideal output-port launch clock against a
+~250 ps propagated `core_clock` capture insertion); reg-to-reg hold is clean.
+Masking the core input buses with `io_false_path_ports`
+(`io_tex*`, `io_fragIn_bits*`, `io_fragUv*`, `io_wordMemResp_bits*`,
+`io_memResp_bits*`, `io_shaderPc`, `io_kernarg*`) confirms the classification:
+setup is untouched (+13.27 ps, 0 violations) and hold falls 990 -> 529
+violations / -34.79 -> -27.60 ps / TNS -6938 -> -4547 ps, with the new worst
+path on another boundary signal (`io_wordMemReq_ready` ->
+`wordMemReqPipe.maybe_full`). No selective constraint clears the residual; only
+blanket IO false-pathing would, which is not a meaningful carry-boundary
+sign-off — these paths belong to the parent. Emitted RTL is unchanged
+(`emitquadsel`) at `generated/ppa_refresh_head/kernel_frag_stage_emitquadsel/`.
+
 Graphics artifact directories:
 
 - `generated/ppa_runs/head_command_buffer_scalar_tc_slvt_1ghz_closure/`
@@ -281,6 +321,11 @@ Graphics artifact directories:
 - `generated/ppa_runs/head_kernel_frag_stage_gradsplit_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u25_d60/`
 - `generated/ppa_runs/head_kernel_frag_stage_texcfg_tc_slvt_1ghz_explore_u25_d60/` (reverted)
+- `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u35_d60/` (bad point)
+- `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u45_d60/`
+- `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u50_d60/` (best)
+- `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u50_d60_iofp/` (io false-path probe)
+- `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u55_d60/` (aborted, congestion)
 
 `closure_no_cts` / `closure` note for large blocks: `repair_timing
 -repair_tns 100` does not converge on KernelFragStage (~870k instances; WNS
