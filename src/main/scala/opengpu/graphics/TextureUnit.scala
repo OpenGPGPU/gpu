@@ -308,7 +308,9 @@ class TextureUnit(
         baseMipLevel := selectedLevel
         // There is no next level at the upper clamp, so suppress the second
         // four-tap fetch rather than blending a level with itself.
-        lodFracReg := Mux(selectedLevel < io.texMaxLevel,
+        // min(requested, max) < max iff requested < max. Keep the clamp
+        // mux out of the fractional-weight register's timing cone.
+        lodFracReg := Mux(io.sample.bits.mipLevel < io.texMaxLevel,
           io.sample.bits.lodFrac, 0.U)
         secondLevel := false.B
         state := sLevel

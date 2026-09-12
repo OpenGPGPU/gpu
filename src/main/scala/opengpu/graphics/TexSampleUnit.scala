@@ -55,13 +55,11 @@ class TexSampleUnit(
   io.mem.req <> sampler.io.mem.req
   sampler.io.mem.resp <> io.mem.resp
 
-  // Vector LOD selection is deliberately pipelined.  The gradient subtracts,
-  // extent multiplies, max reduction, mip walk, and log-fraction LUT each sit
-  // in their own stage (the extent multiply itself takes two, splitting the
-  // difference into 16-bit halves); even so the gradient cone alone is far
-  // deeper than one 1 GHz cycle between the issued vector request and
-  // mipFracReg.
-  private val sIdle :: sGrad :: sMul :: sAdd :: sMaxPair :: sMax :: sMax2 :: sLod :: sFrac :: sSample :: sCommit :: Nil =
+  // Reduce differences independently per texture axis before multiplying:
+  // max(d0*w, ..., d3*w) = max(d0, ..., d3)*w for unsigned full products.
+  // Two 32-bit max stages replace two 46-bit post-multiply max stages;
+  // keeping the split multiply and final axis max preserves request latency.
+  private val sIdle :: sGrad :: sMaxPair :: sMax :: sMul :: sAdd :: sMax2 :: sLod :: sFrac :: sSample :: sCommit :: Nil =
     Enum(11)
   private val state = RegInit(sIdle)
 
@@ -99,17 +97,14 @@ class TexSampleUnit(
     * the base extent converts them to texels-per-pixel in Q16.16. */
   private def absDiff(a: UInt, b: UInt): UInt = Mux(a >= b, a - b, b - a)
   private val diffReg = Reg(Vec(8, UInt(32.W)))
-  // The extent multiply is split across two stages: a 16-bit half of the
-  // difference is multiplied by the 14-bit extent in each of gradLo/gradHi,
-  // then the two partial products are recombined.  This keeps the per-cycle
-  // cone at a 16x14 array plus a narrow carry chain instead of a full 32x14
-  // product (which was the post-route core critical path).
-  private val gradLoReg = Reg(Vec(8, UInt(30.W)))
-  private val gradHiReg = Reg(Vec(8, UInt(30.W)))
-  private val gradReg = Reg(Vec(8, UInt(46.W)))
-  private val rhoPairReg = Reg(Vec(4, UInt(46.W)))
-  private val rhoLowReg = RegInit(0.U(46.W))
-  private val rhoHighReg = RegInit(0.U(46.W))
+  private val diffPairReg = Reg(Vec(4, UInt(32.W)))
+  private val diffAxisReg = Reg(Vec(2, UInt(32.W)))
+  // Only the maximum U and V differences need extent multiplication. Keep
+  // 16x14 registered partial products so no full 32x14 multiply is on a
+  // single-cycle path. Recombination is exact at 46 bits, without saturation.
+  private val gradLoReg = Reg(Vec(2, UInt(30.W)))
+  private val gradHiReg = Reg(Vec(2, UInt(30.W)))
+  private val gradReg = Reg(Vec(2, UInt(46.W)))
   if (config.lanes >= 4) {
     val u = uVectorReg
     val v = vVectorReg
@@ -121,16 +116,12 @@ class TexSampleUnit(
     diffReg(5) := absDiff(v(3), v(2))
     diffReg(6) := absDiff(v(2), v(0))
     diffReg(7) := absDiff(v(3), v(1))
-    val extents = Seq(
-      texWidthReg, texWidthReg, texWidthReg, texWidthReg,
-      texHeightReg, texHeightReg, texHeightReg, texHeightReg)
-    for (i <- 0 until 8) {
-      gradLoReg(i) := diffReg(i)(15, 0) * extents(i)
-      gradHiReg(i) := diffReg(i)(31, 16) * extents(i)
+    val extents = Seq(texWidthReg, texHeightReg)
+    for (i <- 0 until 2) {
+      gradLoReg(i) := diffAxisReg(i)(15, 0) * extents(i)
+      gradHiReg(i) := diffAxisReg(i)(31, 16) * extents(i)
+      gradReg(i) := gradLoReg(i) + (gradHiReg(i) << 16)
     }
-    gradReg := VecInit(Seq.tabulate(8) { i =>
-      gradLoReg(i) + (gradHiReg(i) << 16)
-    })
   }
   private val automaticMip = WireDefault(0.U(4.W))
   if (config.lanes >= 4) {
@@ -239,38 +230,33 @@ class TexSampleUnit(
       }
     }
     is(sGrad) {
-      // Stage 2: UV differences only; the request-cycle logic stops at the
-      // subtract so the multiply cone never sees the input port.
-      state := sMul
-    }
-    is(sMul) {
-      // Stage 3: per-entry 16x14 partial products of the difference halves.
-      state := sAdd
-    }
-    is(sAdd) {
-      // Stage 4: recombine the two half products into the full gradient.
+      // UV differences are captured from the accepted coordinates.
       state := sMaxPair
     }
     is(sMaxPair) {
-      // Stage 5: compare adjacent gradients in parallel.  Keep this explicit
-      // rather than using reduce, which builds a serial comparator chain.
       for (i <- 0 until 4) {
-        rhoPairReg(i) := Mux(
-          gradReg(2 * i) >= gradReg(2 * i + 1),
-          gradReg(2 * i),
-          gradReg(2 * i + 1))
+        diffPairReg(i) := Mux(diffReg(2 * i) >= diffReg(2 * i + 1),
+          diffReg(2 * i), diffReg(2 * i + 1))
       }
       state := sMax
     }
     is(sMax) {
-      // Stage 6: reduce the four pair maxima to two in parallel.
-      rhoLowReg := Mux(rhoPairReg(0) >= rhoPairReg(1), rhoPairReg(0), rhoPairReg(1))
-      rhoHighReg := Mux(rhoPairReg(2) >= rhoPairReg(3), rhoPairReg(2), rhoPairReg(3))
+      for (i <- 0 until 2) {
+        diffAxisReg(i) := Mux(diffPairReg(2 * i) >= diffPairReg(2 * i + 1),
+          diffPairReg(2 * i), diffPairReg(2 * i + 1))
+      }
+      state := sMul
+    }
+    is(sMul) {
+      // Capture two partial products for each axis maximum.
+      state := sAdd
+    }
+    is(sAdd) {
+      // Recombine into two full-width texel gradients.
       state := sMax2
     }
     is(sMax2) {
-      // Stage 7: final reduction into rhoReg.
-      rhoReg := Mux(rhoLowReg >= rhoHighReg, rhoLowReg, rhoHighReg)
+      rhoReg := Mux(gradReg(0) >= gradReg(1), gradReg(0), gradReg(1))
       state := sLod
     }
     is(sLod) {

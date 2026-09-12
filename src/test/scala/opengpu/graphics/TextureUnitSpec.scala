@@ -381,6 +381,8 @@ class TextureUnitSpec extends AnyFlatSpec {
         texel(191, 0, 63), "level 1/2 trilinear blend was wrong")
       assert(runSample(dut, mem, q(0.5), q(0.5), mipLevel = 2, lodFrac = 128) == blue,
         "last mip must not attempt an out-of-range next-level blend")
+      assert(runSample(dut, mem, q(0.5), q(0.5), mipLevel = 15, lodFrac = 255) == blue,
+        "a request above the upper clamp must also suppress fractional blending")
       assert(mem.oobReads == 0, "trilinear fetch walked outside the packed chain")
     }
   }

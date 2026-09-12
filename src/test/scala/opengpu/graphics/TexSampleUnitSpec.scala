@@ -219,4 +219,103 @@ class TexSampleUnitSpec extends AnyFlatSpec {
         dut.io.vectorCommit.bits.writeback.data(lane).expect(expected.U)
     }
   }
+
+  it should "match full-width gradient LOD across axes, extents and consecutive requests" in {
+    simulate(new TexSampleUnit(GpuConfig(lanes = 4, warps = 2))) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.in.valid.poke(false.B)
+      dut.io.commit.ready.poke(true.B)
+      dut.io.vectorIn.valid.poke(false.B)
+      dut.io.vectorCommit.ready.poke(false.B)
+      dut.io.mem.resp.valid.poke(false.B)
+      dut.io.mem.resp.bits.poke(0.U.asTypeOf(dut.io.mem.resp.bits))
+      val random = new scala.util.Random(20260911L)
+      val fixed = Seq(
+        (4, 8, Seq(0L, 0x6000L, 0L, 0L), Seq.fill(4)(0L)),
+        (8, 4, Seq.fill(4)(0L), Seq(0L, 0L, 0x6000L, 0L)),
+        (1, 16383, Seq(0xffffffffL, 0L, 0xffffL, 0x10000L), Seq.fill(4)(0L)),
+        (16383, 1, Seq.fill(4)(0L), Seq(0L, 0xffffffffL, 0L, 0x10001L)),
+        (16383, 16382, Seq(0xffffffffL, 0L, 0x10001L, 0L),
+          Seq(0L, 0xffffffffL, 0L, 0x10001L)),
+        (3, 7, Seq.fill(4)(0L), Seq.fill(4)(0L)))
+      val cases = fixed ++ Seq.tabulate(27) { i =>
+        val mask = if (i % 3 == 0) 0xffffffffL else 0x1ffffL
+        (1 + random.nextInt(16), 1 + random.nextInt(16),
+          Seq.fill(4)(random.nextLong() & mask), Seq.fill(4)(random.nextLong() & mask))
+      }
+      for (((width, height, u, v), trial) <- cases.zipWithIndex) {
+        val maxLevel = 4
+        val bias = Seq(0, -2, 1)(trial % 3)
+        val minLevel = trial % 2
+        val edges = Seq((1, 0), (3, 2), (2, 0), (3, 1))
+        // Reference evaluates all eight full products before taking the max.
+        val rho = (edges.map { case (a, b) => BigInt((u(a) - u(b)).abs) * width } ++
+          edges.map { case (a, b) => BigInt((v(a) - v(b)).abs) * height }).max
+        val automatic = (1 until 16).filter(l => rho >= (BigInt(1) << (16 + l))).lastOption.getOrElse(0)
+        // Preserve the existing five-bit signed bias addition, including
+        // wraparound at +16; widening that arithmetic is a separate change.
+        val biasBits = (automatic + bias) & 31
+        val biased = if (biasBits >= 16) biasBits - 32 else biasBits
+        val level = math.max(minLevel, math.min(maxLevel, biased))
+        val normal = rho >> automatic
+        val fraction = if (biased < minLevel || biased > maxLevel || normal <= 65536 || level == maxLevel) 0
+          else math.floor(math.log(1.0 + ((normal >> 8) & 255).toDouble / 256.0) / math.log(2.0) * 256).toInt
+        val colors = Seq.tabulate(5)(l => 20 + l * 40)
+        val expected = (colors(level) * (256 - fraction) + colors(math.min(level + 1, maxLevel)) * fraction) >> 8
+        val bases = mutable.ArrayBuffer(0x2000L)
+        var w = width; var h = height
+        for (_ <- 0 to maxLevel) {
+          bases += bases.last + w.toLong * h * 4
+          w = math.max(1, w / 2); h = math.max(1, h / 2)
+        }
+        dut.io.texBase.poke(0x2000.U)
+        dut.io.texWidth.poke(width.U); dut.io.texHeight.poke(height.U)
+        dut.io.wrapClamp.poke(true.B); dut.io.texMaxLevel.poke(maxLevel.U)
+        dut.io.lodBias.poke(bias.S); dut.io.minLevel.poke(minLevel.U)
+        dut.io.vectorIn.bits.poke(0.U.asTypeOf(dut.io.vectorIn.bits))
+        dut.io.vectorIn.bits.executionMask.poke(1.U)
+        dut.io.vectorIn.bits.issued.decode.activeMask.poke(15.U)
+        for (lane <- 0 until 4) {
+          dut.io.vectorIn.bits.issued.vs1Data(lane).poke(u(lane).U)
+          dut.io.vectorIn.bits.issued.vs2Data(lane).poke(v(lane).U)
+          dut.io.vectorIn.bits.issued.oldVdData(lane).poke((0x100 + lane).U)
+        }
+        dut.io.vectorIn.valid.poke(true.B)
+        dut.io.vectorIn.ready.expect(true.B)
+        dut.clock.step(); dut.io.vectorIn.valid.poke(false.B)
+        // Upstream operands need not remain stable after acceptance.
+        dut.io.vectorIn.bits.poke(0.U.asTypeOf(dut.io.vectorIn.bits))
+        val pending = mutable.Queue.empty[Long]
+        var cycle = 0
+        while (!dut.io.vectorCommit.valid.peek().litToBoolean && cycle < 800) {
+          dut.io.mem.req.ready.poke((cycle % 3 != 0).B)
+          dut.io.mem.resp.valid.poke((pending.nonEmpty && cycle % 4 != 0).B)
+          if (pending.nonEmpty) {
+            val addr = pending.front
+            val mip = (0 to maxLevel).find(l => addr >= bases(l) && addr < bases(l + 1)).get
+            assert(mip == level || (fraction != 0 && mip == level + 1), s"trial $trial fetched mip $mip")
+            dut.io.mem.resp.bits.addr.poke(addr.U)
+            dut.io.mem.resp.bits.data.poke(texel(colors(mip), 0, 0).U)
+            dut.io.mem.resp.bits.write.poke(false.B)
+          }
+          if (dut.io.mem.resp.valid.peek().litToBoolean && dut.io.mem.resp.ready.peek().litToBoolean)
+            pending.dequeue()
+          if (dut.io.mem.req.valid.peek().litToBoolean && dut.io.mem.req.ready.peek().litToBoolean)
+            pending.enqueue(dut.io.mem.req.bits.addr.peek().litValue.toLong)
+          dut.clock.step(); cycle += 1
+        }
+        assert(cycle < 800, s"trial $trial timed out")
+        dut.io.mem.resp.valid.poke(false.B)
+        dut.io.vectorCommit.bits.writeback.data(0).expect(texel(expected, 0, 0).U)
+        for (lane <- 1 until 4)
+          dut.io.vectorCommit.bits.writeback.data(lane).expect((0x100 + lane).U)
+        dut.clock.step(2)
+        dut.io.vectorCommit.valid.expect(true.B)
+        dut.io.vectorCommit.bits.writeback.data(0).expect(texel(expected, 0, 0).U)
+        dut.io.vectorCommit.ready.poke(true.B); dut.clock.step()
+        dut.io.vectorCommit.ready.poke(false.B)
+      }
+    }
+  }
+
 }
