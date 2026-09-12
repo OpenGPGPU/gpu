@@ -72,6 +72,8 @@ class RenderCore(
     val depthFunc = Input(UInt(3.W))
     val depthWriteEnable = Input(Bool())
     val cullMode = Input(UInt(2.W))
+    /** bits[1:0] sample mode: 0 = 1x, 1 = 2x, 2 = 4x. */
+    val sampleMode = Input(UInt(2.W))
     /** Sampler word port (separate client in the fabric arbitration). */
     val texMem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
@@ -106,6 +108,7 @@ class RenderCore(
   rp.io.depthFunc := io.depthFunc
   rp.io.depthWriteEnable := io.depthWriteEnable
   rp.io.cullMode := io.cullMode
+  rp.io.sampleMode := io.sampleMode
   rp.io.texEnable := io.texEnable
   rp.io.texBase := io.texBase
   rp.io.texWidth := io.texWidth

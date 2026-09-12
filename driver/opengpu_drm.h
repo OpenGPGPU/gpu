@@ -89,9 +89,17 @@ struct drm_opengpu_param {
 #define OPENGPU_CAP_BLIT_ENGINE (1u << 4)
 #define OPENGPU_CAP_STRIDED_ENGINE (1u << 5)
 #define OPENGPU_CAP_UNIFIED_COMMANDS (1u << 6)
+/* MSAA (bit7) is fixed-function only; bits 17:16 carry the max sample mode. */
+#define OPENGPU_CAP_MSAA (1u << 7)
+#define OPENGPU_CAP_MSAA_MAX_MODE_SHIFT 16u
+#define OPENGPU_CAP_MSAA_MAX_MODE_MASK \
+    (0x3u << OPENGPU_CAP_MSAA_MAX_MODE_SHIFT)
 #define OPENGPU_CAP_FRAGMENT_BATCH_SHIFT 8u
 #define OPENGPU_CAP_FRAGMENT_BATCH_MASK \
     (0xffu << OPENGPU_CAP_FRAGMENT_BATCH_SHIFT)
+
+/* Sample mode field width (0 = 1x, 1 = 2x, 2 = 4x). */
+#define OPENGPU_MSAA_MODE_MASK 0x3u
 
 /* Device-global snapshot of the most recent unified-command fault. Sequence
  * zero means that no fault has been observed since driver initialization.
@@ -166,7 +174,8 @@ struct drm_opengpu_submit {
     __u32 vertex_buffer_slot;
     __u32 vertex_shader_slot;
     __u32 vertex_kernarg_slot;
-    __u32 pad;
+    /* bits 1:0 sample mode (OPENGPU_MSAA_MODE_MASK); reserved bits must be 0. */
+    __u32 sample_mode;
 };
 
 /* Ordered whole-cache-line copy. Source and destination ranges are validated

@@ -146,6 +146,7 @@ static void opengpu_job_fill(struct gpu_job_record *rec, u32 id,
     rec->tex_size = GPU_JOB_TEX_SIZE(job->texture_width,
                                      job->texture_height);
     rec->tex_config = job->texture_config;
+    rec->msaa = job->sample_mode & 0x3u;
 }
 
 /* Drain pending interrupt-history records and retire the fences they name.
@@ -684,6 +685,7 @@ static int opengpu_hw_submit_legacy_locked(struct opengpu_device *gpu,
     opengpu_reg_write(gpu, GPU_REG_TEX_WIDTH, job->texture_width);
     opengpu_reg_write(gpu, GPU_REG_TEX_HEIGHT, job->texture_height);
     opengpu_reg_write(gpu, GPU_REG_TEX_CONFIG, job->texture_config);
+    opengpu_reg_write(gpu, GPU_REG_MSAA_CONFIG, job->sample_mode & 0x3u);
 
     opengpu_reg_write(gpu, GPU_REG_IRQ, GPU_IRQ_ENABLE);
     schedule_delayed_work(&gpu->hw.timeout_work,

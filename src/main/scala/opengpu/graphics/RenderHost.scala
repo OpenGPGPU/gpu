@@ -22,7 +22,7 @@ import opengpu.core.memory.{
   */
 object RenderHostRegs {
   /** First invalid byte offset (exclusive end of the register file). */
-  val END               = 0xC4
+  val END               = 0x138
   val ID                = 0x00
   val CONTROL           = 0x04
   val STATUS            = 0x08
@@ -95,6 +95,9 @@ object RenderHostRegs {
   val STRIDED_SRC_STRIDE= 0xB8
   val STRIDED_DST_STRIDE= 0xBC
   val STRIDED_START     = 0xC0
+  /** bits[1:0] sample mode: 0 = 1x, 1 = 2x, 2 = 4x.  Reserved on
+    * programmable (fragment-core) builds, which do not advertise MSAA. */
+  val MSAA_CONFIG       = 0x134
 }
 
 /** A host memory-mapped register access (read or write of one 32-bit word). */
@@ -156,6 +159,9 @@ class RenderHost(
   unifiedCommands: Boolean = false
 ) extends Module {
   override def desiredName: String = "RenderHost"
+
+  /** Largest sample mode this build supports: log2 of the sample count. */
+  private val maxSampleMode = log2Ceil(config.maxSampleCount)
 
   val io = IO(new Bundle {
     val reg = new Bundle {
@@ -298,6 +304,7 @@ class RenderHost(
   private val texWidthReg = RegInit(0.U(32.W))
   private val texHeightReg = RegInit(0.U(32.W))
   private val texConfigReg = RegInit(0.U(32.W))
+  private val msaaConfigReg = RegInit(0.U(32.W))
   private val scanoutBaseReg = RegInit(0.U(32.W))
   private val scanoutStrideReg = RegInit(0.U(32.W))
   private val scanoutWidthReg = RegInit(0.U(32.W))
@@ -328,6 +335,7 @@ class RenderHost(
   private val activeTexWidth = RegInit(0.U(32.W))
   private val activeTexHeight = RegInit(0.U(32.W))
   private val activeTexConfig = RegInit(0.U(32.W))
+  private val activeMsaaConfig = RegInit(0.U(32.W))
 
   private val busy = RegInit(false.B)
   private val done = RegInit(false.B)
@@ -400,6 +408,7 @@ class RenderHost(
     ((if (fragCore) 1 else 0) | (1 << 1) |
       (if (vertCore) (1 << 2) else 0) | (1 << 3) |
       (1 << 4) | (1 << 5) | (if (unifiedCommands) (1 << 6) else 0) |
+      (if (fragCore) 0 else (1 << 7) | (maxSampleMode << 16)) |
       (gpuConfig.warps * gpuConfig.lanes << 8)).U(32.W)
   private val jobStatusBits = Cat(
     0.U(22.W), jq.io.pendingValid, jq.io.running, 0.U(7.W), jqEnabled)
@@ -422,6 +431,7 @@ class RenderHost(
       RenderHostRegs.TEX_WIDTH.U -> texWidthReg,
       RenderHostRegs.TEX_HEIGHT.U -> texHeightReg,
       RenderHostRegs.TEX_CONFIG.U -> texConfigReg,
+      RenderHostRegs.MSAA_CONFIG.U -> msaaConfigReg,
       RenderHostRegs.SCANOUT_BASE.U -> scanoutBaseReg,
       RenderHostRegs.SCANOUT_STRIDE.U -> scanoutStrideReg,
       RenderHostRegs.SCANOUT_WIDTH.U -> scanoutWidthReg,
@@ -601,6 +611,10 @@ class RenderHost(
         stridedDstStrideReg := merge(stridedDstStrideReg,
           io.reg.req.bits.data, io.reg.req.bits.strb)
       }
+      is(RenderHostRegs.MSAA_CONFIG.U) {
+        msaaConfigReg := merge(msaaConfigReg,
+          io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
     }
   }
 
@@ -611,7 +625,11 @@ class RenderHost(
     jqResetPulse := true.B
   }
 
-  private val launch = startWrite && !busy
+  // The legacy START path validates the programmed sample mode; the job-ring
+  // path trusts the driver, which builds word 9 itself and rejects invalid
+  // modes before submission.
+  private val msaaModeValid = msaaConfigReg(1, 0) <= maxSampleMode.U
+  private val launch = startWrite && !busy && msaaModeValid
 
   when(blitStartWrite &&
       (dmaOwner =/= dmaIdle || clearStartWrite || stridedStartWrite)) {
@@ -636,7 +654,7 @@ class RenderHost(
   }
 
   when(startWrite) {
-    when(!busy) {
+    when(!busy && msaaModeValid) {
       busy := true.B
       done := false.B
       error := false.B
@@ -655,8 +673,12 @@ class RenderHost(
       activeTexWidth := texWidthReg
       activeTexHeight := texHeightReg
       activeTexConfig := texConfigReg
+      activeMsaaConfig := msaaConfigReg
     }
   }
+  // An invalid programmed sample mode rejects the launch and latches ERROR.
+  // This must follow the snapshot block so it wins over its ERROR clear.
+  when(startWrite && !msaaModeValid) { error := true.B }
 
   // Queue-initiated launches are accepted when the engine is idle and no
   // legacy START pulses in the same cycle (legacy has priority).
@@ -716,6 +738,8 @@ class RenderHost(
     activeTexConfig(0), jq.io.cfg.texWrapClamp)
   core.io.texMaxLevel := muxActive(
     activeTexConfig(5, 2), jq.io.cfg.texMaxLevel)
+  core.io.sampleMode := muxActive(
+    activeMsaaConfig(1, 0), jq.io.cfg.sampleMode)
   core.io.start := launch || (jq.io.launch && jq.io.launchReady)
 
   // Command-buffer memory port arbitration. The queue's admin agent

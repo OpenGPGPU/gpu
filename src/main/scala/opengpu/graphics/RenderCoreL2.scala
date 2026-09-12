@@ -77,6 +77,8 @@ class RenderCoreL2(
     val depthFunc = Input(UInt(3.W))
     val depthWriteEnable = Input(Bool())
     val cullMode = Input(UInt(2.W))
+    /** bits[1:0] sample mode: 0 = 1x, 1 = 2x, 2 = 4x. */
+    val sampleMode = Input(UInt(2.W))
     /** Texture sampling config forwarded to the core's fragment stage. */
     val texEnable = Input(Bool())
     val texBase = Input(UInt(32.W))
@@ -110,6 +112,7 @@ class RenderCoreL2(
   core.io.depthFunc := io.depthFunc
   core.io.depthWriteEnable := io.depthWriteEnable
   core.io.cullMode := io.cullMode
+  core.io.sampleMode := io.sampleMode
   core.io.texEnable := io.texEnable
   core.io.texBase := io.texBase
   core.io.texWidth := io.texWidth

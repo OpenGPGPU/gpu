@@ -51,6 +51,7 @@ private class DrawRenderState extends Bundle {
   val depthWriteEnable = Bool()
   val blendEnable = Bool()
   val cullMode = UInt(2.W)
+  val sampleMode = UInt(2.W)
   val texEnable = Bool()
   val texBase = UInt(32.W)
   val texWidth = UInt(14.W)
@@ -112,6 +113,8 @@ class RenderPipeline(
     val depthFunc = Input(UInt(3.W))
     val depthWriteEnable = Input(Bool())
     val cullMode = Input(UInt(2.W))
+    /** bits[1:0] sample mode: 0 = 1x, 1 = 2x, 2 = 4x. */
+    val sampleMode = Input(UInt(2.W))
     /** Texture sampling (fixed-function path; ignored with fragCore). */
     val texEnable = Input(Bool())
     val texBase = Input(UInt(32.W))
@@ -129,12 +132,6 @@ class RenderPipeline(
   private val geo = Module(new GeometryStage(config))
   private val shader = Module(new RasterShader(config, quadMode = fragCore || vertCore))
   private val om = Module(new OutputMerger(config))
-  // Sample mode is elaboration-staged: the 1x value keeps coverage, addressing
-  // and the expander bit-identical to the single-sample pipeline.  State
-  // plumbing to program modes 1/2 is a later phase.
-  private val sampleMode = 0.U(2.W)
-  om.io.sampleMode := sampleMode
-  shader.io.sampleMode := sampleMode
   private val textured =
     Module(new TexturedFragStage(config, quadUv = fragCore || vertCore))
   private val expander = Module(new SampleExpander(config.maxSampleCount))
@@ -248,6 +245,7 @@ class RenderPipeline(
     drawState.colorBase := io.colorBase
     drawState.depthBase := io.depthBase
     drawState.stride := io.stride
+    drawState.sampleMode := io.sampleMode
     if (vertCore) {
       val cmd = vertDrawCmd.get
       drawState.depthTestEnable := Mux(cmd.stateOverride,
@@ -342,6 +340,7 @@ class RenderPipeline(
     shader.io.depths(i) := clippedVertices(i).depth
   }
   shader.io.cullMode := drawState.cullMode
+  shader.io.sampleMode := drawState.sampleMode
 
   // The source remains stopped until every triangle in the clipped fan has
   // entered rasterization. This also keeps the source metadata snapshot stable.
@@ -475,6 +474,7 @@ class RenderPipeline(
     ctxFifo.io.enq.bits.colorBase := drawState.colorBase
     ctxFifo.io.enq.bits.depthBase := drawState.depthBase
     ctxFifo.io.enq.bits.stride := drawState.stride
+    ctxFifo.io.enq.bits.sampleMode := drawState.sampleMode
     ctxFifo.io.enq.bits.depthTestEnable := drawState.depthTestEnable
     ctxFifo.io.enq.bits.depthFunc := drawState.depthFunc
     ctxFifo.io.enq.bits.depthWriteEnable := drawState.depthWriteEnable
@@ -589,6 +589,7 @@ class RenderPipeline(
     om.io.depthFunc := ctxFifo.io.head.depthFunc
     om.io.depthWriteEnable := ctxFifo.io.head.depthWriteEnable
     om.io.blendEnable := ctxFifo.io.head.blendEnable
+    om.io.sampleMode := ctxFifo.io.head.sampleMode
 
     // Done only once every rasterized fragment has been flushed, shaded, and
     // handed to the OM: the batch slots must be empty (drained) and every
@@ -606,6 +607,7 @@ class RenderPipeline(
     om.io.depthFunc := drawState.depthFunc
     om.io.depthWriteEnable := drawState.depthWriteEnable
     om.io.blendEnable := drawState.blendEnable
+    om.io.sampleMode := drawState.sampleMode
     // As in the core-backed path, wait for the final fragment's serialized
     // depth/color RMW to retire (in-flight entries drained) before declaring
     // done; admission stays additionally gated on OM slot availability and on

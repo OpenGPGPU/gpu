@@ -71,7 +71,7 @@ protocol.
 | 0x54 | SCANOUT_FORMAT | RW | 0 = RGBA8888 |
 | 0x58 | SCANOUT_CONTROL | RW | bit 0 ENABLE |
 | 0x5C | SCANOUT_STATUS | RO | bit 0 ACTIVE |
-| 0x60 | CAPABILITIES | RO | fragment core, job/IH rings, vertex core, clear/blit/strided engines, unified commands and batch capacity |
+| 0x60 | CAPABILITIES | RO | fragment core, job/IH rings, vertex core, clear/blit/strided engines, unified commands, MSAA and batch capacity |
 | 0x64 | JOB_RING_BASE | RW | job-ring byte address |
 | 0x68 | JOB_RING_SIZE | RW | power-of-two entry count |
 | 0x6C | JOB_WPTR | RW | host producer pointer/doorbell |
@@ -119,6 +119,7 @@ protocol.
 | 0x124 | UCMD_COMPLETION | RO | ID `[7:0]`, opcode `[10:8]`, status `[14:11]`, success `[15]` |
 | 0x128-0x12C | UCMD_COMPLETION_BYTES | RO | processed byte count, low then high word |
 | 0x130 | UCMD_COMPLETION_POP | W1P | consume completion when bit 0 is written |
+| 0x134 | MSAA_CONFIG | RW | bits 1:0 sample mode (0 = 1x, 1 = 2x, 2 = 4x), snapshotted at START |
 
 START snapshots the programmed job state. On queue-capable hardware, the host
 writes a 64-byte descriptor to the job ring and advances `JOB_WPTR`. Jobs
@@ -133,6 +134,15 @@ remains reserved from submission until its completion is popped; duplicate IDs
 are not accepted. The staging FIFO preserves submission order, while engines
 may finish independently and report their opcode and status in the common
 completion format.
+
+`CAPABILITIES[7]` advertises MSAA and is set only on fixed-function builds
+(`!fragCore`); bits 17:16 carry the maximum supported sample mode
+(`log2Ceil(maxSampleCount)`). `MSAA_CONFIG[1:0]` selects 1x/2x/4x for the next
+START; an invalid or over-maximum mode is rejected with `STATUS.ERROR` and no
+launch. The same mode travels in queued job-record word 9. In multi-sample
+modes a pixel's samples are contiguous words at
+`base + y*stride + ((x << mode) + sample)*4`, so the physical stride must
+cover `width << mode` pixels.
 
 Linux exposes the kernel opcode through `DRM_IOCTL_OPENGPU_COMPUTE`.
 Applications bind separate `OPENGPU_RESOURCE_COMPUTE_SHADER` and
@@ -297,9 +307,24 @@ raster staging can overlap SIMT execution without aliasing scratch data.
 
 #### Queued job and completion records
 
-The 16-word job descriptor contains job id/count, command/colour/depth bases,
-stride, depth/cull state and texture configuration; unused words are zero. The
-four-word IH record contains job id, done/error flags, ring slot and status.
+The 16-word job descriptor is:
+
+| Words | Content |
+|---|---|
+| 0 | bits 15:0 job id, bits 31:16 command record count |
+| 1 | command buffer base |
+| 2 | colour buffer base |
+| 3 | depth buffer base |
+| 4 | framebuffer stride (bytes, physically padded for the sample mode) |
+| 5 | bit 0 depth test, bits 6:4 depth func, bit 7 depth write, bits 9:8 cull mode |
+| 6 | texture base |
+| 7 | bits 13:0 texture width, bits 29:16 texture height |
+| 8 | TEX_CONFIG (bit 0 clamp, bits 5:2 max mip level, bit 8 enable) |
+| 9 | bits 1:0 sample mode (0 = 1x, 1 = 2x, 2 = 4x), bits 31:2 reserved |
+| 10-15 | reserved, zero |
+
+Unused words are zero. The four-word IH record contains job id, done/error
+flags, ring slot and status.
 
 ### Linux ownership and synchronization
 

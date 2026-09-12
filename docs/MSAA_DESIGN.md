@@ -443,15 +443,18 @@ memory-port utilisation under 2x and 4x workloads.
 
 ### Phase 1: ABI and State Plumbing
 
-1. Reserve `MSAA_CONFIG` at `0x134`, bound the unified-command address route,
-   and extend the overall mapped register end to `0x138`.
-2. Add capability bit 7 and maximum-mode bits 17:16 without changing the
-   fragment-batch field.
-3. Add `sampleMode` to the legacy snapshot, job descriptor word 9, `JobConfig`,
-   `DrawRenderState`, and `DrawContext`.
-4. Extend the render UAPI and driver validation for physical stride and buffer
-   size.
-5. Keep mode 0 bit-identical with existing submissions.
+Status: landed. `sampleMode` is programmable end-to-end (legacy register and job
+ring); mode 0 remains bit-identical on every path.
+
+- [x] Reserve `MSAA_CONFIG` at `0x134`, bound the unified-command address route,
+      and extend the overall mapped register end to `0x138`.
+- [x] Add capability bit 7 and maximum-mode bits 17:16 without changing the
+      fragment-batch field. Advertising is gated to fixed-function builds.
+- [x] Add `sampleMode` to the legacy snapshot, job descriptor word 9,
+      `JobConfig`, `DrawRenderState`, and `DrawContext`.
+- [x] Extend the render UAPI and driver validation for physical stride and
+      buffer size.
+- [x] Keep mode 0 bit-identical with existing submissions.
 
 ### Phase 2: Coverage and Depth
 

@@ -180,8 +180,11 @@ class GpuHostAxi(
     val beatAddr =
       Mux(burstReg === 0.U, addrReg + (beat << sizeReg), addrReg)
     val lastBeat = beat === lenReg
-    val mappedEnd = (if (unifiedCommandMmio) GpuCommandMmioRegs.END
-      else RenderHostRegs.END).U
+    // RenderHost owns 0x000..0xC4 and 0x134; the unified block owns
+    // 0xC4..0x134. The overall map ends at RenderHostRegs.END (0x138) for
+    // both build flavours; non-unified builds read the unified range as
+    // reserved zero.
+    val mappedEnd = RenderHostRegs.END.U
     val beatOk = (beatAddr & 0x3.U) === 0.U && beatAddr < mappedEnd
 
     val writeBeat = writeActive && !bPending
@@ -192,9 +195,9 @@ class GpuHostAxi(
     // channel (mutually exclusive by construction).
     val busRegValid = Mux(
       readActive, true.B, Mux(writeBeat, io.s_axi_wvalid, false.B))
-    val targetUnified = if (unifiedCommandMmio) {
-      beatAddr >= GpuCommandMmioRegs.COMMAND_ID.U
-    } else false.B
+    val targetUnified =
+      beatAddr >= GpuCommandMmioRegs.COMMAND_ID.U &&
+        beatAddr < RenderHostRegs.MSAA_CONFIG.U
     reg.req.valid := busRegValid && !targetUnified
     reg.req.bits.isWrite := writeActive
     reg.req.bits.addr := beatAddr(9, 0)

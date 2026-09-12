@@ -18,6 +18,7 @@ class DrawContext extends Bundle {
   val colorBase = UInt(32.W)
   val depthBase = UInt(32.W)
   val stride = UInt(32.W)
+  val sampleMode = UInt(2.W)
   val depthTestEnable = Bool()
   val depthFunc = UInt(3.W)
   val depthWriteEnable = Bool()

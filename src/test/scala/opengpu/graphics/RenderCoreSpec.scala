@@ -41,6 +41,7 @@ class RenderCoreSpec extends AnyFlatSpec {
     simulate(new RenderCore(
       GraphicsConfig(screenWidth = 16, screenHeight = 16),
       GpuConfig(lanes = 4, warps = 2), fragCore = true, vertCore = true)) { dut =>
+      dut.io.sampleMode.poke(0.U)
       dut.reset.poke(true.B)
       dut.clock.step()
     }
@@ -89,6 +90,7 @@ class RenderCoreSpec extends AnyFlatSpec {
       dut.io.depthFunc.poke(0.U)
       dut.io.depthWriteEnable.poke(true.B)
       dut.io.cullMode.poke(0.U)
+      dut.io.sampleMode.poke(0.U)
       dut.io.texEnable.poke(false.B)
       dut.io.texBase.poke(0.U)
       dut.io.texWidth.poke(0.U)
@@ -238,6 +240,7 @@ class RenderCoreSpec extends AnyFlatSpec {
       dut.io.depthFunc.poke(0.U)
       dut.io.depthWriteEnable.poke(true.B)
       dut.io.cullMode.poke(0.U)
+      dut.io.sampleMode.poke(0.U)
       dut.io.cbMem.req.ready.poke(true.B)
       dut.io.cbMem.resp.valid.poke(false.B)
       dut.io.fbMem.req.ready.poke(true.B)
@@ -439,6 +442,7 @@ class RenderCoreSpec extends AnyFlatSpec {
       dut.io.depthFunc.poke(0.U)
       dut.io.depthWriteEnable.poke(true.B)
       dut.io.cullMode.poke(0.U)
+      dut.io.sampleMode.poke(0.U)
       dut.io.cbMem.req.ready.poke(true.B)
       dut.io.cbMem.resp.valid.poke(false.B)
       dut.io.fbMem.req.ready.poke(true.B)

@@ -160,8 +160,8 @@ class GpuHostAxiSpec extends AnyFlatSpec {
 
       assert(axiRead(dut, RenderHostRegs.ID) == 0x47550001L,
         "device ID must read back through AXI4")
-      assert(axiRead(dut, RenderHostRegs.CAPABILITIES) == 0x203aL,
-        "fixed-function builds must advertise the job queue and DMA engines but not fragment-core execution")
+      assert(axiRead(dut, RenderHostRegs.CAPABILITIES) == 0x220baL,
+        "fixed-function builds must advertise the job queue, DMA engines and MSAA but not fragment-core execution")
 
       // Unaligned read -> SLVERR.
       axiRead(dut, 0x11)
@@ -170,6 +170,15 @@ class GpuHostAxiSpec extends AnyFlatSpec {
       // Out-of-map read -> SLVERR.
       axiRead(dut, 0x200)
       assert(respVar == 2L, s"out-of-map read must return SLVERR, got RRESP=$respVar")
+
+      // 0x138 is past the end of the (extended) register map.
+      axiRead(dut, RenderHostRegs.END)
+      assert(respVar == 2L, s"0x138 read must return SLVERR, got RRESP=$respVar")
+
+      // MSAA_CONFIG is routed to RenderHost at 0x134.
+      axiWrite(dut, RenderHostRegs.MSAA_CONFIG, 2)
+      assert(axiRead(dut, RenderHostRegs.MSAA_CONFIG) == 2L,
+        "MSAA_CONFIG must round-trip through the AXI4 register path")
 
       // Program and read back a few registers via single-beat AXis.
       axiWrite(dut, RenderHostRegs.CMD_BASE, 0x4000)

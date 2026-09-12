@@ -203,6 +203,7 @@ class RenderHostSpec extends AnyFlatSpec {
       regWrite(dut, RenderHostRegs.DEPTH_WRITE_ENABLE, 1)
       regWrite(dut, RenderHostRegs.CULL_MODE, 2)
       regWrite(dut, RenderHostRegs.TEX_BASE, 0xa000)
+      regWrite(dut, RenderHostRegs.MSAA_CONFIG, 2)
       regWrite(dut, RenderHostRegs.SCANOUT_BASE, 0xb000)
       regWrite(dut, RenderHostRegs.SCANOUT_STRIDE, 128)
       regWrite(dut, RenderHostRegs.SCANOUT_WIDTH, 16)
@@ -219,6 +220,7 @@ class RenderHostSpec extends AnyFlatSpec {
       assert(regRead(dut, RenderHostRegs.DEPTH_WRITE_ENABLE) == 1L)
       assert(regRead(dut, RenderHostRegs.CULL_MODE) == 2L)
       assert(regRead(dut, RenderHostRegs.TEX_BASE) == 0xa000L)
+      assert(regRead(dut, RenderHostRegs.MSAA_CONFIG) == 2L)
       assert(regRead(dut, RenderHostRegs.SCANOUT_BASE) == 0xb000L)
       assert(regRead(dut, RenderHostRegs.SCANOUT_STRIDE) == 128L)
       assert(regRead(dut, RenderHostRegs.SCANOUT_WIDTH) == 16L)
@@ -406,6 +408,103 @@ class RenderHostSpec extends AnyFlatSpec {
         "clearing IRQ.PENDING must deassert the interrupt")
       assert((regRead(dut, RenderHostRegs.IRQ) & 0x1) == 0x1,
         "acknowledging IRQ.PENDING must preserve IRQ.ENABLE")
+    }
+  }
+
+  it should "advertise MSAA only on fixed-function builds" in {
+    val cfg = GpuConfig(lanes = 4, warps = 2)
+    simulate(new RenderHost(gpuConfig = cfg, fragCore = false)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      val cap = regRead(dut, RenderHostRegs.CAPABILITIES)
+      assert((cap & (1L << 7)) != 0L,
+        s"fixed-function builds must advertise MSAA, got 0x${cap.toString(16)}")
+      assert(((cap >> 16) & 0x3L) == 2L,
+        s"maximum sample mode must be log2(4) = 2, got 0x${cap.toString(16)}")
+      assert(cap == 0x208baL, s"unexpected capability word 0x${cap.toString(16)}")
+    }
+  }
+
+  it should "reject an out-of-range MSAA sample mode without launching" in {
+    val cfg = GpuConfig(lanes = 4, warps = 2)
+    simulate(new RenderHost(gpuConfig = cfg, fragCore = false)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+
+      // Mode 2 is valid for the default 4x configuration.
+      regWrite(dut, RenderHostRegs.MSAA_CONFIG, 2)
+      assert(regRead(dut, RenderHostRegs.MSAA_CONFIG) == 2L)
+
+      // Mode 3 exceeds the maximum: START is rejected and ERROR latched.
+      regWrite(dut, RenderHostRegs.MSAA_CONFIG, 3)
+      regWrite(dut, RenderHostRegs.CONTROL, 1)
+      assert((regRead(dut, RenderHostRegs.STATUS) & 0x1L) == 0L,
+        "an invalid sample mode must not leave the engine BUSY")
+      assert((regRead(dut, RenderHostRegs.STATUS) & 0x4L) == 0x4L,
+        "an invalid sample mode must latch STATUS.ERROR")
+    }
+  }
+
+  it should "write four per-sample colour words in fixed-function 4x mode" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    val cfg = GpuConfig(lanes = 4, warps = 2)
+    // Mode 2 packs four samples per pixel, so the physical row is 4x wide.
+    val stride = 16 * 4 * 4
+    val colorBase = 0x8000
+    val depthBase = 0x9000
+    val cmdBase = 0x4000
+
+    def tri(x: Int, y: Int, d: Int) = ((x, y, 0, q(1.0)), (255, 0, 0), d)
+    val record = Seq(
+      tri(q(-1.0), q(-1.0), 0x10),
+      tri(q(1.0), q(-1.0), 0x10),
+      tri(q(-1.0), q(1.0), 0x10)
+    )
+
+    val m = new MemModel
+    encode(record).zipWithIndex.foreach { case (w, i) => m.wwrite(cmdBase + i * 4, w) }
+    // Sentinel each sample slot of interior pixel (5,5); only a real per-sample
+    // write can turn them all red.
+    val pixel = 5
+    def sampleAddr(s: Int): Long =
+      colorBase + pixel * stride + (pixel * 4 + s) * 4
+    for (s <- 0 until 4) m.wwrite(sampleAddr(s), 0xdeadbeef)
+
+    simulate(new RenderHost(config, cfg, fragCore = false)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+
+      regWrite(dut, RenderHostRegs.CMD_BASE, cmdBase)
+      regWrite(dut, RenderHostRegs.CMD_COUNT, 1)
+      regWrite(dut, RenderHostRegs.COLOR_BASE, colorBase)
+      regWrite(dut, RenderHostRegs.DEPTH_BASE, depthBase)
+      regWrite(dut, RenderHostRegs.STRIDE, stride)
+      regWrite(dut, RenderHostRegs.DEPTH_TEST_ENABLE, 0)
+      regWrite(dut, RenderHostRegs.DEPTH_WRITE_ENABLE, 0)
+      regWrite(dut, RenderHostRegs.CULL_MODE, 0)
+      regWrite(dut, RenderHostRegs.MSAA_CONFIG, 2)
+      regWrite(dut, RenderHostRegs.IRQ, 1)
+
+      dut.io.cbMem.req.ready.poke(true.B)
+      dut.io.cbMem.resp.valid.poke(false.B)
+      dut.io.fbMem.req.ready.poke(true.B)
+      dut.io.fbMem.resp.valid.poke(false.B)
+      dut.io.kernelMemReq.ready.poke(true.B)
+      dut.io.kernelMemResp.valid.poke(false.B)
+      dut.io.kernelWordMemReq.ready.poke(true.B)
+      dut.io.kernelWordMemResp.valid.poke(false.B)
+
+      regWrite(dut, RenderHostRegs.CONTROL, 1)
+      serviceMem(dut, m, 120000)(dut.io.irq.peek().litToBoolean)
+      assert(dut.io.irq.peek().litToBoolean, "completion interrupt must assert")
+      assert((regRead(dut, RenderHostRegs.STATUS) & 0x3L) == 0x2L,
+        "STATUS must report DONE")
+
+      for (s <- 0 until 4) {
+        assert(m.word(sampleAddr(s)) == 0xff0000ffL,
+          s"sample $s of pixel ($pixel,$pixel) should be red, " +
+            s"got 0x${m.word(sampleAddr(s)).toHexString}")
+      }
     }
   }
 

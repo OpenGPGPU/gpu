@@ -19,6 +19,7 @@ class JobConfig extends Bundle {
   val depthFunc = UInt(3.W)
   val depthWriteEnable = Bool()
   val cullMode = UInt(2.W)
+  val sampleMode = UInt(2.W)
   val texEnable = Bool()
   val texBase = UInt(32.W)
   val texWidth = UInt(14.W)
@@ -55,7 +56,8 @@ class JobConfig extends Bundle {
   *   [6]  texture base
   *   [7]  bits 13:0 texture width, bits 29:16 texture height
   *   [8]  TEX_CONFIG (bit0 CLAMP, bits 5:2 max mip level, bit8 enable)
-  *   [9..15] reserved
+  *   [9]  bits 1:0 sample mode (0 = 1x, 1 = 2x, 2 = 4x), bits 31:2 reserved
+  *   [10..15] reserved
   *
   * IH record layout (4 words):
   *   [0] bits 15:0 job id, bit16 DONE, bit17 ERROR
@@ -242,6 +244,7 @@ class JobQueue extends Module {
             fetchCfg.texMaxLevel := data(5, 2)
             fetchCfg.texEnable := data(8)
           }
+          is(9.U) { fetchCfg.sampleMode := data(1, 0) }
         }
         when(fetchWord === (wordsPerJob - 1).U) {
           // Descriptor consumed: advance the read pointer and stage the job.

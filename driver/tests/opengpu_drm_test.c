@@ -1017,11 +1017,12 @@ int main(void)
     uint32_t output_syncobjs[2];
     uint64_t capabilities;
     uint32_t batch_capacity;
+    uint32_t msaa_max_mode;
     uint32_t texture_slot, shader_slot, kernarg_slot;
     uint32_t vertex_buffer_slot = 0, vertex_shader_slot = 0;
     uint32_t vertex_kernarg_slot = 0;
     uint32_t expected_pixel, alternate_pixel = 0;
-    bool frag_core, vert_core;
+    bool frag_core, vert_core, msaa_capable;
     uint64_t start;
     uint32_t context_id;
     int fd;
@@ -1063,6 +1064,17 @@ int main(void)
     vert_core = capabilities & OPENGPU_CAP_VERTEX_CORE;
     batch_capacity = (capabilities & OPENGPU_CAP_FRAGMENT_BATCH_MASK) >>
                      OPENGPU_CAP_FRAGMENT_BATCH_SHIFT;
+    msaa_capable = !!(capabilities & OPENGPU_CAP_MSAA);
+    msaa_max_mode = (capabilities & OPENGPU_CAP_MSAA_MAX_MODE_MASK) >>
+                    OPENGPU_CAP_MSAA_MAX_MODE_SHIFT;
+    /* MSAA is fixed-function only; a programmable build must never advertise
+     * it, and a capable build must report a non-zero max sample mode. */
+    if ((msaa_capable && (frag_core || msaa_max_mode < 1)) ||
+        (!msaa_capable && msaa_max_mode != 0)) {
+        errno = EPROTO;
+        perror("OPENGPU USERSPACE DRM FAIL MSAA capabilities");
+        return 1;
+    }
     if (frag_core && batch_capacity != 8) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL fragment batch capacity");

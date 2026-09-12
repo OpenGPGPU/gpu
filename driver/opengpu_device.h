@@ -157,6 +157,7 @@ struct opengpu_job {
     u32 depth_func;
     bool depth_write;
     u32 cull_mode;
+    u32 sample_mode;
     dma_addr_t texture;
     u32 texture_width;
     u32 texture_height;

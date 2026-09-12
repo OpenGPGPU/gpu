@@ -20,17 +20,23 @@ class JobQueueSpec extends AnyFlatSpec {
     def wwrite(a: Long, d: Int): Unit = words(a) = d & 0xffffffff
   }
 
-  private def descriptor(jobId: Int, count: Int, cmdBase: Int): Seq[Int] =
+  private def descriptor(
+    jobId: Int,
+    count: Int,
+    cmdBase: Int,
+    sampleMode: Int = 0
+  ): Seq[Int] =
     Seq((jobId & 0xffff) | ((count & 0xffff) << 16),
       cmdBase, 0x8000, 0x9000, 64,
       1 | (1 << 7),
-      0, 0, 0) ++ Seq.fill(7)(0)
+      0, 0, 0,
+      sampleMode & 0x3) ++ Seq.fill(6)(0)
 
   it should "fetch, launch and record two jobs with prefetch overlap" in {
     val ringBase = 0x10000L
     val ihBase = 0x20000L
     val m = new MemModel
-    descriptor(1, 2, 0x4000).zipWithIndex.foreach {
+    descriptor(1, 2, 0x4000, sampleMode = 2).zipWithIndex.foreach {
       case (w, i) => m.wwrite(ringBase + i * 4, w)
     }
     descriptor(2, 1, 0x4200).zipWithIndex.foreach {
@@ -52,6 +58,7 @@ class JobQueueSpec extends AnyFlatSpec {
 
       // Mock engine: captures launches; completes a job `latency` cycles later.
       var launched = List.empty[Long] // cmdBase, in launch order
+      var launchedSampleMode = List.empty[Long] // cfg.sampleMode, launch order
       var captureNext = false
       var engineBusy = false
       var countdown = 0
@@ -72,6 +79,8 @@ class JobQueueSpec extends AnyFlatSpec {
         // is exactly when a real engine would sample them.
         if (captureNext) {
           launched = dut.io.cfg.cmdBase.peek().litValue.toLong :: launched
+          launchedSampleMode =
+            dut.io.cfg.sampleMode.peek().litValue.toLong :: launchedSampleMode
           captureNext = false
         }
 
@@ -121,6 +130,9 @@ class JobQueueSpec extends AnyFlatSpec {
 
       assert(launched.reverse == List(0x4000L, 0x4200L),
         s"jobs must launch in ring order with the right command bases, got ${launched.reverse}")
+      assert(launchedSampleMode.reverse == List(2L, 0L),
+        "descriptor word 9 must decode into cfg.sampleMode, got " +
+          s"${launchedSampleMode.reverse}")
       assert(dut.io.rptr.peek().litValue == 2,
         "both descriptors must be consumed")
       assert(dut.io.ihWptr.peek().litValue == 2,

@@ -114,6 +114,11 @@
 #define GPU_REG_UCMD_COMPLETION_BYTES_HI 0x12c
 #define GPU_REG_UCMD_COMPLETION_POP 0x130
 
+/* MSAA sample-mode register (bits 1:0; 0 = 1x, 1 = 2x, 2 = 4x).  Snapshotted
+ * on the legacy START path exactly like the other execution config; the
+ * job-ring path carries the same mode in job-record word 9. */
+#define GPU_REG_MSAA_CONFIG 0x134
+
 #define GPU_CAP_FRAGMENT_CORE   (1u << 0)
 #define GPU_CAP_JOB_QUEUE       (1u << 1)
 #define GPU_CAP_VERTEX_CORE     (1u << 2)
@@ -121,6 +126,11 @@
 #define GPU_CAP_BLIT_ENGINE     (1u << 4)
 #define GPU_CAP_STRIDED_ENGINE  (1u << 5)
 #define GPU_CAP_UNIFIED_COMMANDS (1u << 6)
+/* MSAA (bit7) is advertised only by fixed-function builds; bits 17:16 carry
+ * the maximum supported sample mode (log2 of the maximum sample count). */
+#define GPU_CAP_MSAA            (1u << 7)
+#define GPU_CAP_MSAA_MAX_MODE_SHIFT 16u
+#define GPU_CAP_MSAA_MAX_MODE_MASK  (0x3u << GPU_CAP_MSAA_MAX_MODE_SHIFT)
 #define GPU_CAP_FRAGMENT_BATCH_SHIFT 8u
 #define GPU_CAP_FRAGMENT_BATCH_MASK  (0xffu << GPU_CAP_FRAGMENT_BATCH_SHIFT)
 
@@ -402,7 +412,8 @@ struct gpu_vert_draw_record {
  *   texture base                                                         [6]
  *   bits 13:0 texture width, bits 29:16 texture height                   [7]
  *   TEX_CONFIG (bit0 CLAMP, bits 5:2 max mip level, bit8 enable)         [8]
- *   reserved                                                             [9..15]
+ *   sample mode in bits 1:0 (0 = 1x, 1 = 2x, 2 = 4x), bits 31:2 reserved [9]
+ *   reserved                                                             [10..15]
  * ------------------------------------------------------------------------ */
 #define GPU_JOB_WORDS 16u
 struct gpu_job_record {
@@ -415,7 +426,8 @@ struct gpu_job_record {
     u32 tex_base;
     u32 tex_size;
     u32 tex_config;
-    u32 reserved[7];
+    u32 msaa;
+    u32 reserved[6];
 };
 
 #define GPU_JOB_HDR_ID(h)       ((h) & 0xffffu)

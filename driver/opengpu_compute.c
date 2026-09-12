@@ -1019,21 +1019,30 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     size_t color_required;
     bool sched_initialized = false;
     u32 i, j;
+    u32 sample_mode, max_mode;
     int ret;
+
+    sample_mode = args->sample_mode & OPENGPU_MSAA_MODE_MASK;
+    max_mode = (gpu->hw.capabilities & GPU_CAP_MSAA_MAX_MODE_MASK) >>
+               GPU_CAP_MSAA_MAX_MODE_SHIFT;
 
     if ((args->flags & ~(OPENGPU_SUBMIT_TEST_FENCE_DELAY |
                          OPENGPU_SUBMIT_VERTEX_CORE)) ||
         !args->context_id || !args->command_handle || !args->color_handle ||
         args->command_handle == args->color_handle ||
         !args->command_count || args->command_count > OPENGPU_MAX_COMMANDS ||
-        (args->command_offset & 3) || args->pad ||
+        (args->command_offset & 3) ||
+        (args->sample_mode & ~OPENGPU_MSAA_MODE_MASK) ||
+        sample_mode > max_mode ||
+        (sample_mode && !(gpu->hw.capabilities & GPU_CAP_MSAA)) ||
         args->shader_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
         args->kernarg_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
         args->texture_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
         args->vertex_buffer_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
         args->vertex_shader_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
         args->vertex_kernarg_slot > OPENGPU_MAX_RESOURCE_SLOTS ||
-        args->stride != gpu->stride ||
+        (args->stride & 3) ||
+        args->stride < (u64)gpu->width * (1u << sample_mode) * 4u ||
         check_mul_overflow((size_t)args->stride, (size_t)gpu->height,
                            &color_required) ||
         check_mul_overflow((size_t)args->command_count,
@@ -1169,7 +1178,7 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
                vertex_shader->size);
     }
     ret = opengpu_buffer_alloc(gpu, &sched_job->depth,
-                               (size_t)gpu->stride * gpu->height);
+                               (size_t)args->stride * gpu->height);
     if (ret)
         goto out_job;
 
@@ -1201,6 +1210,7 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         .depth_func = GPU_DEPTH_FUNC_LESS,
         .depth_write = true,
         .cull_mode = GPU_CULL_NONE,
+        .sample_mode = sample_mode,
         .texture = texture ? texture->dma : 0,
         .texture_width = texture ? texture->width : 0,
         .texture_height = texture ? texture->height : 0,
