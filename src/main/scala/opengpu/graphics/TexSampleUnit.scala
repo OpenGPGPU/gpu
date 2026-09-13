@@ -131,9 +131,14 @@ class TexSampleUnit(
       }
     }
   }
-  private val biasedMip = automaticMip.zext + lodBiasReg
-  private val clampedMip = Mux(biasedMip < minLevelReg.zext,
-    minLevelReg, Mux(biasedMip > maxLevelReg.zext,
+  // automaticMip is 0..15 and lodBiasReg is -16..15, so the sum spans -16..30
+  // and needs six signed bits.  A five-bit sum wrapped at +16, selecting a
+  // lower mip than requested; keep one extra bit so the upper clamp sees the
+  // true positive value.  The scalar path adds no automatic level, so its
+  // five-bit bias already fits and is left unchanged.
+  private val biasedMip = automaticMip.pad(6).asSInt + lodBiasReg.pad(6)
+  private val clampedMip = Mux(biasedMip < minLevelReg.pad(6).asSInt,
+    minLevelReg, Mux(biasedMip > maxLevelReg.pad(6).asSInt,
       maxLevelReg, biasedMip.asUInt(3, 0)))
   // The sampler consumes an 8-bit trilinear weight.  Normalise rho into
   // [1,2), then look up frac(log2(rho)) from the top eight fractional bits.
@@ -263,8 +268,8 @@ class TexSampleUnit(
       // Stage 8: select the nearest mip and register the normalized rho used
       // by the fractional-LOD lookup.
       rhoNormalReg := rhoReg >> automaticMip
-      lodIsClampedReg := biasedMip < minLevelReg.zext ||
-        biasedMip > maxLevelReg.zext
+      lodIsClampedReg := biasedMip < minLevelReg.pad(6).asSInt ||
+        biasedMip > maxLevelReg.pad(6).asSInt
       mipLevelReg := clampedMip
       state := sFrac
     }

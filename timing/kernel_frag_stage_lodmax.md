@@ -18,9 +18,11 @@ utilization 25%, placement density 0.60, timing effort `explore`.
   still takes the same number of cycles from request acceptance to sampling.
   Partial multipliers drop from 16 to 4; pipeline register bits drop by 720.
 
-The existing five-bit signed `automaticMip + lodBiasReg` arithmetic is
-unchanged, including wraparound for a result above +15. The reference test
-models this explicitly; widening the bias arithmetic is a separate fix.
+The `automaticMip + lodBiasReg` sum was originally five-bit signed and wrapped
+for a result above +15. It is now evaluated in six signed bits in the source,
+so the sum spans -16..30 without wraparound and the upper clamp sees positive
+values. The scalar path adds no automatic level, so its five-bit bias already
+fit and is unchanged. The reference test models the widened sum directly.
 
 ## Controlled synthesis comparison
 
@@ -84,5 +86,24 @@ GRAPHICS_PPA_TIMING_EFFORT=explore /Users/duckdonald/workspace/chipagent/.venv/b
 
 ## Physical results
 
-Pending: candidate and current-MSAA control are running the same full
-`explore` recipe. Do not treat synthesis timing or area as post-route closure.
+Both blocks completed the full `explore` u25 d60 physical flow (Yosys native
+SV, ASAP7 TC / SLVT, 1000 ps, `generate_gds` off, post-route STA with
+extracted parasitics). The candidate was re-emitted from the current source,
+so it also carries the six-bit `automaticMip + lodBias` widening; the control
+is the unchanged MSAA baseline snapshot. Each variant is a single detailed
+route, so small timing deltas are placement/routing sensitive.
+
+| Variant | Cell area (um^2) | DFFs | Route WL | Power (mW) | Setup viol | Core Fmax (MHz) |
+|---|---:|---:|---:|---:|---:|---:|
+| MSAA control | 27312.300 | 34815 | 913906 | 312.577 | 1 | 1000.460 |
+| Current source (LOD + bias) | 25644.600 | 34095 | 865911 | 302.279 | 17 | 957.921 |
+
+The candidate saves 1667.700 um^2 (6.11%), 720 DFFs and 10.298 mW, and both
+runs show 0 routing DRC and 0 antenna violations. Its core critical path
+(`levelW[2] -> tapAddrs_1[30]`) is 43.930 ps short of 1 GHz, while the
+control's (`levelW[12] -> tapAddrs_0[31]`) just makes it at +0.460 ps. Both
+runs fail hold (2523 and 2578 violations, virtual-I/O boundary); the control's
+worst setup slack (-125.562 ps) is on that virtual-I/O group, not the core.
+Neither result closes sign-off. The 44 ps core delta is not explained by the
+logic change alone (the LOD comparison only removes a clamp mux), so a repeat
+run or path-level comparison is needed before attributing it to the reorder.

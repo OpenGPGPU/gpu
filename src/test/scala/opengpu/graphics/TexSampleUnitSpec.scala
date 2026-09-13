@@ -233,6 +233,10 @@ class TexSampleUnitSpec extends AnyFlatSpec {
       val fixed = Seq(
         (4, 8, Seq(0L, 0x6000L, 0L, 0L), Seq.fill(4)(0L)),
         (8, 4, Seq.fill(4)(0L), Seq(0L, 0L, 0x6000L, 0L)),
+        // Bias +1 on the largest automatic level drives the sum to 15 + 1 = 16.
+        // A five-bit sum wrapped to -16 and selected the lower clamp; keeping
+        // six signed bits selects the upper clamp (level 4, not level 0).
+        (16, 1, Seq(0L, 0x08000000L, 0L, 0L), Seq.fill(4)(0L)),
         (1, 16383, Seq(0xffffffffL, 0L, 0xffffL, 0x10000L), Seq.fill(4)(0L)),
         (16383, 1, Seq.fill(4)(0L), Seq(0L, 0xffffffffL, 0L, 0x10001L)),
         (16383, 16382, Seq(0xffffffffL, 0L, 0x10001L, 0L),
@@ -252,10 +256,9 @@ class TexSampleUnitSpec extends AnyFlatSpec {
         val rho = (edges.map { case (a, b) => BigInt((u(a) - u(b)).abs) * width } ++
           edges.map { case (a, b) => BigInt((v(a) - v(b)).abs) * height }).max
         val automatic = (1 until 16).filter(l => rho >= (BigInt(1) << (16 + l))).lastOption.getOrElse(0)
-        // Preserve the existing five-bit signed bias addition, including
-        // wraparound at +16; widening that arithmetic is a separate change.
-        val biasBits = (automatic + bias) & 31
-        val biased = if (biasBits >= 16) biasBits - 32 else biasBits
+        // automatic (0..15) plus the signed bias (-16..15) spans -16..30 and
+        // is kept in six signed bits, so the sum never wraps.
+        val biased = automatic + bias
         val level = math.max(minLevel, math.min(maxLevel, biased))
         val normal = rho >> automatic
         val fraction = if (biased < minLevel || biased > maxLevel || normal <= 65536 || level == maxLevel) 0
