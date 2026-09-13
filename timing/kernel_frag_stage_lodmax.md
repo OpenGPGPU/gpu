@@ -86,24 +86,32 @@ GRAPHICS_PPA_TIMING_EFFORT=explore /Users/duckdonald/workspace/chipagent/.venv/b
 
 ## Physical results
 
-Both blocks completed the full `explore` u25 d60 physical flow (Yosys native
-SV, ASAP7 TC / SLVT, 1000 ps, `generate_gds` off, post-route STA with
-extracted parasitics). The candidate was re-emitted from the current source,
-so it also carries the six-bit `automaticMip + lodBias` widening; the control
-is the unchanged MSAA baseline snapshot. Each variant is a single detailed
-route, so small timing deltas are placement/routing sensitive.
+All three variants completed the full `explore` u25 d60 physical flow (Yosys
+native SV, ASAP7 TC / SLVT, 1000 ps, `generate_gds` off, post-route STA with
+extracted parasitics). Each candidate was emitted from source at its change
+point; the control is the unchanged MSAA baseline snapshot. ORFS is
+deterministic for a given netlist, so these deltas are between physical
+solutions, not run-to-run spread.
 
 | Variant | Cell area (um^2) | DFFs | Route WL | Power (mW) | Setup viol | Core Fmax (MHz) |
 |---|---:|---:|---:|---:|---:|---:|
 | MSAA control | 27312.300 | 34815 | 913906 | 312.577 | 1 | 1000.460 |
-| Current source (LOD + bias) | 25644.600 | 34095 | 865911 | 302.279 | 17 | 957.921 |
+| LOD reorder only | 25616.800 | 34095 | 877602 | 289.400 | 139 | 947.933 |
+| LOD reorder + bias widening | 25644.600 | 34095 | 865911 | 302.279 | 17 | 957.921 |
 
-The candidate saves 1667.700 um^2 (6.11%), 720 DFFs and 10.298 mW, and both
-runs show 0 routing DRC and 0 antenna violations. Its core critical path
-(`levelW[2] -> tapAddrs_1[30]`) is 43.930 ps short of 1 GHz, while the
-control's (`levelW[12] -> tapAddrs_0[31]`) just makes it at +0.460 ps. Both
-runs fail hold (2523 and 2578 violations, virtual-I/O boundary); the control's
-worst setup slack (-125.562 ps) is on that virtual-I/O group, not the core.
-Neither result closes sign-off. The 44 ps core delta is not explained by the
-logic change alone (the LOD comparison only removes a clamp mux), so a repeat
-run or path-level comparison is needed before attributing it to the reorder.
+The reorder removes 1695.5 um^2 (6.21%), 720 DFFs and up to 23.2 mW, with 0
+routing DRC and 0 antenna violations in every run. It does not close core
+timing. The control's `core_clock` group makes 1000.46 MHz (+0.46 ps), while
+the two reorder variants miss by 54.93 ps (worst path `wpWrite ->
+fragRecords_*_depth`, outside the texture unit) and 43.93 ps (worst path
+`levelW -> tapAddrs_1[30]`, the sampler cone named by the synthesis table).
+
+The result is non-monotonic: adding the bias-widening logic back improves core
+slack by 11 ps and moves the worst path back into the sampler. That shows
+these tens-of-ps deltas are dominated by how the 6% smaller netlist re-solves
+placement, CTS and routing, not by the changed logic depth. The reorder is a
+reliable area/power win whose timing effect sits within physical-solution
+sensitivity; neither reorder variant closes core. All runs fail hold
+(2511-2578 violations, virtual-I/O boundary). Closing core timing needs the
+sampler `levelW -> tapAddrs` path and the virtual-I/O hold, which are common
+to every variant.
