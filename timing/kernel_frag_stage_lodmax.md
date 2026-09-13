@@ -115,3 +115,26 @@ sensitivity; neither reorder variant closes core. All runs fail hold
 (2511-2578 violations, virtual-I/O boundary). Closing core timing needs the
 sampler `levelW -> tapAddrs` path and the virtual-I/O hold, which are common
 to every variant.
+
+## u50 validation of the current source
+
+The u50 result in `timing/README.md` that closes every setup group was
+measured on the older `emitquadsel` RTL, which predates the MSAA changes.
+Re-running the two snapshots at core utilization 50 (same `explore` d60
+recipe) shows that closure does not reproduce for either the MSAA control or
+the current source, so the reorder is not what moved u50:
+
+| Variant | Cell area (um^2) | DFFs | Route WL | Power (mW) | Setup worst / viol | Hold worst / viol | Core Fmax | vclk Fmax |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| MSAA control | 26982.9 | 34815 | 826665 | 310.4 | -44.82 ps / 33 | -34.80 ps / 1361 | 987.21 | 1210.49 |
+| Current (LOD + bias) | 25347.3 | 34095 | 770543 | 298.4 | -114.92 ps / 4 | -31.99 ps / 629 | 985.22 | 896.93 |
+
+Against the MSAA control the reorder keeps core Fmax flat (985.22 vs 987.21
+MHz) while cutting 1635.6 um^2 (6.06%), 720 DFFs, 6.8% wirelength and 12.0 mW,
+and roughly halves the hold violations (1361 -> 629). The virtual-IO group
+differs sharply (vclk 896.93 vs 1210.49 MHz), but that is the
+placement-sensitive boundary class `timing/README.md` already assigns to the
+parent, so it is not attributed to the reorder.
+
+Both runs fail u50 setup. Recovering the u50 closure that the post-`emitquadsel`
+changes displaced is a separate task from this LOD experiment.
