@@ -172,6 +172,12 @@ class GpuSystem(
     val stridedCopyEngineBusy = Output(Bool())
     val unifiedCommandRouterBusy = Output(Bool())
     val duplicateUnifiedCommandId = Output(Bool())
+    /** Level request from the unified-command MMIO bridge: stop dispatching,
+      * drain every in-flight command and memory transaction, reset the
+      * command-path state, then pulse `commandResetDone`.  Meaningful only
+      * when enableUnifiedCommands is set. */
+    val commandResetActive = Input(Bool())
+    val commandResetDone = Output(Bool())
     val clearPerformanceCounters = Input(Bool())
     val performance = Output(new GpuPerformanceCounters)
   })
@@ -243,6 +249,43 @@ class GpuSystem(
   io.stridedCopyEngineBusy := stridedCopyEngine.io.busy
   io.unifiedCommandRouterBusy := commandRouter.io.busy
   io.duplicateUnifiedCommandId := commandRouter.io.duplicateCommandId
+
+  // Safe unified-command reset: while the MMIO bridge holds
+  // commandResetActive, stop dispatching queued commands, wait for every
+  // engine, kernel and shared-L2 transaction to drain (completions keep
+  // flowing and are discarded by the bridge), then pulse a synchronous reset
+  // through the command path and acknowledge.  A command that never retires
+  // (hung kernel or lower memory) keeps the FSM in `draining`; only a full
+  // fabric reset recovers from that.
+  commandRouter.io.blockDispatch := false.B
+  commandRouter.io.pathReset := false.B
+  commandProcessor.io.pathReset := false.B
+  if (enableUnifiedCommands) {
+    object ResetState extends ChiselEnum { val idle, draining, resetting = Value }
+    val resetState = RegInit(ResetState.idle)
+    val quiesced = !copyEngine.io.busy && !fillEngine.io.busy &&
+      !stridedCopyEngine.io.busy && !commandProcessor.io.busy &&
+      l2.io.drained && !commandRouter.io.completion.valid
+    // Held across the resetting cycle too: otherwise a queue flush and a
+    // dispatch fire on the same edge and launch the flushed command.
+    commandRouter.io.blockDispatch := resetState =/= ResetState.idle
+    commandRouter.io.pathReset := resetState === ResetState.resetting
+    commandProcessor.io.pathReset := resetState === ResetState.resetting
+    io.commandResetDone := resetState === ResetState.resetting
+    switch(resetState) {
+      is(ResetState.idle) {
+        when(io.commandResetActive) { resetState := ResetState.draining }
+      }
+      is(ResetState.draining) {
+        when(quiesced) { resetState := ResetState.resetting }
+      }
+      is(ResetState.resetting) {
+        resetState := ResetState.idle
+      }
+    }
+  } else {
+    io.commandResetDone := false.B
+  }
   private val cycleCount = RegInit(0.U(64.W))
   private val activeCuCycleCount = RegInit(0.U(64.W))
   private val lowerReadCount = RegInit(0.U(64.W))

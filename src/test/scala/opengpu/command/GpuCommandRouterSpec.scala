@@ -29,6 +29,8 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
     dut.io.stridedCopyCompletion.valid.poke(false.B)
     dut.io.stridedCopyCompletion.bits.poke(
       0.U.asTypeOf(dut.io.stridedCopyCompletion.bits))
+    dut.io.blockDispatch.poke(false.B)
+    dut.io.pathReset.poke(false.B)
   }
 
   private def submit(dut: GpuCommandRouter, id: Int, opcode: UInt): Unit = {
@@ -175,6 +177,49 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
       dut.io.completion.bits.commandId.expect(2.U)
       dut.io.completion.bits.status.expect(
         GpuCommandResultStatus.eventDependencyFailed)
+    }
+  }
+
+  it should "hold dispatch while blocked and flush queued work on a path reset" in {
+    simulate(new GpuCommandRouter(
+      GpuConfig(lanes = 4), commandIdWidth = 4,
+      commandQueueDepth = 2, completionQueueDepth = 2)) { dut =>
+      initialize(dut)
+      dut.io.command.bits.destinationAddress.poke(0x4000.U)
+      dut.io.command.bits.bytes.poke(64.U)
+
+      // With dispatch blocked the command is accepted but never launched.
+      dut.io.blockDispatch.poke(true.B)
+      submit(dut, 5, GpuCommandOpcode.fill)
+      dut.io.busy.expect(true.B)
+      dut.io.fill.valid.expect(false.B)
+      dut.clock.step(2)
+      dut.io.fill.valid.expect(false.B)
+
+      // The reset flushes it: the ID is released without a completion.
+      dut.io.pathReset.poke(true.B)
+      dut.clock.step()
+      dut.io.pathReset.poke(false.B)
+      dut.io.blockDispatch.poke(false.B)
+      dut.io.busy.expect(false.B)
+      dut.io.fill.valid.expect(false.B)
+
+      // The same ID is immediately reusable and dispatches normally.
+      submit(dut, 5, GpuCommandOpcode.fill)
+      dut.io.fill.valid.expect(true.B)
+      dut.io.fill.bits.descriptorId.expect(5.U)
+      dut.io.fill.ready.poke(true.B)
+      dut.clock.step()
+
+      dut.io.fillCompletion.bits.descriptorId.poke(5.U)
+      dut.io.fillCompletion.bits.status.poke(0.U)
+      dut.io.fillCompletion.bits.success.poke(true.B)
+      dut.io.fillCompletion.bits.bytesFilled.poke(64.U)
+      dut.io.fillCompletion.valid.poke(true.B)
+      dut.clock.step(); dut.io.fillCompletion.valid.poke(false.B)
+      dut.io.completion.ready.poke(true.B)
+      dut.clock.step()
+      dut.io.busy.expect(false.B)
     }
   }
 }

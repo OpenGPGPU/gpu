@@ -71,7 +71,7 @@ protocol.
 | 0x54 | SCANOUT_FORMAT | RW | 0 = RGBA8888 |
 | 0x58 | SCANOUT_CONTROL | RW | bit 0 ENABLE |
 | 0x5C | SCANOUT_STATUS | RO | bit 0 ACTIVE |
-| 0x60 | CAPABILITIES | RO | fragment core, job/IH rings, vertex core, clear/blit/strided engines, unified commands, MSAA and batch capacity |
+| 0x60 | CAPABILITIES | RO | fragment core, job/IH rings, vertex core, clear/blit/strided engines, unified commands, MSAA, batch capacity and safe unified reset |
 | 0x64 | JOB_RING_BASE | RW | job-ring byte address |
 | 0x68 | JOB_RING_SIZE | RW | power-of-two entry count |
 | 0x6C | JOB_WPTR | RW | host producer pointer/doorbell |
@@ -115,11 +115,12 @@ protocol.
 | 0x114 | UCMD_WAIT_EVENT | RW | event ID `[7:0]` and generation `[15:8]` |
 | 0x118 | UCMD_SIGNAL_EVENT | RW | event ID `[7:0]` and generation `[15:8]` |
 | 0x11C | UCMD_SUBMIT | W1P | snapshot and enqueue when bit 0 is written |
-| 0x120 | UCMD_STATUS | RO/W1C | ready, completion-valid and submit-overflow; bit 2 clears overflow |
+| 0x120 | UCMD_STATUS | RO/W1C | ready, completion-valid and submit-overflow; bit 2 clears overflow; bits 3 RESET_BUSY and 4 RESET_REJECTED; bit 4 clears RESET_REJECTED |
 | 0x124 | UCMD_COMPLETION | RO | ID `[7:0]`, opcode `[10:8]`, status `[14:11]`, success `[15]` |
 | 0x128-0x12C | UCMD_COMPLETION_BYTES | RO | processed byte count, low then high word |
 | 0x130 | UCMD_COMPLETION_POP | W1P | consume completion when bit 0 is written |
 | 0x134 | MSAA_CONFIG | RW | bits 1:0 sample mode (0 = 1x, 1 = 2x, 2 = 4x), snapshotted at START |
+| 0x138 | UCMD_RESET | W1P | request a safe unified-command reset when bit 0 is written |
 
 START snapshots the programmed job state. On queue-capable hardware, the host
 writes a 64-byte descriptor to the job ring and advances `JOB_WPTR`. Jobs
@@ -134,6 +135,20 @@ remains reserved from submission until its completion is popped; duplicate IDs
 are not accepted. The staging FIFO preserves submission order, while engines
 may finish independently and report their opcode and status in the common
 completion format.
+
+`CAPABILITIES[18]` advertises the safe unified-command reset. Writing
+`UCMD_RESET[0]` stops dispatch, discards staged commands, refuses new
+submissions and drains every in-flight command and its memory transaction
+before resetting the command-path state. Until the drain completes the hardware
+reports `UCMD_STATUS.RESET_BUSY` and raises the shared completion IRQ when the
+path is clean and ready again. A submission that races the drain is not queued
+and sets `UCMD_STATUS.RESET_REJECTED`; late completions from the abandoned
+stream are consumed and dropped so the post-reset completion slot starts empty.
+The reset is drain-based rather than invalidating: outstanding L2 accesses are
+allowed to retire, because discarding them would orphan memory responses that
+the response demultiplexer still expects. A reset that cannot quiesce (a hung
+engine or lower memory) leaves `RESET_BUSY` set; the driver turns that into an
+explicit wedge rather than a silent hang.
 
 `CAPABILITIES[7]` advertises MSAA and is set only on fixed-function builds
 (`!fragCore`); bits 17:16 carry the maximum supported sample mode
@@ -244,11 +259,20 @@ advances the nonzero sequence and records the Linux errno, raw hardware status,
 observed and expected command ID/opcode, and actual and expected byte counts.
 Reason flags distinguish hardware completion errors, timeouts, aborts, ID or
 opcode mismatches, inconsistent success metadata and short/long successful
-transfers. For an abort without a completion, raw status and processed bytes
-are zero. The snapshot intentionally contains no GPU addresses and remains
-available after the failing fence is consumed, so render clients can diagnose
-asynchronous failures without racing completion handling. Reserved input words
-must be zero.
+transfers. A timeout or abort on reset-capable hardware also records
+`OPENGPU_FAULT_RESET_ISSUED` because the driver asked the hardware for a safe
+reset; if the drain never completes within the recovery window the driver
+records `OPENGPU_FAULT_RESET_TIMEOUT` alongside it and marks the device wedged.
+For an abort without a completion, raw status and processed bytes are zero. The
+snapshot intentionally contains no GPU addresses and remains available after
+the failing fence is consumed, so render clients can diagnose asynchronous
+failures without racing completion handling. Reserved input words must be zero.
+
+Recovery is explicit: after a timeout or abort the driver requests the hardware
+reset described above. Unified-command submissions made while it drains fail
+with `-EBUSY`; if the drain times out, every later unified submission fails with
+`-EIO` until the device is reloaded. Dedicated register-bank paths are
+unaffected.
 
 ### Shared-memory ABI
 
@@ -420,11 +444,14 @@ result must be consumed before the interrupt is acknowledged.
   event-dependency failures propagate as scheduler fence errors.
 - `DRM_IOCTL_OPENGPU_GET_FAULT` exposes an atomic retained snapshot of the most
   recent unified completion error, protocol mismatch or watchdog abort.
+- A safe unified-command reset (`UCMD_RESET`, `CAPABILITIES[18]`) drains
+  in-flight commands and memory transactions, refuses racing submissions and
+  discards the abandoned stream's completions. Timeout/abort recovery requests
+  it automatically, reports `OPENGPU_FAULT_RESET_ISSUED`, and turns a drain that
+  never completes into `OPENGPU_FAULT_RESET_TIMEOUT` plus `-EIO` wedging.
 
 ## Next
 
-- Add a safe command-level reset that drains or invalidates in-flight memory
-  transactions, then expose explicit reset recovery semantics through DRM.
 - Expand shader profiles and resource types only with matching hardware and
   validation.
 - Stabilize the ABI and performance envelope before a Mesa userspace driver.

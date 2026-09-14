@@ -136,6 +136,10 @@ parallel output merger -> GPU L2 -> AXI4 / SoC fabric -> shared DRAM
   DMA ioctls, with failed dependencies surfaced through fence errors.
 - Atomic DRM queries for the latest unified-command fault, including raw
   status, errno, command metadata, byte counts and timeout/protocol reasons.
+- Safe unified-command reset that stops dispatch, drains in-flight commands and
+  memory transactions, refuses racing submissions and discards the abandoned
+  stream's completions, with explicit DRM recovery: `-EBUSY` while draining,
+  `OPENGPU_FAULT_RESET_ISSUED`, and `-EIO` wedging on a drained timeout.
 - KMS scanout handoff, atomic modeset, page flip and virtual vblank.
 - ARTI/QEMU/Linux integration for the standard-AXI `GpuHostSystemAxi` product
   top in fixed-function, fragment-core and vertex-core configurations.
@@ -153,17 +157,11 @@ parallel output merger -> GPU L2 -> AXI4 / SoC fabric -> shared DRAM
   validation only with matching hardware support.
 - Measure full-system cost by resolution, remove avoidable host-memory work and
   establish a practical regression default.
-- Add a safe unified-command reset that drains or invalidates in-flight memory
-  transactions and define its DRM recovery semantics. Existing timeout/abort
-  error fences and fault records do not establish that in-flight memory
-  transactions have stopped.
 
 ### Graphics capability
 
 - Add stencil, more blend modes and MSAA.
 - Broaden the shader/RVV subset together with its validator.
-- Extend the existing host-visible fault and timeout ABI with safe reset and
-  recovery behavior.
 - Close timing and area on the complete integrated graphics top. Current
   measured blockers are KernelFragStage (best measured 846.2 MHz after packed
   quad records, a single request register and registered request selectors; a

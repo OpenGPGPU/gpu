@@ -31,6 +31,11 @@ struct opengpu_drm;
 #ifndef OPENGPU_DRAW_WAIT_MS
 #define OPENGPU_DRAW_WAIT_MS    30000
 #endif
+/* How long the driver waits for a requested safe unified-command reset to
+ * drain before declaring the device wedged. */
+#ifndef OPENGPU_RESET_WAIT_MS
+#define OPENGPU_RESET_WAIT_MS   5000
+#endif
 /* Boot-time render mode used when the device-tree node carries no
  * opengpu,width/height/stride properties (the ARTI-generated node does not).
  * Must match the elaborated RTL resolution; the runner passes
@@ -91,6 +96,13 @@ struct opengpu_hw {
     struct delayed_work timeout_work;
     struct delayed_work completion_work;
     struct delayed_work poll_work;
+    struct delayed_work reset_work;
+    /* Safe unified-command reset state.  `reset_pending` blocks new unified
+     * submissions with -EBUSY until the hardware drain acknowledges;
+     * `wedged` means the drain never completed, so the device keeps failing
+     * unified submissions with -EIO until it is reloaded. */
+    bool reset_pending;
+    bool wedged;
     u32 active_completion_delay_ms;
     u64 fence_context;
     u64 fence_seqno;

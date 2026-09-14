@@ -284,6 +284,104 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
     }
   }
 
+  it should "complete a unified reset through the AXI control path" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(
+      lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      assert((axiRead(dut, RenderHostRegs.CAPABILITIES) & (1 << 18)) != 0L,
+        "integrated host must advertise the safe unified-command reset")
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+
+      // Idle command path: the drain completes and acknowledges by IRQ.
+      axiWrite(dut, GpuCommandMmioRegs.RESET, 1)
+      var cycles = 0
+      var status = axiRead(dut, GpuCommandMmioRegs.STATUS)
+      while ((status & 0x8L) != 0L && cycles < 40) {
+        status = axiRead(dut, GpuCommandMmioRegs.STATUS)
+        cycles += 1
+      }
+      assert((status & 0x8L) == 0L, "unified reset was never acknowledged")
+      dut.io.m_irq.expect(true.B)
+
+      // The reset leaves a clean, ready command slot behind.
+      assert((status & 0x1L) != 0L, "command queue must report ready")
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 3)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE,
+        GpuCommandOpcode.fill.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, 0x8000)
+      axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      val write = acceptMemoryWrite(dut)
+      assert(write.address == 0x8000,
+        "post-reset submission must reach the memory master")
+    }
+  }
+
+  it should "reject work while a unified reset drains and recover afterwards" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(
+      lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+
+      // Start a fill whose memory transaction is deliberately left unserviced
+      // so the command path stays busy while the reset drains.  This mirrors
+      // the driver's recovery contract: RESET_BUSY maps to -EBUSY and a
+      // submission racing the drain must be refused, not queued.
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 5)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE,
+        GpuCommandOpcode.fill.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, 0x6000)
+      axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+
+      var cycles = 0
+      while (!dut.io.m_axi_awvalid.peek().litToBoolean && cycles < 80) {
+        dut.io.s_axi_aclk.step()
+        cycles += 1
+      }
+      assert(cycles < 80, "fill never reached the memory master")
+
+      axiWrite(dut, GpuCommandMmioRegs.RESET, 1)
+      val draining = axiRead(dut, GpuCommandMmioRegs.STATUS)
+      assert((draining & 0x8L) != 0L,
+        "reset must report BUSY while in-flight work drains")
+
+      // A submission during the drain is rejected and must not be executed.
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 6)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, 0x7000)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      val rejected = axiRead(dut, GpuCommandMmioRegs.STATUS)
+      assert((rejected & 0x10L) != 0L,
+        "reset must report the refused submission")
+
+      // Let the outstanding fill finish; the drain then acknowledges by IRQ.
+      val inFlight = acceptMemoryWrite(dut)
+      assert(inFlight.address == 0x6000)
+      cycles = 0
+      var status = axiRead(dut, GpuCommandMmioRegs.STATUS)
+      while ((status & 0x8L) != 0L && cycles < 40) {
+        status = axiRead(dut, GpuCommandMmioRegs.STATUS)
+        cycles += 1
+      }
+      assert((status & 0x8L) == 0L, "unified reset never drained")
+      assert((status & 0x1L) != 0L, "reset must leave a ready command slot")
+      dut.io.m_irq.expect(true.B)
+
+      // The refused command must not have reached memory; the next one does.
+      axiWrite(dut, GpuCommandMmioRegs.STATUS, 0x10)
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 7)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, 0x8000)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      val recovered = acceptMemoryWrite(dut)
+      assert(recovered.address == 0x8000,
+        "post-reset submission must reach the memory master")
+    }
+  }
+
   it should "execute a unified kernel through the AXI memory master" in {
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
     val gpu = GpuConfig(l2Sets = 8, l2Ways = 2)

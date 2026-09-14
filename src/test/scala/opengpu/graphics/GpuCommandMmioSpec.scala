@@ -119,4 +119,61 @@ class GpuCommandMmioSpec extends AnyFlatSpec {
       assert((read(dut, GpuCommandMmioRegs.STATUS) & 0x4) == 0)
     }
   }
+
+  it should "drain staged commands, reject submissions and drop completions during reset" in {
+    simulate(new GpuCommandMmio(
+      GpuConfig(lanes = 4, warps = 2), queueDepth = 2)) { dut =>
+      dut.io.reg.req.valid.poke(false.B)
+      dut.io.reg.resp.ready.poke(true.B)
+      dut.io.command.ready.poke(false.B)
+      dut.io.completion.valid.poke(false.B)
+      dut.io.completion.bits.poke(0.U.asTypeOf(dut.io.completion.bits))
+      dut.io.resetDone.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+
+      // Stage one command so the reset has queued work to discard.
+      write(dut, GpuCommandMmioRegs.COMMAND_ID, 0x11)
+      write(dut, GpuCommandMmioRegs.OPCODE, GpuCommandOpcode.fill.litValue)
+      write(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      dut.io.command.valid.expect(true.B)
+
+      write(dut, GpuCommandMmioRegs.RESET, 1)
+      dut.io.resetActive.expect(true.B)
+      assert((read(dut, GpuCommandMmioRegs.STATUS) & 0x8) != 0)
+      // The staged command drains into the bit bucket instead of dispatching.
+      dut.io.command.valid.expect(false.B)
+      dut.clock.step()
+
+      // Submissions while reset is held are refused with a sticky diagnostic.
+      write(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      assert((read(dut, GpuCommandMmioRegs.STATUS) & 0x10) != 0)
+      dut.io.command.valid.expect(false.B)
+
+      // A late completion from the aborted stream is consumed and discarded.
+      dut.io.completion.bits.commandId.poke(0x11.U)
+      dut.io.completion.bits.opcode.poke(GpuCommandOpcode.fill)
+      dut.io.completion.bits.status.poke(0.U)
+      dut.io.completion.bits.success.poke(true.B)
+      dut.io.completion.valid.poke(true.B)
+      dut.io.completion.ready.expect(true.B)
+      dut.io.completionEvent.expect(false.B)
+      dut.clock.step(); dut.io.completion.valid.poke(false.B)
+      assert((read(dut, GpuCommandMmioRegs.STATUS) & 0x2) == 0)
+
+      // The system's drain acknowledgement ends the reset and raises the IRQ.
+      dut.io.resetDone.poke(true.B)
+      dut.io.completionEvent.expect(true.B)
+      dut.clock.step(); dut.io.resetDone.poke(false.B)
+      dut.io.resetActive.expect(false.B)
+      assert((read(dut, GpuCommandMmioRegs.STATUS) & 0x8) == 0)
+      write(dut, GpuCommandMmioRegs.STATUS, 0x10)
+      assert((read(dut, GpuCommandMmioRegs.STATUS) & 0x10) == 0)
+
+      // Normal submission resumes from an empty slot.
+      write(dut, GpuCommandMmioRegs.COMMAND_ID, 0x22)
+      write(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      dut.io.command.valid.expect(true.B)
+      dut.io.command.bits.commandId.expect(0x22.U)
+    }
+  }
 }

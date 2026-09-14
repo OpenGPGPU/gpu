@@ -21,6 +21,7 @@ class GpuCommandProcessorSpec extends AnyFlatSpec {
       event.valid.poke(false.B)
       event.bits.poke(0.U.asTypeOf(event.bits))
     }
+    dut.io.pathReset.poke(false.B)
   }
 
   private def driveCommand(dut: GpuCommandProcessor, id: Int,
@@ -185,6 +186,38 @@ class GpuCommandProcessorSpec extends AnyFlatSpec {
       dut.io.completion.bits.commandId.expect(10.U)
       dut.io.completion.bits.status.expect(
         KernelCommandStatus.dmaDependencyFailed)
+    }
+  }
+
+  it should "flush queued commands and reservations on a path reset" in {
+    simulate(new GpuCommandProcessor(
+      GpuConfig(lanes = 4, warps = 2), commandIdWidth = 4,
+      commandQueueDepth = 2, completionQueueDepth = 2)) { dut =>
+      initialize(dut)
+      // Queue two kernels without ever dispatching them.
+      driveCommand(dut, id = 5)
+      dut.clock.step(); dut.io.command.valid.poke(false.B)
+      driveCommand(dut, id = 6)
+      dut.clock.step(); dut.io.command.valid.poke(false.B)
+      dut.io.busy.expect(true.B)
+      dut.io.queued.expect(2.U)
+
+      dut.io.pathReset.poke(true.B)
+      dut.clock.step()
+      dut.io.pathReset.poke(false.B)
+
+      dut.io.busy.expect(false.B)
+      dut.io.queued.expect(0.U)
+      dut.io.inFlight.expect(0.U)
+      dut.io.dispatch.valid.expect(false.B)
+
+      // Both IDs are free again, and a fresh launch dispatches normally.
+      driveCommand(dut, id = 5, pc = 0x3000)
+      dut.io.command.ready.expect(true.B)
+      dut.clock.step(); dut.io.command.valid.poke(false.B)
+      dut.io.dispatch.valid.expect(true.B)
+      dut.io.dispatch.bits.commandId.expect(5.U)
+      dut.io.dispatch.bits.launch.kernelPc.expect(0x3000.U)
     }
   }
 }

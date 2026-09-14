@@ -126,7 +126,12 @@ struct drm_opengpu_fault {
 #define OPENGPU_FAULT_OPCODE_MISMATCH     (1u << 5)
 #define OPENGPU_FAULT_SUCCESS_MISMATCH    (1u << 6)
 #define OPENGPU_FAULT_BYTES_MISMATCH      (1u << 7)
-#define OPENGPU_FAULT_FLAGS_MASK          0xffu
+/* A safe unified-command reset was issued to recover from this fault, and
+ * the drain never completed within the driver's reset window (the device is
+ * wedged until it is reloaded or the fabric is reset). */
+#define OPENGPU_FAULT_RESET_ISSUED        (1u << 8)
+#define OPENGPU_FAULT_RESET_TIMEOUT       (1u << 9)
+#define OPENGPU_FAULT_FLAGS_MASK          0x3ffu
 
 enum drm_opengpu_resource_type {
     OPENGPU_RESOURCE_SHADER = 1,

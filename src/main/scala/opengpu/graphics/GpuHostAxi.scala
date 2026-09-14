@@ -90,6 +90,15 @@ class GpuHostAxi(
     val gpuCompletion = if (unifiedCommandMmio) {
       Some(Flipped(Decoupled(new GpuCommandResult(commandIdWidth))))
     } else None
+    /** Safe unified-command reset handshake to the system: the bridge holds
+      * `commandResetActive` from the RESET register write until the system
+      * pulses `commandResetDone` (drain complete, command path reset). */
+    val commandResetActive = if (unifiedCommandMmio) {
+      Some(Output(Bool()))
+    } else None
+    val commandResetDone = if (unifiedCommandMmio) {
+      Some(Input(Bool()))
+    } else None
 
     // Renderer shared-memory ports (command buffer + framebuffer words, and the
     // core-backed shader kernel's line/coherence side ports) pass straight
@@ -129,6 +138,8 @@ class GpuHostAxi(
     unified.foreach { bridge =>
       io.gpuCommand.get <> bridge.io.command
       bridge.io.completion <> io.gpuCompletion.get
+      io.commandResetActive.get := bridge.io.resetActive
+      bridge.io.resetDone := io.commandResetDone.get
     }
     host.io.externalCompletion := io.externalCompletion.getOrElse(false.B) ||
       unified.map(_.io.completionEvent).getOrElse(false.B)
@@ -181,9 +192,9 @@ class GpuHostAxi(
       Mux(burstReg === 0.U, addrReg + (beat << sizeReg), addrReg)
     val lastBeat = beat === lenReg
     // RenderHost owns 0x000..0xC4 and 0x134; the unified block owns
-    // 0xC4..0x134. The overall map ends at RenderHostRegs.END (0x138) for
-    // both build flavours; non-unified builds read the unified range as
-    // reserved zero.
+    // 0xC4..0x134 and the RESET register at 0x138. The overall map ends at
+    // RenderHostRegs.END (0x13C) for both build flavours; non-unified builds
+    // read the unified range as reserved zero.
     val mappedEnd = RenderHostRegs.END.U
     val beatOk = (beatAddr & 0x3.U) === 0.U && beatAddr < mappedEnd
 
@@ -196,8 +207,9 @@ class GpuHostAxi(
     val busRegValid = Mux(
       readActive, true.B, Mux(writeBeat, io.s_axi_wvalid, false.B))
     val targetUnified =
-      beatAddr >= GpuCommandMmioRegs.COMMAND_ID.U &&
-        beatAddr < RenderHostRegs.MSAA_CONFIG.U
+      (beatAddr >= GpuCommandMmioRegs.COMMAND_ID.U &&
+        beatAddr < RenderHostRegs.MSAA_CONFIG.U) ||
+        beatAddr === GpuCommandMmioRegs.RESET.U
     reg.req.valid := busRegValid && !targetUnified
     reg.req.bits.isWrite := writeActive
     reg.req.bits.addr := beatAddr(9, 0)

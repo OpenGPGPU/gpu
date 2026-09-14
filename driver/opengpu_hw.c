@@ -94,6 +94,86 @@ void opengpu_hw_get_fault(struct opengpu_device *gpu,
     spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
 }
 
+/* Completion poll interval. The register read doubles as a watchdog: it
+ * drains IH records that raced the interrupt, and emulated hardware models
+ * only advance while the host touches device registers, so a polling read
+ * keeps slow-clocked models moving toward completion. */
+#define OPENGPU_HW_POLL_INTERVAL_MS 5
+
+/* Recovery from a timeout or abort on the unified-command path.
+ *
+ * The abort paths only clean up driver-side fences; a command that timed out
+ * may still be executing and may still own in-flight memory transactions.
+ * When the device advertises GPU_CAP_UNIFIED_RESET the driver asks the
+ * hardware for a safe reset: it stops dispatch, drains every in-flight
+ * command and memory transaction, resets the command-path state, and then
+ * clears STATUS.RESET_BUSY and raises the completion IRQ.  Submissions are
+ * refused with -EBUSY until that acknowledgement arrives; if it never does
+ * (a hung engine or lower memory), the drain is abandoned and the device is
+ * marked wedged so unified submissions fail with -EIO until it is reloaded.
+ */
+static void opengpu_hw_unified_reset_request(struct opengpu_device *gpu)
+{
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_RESET))
+        return;
+
+    WRITE_ONCE(gpu->hw.reset_pending, true);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_RESET, GPU_UCMD_RESET_REQUEST);
+    /* Abort disables the IRQ; re-enable it so the drain acknowledgement is
+     * delivered, and keep the progress poll running because emulated models
+     * only advance while the host touches device registers. */
+    opengpu_reg_write(gpu, GPU_REG_IRQ, GPU_IRQ_ENABLE);
+    mod_delayed_work(system_dfl_wq, &gpu->hw.reset_work,
+                     msecs_to_jiffies(OPENGPU_RESET_WAIT_MS));
+    if (gpu->hw.queue_ready)
+        mod_delayed_work(system_dfl_wq, &gpu->hw.poll_work,
+                         msecs_to_jiffies(OPENGPU_HW_POLL_INTERVAL_MS));
+}
+
+/* True while a requested reset is still draining; clears the request once the
+ * hardware drops RESET_BUSY.  Safe from IRQ context. */
+static bool opengpu_hw_unified_reset_pending(struct opengpu_device *gpu)
+{
+    if (!READ_ONCE(gpu->hw.reset_pending))
+        return false;
+    if (opengpu_reg_read(gpu, GPU_REG_UCMD_STATUS) &
+        GPU_UCMD_STATUS_RESET_BUSY)
+        return true;
+    WRITE_ONCE(gpu->hw.reset_pending, false);
+    cancel_delayed_work(&gpu->hw.reset_work);
+    dev_info(gpu->dev, "unified command reset drained\n");
+    return false;
+}
+
+static void opengpu_reset_work(struct work_struct *work)
+{
+    struct opengpu_hw *hw;
+    struct opengpu_device *gpu;
+    unsigned long flags;
+    u32 status;
+
+    hw = container_of(to_delayed_work(work), struct opengpu_hw, reset_work);
+    gpu = container_of(hw, struct opengpu_device, hw);
+    if (!READ_ONCE(gpu->hw.reset_pending))
+        return;
+
+    status = opengpu_reg_read(gpu, GPU_REG_UCMD_STATUS);
+    if (status & GPU_UCMD_STATUS_RESET_BUSY) {
+        spin_lock_irqsave(&gpu->hw.fence_lock, flags);
+        opengpu_hw_record_fault_locked(
+            gpu, -EIO,
+            OPENGPU_FAULT_RESET_ISSUED | OPENGPU_FAULT_RESET_TIMEOUT,
+            gpu->hw.unified_command_id, gpu->hw.unified_opcode,
+            gpu->hw.unified_command_id, gpu->hw.unified_opcode,
+            status, 0, 0);
+        spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
+        WRITE_ONCE(gpu->hw.wedged, true);
+        dev_err(gpu->dev,
+                "unified command reset did not drain; device wedged\n");
+    }
+    WRITE_ONCE(gpu->hw.reset_pending, false);
+}
+
 void opengpu_hw_progress_tick(struct opengpu_device *gpu)
 {
     /* Heartbeat read: RO register, no side effects. Emulated hardware
@@ -241,6 +321,8 @@ void opengpu_hw_abort(struct opengpu_device *gpu, int error)
 
         if (error == -ETIMEDOUT)
             fault_flags |= OPENGPU_FAULT_TIMEOUT;
+        if (gpu->hw.capabilities & GPU_CAP_UNIFIED_RESET)
+            fault_flags |= OPENGPU_FAULT_RESET_ISSUED;
         opengpu_hw_record_fault_locked(
             gpu, error ?: -ECANCELED, fault_flags,
             gpu->hw.unified_command_id, gpu->hw.unified_opcode,
@@ -256,6 +338,8 @@ void opengpu_hw_abort(struct opengpu_device *gpu, int error)
             opengpu_reg_write(gpu, GPU_REG_UCMD_COMPLETION_POP, 1);
         dma_fence_put(unified);
     }
+
+    opengpu_hw_unified_reset_request(gpu);
 
     if (gpu->hw.queue_ready) {
         struct dma_fence *abandoned[OPENGPU_JOB_RING_ENTRIES + 1];
@@ -318,10 +402,13 @@ static void opengpu_timeout_work(struct work_struct *work)
     spin_lock_irqsave(&gpu->hw.fence_lock, flags);
     fence = gpu->hw.unified_fence;
     if (fence) {
+        u32 fault_flags = OPENGPU_FAULT_TIMEOUT | OPENGPU_FAULT_ABORTED;
+
         gpu->hw.unified_fence = NULL;
+        if (gpu->hw.capabilities & GPU_CAP_UNIFIED_RESET)
+            fault_flags |= OPENGPU_FAULT_RESET_ISSUED;
         opengpu_hw_record_fault_locked(
-            gpu, -ETIMEDOUT,
-            OPENGPU_FAULT_TIMEOUT | OPENGPU_FAULT_ABORTED,
+            gpu, -ETIMEDOUT, fault_flags,
             gpu->hw.unified_command_id, gpu->hw.unified_opcode,
             gpu->hw.unified_command_id, gpu->hw.unified_opcode, 0, 0,
             gpu->hw.unified_expected_bytes);
@@ -330,6 +417,9 @@ static void opengpu_timeout_work(struct work_struct *work)
     }
     spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
     if (fence) {
+        /* The timed-out command may still be executing, so recover the
+         * command path before the next submission. */
+        opengpu_hw_unified_reset_request(gpu);
         dma_fence_put(fence);
         return;
     }
@@ -396,12 +486,6 @@ static void opengpu_completion_work(struct work_struct *work)
         dma_fence_put(fence);
 }
 
-/* Completion poll interval. The register read doubles as a watchdog: it
- * drains IH records that raced the interrupt, and emulated hardware models
- * only advance while the host touches device registers, so a polling read
- * keeps slow-clocked models moving toward completion. */
-#define OPENGPU_HW_POLL_INTERVAL_MS 5
-
 static void opengpu_poll_work(struct work_struct *work)
 {
     struct opengpu_hw *hw;
@@ -413,6 +497,15 @@ static void opengpu_poll_work(struct work_struct *work)
     if (opengpu_hw_unified_drain(gpu))
         return;
     if (READ_ONCE(gpu->hw.unified_fence)) {
+        opengpu_hw_progress_tick(gpu);
+        mod_delayed_work(system_dfl_wq, &gpu->hw.poll_work,
+                         msecs_to_jiffies(OPENGPU_HW_POLL_INTERVAL_MS));
+        return;
+    }
+
+    /* A requested safe reset is observed here and in the IRQ handler; keep
+     * the poll ticking so the drain makes progress on emulated hardware. */
+    if (opengpu_hw_unified_reset_pending(gpu)) {
         opengpu_hw_progress_tick(gpu);
         mod_delayed_work(system_dfl_wq, &gpu->hw.poll_work,
                          msecs_to_jiffies(OPENGPU_HW_POLL_INTERVAL_MS));
@@ -446,6 +539,7 @@ static irqreturn_t opengpu_irq_handler(int irq, void *data)
 
     dev_info(gpu->dev, "OPENGPU irq: status=%08x wptr=%u done=%u\n",
              status, gpu->hw.job_wptr, gpu->hw.job_done);
+    opengpu_hw_unified_reset_pending(gpu);
     opengpu_hw_unified_drain(gpu);
     if (gpu->hw.queue_ready) {
         opengpu_ih_drain(gpu);
@@ -477,6 +571,7 @@ int opengpu_hw_init(struct opengpu_device *gpu, struct platform_device *pdev)
     INIT_DELAYED_WORK(&gpu->hw.timeout_work, opengpu_timeout_work);
     INIT_DELAYED_WORK(&gpu->hw.completion_work, opengpu_completion_work);
     INIT_DELAYED_WORK(&gpu->hw.poll_work, opengpu_poll_work);
+    INIT_DELAYED_WORK(&gpu->hw.reset_work, opengpu_reset_work);
 
     ret = dma_set_mask_and_coherent(gpu->dev, DMA_BIT_MASK(32));
     if (ret)
@@ -570,6 +665,10 @@ int opengpu_hw_init(struct opengpu_device *gpu, struct platform_device *pdev)
 void opengpu_hw_fini(struct opengpu_device *gpu)
 {
     opengpu_hw_abort(gpu, -ECANCELED);
+    /* abort may have requested a safe reset and re-armed this work; it must
+     * not outlive the register aperture. */
+    cancel_delayed_work_sync(&gpu->hw.reset_work);
+    cancel_delayed_work_sync(&gpu->hw.poll_work);
     if (gpu->hw.queue_ready) {
         opengpu_reg_write(gpu, GPU_REG_JOB_CONTROL, 0);
         opengpu_buffer_free(gpu, &gpu->hw.ih_ring);
@@ -827,6 +926,8 @@ static int opengpu_hw_unified_submit_locked(
     if (!out_fence)
         return -EINVAL;
     *out_fence = NULL;
+    if (READ_ONCE(gpu->hw.wedged))
+        return -EIO;
     if (events &&
         ((events->flags & ~(GPU_UCMD_FLAG_WAIT_EVENT |
                             GPU_UCMD_FLAG_SIGNAL_EVENT)) ||
@@ -838,12 +939,20 @@ static int opengpu_hw_unified_submit_locked(
           events->signal_event)))
         return -EINVAL;
     status = opengpu_reg_read(gpu, GPU_REG_UCMD_STATUS);
+    /* A safe reset owns the command path until it drains: report busy rather
+     * than letting a submission race the state reset. */
+    if (READ_ONCE(gpu->hw.reset_pending) ||
+        (status & GPU_UCMD_STATUS_RESET_BUSY))
+        return -EBUSY;
     if (!(status & GPU_UCMD_STATUS_READY) ||
         (status & GPU_UCMD_STATUS_COMPLETION))
         return -EBUSY;
     if (status & GPU_UCMD_STATUS_OVERFLOW)
         opengpu_reg_write(gpu, GPU_REG_UCMD_STATUS,
                           GPU_UCMD_STATUS_OVERFLOW);
+    if (status & GPU_UCMD_STATUS_RESET_REJECTED)
+        opengpu_reg_write(gpu, GPU_REG_UCMD_STATUS,
+                          GPU_UCMD_STATUS_RESET_REJECTED);
 
     fence = kzalloc(sizeof(*fence), GFP_KERNEL);
     if (!fence)
@@ -1221,9 +1330,11 @@ static bool opengpu_hw_execution_busy(struct opengpu_device *gpu)
     bool busy;
 
     spin_lock_irqsave(&gpu->hw.fence_lock, flags);
-    busy = gpu->hw.unified_fence || (gpu->hw.queue_ready ?
-        gpu->hw.job_wptr != gpu->hw.job_done :
-        gpu->hw.active_fence != NULL);
+    /* A pending safe reset owns the command path, so it reports busy just
+     * like an in-flight command. */
+    busy = READ_ONCE(gpu->hw.reset_pending) || gpu->hw.unified_fence ||
+        (gpu->hw.queue_ready ? gpu->hw.job_wptr != gpu->hw.job_done :
+         gpu->hw.active_fence != NULL);
     spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
     return busy;
 }

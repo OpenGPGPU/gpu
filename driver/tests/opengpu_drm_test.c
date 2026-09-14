@@ -35,6 +35,16 @@
 #define MIN_FENCE_WAIT_MS 30
 #define FLIP_EVENT_COOKIE UINT64_C(0x4f50454e475055)
 
+/* Recovery-contract guard: the safe-reset fault bits the driver records must
+ * fit the mask GET_FAULT validates against, or a real recovery would be
+ * reported to userspace as a malformed snapshot. */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert((OPENGPU_FAULT_RESET_ISSUED | OPENGPU_FAULT_RESET_TIMEOUT) ==
+               ((OPENGPU_FAULT_RESET_ISSUED | OPENGPU_FAULT_RESET_TIMEOUT) &
+                OPENGPU_FAULT_FLAGS_MASK),
+               "safe-reset fault flags must fit OPENGPU_FAULT_FLAGS_MASK");
+#endif
+
 struct kms_ids {
     uint32_t connector;
     uint32_t crtc;

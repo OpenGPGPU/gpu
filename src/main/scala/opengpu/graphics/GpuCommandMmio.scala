@@ -34,7 +34,13 @@ object GpuCommandMmioRegs {
   val COMPLETION_BYTES_LO = 0x128
   val COMPLETION_BYTES_HI = 0x12c
   val COMPLETION_POP = 0x130
-  val END = 0x134
+  /** W1P bit0: request a safe unified-command reset.  The hardware stops
+    * accepting and dispatching new commands, drains in-flight work and memory
+    * transactions, resets the command-path state, then raises the completion
+    * event.  Lives outside the contiguous staging bank (MSAA_CONFIG owns
+    * 0x134); the AXI top routes this one address here explicitly. */
+  val RESET = 0x138
+  val END = 0x13c
 }
 
 /** Register-programmed bridge to the ordered unified GPU command stream. */
@@ -55,6 +61,14 @@ class GpuCommandMmio(
     val completion = Flipped(Decoupled(
       new GpuCommandResult(commandIdWidth)))
     val completionEvent = Output(Bool())
+    /** Held from a RESET request until the system's command path reports a
+      * completed drain and state reset via `resetDone`.  While active this
+      * bridge drops staged commands, rejects submissions and discards late
+      * completions. */
+    val resetActive = Output(Bool())
+    /** Single-cycle pulse from the system: every in-flight command and memory
+      * transaction has drained and the command-path state has been reset. */
+    val resetDone = Input(Bool())
   })
 
   private def merge(old: UInt, data: UInt, strb: UInt): UInt =
@@ -82,16 +96,31 @@ class GpuCommandMmio(
   private val waitEvent = RegInit(0.U(32.W))
   private val signalEvent = RegInit(0.U(32.W))
   private val submitOverflow = RegInit(false.B)
+  private val resetActive = RegInit(false.B)
+  private val resetRejected = RegInit(false.B)
 
   private val queue = Module(new Queue(
     new GpuCommand(config, commandIdWidth), queueDepth))
-  io.command <> queue.io.deq
 
   private val wFire = io.reg.req.fire && io.reg.req.bits.isWrite
+  private val resetRequest = wFire &&
+    io.reg.req.bits.addr === GpuCommandMmioRegs.RESET.U &&
+    io.reg.req.bits.data(0)
+  when(resetRequest) { resetActive := true.B }
+  when(io.resetDone) { resetActive := false.B }
+  io.resetActive := resetActive
+
+  // Staged commands belong to the pre-reset command stream: while a reset
+  // drains, pop them into the bit bucket instead of dispatching them.
+  io.command.valid := queue.io.deq.valid && !resetActive
+  io.command.bits := queue.io.deq.bits
+  queue.io.deq.ready := resetActive || io.command.ready
+
   private val submit = wFire &&
     io.reg.req.bits.addr === GpuCommandMmioRegs.SUBMIT.U &&
     io.reg.req.bits.data(0)
-  queue.io.enq.valid := submit && !submitOverflow
+  queue.io.enq.valid := submit && !submitOverflow && !resetActive
+  when(submit && resetActive) { resetRejected := true.B }
   queue.io.enq.bits.commandId := commandId(commandIdWidth - 1, 0)
   queue.io.enq.bits.opcode := opcode
   queue.io.enq.bits.launch.kernelPc := kernelPc
@@ -125,12 +154,15 @@ class GpuCommandMmio(
   private val popCompletion = wFire &&
     io.reg.req.bits.addr === GpuCommandMmioRegs.COMPLETION_POP.U &&
     io.reg.req.bits.data(0)
-  io.completion.ready := !completionValid || popCompletion
-  io.completionEvent := io.completion.fire
-  when(io.completion.fire) {
+  // Completions arriving mid-reset belong to the aborted stream; consume and
+  // discard them so the post-reset slot starts empty.
+  io.completion.ready := resetActive || !completionValid || popCompletion
+  io.completionEvent := (io.completion.fire && !resetActive) || io.resetDone
+  when(io.completion.fire && !resetActive) {
     completion := io.completion.bits
     completionValid := true.B
-  }.elsewhen(popCompletion) {
+  }.elsewhen(popCompletion || resetRequest ||
+    (io.completion.fire && resetActive)) {
     completionValid := false.B
   }
 
@@ -178,6 +210,7 @@ class GpuCommandMmio(
       }
       is(GpuCommandMmioRegs.STATUS.U) {
         when(io.reg.req.bits.data(2)) { submitOverflow := false.B }
+        when(io.reg.req.bits.data(4)) { resetRejected := false.B }
       }
     }
   }
@@ -186,7 +219,8 @@ class GpuCommandMmio(
     0.U(16.W), completion.success, completion.status, completion.opcode,
     completion.commandId)
   private val status = Cat(
-    0.U(29.W), submitOverflow, completionValid, queue.io.enq.ready)
+    0.U(27.W), resetRejected, resetActive, submitOverflow, completionValid,
+    queue.io.enq.ready)
   private val readData = MuxLookup(io.reg.req.bits.addr, 0.U(32.W))(Seq(
     GpuCommandMmioRegs.COMMAND_ID.U -> commandId,
     GpuCommandMmioRegs.OPCODE.U -> opcode,

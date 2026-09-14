@@ -19,8 +19,8 @@ class GpuCommandProcessor(
   require(commandIdWidth > 0 && commandIdWidth <= 12)
   require(commandQueueDepth > 0)
   require(completionQueueDepth > 0)
-  private val idCount = 1 << commandIdWidth
-  private val countWidth = math.max(1, log2Ceil(commandQueueDepth + 1))
+  val idCount = 1 << commandIdWidth
+  val countWidth = math.max(1, log2Ceil(commandQueueDepth + 1))
 
   val io = IO(new Bundle {
     val command = Flipped(Decoupled(new KernelCommand(config, commandIdWidth)))
@@ -34,43 +34,49 @@ class GpuCommandProcessor(
     val inFlight = Output(UInt(log2Ceil(idCount + 1).W))
     val busy = Output(Bool())
     val duplicateCommandId = Output(Bool())
+    /** Synchronous command-path reset pulse: flushes both queues and clears
+      * every reserved ID and DMA-dependency record.  Assert only once
+      * in-flight kernels have retired. */
+    val pathReset = Input(Bool())
   })
 
-  private val commands = Module(new Queue(
+  withReset(reset.asBool || io.pathReset) {
+
+  val commands = Module(new Queue(
     new KernelCommand(config, commandIdWidth), commandQueueDepth))
-  private val completions = Module(new Queue(
+  val completions = Module(new Queue(
     new KernelCommandResult(commandIdWidth), completionQueueDepth))
-  private val reservedIds = RegInit(0.U(idCount.W))
-  private val dmaSucceeded = RegInit(VecInit(
+  val reservedIds = RegInit(0.U(idCount.W))
+  val dmaSucceeded = RegInit(VecInit(
     Seq.fill(DmaEventSource.count)(0.U(idCount.W))))
-  private val dmaFailed = RegInit(VecInit(
+  val dmaFailed = RegInit(VecInit(
     Seq.fill(DmaEventSource.count)(0.U(idCount.W))))
-  private val incomingDuplicate = reservedIds(io.command.bits.commandId)
+  val incomingDuplicate = reservedIds(io.command.bits.commandId)
 
   commands.io.enq.valid := io.command.valid && !incomingDuplicate
   commands.io.enq.bits := io.command.bits
   io.command.ready := commands.io.enq.ready && !incomingDuplicate
   io.duplicateCommandId := io.command.valid && incomingDuplicate
 
-  private val head = commands.io.deq.bits
-  private val pcAligned = head.launch.kernelPc(1, 0) === 0.U
-  private val kernargAligned = head.launch.kernargAddress(1, 0) === 0.U
-  private val gridValid = head.launch.gridSize.map(_.orR).reduce(_ && _)
-  private val localValid = head.launch.localSize.map(_.orR).reduce(_ && _)
-  private val localItems = head.launch.localSize(0) *
+  val head = commands.io.deq.bits
+  val pcAligned = head.launch.kernelPc(1, 0) === 0.U
+  val kernargAligned = head.launch.kernargAddress(1, 0) === 0.U
+  val gridValid = head.launch.gridSize.map(_.orR).reduce(_ && _)
+  val localValid = head.launch.localSize.map(_.orR).reduce(_ && _)
+  val localItems = head.launch.localSize(0) *
     head.launch.localSize(1) * head.launch.localSize(2)
-  private val residentCapacity = (config.lanes * config.warps).U
-  private val localFits = localItems <= residentCapacity
-  private val descriptorValid = pcAligned && kernargAligned &&
+  val residentCapacity = (config.lanes * config.warps).U
+  val localFits = localItems <= residentCapacity
+  val descriptorValid = pcAligned && kernargAligned &&
     gridValid && localValid && localFits
-  private val dependencySourceValid = head.dmaSource < DmaEventSource.count.U
-  private val dependencySucceeded = dependencySourceValid &&
+  val dependencySourceValid = head.dmaSource < DmaEventSource.count.U
+  val dependencySucceeded = dependencySourceValid &&
     dmaSucceeded(head.dmaSource)(head.dmaDescriptorId)
-  private val dependencyFailed = !dependencySourceValid ||
+  val dependencyFailed = !dependencySourceValid ||
     dmaFailed(head.dmaSource)(head.dmaDescriptorId)
-  private val dependencyKnown = !head.waitForDma ||
+  val dependencyKnown = !head.waitForDma ||
     dependencySucceeded || dependencyFailed
-  private val invalidStatus = Mux(!pcAligned,
+  val invalidStatus = Mux(!pcAligned,
     KernelCommandStatus.invalidProgramCounter,
     Mux(!gridValid, KernelCommandStatus.invalidGrid,
       Mux(!localValid || !localFits, KernelCommandStatus.invalidLocalSize,
@@ -81,7 +87,7 @@ class GpuCommandProcessor(
   io.dispatch.bits.commandId := head.commandId
   io.dispatch.bits.launch := head.launch
 
-  private val completionEvents = Module(new RRArbiter(
+  val completionEvents = Module(new RRArbiter(
     new KernelCommandResult(commandIdWidth), 2))
   completionEvents.io.in(0).valid := io.dispatchCompletion.valid
   completionEvents.io.in(0).bits.commandId :=
@@ -106,9 +112,9 @@ class GpuCommandProcessor(
   completions.io.enq <> completionEvents.io.out
   io.completion <> completions.io.deq
 
-  private val inFlight = RegInit(0.U(log2Ceil(idCount + 1).W))
-  private val dispatchFire = io.dispatch.fire
-  private val dispatchCompletionFire = io.dispatchCompletion.fire
+  val inFlight = RegInit(0.U(log2Ceil(idCount + 1).W))
+  val dispatchFire = io.dispatch.fire
+  val dispatchCompletionFire = io.dispatchCompletion.fire
   when(dispatchFire =/= dispatchCompletionFire) {
     inFlight := Mux(dispatchFire, inFlight + 1.U, inFlight - 1.U)
   }
@@ -120,15 +126,15 @@ class GpuCommandProcessor(
     assert(reservedIds(io.completion.bits.commandId),
       "completion must reference a reserved command ID")
   }
-  private val reserveMask = Mux(io.command.fire,
+  val reserveMask = Mux(io.command.fire,
     UIntToOH(io.command.bits.commandId, idCount), 0.U)
-  private val releaseMask = Mux(io.completion.fire,
+  val releaseMask = Mux(io.completion.fire,
     UIntToOH(io.completion.bits.commandId, idCount), 0.U)
   when(io.command.fire || io.completion.fire) {
     reservedIds := (reservedIds | reserveMask) & ~releaseMask
   }
 
-  private val dependencyConsumed = commands.io.deq.fire && head.waitForDma
+  val dependencyConsumed = commands.io.deq.fire && head.waitForDma
   for (source <- 0 until DmaEventSource.count) {
     val event = io.dmaCompletion(source)
     val sourceMatches = head.dmaSource === source.U
@@ -151,4 +157,5 @@ class GpuCommandProcessor(
   io.queued := commands.io.count
   io.inFlight := inFlight
   io.busy := reservedIds.orR
+  }
 }

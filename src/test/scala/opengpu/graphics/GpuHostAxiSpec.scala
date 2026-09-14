@@ -171,9 +171,9 @@ class GpuHostAxiSpec extends AnyFlatSpec {
       axiRead(dut, 0x200)
       assert(respVar == 2L, s"out-of-map read must return SLVERR, got RRESP=$respVar")
 
-      // 0x138 is past the end of the (extended) register map.
+      // 0x13C is past the end of the (extended) register map.
       axiRead(dut, RenderHostRegs.END)
-      assert(respVar == 2L, s"0x138 read must return SLVERR, got RRESP=$respVar")
+      assert(respVar == 2L, s"0x13c read must return SLVERR, got RRESP=$respVar")
 
       // MSAA_CONFIG is routed to RenderHost at 0x134.
       axiWrite(dut, RenderHostRegs.MSAA_CONFIG, 2)
@@ -200,6 +200,33 @@ class GpuHostAxiSpec extends AnyFlatSpec {
       assert(axiRead(dut, RenderHostRegs.SCANOUT_HEIGHT) == 16L)
       assert(axiRead(dut, RenderHostRegs.SCANOUT_STATUS) == 1L)
       assert((axiRead(dut, RenderHostRegs.STATUS) & 0x3) == 0L)
+    }
+  }
+
+  it should "route the unified reset register over AXI and raise the completion IRQ" in {
+    simulate(new GpuHostAxi(deviceId = 0x4755, version = 0x0001,
+      unifiedCommandMmio = true)) { dut =>
+      dut.io.s_axi_aresetn.poke(false.B)
+      dut.clock.step()
+      dut.io.s_axi_aresetn.poke(true.B)
+      dut.clock.step()
+      dut.io.commandResetDone.get.poke(false.B)
+
+      // Unified builds advertise the safe reset capability (bit 18).
+      assert((axiRead(dut, RenderHostRegs.CAPABILITIES) & (1 << 18)) != 0,
+        "unified builds must advertise GPU_CAP_UNIFIED_RESET")
+
+      // RESET lives at 0x138, inside the extended map but outside RenderHost.
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+      axiWrite(dut, GpuCommandMmioRegs.RESET, 1)
+      dut.io.commandResetActive.get.expect(true.B)
+
+      // The system's drain acknowledgement ends the request and rings the IRQ.
+      dut.io.commandResetDone.get.poke(true.B)
+      dut.clock.step()
+      dut.io.commandResetDone.get.poke(false.B)
+      dut.io.commandResetActive.get.expect(false.B)
+      dut.io.m_irq.expect(true.B)
     }
   }
 

@@ -22,7 +22,7 @@ import opengpu.core.memory.{
   */
 object RenderHostRegs {
   /** First invalid byte offset (exclusive end of the register file). */
-  val END               = 0x138
+  val END               = 0x13c
   val ID                = 0x00
   val CONTROL           = 0x04
   val STATUS            = 0x08
@@ -409,6 +409,7 @@ class RenderHost(
       (if (vertCore) (1 << 2) else 0) | (1 << 3) |
       (1 << 4) | (1 << 5) | (if (unifiedCommands) (1 << 6) else 0) |
       (if (fragCore) 0 else (1 << 7) | (maxSampleMode << 16)) |
+      (if (unifiedCommands) (1 << 18) else 0) |
       (gpuConfig.warps * gpuConfig.lanes << 8)).U(32.W)
   private val jobStatusBits = Cat(
     0.U(22.W), jq.io.pendingValid, jq.io.running, 0.U(7.W), jqEnabled)

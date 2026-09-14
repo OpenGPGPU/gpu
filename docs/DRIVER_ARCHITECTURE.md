@@ -80,11 +80,18 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
   capability-selected fill/blit/strided-copy submission with legacy fallback.
 - IRQ-driven unified DMA fences with validated completion identity/status,
   timeout and abort signaling, plus an emulator progress-poll fallback.
+- Safe unified-command reset with explicit recovery semantics. On a timeout or
+  abort the hardware layer requests `UCMD_RESET` when the device advertises
+  `GPU_CAP_UNIFIED_RESET`; `reset_pending` refuses new unified submissions with
+  `-EBUSY` while the drain runs and is cleared when the drain completes (via the
+  shared IRQ or the progress poll). A drain that exceeds the reset window
+  records `OPENGPU_FAULT_RESET_TIMEOUT`, sets `wedged`, and fails later unified
+  submissions with `-EIO` until reload. Faults use `OPENGPU_FAULT_RESET_ISSUED`
+  to record that recovery was attempted.
 
 ## Next
 
 - Add general-compute job payloads without duplicating queue, memory or fence
   machinery.
-- Define precise reset, timeout recovery and host-visible fault reporting.
 - Grow the admitted shader ISA only with matching RTL, validator and ABI rules.
 - Add runtime power management when required by the SoC integration.

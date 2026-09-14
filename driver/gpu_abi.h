@@ -113,6 +113,12 @@
 #define GPU_REG_UCMD_COMPLETION_BYTES_LO 0x128
 #define GPU_REG_UCMD_COMPLETION_BYTES_HI 0x12c
 #define GPU_REG_UCMD_COMPLETION_POP 0x130
+/* Safe unified-command reset (W1P bit0).  Write 1 to request: the hardware
+ * stops dispatching, drains in-flight commands and memory transactions,
+ * resets the command-path state, then clears STATUS.RESET_BUSY and raises
+ * the completion IRQ.  Submissions during the drain are refused with
+ * STATUS.RESET_REJECTED.  Present only when GPU_CAP_UNIFIED_RESET is set. */
+#define GPU_REG_UCMD_RESET          0x138
 
 /* MSAA sample-mode register (bits 1:0; 0 = 1x, 1 = 2x, 2 = 4x).  Snapshotted
  * on the legacy START path exactly like the other execution config; the
@@ -126,6 +132,10 @@
 #define GPU_CAP_BLIT_ENGINE     (1u << 4)
 #define GPU_CAP_STRIDED_ENGINE  (1u << 5)
 #define GPU_CAP_UNIFIED_COMMANDS (1u << 6)
+/* Safe unified-command reset (bit18): the RESET register drains in-flight
+ * commands and memory transactions, resets the command-path state and
+ * acknowledges through STATUS.RESET_BUSY and the completion IRQ. */
+#define GPU_CAP_UNIFIED_RESET   (1u << 18)
 /* MSAA (bit7) is advertised only by fixed-function builds; bits 17:16 carry
  * the maximum supported sample mode (log2 of the maximum sample count). */
 #define GPU_CAP_MSAA            (1u << 7)
@@ -177,6 +187,11 @@
 #define GPU_UCMD_STATUS_READY      (1u << 0)
 #define GPU_UCMD_STATUS_COMPLETION (1u << 1)
 #define GPU_UCMD_STATUS_OVERFLOW   (1u << 2)
+/* bit3: a requested reset is still draining (RO).  bit4: a SUBMIT was refused
+ * because a reset was draining (sticky, W1C via a STATUS write). */
+#define GPU_UCMD_STATUS_RESET_BUSY     (1u << 3)
+#define GPU_UCMD_STATUS_RESET_REJECTED (1u << 4)
+#define GPU_UCMD_RESET_REQUEST     (1u << 0)
 #define GPU_UCMD_COMPLETION_ID(v)      ((v) & 0xffu)
 #define GPU_UCMD_COMPLETION_OPCODE(v)  (((v) >> 8) & 0x7u)
 #define GPU_UCMD_COMPLETION_STATUS(v)  (((v) >> 11) & 0xfu)

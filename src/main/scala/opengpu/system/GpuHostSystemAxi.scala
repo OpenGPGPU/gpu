@@ -182,6 +182,8 @@ class GpuHostSystemAxi(
 
     system.io.gpuCommand <> host.io.gpuCommand.get
     host.io.gpuCompletion.get <> system.io.gpuCompletion
+    system.io.commandResetActive := host.io.commandResetActive.get
+    host.io.commandResetDone.get := system.io.commandResetDone
 
     system.io.graphicsShaderRequest <> host.io.kernelMemReq
     host.io.kernelMemResp <> system.io.graphicsShaderResponse

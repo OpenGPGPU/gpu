@@ -563,4 +563,94 @@ class GpuSystemSpec extends AnyFlatSpec {
       dut.io.performance.dmaBytesCompleted.expect(0.U)
     }
   }
+
+  it should "drain in-flight unified work and reset the command path on request" in {
+    val config = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuSystem(config, numComputeUnits = 2,
+      enableUnifiedCommands = true)) { dut =>
+      initialize(dut, 2)
+      dut.io.commandResetActive.poke(false.B)
+      val pattern = BigInt("13579bdf", 16)
+
+      // Start a fill and accept its store request, but withhold the response
+      // so one memory transaction remains in flight.
+      dut.io.gpuCommand.bits.commandId.poke(12.U)
+      dut.io.gpuCommand.bits.opcode.poke(GpuCommandOpcode.fill)
+      dut.io.gpuCommand.bits.destinationAddress.poke(0x5000.U)
+      dut.io.gpuCommand.bits.bytes.poke(64.U)
+      dut.io.gpuCommand.bits.pattern.poke(pattern.U)
+      dut.io.gpuCommand.valid.poke(true.B)
+      dut.clock.step(); dut.io.gpuCommand.valid.poke(false.B)
+
+      var cycles = 0
+      while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 30) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.memoryRequest.valid.expect(true.B)
+      val transactionId =
+        dut.io.memoryRequest.bits.transactionId.peek().litValue
+      dut.clock.step()
+
+      // The reset blocks dispatch and holds the drain open on the store.
+      dut.io.commandResetActive.poke(true.B)
+      dut.clock.step(2)
+      dut.io.commandResetDone.expect(false.B)
+
+      // A command submitted mid-drain is queued but never dispatched.
+      dut.io.gpuCommand.bits.commandId.poke(13.U)
+      dut.io.gpuCommand.bits.destinationAddress.poke(0x5100.U)
+      dut.io.gpuCommand.valid.poke(true.B)
+      dut.io.gpuCommand.ready.expect(true.B)
+      dut.clock.step(); dut.io.gpuCommand.valid.poke(false.B)
+      dut.clock.step(2)
+      dut.io.memoryRequest.valid.expect(false.B)
+      dut.io.commandResetDone.expect(false.B)
+
+      // Retire the outstanding store: the drain completes, the queued command
+      // is flushed without a completion and the reset acknowledges.
+      dut.io.memoryResponse.bits.transactionId.poke(transactionId.U)
+      dut.io.memoryResponse.bits.fault.poke(false.B)
+      dut.io.memoryResponse.valid.poke(true.B)
+      dut.io.memoryResponse.ready.expect(true.B)
+      dut.clock.step(); dut.io.memoryResponse.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.commandResetDone.peek().litToBoolean && cycles < 40) {
+        if (dut.io.gpuCompletion.valid.peek().litToBoolean)
+          dut.io.gpuCompletion.bits.commandId.expect(12.U)
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.commandResetDone.expect(true.B)
+      dut.clock.step()
+      dut.io.commandResetDone.expect(false.B)
+      dut.io.commandResetActive.poke(false.B)
+      dut.io.unifiedCommandRouterBusy.expect(false.B)
+      dut.io.fillEngineBusy.expect(false.B)
+
+      // The command path accepts and executes new work after the reset.
+      dut.io.gpuCommand.bits.commandId.poke(14.U)
+      dut.io.gpuCommand.bits.destinationAddress.poke(0x5200.U)
+      dut.io.gpuCommand.valid.poke(true.B)
+      dut.io.gpuCommand.ready.expect(true.B)
+      dut.clock.step(); dut.io.gpuCommand.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 30) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.memoryRequest.bits.address.expect(0x5200.U)
+      val secondId = dut.io.memoryRequest.bits.transactionId.peek().litValue
+      dut.clock.step()
+      dut.io.memoryResponse.bits.transactionId.poke(secondId.U)
+      dut.io.memoryResponse.valid.poke(true.B)
+      dut.clock.step(); dut.io.memoryResponse.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.gpuCompletion.valid.peek().litToBoolean && cycles < 20) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.io.gpuCompletion.bits.commandId.expect(14.U)
+      dut.io.gpuCompletion.bits.success.expect(true.B)
+    }
+  }
 }
