@@ -23,6 +23,9 @@ private class KernelFragQuadRecord(gfxConfig: GraphicsConfig) extends Bundle {
   val lanes = Vec(4, new RasterFragment(gfxConfig))
   val u = Vec(4, UInt(32.W))
   val v = Vec(4, UInt(32.W))
+  /** Rasterizer-derived per-sample depths, a register sideband carried in
+    * parallel with each lane (outside the SoA kernarg layout). */
+  val depths = Vec(4, Vec(gfxConfig.maxSampleCount, UInt(30.W)))
 }
 
 /** Consumer-side emit payload of one lane.  The whole 2x2 quad is captured
@@ -72,8 +75,15 @@ private class KernelFragEmitLane(gfxConfig: GraphicsConfig) extends Bundle {
   *   [5*stride, 6*stride)  perspective-correct v (unsigned Q16.16)
   *   [6*stride, 7*stride)  per-fragment packed-colour outputs
   *   [7*stride, 8*stride)  per-fragment depth outputs
-  *   [8*stride, 9*stride)  output-valid words (1 = emit, 0 = discard)
+  *   [8*stride, 9*stride)  output-control words (ABI 0: nonzero = emit; ABI 1:
+  *                         bit 0 = emit, bit 1 = shader-depth override, bits
+  *                         31:2 reserved)
   *   [9*stride, ...)       per-draw uniforms
+  * The output-control ABI is selected by `io.abi1` per draw.  The full-width
+  * depth-output word is always written back by ABI 0; ABI 1 additionally
+  * accepts the rasterizer's per-sample depths, which ride beside the lanes as
+  * a register sideband (`io.fragDepths`/`io.outDepths`) rather than in this
+  * SoA layout, so no kernarg array is added for them.
   * The layout is structure-of-arrays so a lane-aware shader (fragment i = lane
   * i) can fetch each attribute with one unit-stride vector load at
   * `kernarg + k*stride + 4*localLinearBase` (scalar base = x1 + (x8 << 2));
@@ -129,8 +139,17 @@ class KernelFragStage(
     val fragIn = Flipped(Decoupled(new FragmentQuad(gfxConfig)))
     /** Per-lane perspective-correct UVs of the presented quad. */
     val fragUv = Input(Vec(4, new TexUV))
+    /** Per-lane rasterizer-derived per-sample depths of the presented quad. */
+    val fragDepths = Input(Vec(4, Vec(gfxConfig.maxSampleCount, UInt(30.W))))
     val out = Decoupled(new RasterFragment(gfxConfig))
+    /** Per-sample depths selected for the presented fragment. */
+    val outDepths = Output(Vec(gfxConfig.maxSampleCount, UInt(30.W)))
+    /** The shader-depth word overrides the per-sample raster depths. */
+    val depthOverride = Output(Bool())
     val shaderPc = Input(UInt(32.W))
+    /** Output-control ABI: 0 = legacy (any nonzero word emits), 1 = the
+      * output-valid word splits into bit 0 emit / bit 1 depth override. */
+    val abi1 = Input(Bool())
     val kernargBase = Input(UInt(32.W))
     /** Byte stride between two complete, identically laid-out kernarg banks. */
     val kernargBankStride = Input(UInt(32.W))
@@ -240,6 +259,7 @@ class KernelFragStage(
   private val outWords = Reg(Vec(batchCap, UInt(32.W)))
   private val outDepth = Reg(Vec(batchCap, SInt(32.W)))
   private val outValid = Reg(Vec(batchCap, Bool()))
+  private val outOverride = Reg(Vec(batchCap, Bool()))
 
   // Emit quad cache: one whole quad of emit payload captured at a quad
   // boundary.  It is selected by a quad index (`emitQuadPtr`) so the cache
@@ -250,6 +270,9 @@ class KernelFragStage(
   private val emitColorQ = Reg(Vec(4, UInt(32.W)))
   private val emitDepthQ = Reg(Vec(4, SInt(32.W)))
   private val emitHitQ = Reg(Vec(4, Bool()))
+  private val emitDepthsQ =
+    Reg(Vec(4, Vec(gfxConfig.maxSampleCount, UInt(30.W))))
+  private val emitOverrideQ = Reg(Vec(4, Bool()))
   private val emitQuadValid = RegInit(false.B)
 
   private val slotCount = RegInit(VecInit(0.U(countWidth.W), 0.U(countWidth.W)))
@@ -267,6 +290,7 @@ class KernelFragStage(
   private val slotTexMaxLevel = Reg(Vec(2, UInt(4.W)))
   private val slotTexLodBias = Reg(Vec(2, SInt(5.W)))
   private val slotTexMinLevel = Reg(Vec(2, UInt(4.W)))
+  private val slotAbi1 = Reg(Vec(2, Bool()))
 
   texUnit.io.texBase := slotTexBase(execSlot)
   texUnit.io.texWidth := slotTexWidth(execSlot)
@@ -359,6 +383,16 @@ class KernelFragStage(
       Mux1H(sel, VecInit(Seq.tabulate(quadCount)(q => f(fragRecords(1)(q).lanes(lane))))),
       Mux1H(sel, VecInit(Seq.tabulate(quadCount)(q => f(fragRecords(0)(q).lanes(lane))))))
   }
+  // Lane/sample-static read of the record's depth sideband for the emit quad
+  // cache, same one-hot selector as `loadQuadField` (the sideband sits beside
+  // the lanes rather than inside a `RasterFragment`).
+  private def loadQuadDepth(lane: Int, sample: Int): UInt = {
+    val sel = emitQuadSel.asBools
+    Mux(
+      execSlot.asBool,
+      Mux1H(sel, VecInit(Seq.tabulate(quadCount)(q => fragRecords(1)(q).depths(lane)(sample)))),
+      Mux1H(sel, VecInit(Seq.tabulate(quadCount)(q => fragRecords(0)(q).depths(lane)(sample)))))
+  }
   private val execCovered = slotField(quadIdx, laneIdx)(r => r.lanes(laneIdx).covered)
   private val requestX = requestQuad.lanes(requestLaneIdx).x
   private val requestY = requestQuad.lanes(requestLaneIdx).y
@@ -414,6 +448,7 @@ class KernelFragStage(
   private val wpTexMaxLevel = Reg(UInt(4.W))
   private val wpTexLodBias = Reg(SInt(5.W))
   private val wpTexMinLevel = Reg(UInt(4.W))
+  private val wpAbi1 = Reg(Bool())
 
   io.fragIn.ready := !pendingValid && prodCount < batchCap.U
   io.drained := state === sIdle && !pendingValid
@@ -466,8 +501,11 @@ class KernelFragStage(
       wpRecord.lanes(k).alpha := 0xff.U
       wpRecord.u(k) := io.fragUv(k).u
       wpRecord.v(k) := io.fragUv(k).v
+      for (s <- 0 until gfxConfig.maxSampleCount)
+        wpRecord.depths(k)(s) := io.fragDepths(k)(s)
     }
     wpShaderPc := io.shaderPc
+    wpAbi1 := io.abi1
     wpKernarg := bankedKernarg(prodSlot)
     wpTexBase := io.texBase
     wpTexWidth := io.texWidth
@@ -508,6 +546,7 @@ class KernelFragStage(
       slotTexMaxLevel(wpSlot) := wpTexMaxLevel
       slotTexLodBias(wpSlot) := wpTexLodBias
       slotTexMinLevel(wpSlot) := wpTexMinLevel
+      slotAbi1(wpSlot) := wpAbi1
     }
   }
 
@@ -631,8 +670,12 @@ class KernelFragStage(
   // while `valid && !ready`.
   private val outValidReg = RegInit(false.B)
   private val outBitsReg = Reg(new RasterFragment(gfxConfig))
+  private val outDepthsReg = Reg(Vec(gfxConfig.maxSampleCount, UInt(30.W)))
+  private val outOverrideReg = RegInit(false.B)
   io.out.valid := outValidReg
   io.out.bits := outBitsReg
+  io.outDepths := outDepthsReg
+  io.depthOverride := outOverrideReg
 
   // Emit cache fill: capture quad 0 on entry to sEmit, then reload quad N+1 on
   // the edge that steps out of quad N's last lane.  `execCount` is always a
@@ -662,6 +705,9 @@ class KernelFragStage(
       emitColorQ(lane) := outWords(emitOutIdx)
       emitDepthQ(lane) := outDepth(emitOutIdx)
       emitHitQ(lane) := outValid(emitOutIdx)
+      emitOverrideQ(lane) := outOverride(emitOutIdx)
+      for (s <- 0 until gfxConfig.maxSampleCount)
+        emitDepthsQ(lane)(s) := loadQuadDepth(lane, s)
     }
   }
 
@@ -678,11 +724,17 @@ class KernelFragStage(
     outBitsReg.e1 := emitQuad(laneIdx).e1
     outBitsReg.e2 := emitQuad(laneIdx).e2
     outBitsReg.covered := emitQuad(laneIdx).covered
-    outBitsReg.coverageMask := emitQuad(laneIdx).coverageMask
+    // ABI 1 bit 0 gates emit; the effective coverage mask is the raster mask
+    // only for lanes that actually emit (helpers and discards clear to zero).
+    outBitsReg.coverageMask :=
+      Mux(emitHitQ(laneIdx), emitQuad(laneIdx).coverageMask, 0.U)
     outBitsReg.color.r := emitColorQ(laneIdx)(31, 24)
     outBitsReg.color.g := emitColorQ(laneIdx)(23, 16)
     outBitsReg.color.b := emitColorQ(laneIdx)(15, 8)
     outBitsReg.alpha := emitColorQ(laneIdx)(7, 0)
+    outOverrideReg := emitOverrideQ(laneIdx)
+    for (s <- 0 until gfxConfig.maxSampleCount)
+      outDepthsReg(s) := emitDepthsQ(laneIdx)(s)
   }
 
   switch(state) {
@@ -777,8 +829,14 @@ class KernelFragStage(
         }.otherwise {
           // Helper lanes execute the shader and may participate in quad
           // derivatives, but no shader store can promote one into an OM write.
-          outValid(indexIdx) := bridge.io.out.bits.data =/= 0.U &&
-            execCovered
+          // ABI 0 keeps the legacy "any nonzero word emits" contract and always
+          // takes the shader-depth word; ABI 1 gates emit on bit 0 and selects
+          // the depth override on bit 1.
+          val ctrl = bridge.io.out.bits.data
+          val abi1Exec = slotAbi1(execSlot)
+          outValid(indexIdx) :=
+            Mux(abi1Exec, ctrl(0), ctrl.orR) && execCovered
+          outOverride(indexIdx) := !abi1Exec || ctrl(1)
           field := 0.U
           when(index === execCount - 1.U) {
             index := 0.U

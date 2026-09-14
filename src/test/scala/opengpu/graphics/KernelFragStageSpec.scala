@@ -25,7 +25,11 @@ class KernelFragStageWithKernel(
   val io = IO(new Bundle {
     val fragIn = Flipped(Decoupled(new FragmentQuad(gfxConfig)))
     val fragUv = Input(Vec(4, new TexUV))
+    val fragDepths = Input(Vec(4, Vec(gfxConfig.maxSampleCount, UInt(30.W))))
     val out = Decoupled(new RasterFragment(gfxConfig))
+    val outDepths = Output(Vec(gfxConfig.maxSampleCount, UInt(30.W)))
+    val depthOverride = Output(Bool())
+    val abi1 = Input(Bool())
     val shaderPc = Input(UInt(32.W))
     val kernargBase = Input(UInt(32.W))
     val kernargBankStride = Input(UInt(32.W))
@@ -55,7 +59,11 @@ class KernelFragStageWithKernel(
   // Connect wrapper IO to frag stage's non-kernel ports
   io.fragIn <> frag.io.fragIn
   io.fragUv <> frag.io.fragUv
+  frag.io.fragDepths := io.fragDepths
   frag.io.out <> io.out
+  io.outDepths := frag.io.outDepths
+  io.depthOverride := frag.io.depthOverride
+  frag.io.abi1 := io.abi1
   frag.io.shaderPc := io.shaderPc
   frag.io.kernargBase := io.kernargBase
   frag.io.kernargBankStride := io.kernargBankStride
@@ -130,7 +138,8 @@ class KernelFragStageSpec extends AnyFlatSpec {
   //   [160, 192)  perspective-correct v
   //   [192, 224)  per-fragment colour outputs
   //   [224, 256)  per-fragment depth outputs
-  //   [256, 288)  per-fragment output-valid (1 = emit, 0 = discard)
+  //   [256, 288)  per-fragment output-control (ABI 0: nonzero = emit; ABI 1:
+  //               bit 0 = emit, bit 1 = depth override)
   //   [288, ...)  per-draw uniforms
 
   /** Byte-addressed 64-byte line memory model shared by the core and the
@@ -384,6 +393,9 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.fragUv(k).v.poke(0.U)
     }
     dut.io.out.ready.poke(true.B)
+    dut.io.abi1.poke(false.B)
+    for (k <- 0 until 4; s <- 0 until dut.io.fragDepths(k).length)
+      dut.io.fragDepths(k)(s).poke(0.U)
     dut.io.flush.poke(false.B)
     dut.io.drawRetire.ready.poke(true.B)
     dut.io.memReq.ready.poke(true.B)
@@ -402,24 +414,29 @@ class KernelFragStageSpec extends AnyFlatSpec {
     * default to uncovered helper lanes, which stage and execute but never
     * reach the output stream. */
   private case class Frag(x: Int, y: Int, depth: Int,
-    r: Int = 0xab, g: Int = 0xcd, b: Int = 0xef, covered: Boolean = true)
+    r: Int = 0xab, g: Int = 0xcd, b: Int = 0xef, covered: Boolean = true,
+    coverageMask: Int = 1)
 
-  /** Pokes all four lanes of `fragIn` (TL/TR/BL/BR) and their UVs without
-    * firing; lanes beyond `frags.length` become uncovered helpers. */
+  /** Pokes all four lanes of `fragIn` (TL/TR/BL/BR), their UVs and their
+    * per-sample depths without firing; lanes beyond `frags.length` become
+    * uncovered helpers. */
   private def pokeQuadLanes(dut: KernelFragStageWithKernel, frags: Seq[Frag],
     uvs: Seq[(Int, Int)] = Seq.fill(4)((0, 0))): Unit = {
     for (k <- 0 until 4) {
       val f = if (k < frags.length) frags(k)
-        else Frag(0, 0, 0, 0, 0, 0, covered = false)
+        else Frag(0, 0, 0, 0, 0, 0, covered = false, coverageMask = 0)
       dut.io.fragIn.bits.lanes(k).x.poke(f.x.S)
       dut.io.fragIn.bits.lanes(k).y.poke(f.y.S)
       dut.io.fragIn.bits.lanes(k).depth.poke(f.depth.S)
       dut.io.fragIn.bits.lanes(k).covered.poke(f.covered.B)
+      dut.io.fragIn.bits.lanes(k).coverageMask.poke(f.coverageMask.U)
       dut.io.fragIn.bits.lanes(k).color.r.poke(f.r.U)
       dut.io.fragIn.bits.lanes(k).color.g.poke(f.g.U)
       dut.io.fragIn.bits.lanes(k).color.b.poke(f.b.U)
       dut.io.fragUv(k).u.poke(uvs(k)._1.U)
       dut.io.fragUv(k).v.poke(uvs(k)._2.U)
+      for (s <- 0 until dut.io.fragDepths(k).length)
+        dut.io.fragDepths(k)(s).poke(((k * 8 + s) & 0x3fffffff).U)
     }
   }
 
@@ -1059,5 +1076,92 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.clock.step(4)
       dut.io.drawRetire.valid.expect(false.B)
     }
+  }
+
+  /** Result of one ABI output-control run: whether a fragment emitted, its
+    * effective coverage mask, the selected depth source, and the per-sample
+    * depths presented alongside it. */
+  private case class AbiResult(emitted: Boolean, mask: Int,
+    overrideDepth: Boolean, depths: Seq[Int])
+
+  /** Runs a single covered (or helper) fragment through a shader that writes
+    * the output-control word from a uniform, with the given ABI selection. */
+  private def runAbiCase(abi1: Boolean, controlWord: Int, mask: Int,
+    covered: Boolean): AbiResult = {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    var result: AbiResult = null
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
+      val mem = new MemModel
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.abi1.poke(abi1.B)
+      dut.io.shaderPc.poke(0x1000.U)
+      dut.io.kernargBase.poke(0x8000.U)
+      dut.io.kernargBankStride.poke(0.U)
+
+      // Program: lw x10, 288(x1); sw x10, 256(x1); cease.  The uniform holds
+      // the output-control word; slice 8 is the control array.
+      mem.putWord(0x1000L, 0, lw(10, 1, 288))
+      mem.putWord(0x1000L, 1, sw(10, 1, 256))
+      mem.putWord(0x1000L, 2, cease)
+      mem.putWord(0x8100L, 8, BigInt(controlWord))
+
+      val depths = Seq(0x111, 0x222, 0x333, 0x444)
+      pokeQuadLanes(dut, Seq(Frag(3, 4, 0x20,
+        covered = covered, coverageMask = mask)))
+      for (s <- depths.indices) dut.io.fragDepths(0)(s).poke(depths(s).U)
+      dut.io.fragIn.valid.poke(true.B); dut.clock.step()
+      dut.io.fragIn.valid.poke(false.B)
+      dut.io.flush.poke(true.B); dut.clock.step(); dut.io.flush.poke(false.B)
+
+      if (pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean)) {
+        result = AbiResult(true,
+          dut.io.out.bits.coverageMask.peek().litValue.toInt,
+          dut.io.depthOverride.peek().litToBoolean,
+          depths.indices.map(s => dut.io.outDepths(s).peek().litValue.toInt))
+      } else {
+        result = AbiResult(false, 0, false, Seq.empty)
+      }
+    }
+    result
+  }
+
+  it should "split the ABI-1 output-control word into emit and depth override" in {
+    // ABI 0 keeps the legacy contract: any nonzero word emits and the
+    // shader-depth word is always selected.
+    val abi0 = runAbiCase(abi1 = false, controlWord = 0x2, mask = 0xa,
+      covered = true)
+    assert(abi0.emitted, "ABI 0 nonzero word must emit")
+    assert(abi0.mask == 0xa, s"ABI 0 effective mask should be 0xa, got ${abi0.mask}")
+    assert(abi0.overrideDepth, "ABI 0 always selects the shader-depth word")
+
+    // ABI 1: bit 0 gates emit, bit 1 selects the override.  Without override
+    // the rasterizer's per-sample depths ride through.
+    val abi1Emit = runAbiCase(abi1 = true, controlWord = 0x1, mask = 0xf,
+      covered = true)
+    assert(abi1Emit.emitted, "ABI 1 bit 0 set must emit")
+    assert(abi1Emit.mask == 0xf,
+      s"ABI 1 effective mask should be 0xf, got ${abi1Emit.mask}")
+    assert(!abi1Emit.overrideDepth, "ABI 1 bit 1 clear selects raster depths")
+    assert(abi1Emit.depths == Seq(0x111, 0x222, 0x333, 0x444),
+      s"ABI 1 per-sample depths: got ${abi1Emit.depths}")
+
+    // Bit 0 clear suppresses the fragment entirely.
+    val abi1Gate = runAbiCase(abi1 = true, controlWord = 0x2, mask = 0xf,
+      covered = true)
+    assert(!abi1Gate.emitted, "ABI 1 bit 0 clear must not emit")
+
+    // Both bits set selects the shader-depth word again.
+    val abi1Override = runAbiCase(abi1 = true, controlWord = 0x3, mask = 0xf,
+      covered = true)
+    assert(abi1Override.emitted, "ABI 1 word 0x3 must emit")
+    assert(abi1Override.overrideDepth,
+      "ABI 1 bit 1 set must select the shader-depth word")
+
+    // An uncovered helper lane never emits under either ABI.
+    assert(!runAbiCase(abi1 = false, controlWord = 1, mask = 0x1,
+      covered = false).emitted, "ABI 0 helper must not emit")
+    assert(!runAbiCase(abi1 = true, controlWord = 0x1, mask = 0x1,
+      covered = false).emitted, "ABI 1 helper must not emit")
   }
 }

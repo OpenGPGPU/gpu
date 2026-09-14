@@ -554,4 +554,228 @@ class RenderCoreSpec extends AnyFlatSpec {
       assert(depth(14, 3) == 0xffffffff, s"uncovered depth (14,3) should be far, got ${depth(14, 3)}")
     }
   }
+
+  it should "write MSAA per-sample depths through the core-backed kernel (fragCore)" in {
+    // End-to-end phase-3 check: the programmable (core-backed) fragment path
+    // must carry the rasterizer's per-sample depths out to the OM, exactly as
+    // the fixed-function path does.  Four samples per pixel make the depth
+    // ramp X + Y/2 evaluate to quarter-pixel steps of +64 in x, +32 in y.
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    val cfg = GpuConfig(lanes = 4, warps = 2)
+    val wordsPerRow = 16 * 4
+    val stride = wordsPerRow * 4
+    val colorBase = 0x8000
+    val depthBase = 0x9000
+    val cmdBase = 0x4000
+    val shaderPc = 0x1000
+    val kernarg = 0x6000
+
+    def tri(x: Int, y: Int, d: Int) = ((x, y, 0, q(1.0)), (255, 0, 0), d)
+    val record = Seq(
+      tri(q(-1.0), q(-1.0), 0),
+      tri(q(1.0), q(-1.0), 4096),
+      tri(q(-1.0), q(1.0), 2048)
+    )
+
+    def slli(rd: Int, rs1: Int, sh: Int): Int = (sh << 20) | (rs1 << 15) | (1 << 12) | (rd << 7) | 0x13
+    def add(rd: Int, rs1: Int, rs2: Int): Int = (rs2 << 20) | (rs1 << 15) | (rd << 7) | 0x33
+    def addi(rd: Int, rs1: Int, imm: Int): Int = ((imm & 0xfff) << 20) | (rs1 << 15) | (rd << 7) | 0x13
+    def vsetivli(uimm: Int): Int = (0x3 << 30) | (0x10 << 20) | (uimm << 15) | (0x7 << 12) | 0x57
+    def vle32(rs1: Int, vd: Int): Int = (1 << 25) | (0x6 << 12) | (vd << 7) | (rs1 << 15) | 0x07
+    def vse32(rs1: Int, vs3: Int): Int = (1 << 25) | (0x6 << 12) | (vs3 << 7) | (rs1 << 15) | 0x27
+    val cease = 0x30500073
+
+    // Colour pass-through and the interpolated input depth copied to the
+    // depth-output slice.  The output-control slice is left at its staged
+    // initialization (emit, no override).
+    val depthCopy = Seq(
+      slli(5, 8, 2), add(5, 1, 5), vsetivli(4),
+      addi(6, 5, 96), vle32(6, 2), addi(6, 5, 192), vse32(6, 2),
+      addi(6, 5, 64), vle32(6, 3), addi(6, 5, 224), vse32(6, 3), cease)
+
+    // Override: write a constant depth word and the ABI-1 control value 0x3
+    // (emit + shader-depth override) for every lane.
+    val overrideProgram = Seq(
+      slli(5, 8, 2), add(5, 1, 5), vsetivli(4),
+      addi(6, 5, 96), vle32(6, 2), addi(6, 5, 192), vse32(6, 2),
+      addi(6, 5, 288), vle32(6, 3), addi(6, 5, 224), vse32(6, 3),
+      addi(6, 5, 320), vle32(6, 4), addi(6, 5, 256), vse32(6, 4), cease)
+    val overrideDepthWord = 0xabcd
+    val overrideUniforms =
+      (0 until 8).flatMap(i => Seq(
+        (kernarg + 288 + i * 4L, overrideDepthWord),
+        (kernarg + 320 + i * 4L, 3)))
+
+    // Render one core-backed draw and return the finished word memory.
+    def drain(sampleMode: Int, program: Seq[Int],
+      uniforms: Seq[(Long, Int)]): Map[Long, Int] = {
+      val m = scala.collection.mutable.LongMap[Int]()
+      def word(a: Long): Long = m.getOrElse(a, 0) & 0xffffffffL
+      def wwrite(a: Long, d: Int): Unit = m(a) = d & 0xffffffff
+      def lineRead(a: Long): BigInt =
+        (0 until 16).map(i => BigInt(word(a + i * 4)) << (i * 32)).foldLeft(BigInt(0))(_ | _)
+      def lineWrite(a: Long, wd: BigInt, bm: BigInt): Unit = {
+        for (wi <- 0 until 16) {
+          var wo = word(a + wi * 4); val base = wi * 4
+          for (b <- 0 until 4) {
+            val byte = base + b
+            if (((bm >> byte) & 1) != 0) {
+              wo = (wo & ~(0xffL << (b * 8))) | ((((wd >> (byte * 8)) & 0xff).toLong) << (b * 8))
+            }
+          }
+          m(a + wi * 4) = wo.toInt & 0xffffffff
+        }
+      }
+      encode(record, shaderPc, kernarg).zipWithIndex.foreach { case (w, i) =>
+        wwrite(cmdBase + i * 4, w)
+      }
+      program.zipWithIndex.foreach { case (w, i) => wwrite(shaderPc + i * 4, w) }
+      uniforms.foreach { case (a, d) => wwrite(a, d) }
+      for (i <- 0 until (16 * wordsPerRow)) wwrite(depthBase + i * 4, 0xffffffff)
+
+      simulate(new RenderCore(gfx, cfg, fragCore = true)) { dut =>
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        dut.io.cmdBase.poke(cmdBase.U)
+        dut.io.cmdCount.poke(1.U)
+        dut.io.colorBase.poke(colorBase.U)
+        dut.io.depthBase.poke(depthBase.U)
+        dut.io.stride.poke(stride.U)
+        dut.io.depthTestEnable.poke(false.B)
+        dut.io.depthFunc.poke(0.U)
+        dut.io.depthWriteEnable.poke(true.B)
+        dut.io.cullMode.poke(0.U)
+        dut.io.sampleMode.poke(sampleMode.U)
+        dut.io.cbMem.req.ready.poke(true.B)
+        dut.io.cbMem.resp.valid.poke(false.B)
+        dut.io.fbMem.req.ready.poke(true.B)
+        dut.io.fbMem.resp.valid.poke(false.B)
+        dut.io.kernelMemReq.ready.poke(true.B)
+        dut.io.kernelMemResp.valid.poke(false.B)
+        dut.io.kernelMemResp.bits.readData.poke(0.U)
+        dut.io.kernelMemResp.bits.fault.poke(false.B)
+        dut.io.kernelMemResp.bits.transactionId.poke(0.U)
+        dut.io.kernelWordMemReq.ready.poke(true.B)
+        dut.io.kernelWordMemResp.valid.poke(false.B)
+        dut.io.kernelWordMemResp.bits.readData.poke(0.U)
+        dut.io.kernelWordMemResp.bits.fault.poke(false.B)
+        dut.io.kernelWordMemResp.bits.transactionId.poke(0.U)
+
+        dut.io.start.poke(true.B)
+        dut.clock.step()
+        dut.io.start.poke(false.B)
+
+        val kuQ = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
+        val wuQ = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
+        val cbQ = scala.collection.mutable.Queue.empty[(Long, Long)]
+        val fbQ = scala.collection.mutable.Queue.empty[(Boolean, Long, Long)]
+        var guard = 0
+        while (!dut.io.done.peek().litToBoolean && guard < 60000) {
+          dut.io.cbMem.req.ready.poke(true.B)
+          if (cbQ.nonEmpty) {
+            val (a, d) = cbQ.head
+            dut.io.cbMem.resp.valid.poke(true.B)
+            dut.io.cbMem.resp.bits.data.poke(d.U)
+            dut.io.cbMem.resp.bits.addr.poke(a.U)
+          } else dut.io.cbMem.resp.valid.poke(false.B)
+          if (cbQ.nonEmpty && dut.io.cbMem.resp.ready.peek().litToBoolean) cbQ.dequeue()
+          if (dut.io.cbMem.req.valid.peek().litToBoolean && dut.io.cbMem.req.ready.peek().litToBoolean)
+            if (!dut.io.cbMem.req.bits.write.peek().litToBoolean) {
+              cbQ.enqueue((dut.io.cbMem.req.bits.addr.peek().litValue.toLong,
+                word(dut.io.cbMem.req.bits.addr.peek().litValue.toLong)))
+            }
+
+          dut.io.fbMem.req.ready.poke(true.B)
+          if (fbQ.nonEmpty) {
+            val (write, a, d) = fbQ.head
+            dut.io.fbMem.resp.valid.poke(true.B)
+            dut.io.fbMem.resp.bits.write.poke(write.B)
+            dut.io.fbMem.resp.bits.data.poke(d.U)
+            dut.io.fbMem.resp.bits.addr.poke(a.U)
+          } else dut.io.fbMem.resp.valid.poke(false.B)
+          if (fbQ.nonEmpty && dut.io.fbMem.resp.ready.peek().litToBoolean) fbQ.dequeue()
+          if (dut.io.fbMem.req.valid.peek().litToBoolean && dut.io.fbMem.req.ready.peek().litToBoolean) {
+            val a = dut.io.fbMem.req.bits.addr.peek().litValue.toLong
+            val w = dut.io.fbMem.req.bits.write.peek().litToBoolean
+            if (w) wwrite(a, dut.io.fbMem.req.bits.data.peek().litValue.toInt)
+            fbQ.enqueue((w, a, word(a)))
+          }
+
+          if (kuQ.nonEmpty) {
+            dut.io.kernelMemResp.valid.poke(true.B)
+            dut.io.kernelMemResp.bits.transactionId.poke(kuQ.head._1.U)
+            dut.io.kernelMemResp.bits.readData.poke(kuQ.head._2.U)
+            dut.io.kernelMemResp.bits.fault.poke(false.B)
+          } else dut.io.kernelMemResp.valid.poke(false.B)
+          if (kuQ.nonEmpty && dut.io.kernelMemResp.ready.peek().litToBoolean) kuQ.dequeue()
+          if (dut.io.kernelMemReq.valid.peek().litToBoolean && dut.io.kernelMemReq.ready.peek().litToBoolean) {
+            val a = dut.io.kernelMemReq.bits.address.peek().litValue.toLong
+            val id = dut.io.kernelMemReq.bits.transactionId.peek().litValue
+            if (dut.io.kernelMemReq.bits.isWrite.peek().litToBoolean) {
+              lineWrite(a, dut.io.kernelMemReq.bits.writeData.peek().litValue,
+                dut.io.kernelMemReq.bits.byteMask.peek().litValue); kuQ.enqueue((id, BigInt(0)))
+            } else kuQ.enqueue((id, lineRead(a)))
+          }
+
+          if (wuQ.nonEmpty) {
+            dut.io.kernelWordMemResp.valid.poke(true.B)
+            dut.io.kernelWordMemResp.bits.transactionId.poke(wuQ.head._1.U)
+            dut.io.kernelWordMemResp.bits.readData.poke(wuQ.head._2.U)
+            dut.io.kernelWordMemResp.bits.fault.poke(false.B)
+          } else dut.io.kernelWordMemResp.valid.poke(false.B)
+          if (wuQ.nonEmpty && dut.io.kernelWordMemResp.ready.peek().litToBoolean) wuQ.dequeue()
+          if (dut.io.kernelWordMemReq.valid.peek().litToBoolean &&
+            dut.io.kernelWordMemReq.ready.peek().litToBoolean) {
+            val a = dut.io.kernelWordMemReq.bits.address.peek().litValue.toLong
+            val id = dut.io.kernelWordMemReq.bits.transactionId.peek().litValue
+            if (dut.io.kernelWordMemReq.bits.isWrite.peek().litToBoolean) {
+              lineWrite(a, dut.io.kernelWordMemReq.bits.writeData.peek().litValue,
+                dut.io.kernelWordMemReq.bits.byteMask.peek().litValue); wuQ.enqueue((id, BigInt(0)))
+            } else wuQ.enqueue((id, lineRead(a)))
+          }
+
+          dut.clock.step()
+          guard += 1
+        }
+        assert(guard < 60000, "core-backed MSAA draw did not drain")
+      }
+      m.toMap
+    }
+
+    def depthWord(mem: Map[Long, Int], mode: Int, x: Int, y: Int, sample: Int): Int = {
+      val sampleOffset = (x << mode) + (if (mode == 0) 0 else sample)
+      mem.getOrElse(depthBase + (y * wordsPerRow + sampleOffset) * 4L, 0)
+    }
+
+    // The vertex depths (0, 4096, 2048) on a 16-pixel axis give an affine depth
+    // of 256 per pixel in x and 128 in y, so the centre at (5,5) is 1920 and a
+    // quarter-pixel offset is +64 in x / +32 in y about that centre.
+    val centre = 256 * 5 + 128 * 5
+
+    // In 4x mode the control word left at its staged initialization selects the
+    // rasterizer's per-sample depths, one per quarter-pixel offset around the
+    // centre.  Those depths ride beside the kernel lanes as a register sideband
+    // (`fragDepths`/`outDepths`), so they are independent of the shader's
+    // kernarg loads; the L1-coherence contract between kernel batches does not
+    // apply to them.
+    val mode2 = drain(2, depthCopy, Seq.empty)
+    val expected = Seq(centre - 96, centre + 32, centre - 32, centre + 96)
+    for (s <- 0 until 4) {
+      val got = depthWord(mode2, 2, 5, 5, s)
+      assert(got == expected(s),
+        s"sample $s of pixel (5,5): got $got expected ${expected(s)}")
+    }
+    val d = (0 until 4).map(s => depthWord(mode2, 2, 5, 5, s))
+    assert(d(0) + d(3) == d(1) + d(2), s"sample depths not affine: $d")
+    assert(d.sum == 4 * centre, s"sample mean ${d.sum / 4.0} != centre $centre")
+
+    // ABI 1 bit 1 set: the shader-written constant depth word replaces every
+    // raster sample.  The uniform is batch-invariant, so this is unaffected by
+    // the batch-to-batch L1 reuse that a per-fragment input would hit.
+    val over = drain(2, overrideProgram, overrideUniforms)
+    for (s <- 0 until 4) {
+      val got = depthWord(over, 2, 5, 5, s)
+      assert(got == overrideDepthWord,
+        s"override sample $s of pixel (5,5): got $got expected $overrideDepthWord")
+    }
+  }
 }

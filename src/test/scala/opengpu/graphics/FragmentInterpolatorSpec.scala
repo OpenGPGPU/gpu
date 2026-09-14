@@ -180,4 +180,58 @@ class FragmentInterpolatorSpec extends AnyFlatSpec {
       assert(fb.get((3, 12)).exists(c => maxChannel(c) == 2))
     }
   }
+
+  it should "carry per-lane per-sample depths through the quad path" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    simulate(new RasterShader(config, quadMode = true)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.sampleMode.poke(2.U)
+
+      // Lower-left-half triangle over the 16x16 viewport with vertex depths
+      // (0, 4096, 2048): the depth plane ramps as X + Y/2, so a quarter-pixel
+      // step is exactly +64 in x and +32 in y.
+      dut.io.draw.valid.poke(true.B)
+      dut.io.draw.bits.v0.x.poke(config.toFixed(0).S)
+      dut.io.draw.bits.v0.y.poke(config.toFixed(0).S)
+      dut.io.draw.bits.v1.x.poke(config.toFixed(16).S)
+      dut.io.draw.bits.v1.y.poke(config.toFixed(0).S)
+      dut.io.draw.bits.v2.x.poke(config.toFixed(0).S)
+      dut.io.draw.bits.v2.y.poke(config.toFixed(16).S)
+      dut.io.depths(0).poke(0.S)
+      dut.io.depths(1).poke(4096.S)
+      dut.io.depths(2).poke(2048.S)
+      dut.io.quad.ready.poke(true.B)
+      dut.io.cullMode.poke(0.U)
+      dut.clock.step()
+      dut.io.draw.valid.poke(false.B)
+
+      val positions = Msaa.positions(2)
+      var checked = 0
+      var guard = 0
+      while (!dut.io.done.peek().litToBoolean && guard < 2000) {
+        if (dut.io.quad.valid.peek().litToBoolean) {
+          for (k <- 0 until 4) {
+            if (dut.io.quad.bits.lanes(k).covered.peek().litToBoolean) {
+              // Each lane's samples are its own interpolated centre plus the
+              // shared triangle gradient at the sample offsets.
+              val centre = dut.io.quad.bits.lanes(k).depth.peek().litValue.toLong
+              for (s <- positions.indices) {
+                val (sx, sy) = positions(s)
+                val raw = centre + sx * 64L + sy * 32L
+                val expected = math.max(0L, math.min((1L << 30) - 1, raw))
+                val got = dut.io.quadDepths(k)(s).peek().litValue.toLong
+                assert(got == expected,
+                  s"lane $k sample $s centre=$centre: got $got expected $expected")
+              }
+              checked += 1
+            }
+          }
+        }
+        dut.clock.step(); guard += 1
+      }
+      assert(guard < 2000 && checked > 0, "no covered lanes observed")
+    }
+  }
 }

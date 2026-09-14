@@ -484,8 +484,12 @@ class RenderPipeline(
     // it.  Every OM entry snapshots its render-target state at fragment
     // acceptance, so the matching head context may pop once all of that
     // draw's shader outputs have been handed to the OM; the OM itself need
-    // not be globally idle.
-    ctxFifo.io.retire := kernelFrag.io.drawRetire.valid && om.io.fragIn.ready
+    // not be globally idle.  The retire must wait for the expander to have
+    // drained every sample: `in.ready` alone reports capacity and is
+    // OM-independent, so a draw-N pixel could still be inside the expander
+    // while the head advanced to draw N+1 and the OM latched it against
+    // draw N+1's render-target state.
+    ctxFifo.io.retire := kernelFrag.io.drawRetire.valid && expander.io.drained
     kernelFrag.io.drawRetire.ready := ctxFifo.io.retire
     // Per-draw overlap: the rasterizer is the only shared front-end resource,
     // so the next draw is admitted as soon as it is idle and the fragment
@@ -499,8 +503,13 @@ class RenderPipeline(
     kernelFrag.io.fragIn.valid := shader.io.quad.valid
     kernelFrag.io.fragIn.bits := shader.io.quad.bits
     kernelFrag.io.fragUv := textured.io.interpolatedUvQuad
+    kernelFrag.io.fragDepths := shader.io.quadDepths
     shader.io.quad.ready := kernelFrag.io.fragIn.ready
     shader.io.pixel.ready := false.B // quad mode: scalar port is tied off
+    // The programmable path selects ABI 1 exactly when MSAA is active; the
+    // 1x ABI 0 path is observationally identical (the depth-output slice is
+    // pre-initialised to the interpolated centre depth).
+    kernelFrag.io.abi1 := ctxFifo.io.tail.sampleMode.orR
     kernelFrag.io.shaderPc := ctxFifo.io.tail.shaderPc
     kernelFrag.io.kernargBase := ctxFifo.io.tail.kernargBase
     kernelFrag.io.kernargBankStride := ctxFifo.io.tail.kernargBankStride
@@ -518,23 +527,36 @@ class RenderPipeline(
     // which case flush is a no-op.
     kernelFrag.io.flush := shader.io.done
 
-    om.io.fragIn.valid := kernelFrag.io.out.valid
-    om.io.fragIn.bits.x := kernelFrag.io.out.bits.x(15, 0).asUInt
-    om.io.fragIn.bits.y := kernelFrag.io.out.bits.y(15, 0).asUInt
-    om.io.fragIn.bits.color := Cat(
+    // The sample expander is the per-pixel/per-sample boundary for both
+    // backends: the kernel emits one fragment per lane and the expander
+    // presents one OM fragment per set coverage bit.  At 1x the mask is one
+    // bit and the expander is 1-in/1-out (sampleIndex = 0), so the OM stream
+    // is bit-identical to the pre-MSAA direct path.
+    val kfDepth30 = kernelFrag.io.out.bits.depth(29, 0).asUInt
+    // ABI 1 bit 1 selects the shader-written depth word (replicated over the
+    // samples); otherwise each sample takes its rasterizer-derived depth.
+    val kfDepths = VecInit(Seq.tabulate(config.maxSampleCount)(s =>
+      Mux(kernelFrag.io.depthOverride, kfDepth30,
+        kernelFrag.io.outDepths(s))))
+    expander.io.in.valid := kernelFrag.io.out.valid
+    expander.io.in.bits.x := kernelFrag.io.out.bits.x(15, 0).asUInt
+    expander.io.in.bits.y := kernelFrag.io.out.bits.y(15, 0).asUInt
+    expander.io.in.bits.color := Cat(
       kernelFrag.io.out.bits.color.r,
       kernelFrag.io.out.bits.color.g,
       kernelFrag.io.out.bits.color.b,
       kernelFrag.io.out.bits.alpha)
-    om.io.fragIn.bits.depth := kernelFrag.io.out.bits.depth(29, 0).asUInt
-    om.io.fragIn.bits.sampleIndex := 0.U
-    kernelFrag.io.out.ready := om.io.fragIn.ready
+    expander.io.in.bits.coverageMask := kernelFrag.io.out.bits.coverageMask
+    expander.io.in.bits.depths := kfDepths
+    kernelFrag.io.out.ready := expander.io.in.ready
 
-    // The expander serves the fixed-function path only; its own coverage mask
-    // is carried in the fragment record but 1x mode never engages it here.
-    expander.io.in.valid := false.B
-    expander.io.in.bits := 0.U.asTypeOf(new SamplePixel(config.maxSampleCount))
-    expander.io.out.ready := false.B
+    om.io.fragIn.valid := expander.io.out.valid
+    om.io.fragIn.bits.x := expander.io.out.bits.x
+    om.io.fragIn.bits.y := expander.io.out.bits.y
+    om.io.fragIn.bits.color := expander.io.out.bits.color
+    om.io.fragIn.bits.depth := expander.io.out.bits.depth
+    om.io.fragIn.bits.sampleIndex := expander.io.out.bits.sampleIndex
+    expander.io.out.ready := om.io.fragIn.ready
     textured.io.out.ready := om.io.fragIn.ready
 
     // Preserve each bridge's four local IDs by prefixing vertex requests with
@@ -598,7 +620,7 @@ class RenderPipeline(
     // admitted draw retired, so an in-flight batch or an unpresented retire
     // event is never mistaken for an idle pipeline at a draw boundary.
     io.done := !drawHoldValid && shader.io.done && kernelFrag.io.drained &&
-      om.io.drained && !ctxFifo.io.headValid
+      expander.io.drained && om.io.drained && !ctxFifo.io.headValid
   } else {
     shader.io.draw.valid := drawHoldValid && !clipTriangleActive && clipper.io.done &&
       clipEmitIndex < clipper.io.outValid

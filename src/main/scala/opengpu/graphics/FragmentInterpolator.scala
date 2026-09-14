@@ -104,9 +104,13 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
     val done = Output(Bool())
     val pixel = Decoupled(new RasterFragment(config))
     val quad = Decoupled(new FragmentQuad(config))
-    /** Per-sample depths for the scalar pixel, valid with `pixel`.  Tied to
-      * zero in quad mode, whose core-backed path does not sample-expand. */
+    /** Per-sample depths for the scalar pixel, valid with `pixel`; tied to
+      * zero in quad mode, which carries the equivalent per-lane values on
+      * `quadDepths` instead. */
     val depthSamples = Output(Vec(config.maxSampleCount, UInt(30.W)))
+    /** Per-lane per-sample depths, valid with `quad`.  Tied to zero in scalar
+      * mode. */
+    val quadDepths = Output(Vec(4, Vec(config.maxSampleCount, UInt(30.W))))
   })
 
   private val raster = Module(new TriangleRasterizer(config, quadMode))
@@ -141,6 +145,26 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
       io.quad.bits.lanes(k).covered := raster.io.quad.bits.lanes(k).covered
       io.quad.bits.lanes(k).coverageMask :=
         raster.io.quad.bits.lanes(k).coverageMask
+    }
+    // Depth is affine in screen space, so one per-triangle gradient off the
+    // rasterizer's registered plane coefficients gives every sample's depth.
+    // A single shared gradient feeds four per-lane SampleDepth instances,
+    // each centred on its own lane's interpolated depth.
+    val depthGrad = Module(new DepthGradient(config))
+    depthGrad.io.planeA := raster.io.planeA
+    depthGrad.io.planeB := raster.io.planeB
+    depthGrad.io.area := raster.io.planeArea
+    depthGrad.io.d0 := io.depths(0)
+    depthGrad.io.d1 := io.depths(1)
+    depthGrad.io.d2 := io.depths(2)
+    val sampleDepths = Seq.fill(4)(Module(new SampleDepth(config.maxSampleCount)))
+    for (k <- 0 until 4) {
+      sampleDepths(k).io.sampleMode := io.sampleMode
+      sampleDepths(k).io.centre := laneInterps(k).io.depth
+      sampleDepths(k).io.quarterDx := depthGrad.io.quarterDx
+      sampleDepths(k).io.quarterDy := depthGrad.io.quarterDy
+      for (s <- 0 until config.maxSampleCount)
+        io.quadDepths(k)(s) := sampleDepths(k).io.depths(s)
     }
     io.quad.valid := raster.io.quad.valid
     raster.io.quad.ready := io.quad.ready
@@ -193,6 +217,8 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
 
     io.quad.valid := false.B
     io.quad.bits := 0.U.asTypeOf(new FragmentQuad(config))
+    io.quadDepths := 0.U.asTypeOf(
+      Vec(4, Vec(config.maxSampleCount, UInt(30.W))))
     raster.io.quad.ready := false.B
   }
 }
