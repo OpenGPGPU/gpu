@@ -138,3 +138,30 @@ parent, so it is not attributed to the reorder.
 
 Both runs fail u50 setup. Recovering the u50 closure that the post-`emitquadsel`
 changes displaced is a separate task from this LOD experiment.
+
+### What displaced the u50 closure
+
+The two snapshots sit ~35 MHz below the checked-in `emitquadsel` u50 result at
+the identical recipe, so the loss belongs to the MSAA commits (`e37318b`,
+`6f718c5`), not to the reorder:
+
+| Variant | DFFs | Core Fmax | Setup worst | Worst setup path |
+|---|---:|---:|---:|---|
+| `emitquadsel` (checked in, pre-MSAA) | 34523 | 1022.98 | +13.27 ps | `prodSlot -> wpRecord_lanes_2_e2[60]` |
+| MSAA control | 34815 | 987.21 | -44.82 ps | `io_wordMemResp_bits_transactionId[1] -> outValid_27` |
+
+The emitted control netlist carries 293 coverage/sample identifiers that are
+absent from `emitquadsel`, and the top setup path moved into the sEmit
+output-valid cone. MSAA added a term there: `outValid(indexIdx) :=
+bridge.io.out.bits.data =/= 0.U && execCovered`
+(`KernelFragStage.scala:780`), where `execCovered` reads the per-lane
+`coverageMask` that MSAA now threads through every fragment record. That cone
+was already fed combinationally from the word response
+(`io.wordMemResp -> bridge.io.memoryResponse`, `:858-861`), so the added term
+widens an existing input-to-register path. The regression is thus a real MSAA
+RTL effect on a path that was previously not binding, not only placement drift.
+
+Which of the two causes dominates (the `execCovered` term itself versus the
+292 extra coverage registers shifting placement) is not separated by these two
+runs; a controlled A/B would emit one variant with the coverage mask registered
+separately from the outValid cone.
