@@ -565,6 +565,8 @@ class RenderPipeline(
       kernelVert.map(_.io.wordMemResp.ready).getOrElse(false.B),
       kernelFrag.io.wordMemResp.ready)
     textured.io.fragIn.valid := false.B // texture path only on fixed-func branch
+    textured.io.fragDepths := 0.U.asTypeOf(
+      Vec(config.maxSampleCount, UInt(30.W)))
 
     // Tie off kernelFrag's unused memReq/memResp ports
     kernelFrag.io.memReq.ready := false.B
@@ -633,10 +635,11 @@ class RenderPipeline(
         textured.io.out.bits.color.b, textured.io.out.bits.alpha),
       Cat(shader.io.pixel.bits.color.r, shader.io.pixel.bits.color.g,
         shader.io.pixel.bits.color.b, shader.io.pixel.bits.alpha))
-    val fragDepth = Mux(drawState.texEnable,
-      textured.io.out.bits.depth, shader.io.pixel.bits.depth)(29, 0).asUInt
-    // Per-sample depth gradients are not yet specified, so every sample shares
-    // the pixel-centre depth; 1x mode reads only entry 0 either way.
+    // Per-sample depths: the interpolator derives one affine depth per MSAA
+    // sample from the triangle's depth gradient; texturing preserves them.
+    textured.io.fragDepths := shader.io.depthSamples
+    val fragDepths = Mux(drawState.texEnable,
+      textured.io.outDepths, shader.io.depthSamples)
     val fragCoverage = Mux(drawState.texEnable,
       textured.io.out.bits.coverageMask, shader.io.pixel.bits.coverageMask)
 
@@ -646,8 +649,7 @@ class RenderPipeline(
     expander.io.in.bits.y := fragY
     expander.io.in.bits.color := fragColor
     expander.io.in.bits.coverageMask := fragCoverage
-    expander.io.in.bits.depths := VecInit(
-      Seq.fill(config.maxSampleCount)(fragDepth))
+    expander.io.in.bits.depths := fragDepths
 
     om.io.fragIn.valid := expander.io.out.valid
     om.io.fragIn.bits.x := expander.io.out.bits.x

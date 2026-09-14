@@ -132,3 +132,103 @@ class SampleExpanderSpec extends AnyFlatSpec {
     }
   }
 }
+
+class DepthGradientSpec extends AnyFlatSpec {
+  behavior of "DepthGradient"
+
+  /** Low 32 bits of a Chisel SInt result, sign-extended to a Long. */
+  private def lowSInt32(q: BigInt): Long = {
+    val masked = q & BigInt("ffffffff", 16)
+    val l = masked.toLong
+    if (l >= 0x80000000L) l - 0x100000000L else l
+  }
+
+  /** BigInt reference; BigInt's `/` truncates toward zero like Chisel SInt. */
+  private def gradRef(plane: Seq[Long], d: Seq[Long], area: Long): Long = {
+    val num = plane.zip(d).map { case (a, dd) => BigInt(a) * BigInt(dd) }.sum
+    lowSInt32((num << 6) / BigInt(area))
+  }
+
+  private val cases = Seq(
+    // Lower-left-half triangle: d = (0, 4096, 2048) over a 16x16 viewport
+    // gives an exact X + Y/2 depth ramp, i.e. qx = +64, qy = +32.
+    (-4096L, 4096L, 0L, -4096L, 0L, 4096L, 16777216L, Seq(0L, 4096L, 2048L)),
+    // Truncating toward zero for a positive and a negative quotient.
+    (1L, 1L, 1L, -1L, -1L, -1L, 100L, Seq(1L, 2L, 3L)),
+    // Quotient wider than 32 bits: the export keeps the low word.
+    (1L, 0L, 0L, 0L, 0L, 0L, 1L, Seq(2147483647L, 0L, 0L))
+  )
+
+  it should "match the plane-gradient reference on both axes" in {
+    simulate(new DepthGradient(GraphicsConfig())) { dut =>
+      for ((a0, a1, a2, b0, b1, b2, area, d) <- cases) {
+        val planeA = Seq(a0, a1, a2)
+        val planeB = Seq(b0, b1, b2)
+        dut.io.planeA.zipWithIndex.foreach { case (p, i) => p.poke(planeA(i).S) }
+        dut.io.planeB.zipWithIndex.foreach { case (p, i) => p.poke(planeB(i).S) }
+        dut.io.area.poke(area.S)
+        dut.io.d0.poke(d(0).S)
+        dut.io.d1.poke(d(1).S)
+        dut.io.d2.poke(d(2).S)
+        dut.clock.step()
+        assert(dut.io.quarterDx.peek().litValue.toLong == gradRef(planeA, d, area),
+          s"quarterDx planeA=$planeA d=$d area=$area")
+        assert(dut.io.quarterDy.peek().litValue.toLong == gradRef(planeB, d, area),
+          s"quarterDy planeB=$planeB d=$d area=$area")
+      }
+    }
+  }
+}
+
+class SampleDepthSpec extends AnyFlatSpec {
+  behavior of "SampleDepth"
+
+  private def sampleRef(centre: Long, qdx: Long, qdy: Long, mode: Int): Seq[Long] = {
+    val positions = Msaa.positions(mode)
+    (0 until 4).map { i =>
+      if (mode == 0 && i == 0) centre & 0x3fffffffL
+      else if (i < positions.length) {
+        val (sx, sy) = positions(i)
+        val v = BigInt(centre) + BigInt(sx) * BigInt(qdx) + BigInt(sy) * BigInt(qdy)
+        if (v < 0) 0L
+        else if (v > ((1L << 30) - 1)) (1L << 30) - 1
+        else v.toLong
+      } else 0L
+    }
+  }
+
+  private def check(dut: SampleDepth, centre: Long, qdx: Long, qdy: Long): Unit = {
+    dut.io.centre.poke(centre.S)
+    dut.io.quarterDx.poke(qdx.S)
+    dut.io.quarterDy.poke(qdy.S)
+    for (mode <- 0 until 3) {
+      dut.io.sampleMode.poke(mode.U)
+      dut.clock.step()
+      val expected = sampleRef(centre, qdx, qdy, mode)
+      for (i <- 0 until 4) {
+        assert(dut.io.depths(i).peek().litValue.toLong == expected(i),
+          s"mode $mode sample $i centre=$centre qdx=$qdx qdy=$qdy")
+      }
+    }
+  }
+
+  it should "match the affine per-sample reference in every mode" in {
+    simulate(new SampleDepth(4)) { dut => check(dut, 1000L, 10L, 20L) }
+  }
+
+  it should "saturate multi-sample depths at both ends" in {
+    // (-1,-1) underflows to zero; (+1,+1) overflows the D24 range.
+    simulate(new SampleDepth(4)) { dut => check(dut, 5L, 10L, 10L) }
+    simulate(new SampleDepth(4)) { dut => check(dut, (1L << 30) - 1, 10L, 10L) }
+  }
+
+  it should "keep the 1x sample as the legacy truncated centre" in {
+    simulate(new SampleDepth(4)) { dut =>
+      check(dut, 123456789L, 999L, -999L)
+      // Negative and over-range centres truncate to the low 30 bits rather
+      // than saturating, preserving the pre-MSAA single-sample output.
+      check(dut, -1L, 999L, -999L)
+      check(dut, 0x7fffffffL, 999L, -999L)
+    }
+  }
+}

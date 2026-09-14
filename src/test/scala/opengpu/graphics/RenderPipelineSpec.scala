@@ -285,4 +285,113 @@ class RenderPipelineSpec extends AnyFlatSpec {
         f"pixel outside the clipped polygon changed: 0x${pixel(14, 12)}%08x")
     }
   }
+
+  it should "write per-sample depths that follow the triangle depth plane" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    val wordsPerRow = 16 * 4 // four samples per pixel in 4x mode
+    val stride = wordsPerRow * 4
+    val colorBase = 0x4000
+    val depthBase = 0x8000
+
+    // Render the lower-left-half triangle and return the finished memory.
+    // Vertex depths (0, 4096, 2048) over the 16x16 viewport make depth ramp
+    // as X + Y/2 in fixed-point screen units, so a quarter-pixel step is
+    // exactly +64 in x and +32 in y.
+    def drain(sampleMode: Int): Array[Int] = {
+      var result: Array[Int] = null
+      simulate(new RenderPipeline(config)) { dut =>
+        val mem = Array.fill(1 << 16)(0)
+
+        dut.reset.poke(true.B)
+        dut.clock.step()
+        dut.reset.poke(false.B)
+        dut.io.colorBase.poke(colorBase.U)
+        dut.io.depthBase.poke(depthBase.U)
+        dut.io.stride.poke(stride.U)
+        dut.io.depthTestEnable.poke(false.B)
+        dut.io.depthFunc.poke(0.U)
+        dut.io.depthWriteEnable.poke(true.B)
+        dut.io.cullMode.poke(0.U)
+        dut.io.sampleMode.poke(sampleMode.U)
+        dut.io.texEnable.poke(false.B)
+        dut.io.texBase.poke(0.U)
+        dut.io.texWidth.poke(0.U)
+        dut.io.texHeight.poke(0.U)
+        dut.io.texWrapClamp.poke(false.B)
+        dut.io.texMaxLevel.poke(0.U)
+        dut.io.texMem.req.ready.poke(true.B)
+        dut.io.texMem.resp.valid.poke(false.B)
+        dut.io.mem.req.ready.poke(true.B)
+        dut.io.mem.resp.valid.poke(false.B)
+
+        val clip = Seq((-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0))
+        val depth = Seq(0, 4096, 2048)
+        val drawBits = dut.io.draw.bits.asInstanceOf[SceneTriangle]
+        drawBits.stateOverride.poke(false.B)
+        for (i <- 0 until 3) {
+          drawBits.clip(i).x.poke(q(clip(i)._1).S)
+          drawBits.clip(i).y.poke(q(clip(i)._2).S)
+          drawBits.clip(i).z.poke(0.S)
+          drawBits.clip(i).w.poke(q(1.0).S)
+          drawBits.color(i).r.poke(255.U)
+          drawBits.color(i).g.poke(0.U)
+          drawBits.color(i).b.poke(0.U)
+          drawBits.depth(i).poke(depth(i).S)
+        }
+        dut.io.draw.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.draw.valid.poke(false.B)
+
+        val respQ = scala.collection.mutable.Queue.empty[(Boolean, Int, Long)]
+        val captured = scala.collection.mutable.Queue.empty[(Boolean, Int, Long)]
+        var guard = 0
+        while (!dut.io.done.peek().litToBoolean && guard < 8000) {
+          dut.io.mem.req.ready.poke(true.B)
+          while (captured.nonEmpty) respQ.enqueue(captured.dequeue())
+          if (dut.io.mem.req.valid.peek().litToBoolean) {
+            val addr = dut.io.mem.req.bits.addr.peek().litValue.toInt
+            val write = dut.io.mem.req.bits.write.peek().litToBoolean
+            val data = dut.io.mem.req.bits.data.peek().litValue.toInt
+            if (write) mem(addr / 4) = data
+            captured.enqueue((write, addr, mem(addr / 4) & 0xffffffffL))
+          }
+          if (respQ.nonEmpty) {
+            val (isWrite, addr, data) = respQ.head
+            dut.io.mem.resp.valid.poke(true.B)
+            dut.io.mem.resp.bits.write.poke(isWrite.B)
+            dut.io.mem.resp.bits.data.poke(data.U)
+            dut.io.mem.resp.bits.addr.poke(addr.U)
+            if (dut.io.mem.resp.ready.peek().litToBoolean) respQ.dequeue()
+          } else dut.io.mem.resp.valid.poke(false.B)
+          dut.clock.step()
+          guard += 1
+        }
+        assert(guard < 8000, "per-sample depth draw did not drain")
+        result = mem
+      }
+      result
+    }
+
+    def depthWord(mem: Array[Int], mode: Int, x: Int, y: Int, sample: Int): Int = {
+      val sampleOffset = (x << mode) + (if (mode == 0) 0 else sample)
+      mem(depthBase / 4 + y * wordsPerRow + sampleOffset)
+    }
+
+    // Mode 0 keeps the legacy pixel-centre depth; 4x mode places one sample at
+    // each quarter-pixel offset around that same base point.
+    val centre = depthWord(drain(0), 0, 5, 5, 0)
+    assert(centre > 0, s"mode-0 centre depth was not written (got $centre)")
+    val mode2 = drain(2)
+    val expected = Seq(centre - 96, centre + 32, centre - 32, centre + 96)
+    for (s <- 0 until 4) {
+      val got = depthWord(mode2, 2, 5, 5, s)
+      assert(got == expected(s),
+        s"sample $s of pixel (5,5): got $got expected ${expected(s)}")
+    }
+    // The four samples are an affine function of the sample offset: the
+    // parallelogram identity holds and the mean is the interpolated centre.
+    val d = (0 until 4).map(s => depthWord(mode2, 2, 5, 5, s))
+    assert(d(0) + d(3) == d(1) + d(2), s"sample depths not affine: $d")
+    assert(d.sum == 4 * centre, s"sample mean ${d.sum / 4.0} != centre $centre")
+  }
 }

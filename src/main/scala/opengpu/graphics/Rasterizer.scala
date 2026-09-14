@@ -303,6 +303,13 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
     val sampleMode = Input(UInt(2.W))
     val pixel = Decoupled(new RasterPixel(config))
     val quad = Decoupled(new RasterQuad(config))
+    /** Registered per-triangle edge-plane coefficients, exported so the
+      * fragment stage can derive attribute gradients (per-sample depth) once
+      * per triangle.  These are the same registers the scan uses, so they are
+      * stable from the first emitted pixel of the triangle. */
+    val planeA = Output(Vec(3, SInt(34.W)))
+    val planeB = Output(Vec(3, SInt(34.W)))
+    val planeArea = Output(SInt(config.edgeWidth.W))
   })
 
   import FixedPointMath._
@@ -400,6 +407,11 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   private val areaReg = RegInit(0.S(config.edgeWidth.W))
   private val frontReg = RegInit(true.B)
   private val tlReg = Seq(RegInit(false.B), RegInit(false.B), RegInit(false.B))
+
+  // Per-triangle plane coefficients exported for attribute gradients.
+  io.planeA := coeffReg.a
+  io.planeB := coeffReg.b
+  io.planeArea := areaReg
 
   // Stepped candidates: single adds off the current registers.
   private val edgeNextCol = VecInit((0 until 3).map(i =>

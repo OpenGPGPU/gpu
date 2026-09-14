@@ -104,6 +104,9 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
     val done = Output(Bool())
     val pixel = Decoupled(new RasterFragment(config))
     val quad = Decoupled(new FragmentQuad(config))
+    /** Per-sample depths for the scalar pixel, valid with `pixel`.  Tied to
+      * zero in quad mode, whose core-backed path does not sample-expand. */
+    val depthSamples = Output(Vec(config.maxSampleCount, UInt(30.W)))
   })
 
   private val raster = Module(new TriangleRasterizer(config, quadMode))
@@ -144,6 +147,7 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
 
     io.pixel.valid := false.B
     io.pixel.bits := 0.U.asTypeOf(new RasterFragment(config))
+    io.depthSamples := 0.U.asTypeOf(Vec(config.maxSampleCount, UInt(30.W)))
     raster.io.pixel.ready := false.B
   } else {
     val interp = Module(new FragmentInterpolator(config))
@@ -157,6 +161,22 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
     interp.io.e1 := raster.io.pixel.bits.e1
     interp.io.e2 := raster.io.pixel.bits.e2
     interp.io.area := raster.io.pixel.bits.area
+
+    // Depth is affine in screen space, so one per-triangle gradient off the
+    // rasterizer's registered plane coefficients gives every sample's depth.
+    val depthGrad = Module(new DepthGradient(config))
+    depthGrad.io.planeA := raster.io.planeA
+    depthGrad.io.planeB := raster.io.planeB
+    depthGrad.io.area := raster.io.planeArea
+    depthGrad.io.d0 := io.depths(0)
+    depthGrad.io.d1 := io.depths(1)
+    depthGrad.io.d2 := io.depths(2)
+    val sampleDepths = Module(new SampleDepth(config.maxSampleCount))
+    sampleDepths.io.sampleMode := io.sampleMode
+    sampleDepths.io.centre := interp.io.depth
+    sampleDepths.io.quarterDx := depthGrad.io.quarterDx
+    sampleDepths.io.quarterDy := depthGrad.io.quarterDy
+    io.depthSamples := sampleDepths.io.depths
 
     io.pixel.valid := raster.io.pixel.valid
     io.pixel.bits.x := raster.io.pixel.bits.x

@@ -82,3 +82,88 @@ class SampleExpander(maxSampleCount: Int = 4) extends Module {
   }
   when(io.out.fire) { remaining := remaining & (remaining - 1.U) }
 }
+
+/** Screen-space depth gradient of one triangle, evaluated once per triangle.
+  *
+  * The rasterizer's edge plane is `e_k(X,Y) = a_k*X + b_k*Y + c_k` with X,Y in
+  * fixed-point units, so `de_k/dX = a_k` and `de_k/dY = b_k`.  Since
+  * `depth = (Σ e_k*d_k)/area`, the depth change per fixed-point unit is
+  * `(Σ a_k*d_k)/area`.  A quarter pixel is `2^(subPixelBits-2)` fixed-point
+  * units, so the shift is applied to the numerator before the divide to keep
+  * precision.  `a_k` and `area` both flip with winding, so the ratio is
+  * winding-independent and matches the interpolator's signed division.
+  *
+  * The inputs are registered per-triangle values, so the result is a single
+  * cone per triangle rather than one per interpolator lane.  `area` is nonzero
+  * for every triangle that scans (degenerate ones are culled downstream).
+  */
+class DepthGradient(config: GraphicsConfig) extends Module {
+  require(config.subPixelBits >= 2,
+    "a quarter-pixel sample offset needs at least two sub-pixel bits")
+  val io = IO(new Bundle {
+    val planeA = Input(Vec(3, SInt(34.W)))
+    val planeB = Input(Vec(3, SInt(34.W)))
+    val area = Input(SInt(config.edgeWidth.W))
+    val d0 = Input(SInt(32.W))
+    val d1 = Input(SInt(32.W))
+    val d2 = Input(SInt(32.W))
+    val quarterDx = Output(SInt(32.W))
+    val quarterDy = Output(SInt(32.W))
+  })
+  private val depths = Seq(io.d0, io.d1, io.d2)
+  private def gradient(plane: Vec[SInt]): SInt = {
+    val num = plane.zip(depths).map { case (a, d) => a * d }.reduce(_ + _)
+    val scaled = num << (config.subPixelBits - 2)
+    (scaled / io.area)(31, 0).asSInt
+  }
+  io.quarterDx := gradient(io.planeA)
+  io.quarterDy := gradient(io.planeB)
+}
+
+/** Per-sample depth from the centre depth and the quarter-pixel gradients:
+  *
+  *   depthSample[s] = centre + sx[s]*quarterDx + sy[s]*quarterDy
+  *
+  * Lanes whose sample position is not part of the active mode are zero.  In 1x
+  * mode the single sample is the legacy truncated centre depth, so single-
+  * sample output is bit-identical; multi-sample results are saturated to the
+  * 30-bit D24 packing so an out-of-range sample cannot wrap into the buffer.
+  */
+class SampleDepth(maxSampleCount: Int = 4) extends Module {
+  require(Set(1, 2, 4)(maxSampleCount))
+  val io = IO(new Bundle {
+    val sampleMode = Input(UInt(2.W))
+    val centre = Input(SInt(32.W))
+    val quarterDx = Input(SInt(32.W))
+    val quarterDy = Input(SInt(32.W))
+    val depths = Output(Vec(maxSampleCount, UInt(30.W)))
+  })
+  private val maxDepth = (1 << 30) - 1
+
+  // Mirrors SampleCoverage: a zero offset contributes nothing, and negating an
+  // operand avoids widening literals.
+  private def offset(base: SInt, pos: Int): SInt =
+    if (pos == 0) 0.S else if (pos > 0) base else -base
+
+  private def sampleDepth(sx: Int, sy: Int): UInt = {
+    // Widening adds: the centre and gradients are full 32-bit values, so the
+    // offset sum must not wrap before the saturating compare.
+    val v = io.centre +& offset(io.quarterDx, sx) +& offset(io.quarterDy, sy)
+    val clamped = Mux(v < 0.S, 0.S,
+      Mux(v > maxDepth.S, maxDepth.S, v))
+    clamped(29, 0).asUInt
+  }
+
+  private val legacyCentre = io.centre(29, 0).asUInt
+  private def modeDepths(mode: Int): Vec[UInt] = {
+    val positions = Msaa.positions(mode)
+    VecInit((0 until maxSampleCount).map { i =>
+      if (mode == 0 && i == 0) legacyCentre
+      else if (i < positions.length) sampleDepth(positions(i)._1, positions(i)._2)
+      else 0.U(30.W)
+    })
+  }
+  io.depths := MuxLookup(io.sampleMode,
+    VecInit(Seq.fill(maxSampleCount)(0.U(30.W))))(
+    (0 to log2Ceil(maxSampleCount)).map(m => m.U -> modeDepths(m)))
+}
