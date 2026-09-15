@@ -186,9 +186,13 @@ Close the current feature set before adding more shader operations.
 - Keep draw-context retirement distinct from job completion: context state may
   retire after its final sample reaches an OM entry that snapshots the state;
   job DONE/fences must wait for acknowledged memory writes and lower-path drain.
-- Add ABI layout/encoding checks and a bounded integration matrix covering
-  fixed-function, fragment-core and vertex-core builds, legacy/ring submission,
-  padded strides, invalid input and delayed/backpressured memory responses.
+- ABI layout/encoding checks parse `driver/gpu_abi.h` and compare the register
+  map, capability word, fragment control ABI, record sizes and blend/stencil/IH
+  shifts against the Scala definitions (`GpuAbiLayoutSpec`), so the UAPI and
+  hardware cannot drift silently. The bounded integration matrix covers
+  fixed-function and fragment-core builds, legacy and ring submission, padded
+  strides, invalid sample-modes and delayed/backpressured memory responses;
+  vertex-core record decoding is covered by `CommandBufferStageSpec`.
 
 Exit: accepted submissions have consistent semantics across supported paths;
 invalid submissions have documented error behavior; mixed-draw state and

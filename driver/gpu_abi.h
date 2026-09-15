@@ -604,8 +604,11 @@ struct gpu_ih_record {
     u32 reserved;
 };
 
-#define GPU_IH_HDR_ID(h)     ((h) & 0xffffu)
-#define GPU_IH_HDR_DONE(h)   ((h) & (1u << 16))
-#define GPU_IH_HDR_ERROR(h)  ((h) & (1u << 17))
+#define GPU_IH_HDR_ID_BITS   0xffffu
+#define GPU_IH_HDR_DONE_BIT  16u
+#define GPU_IH_HDR_ERROR_BIT 17u
+#define GPU_IH_HDR_ID(h)     ((h) & GPU_IH_HDR_ID_BITS)
+#define GPU_IH_HDR_DONE(h)   ((h) & (1u << GPU_IH_HDR_DONE_BIT))
+#define GPU_IH_HDR_ERROR(h)  ((h) & (1u << GPU_IH_HDR_ERROR_BIT))
 
 #endif /* RISCV_SIMT_GPU_ABI_H */

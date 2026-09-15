@@ -422,12 +422,19 @@ class RenderHost(
     scanoutWidthReg.orR && scanoutHeightReg.orR
   private val scanoutStatusBits = Cat(0.U(31.W), scanoutActive)
   private val capabilityBits =
-    ((if (fragCore) 1 else 0) | (1 << 1) |
-      (if (vertCore) (1 << 2) else 0) | (1 << 3) |
-      (1 << 4) | (1 << 5) | (if (unifiedCommands) (1 << 6) else 0) |
-      (if (fragCore) 0 else (1 << 7) | (maxSampleMode << 16)) |
-      (if (unifiedCommands) (1 << 18) else 0) |
-      (gpuConfig.warps * gpuConfig.lanes << 8)).U(32.W)
+    ((if (fragCore) (1 << GpuCapabilities.FragmentCore) else 0) |
+      (1 << GpuCapabilities.JobQueue) |
+      (if (vertCore) (1 << GpuCapabilities.VertexCore) else 0) |
+      (1 << GpuCapabilities.ClearEngine) |
+      (1 << GpuCapabilities.BlitEngine) |
+      (1 << GpuCapabilities.StridedEngine) |
+      (if (unifiedCommands) (1 << GpuCapabilities.UnifiedCommands) else 0) |
+      (if (fragCore) 0
+       else (1 << GpuCapabilities.Msaa) |
+         (maxSampleMode << GpuCapabilities.MsaaMaxModeShift)) |
+      (if (unifiedCommands) (1 << GpuCapabilities.UnifiedReset) else 0) |
+      (gpuConfig.warps * gpuConfig.lanes << GpuCapabilities.FragmentBatchShift))
+      .U(32.W)
   private val jobStatusBits = Cat(
     0.U(22.W), jq.io.pendingValid, jq.io.running, 0.U(7.W), jqEnabled)
 
