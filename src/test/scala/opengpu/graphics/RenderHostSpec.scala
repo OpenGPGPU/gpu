@@ -655,4 +655,151 @@ class RenderHostSpec extends AnyFlatSpec {
         "STATUS must report DONE after the last queued job")
     }
   }
+
+  for (queued <- Seq(false, true); mode <- Seq(0, 2)) {
+    it should s"wait for framebuffer and IH write visibility (queued=$queued, mode=$mode)" in {
+      val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+      val cfg = GpuConfig(lanes = 4, warps = 2)
+      val samples = 1 << mode
+      val stride = (16 * samples + 4) * 4 // include a physical row gap
+      val colorBase = 0x8000
+      val depthBase = 0x10000
+      val cmdBase = 0x4000
+      val ringBase = 0x20000
+      val ihBase = 0x30000
+      val m = new MemModel
+      def vertex(x: Double, y: Double) =
+        ((q(x), q(y), 0, q(1)), (255, 0, 0), 0x10)
+      encode(Seq(vertex(-0.5, -0.5), vertex(0, -0.5), vertex(-0.5, 0)))
+        .zipWithIndex.foreach { case (w, i) => m.wwrite(cmdBase + i * 4, w) }
+      for (i <- 0 until stride * 16 / 4) {
+        m.wwrite(colorBase + i * 4, 0x12345678)
+        m.wwrite(depthBase + i * 4, 0x00ffffff)
+      }
+      val descriptor = Seq((1 << 16) | 7, cmdBase, colorBase, depthBase,
+        stride, 0x81, 0, 0, 0, mode) ++ Seq.fill(6)(0)
+      descriptor.zipWithIndex.foreach { case (w, i) => m.wwrite(ringBase + i * 4, w) }
+
+      simulate(new RenderHost(gfx, cfg)) { dut =>
+        dut.io.externalCompletion.poke(false.B)
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        dut.io.cbMem.req.ready.poke(false.B)
+        dut.io.cbMem.resp.valid.poke(false.B)
+        dut.io.fbMem.req.ready.poke(false.B)
+        dut.io.fbMem.resp.valid.poke(false.B)
+        dut.io.kernelMemReq.ready.poke(true.B)
+        dut.io.kernelMemResp.valid.poke(false.B)
+        dut.io.kernelWordMemReq.ready.poke(true.B)
+        dut.io.kernelWordMemResp.valid.poke(false.B)
+        regWrite(dut, RenderHostRegs.IRQ, 1)
+        if (queued) {
+          regWrite(dut, RenderHostRegs.JOB_RING_BASE, ringBase)
+          regWrite(dut, RenderHostRegs.JOB_RING_SIZE, 2)
+          regWrite(dut, RenderHostRegs.IH_BASE, ihBase)
+          regWrite(dut, RenderHostRegs.IH_SIZE, 2)
+          regWrite(dut, RenderHostRegs.JOB_WPTR, 1)
+          regWrite(dut, RenderHostRegs.JOB_CONTROL, 1)
+        } else {
+          regWrite(dut, RenderHostRegs.CMD_BASE, cmdBase)
+          regWrite(dut, RenderHostRegs.CMD_COUNT, 1)
+          regWrite(dut, RenderHostRegs.COLOR_BASE, colorBase)
+          regWrite(dut, RenderHostRegs.DEPTH_BASE, depthBase)
+          regWrite(dut, RenderHostRegs.STRIDE, stride)
+          regWrite(dut, RenderHostRegs.DEPTH_TEST_ENABLE, 1)
+          regWrite(dut, RenderHostRegs.DEPTH_FUNC, 0)
+          regWrite(dut, RenderHostRegs.DEPTH_WRITE_ENABLE, 1)
+          regWrite(dut, RenderHostRegs.MSAA_CONFIG, mode)
+          regWrite(dut, RenderHostRegs.CONTROL, 1)
+        }
+
+        // Observe MMIO combinationally: clocked regRead would consume memory
+        // handshakes outside the model and invalidate the visibility check.
+        def peekReg(addr: Int): BigInt = {
+          dut.io.reg.req.valid.poke(true.B)
+          dut.io.reg.req.bits.isWrite.poke(false.B)
+          dut.io.reg.req.bits.addr.poke(addr.U)
+          dut.io.reg.req.bits.data.poke(0.U)
+          dut.io.reg.req.bits.strb.poke(15.U)
+          val value = dut.io.reg.resp.bits.data.peek().litValue
+          dut.io.reg.req.valid.poke(false.B)
+          value
+        }
+        case class Response(write: Boolean, addr: Long, data: Long, due: Int)
+        val cb = mutable.Queue.empty[Response]
+        val fb = mutable.Queue.empty[Response]
+        var cycle = 0
+        var stalledFb = 0
+        var stalledFinalIh = 0
+        var writesCommitted = 0
+        var doneBeforeIh = false
+        var complete = false
+        while (!complete && cycle < 30000) {
+          val status = peekReg(RenderHostRegs.STATUS)
+          val ihWptr = peekReg(RenderHostRegs.IH_WPTR)
+          val irq = dut.io.irq.peek().litToBoolean
+          if (fb.exists(_.write)) {
+            assert((status & 3) == 1, "pending framebuffer writes require BUSY without DONE")
+            assert(!irq && ihWptr == 0, "framebuffer writes must precede completion publication")
+            if (fb.head.due > cycle) stalledFb += 1
+          }
+          if (cb.exists(r => r.write && r.addr == ihBase + 12)) {
+            assert(!irq && ihWptr == 0, "final IH acknowledgement gates IRQ and IH_WPTR")
+            if ((status & 2) != 0) doneBeforeIh = true
+            if (cb.head.due > cycle) stalledFinalIh += 1
+          }
+          for ((port, pending, framebuffer) <- Seq(
+            (dut.io.cbMem, cb, false), (dut.io.fbMem, fb, true))) {
+            port.req.ready.poke((cycle % 5 != 0).B)
+            port.resp.valid.poke((pending.nonEmpty && pending.head.due <= cycle).B)
+            if (pending.nonEmpty) {
+              val r = pending.head
+              port.resp.bits.write.poke(r.write.B)
+              port.resp.bits.addr.poke(r.addr.U)
+              port.resp.bits.data.poke((if (r.write) 0L else r.data).U)
+              if (port.resp.valid.peek().litToBoolean && port.resp.ready.peek().litToBoolean) {
+                // A write becomes visible only when its acknowledgement is accepted.
+                if (r.write) {
+                  m.wwrite(r.addr, r.data.toInt)
+                  if (framebuffer) writesCommitted += 1
+                }
+                pending.dequeue()
+              }
+            }
+            if (port.req.valid.peek().litToBoolean && port.req.ready.peek().litToBoolean) {
+              val addr = port.req.bits.addr.peek().litValue.toLong
+              val write = port.req.bits.write.peek().litToBoolean
+              val data = if (write) port.req.bits.data.peek().litValue.toLong else m.word(addr)
+              val delay = if (write && framebuffer) 37
+                else if (write && addr == ihBase + 12) 61 else 2
+              pending.enqueue(Response(write, addr, data, cycle + delay))
+            }
+          }
+          if (irq) {
+            assert(fb.isEmpty && cb.isEmpty, "completion cannot outrun the memory model")
+            assert((status & 7) == 2, "successful completion must be DONE without BUSY/ERROR")
+            complete = true
+          }
+          dut.clock.step()
+          cycle += 1
+        }
+        assert(complete, "delayed acknowledgements must eventually complete")
+        assert(stalledFb >= 37 && writesCommitted > 0, "exercise real delayed framebuffer writes")
+        if (queued) {
+          assert(stalledFinalIh >= 60 && doneBeforeIh,
+            "render DONE and acknowledged IH publication are separate boundaries")
+          assert(peekReg(RenderHostRegs.IH_WPTR) == 1)
+          assert(m.word(ihBase) == ((1 << 16) | 7))
+          assert(m.word(ihBase + 4) == 0 && m.word(ihBase + 8) == 0)
+        }
+        for (sample <- 0 until samples) {
+          val offset = 5 * stride + (5 * samples + sample) * 4
+          assert(m.word(colorBase + offset) == 0xff0000ffL)
+          assert(m.word(depthBase + offset) == 0x10)
+        }
+        for (y <- 0 until 16; pad <- 0 until 4)
+          assert(m.word(colorBase + y * stride + (16 * samples + pad) * 4) == 0x12345678)
+      }
+    }
+  }
+
 }

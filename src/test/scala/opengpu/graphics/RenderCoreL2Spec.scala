@@ -64,7 +64,7 @@ class RenderCoreL2Spec extends AnyFlatSpec {
     }
   }
 
-  it should "shade a draw and write the framebuffer through one shared L2" in {
+  it should "wait for delayed lower-memory writes before completing a shared-L2 shader draw" in {
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
     val cfg = GpuConfig(lanes = 4, warps = 2)
     val stride = 16 * 4
@@ -147,41 +147,51 @@ class RenderCoreL2Spec extends AnyFlatSpec {
       // writes acknowledged, no response awaiting consumption), so the
       // framebuffer is complete in the off-chip memory the moment done is
       // observed - no quiet-cycle fence required.
-      val respQ = mutable.Queue.empty[(BigInt, BigInt)]
+      case class LowerResponse(id: BigInt, addr: Long, data: BigInt,
+        write: Boolean, mask: BigInt, due: Int)
+      val respQ = mutable.Queue.empty[LowerResponse]
       var guard = 0
       var doneSeen = false
+      var delayedWriteCycles = 0
       while (!doneSeen && guard < 200000) {
-        dut.io.memoryRequest.ready.poke(true.B)
-        val hadPending = respQ.nonEmpty
+        dut.io.memoryRequest.ready.poke((guard % 5 != 0).B)
+        // Hold responses without making writes visible in backing memory.
+        dut.io.memoryResponse.valid.poke(false.B)
+        if (respQ.nonEmpty) {
+          val r = respQ.head
+          if (r.write) {
+            assert(!dut.io.done.peek().litToBoolean,
+              "DONE must wait for lower-memory write acknowledgements")
+            if (r.due > guard) delayedWriteCycles += 1
+          }
+          if (r.due <= guard) {
+            dut.io.memoryResponse.valid.poke(true.B)
+            dut.io.memoryResponse.bits.transactionId.poke(r.id.U)
+            dut.io.memoryResponse.bits.readData.poke((if (r.write) BigInt(0) else r.data).U)
+            dut.io.memoryResponse.bits.fault.poke(false.B)
+            if (dut.io.memoryResponse.ready.peek().litToBoolean) {
+              if (r.write) m.lineWrite(r.addr, r.data, r.mask)
+              respQ.dequeue()
+            }
+          }
+        }
         if (dut.io.memoryRequest.valid.peek().litToBoolean &&
             dut.io.memoryRequest.ready.peek().litToBoolean) {
           val a = dut.io.memoryRequest.bits.address.peek().litValue.toLong
           val id = dut.io.memoryRequest.bits.transactionId.peek().litValue
-          val isWrite = dut.io.memoryRequest.bits.isWrite.peek().litToBoolean
-          val data =
-            if (isWrite) {
-              val wd = dut.io.memoryRequest.bits.writeData.peek().litValue
-              val bm = dut.io.memoryRequest.bits.byteMask.peek().litValue
-              m.lineWrite(a, wd, bm)
-              BigInt(0)
-            } else m.lineRead(a)
-          respQ.enqueue((id, data))
-        }
-        if (hadPending) {
-          val (id, data) = respQ.head
-          dut.io.memoryResponse.valid.poke(true.B)
-          dut.io.memoryResponse.bits.transactionId.poke(id.U)
-          dut.io.memoryResponse.bits.readData.poke(data.U)
-          dut.io.memoryResponse.bits.fault.poke(false.B)
-          if (dut.io.memoryResponse.ready.peek().litToBoolean) respQ.dequeue()
-        } else {
-          dut.io.memoryResponse.valid.poke(false.B)
+          val write = dut.io.memoryRequest.bits.isWrite.peek().litToBoolean
+          val data = if (write) dut.io.memoryRequest.bits.writeData.peek().litValue else m.lineRead(a)
+          val mask = dut.io.memoryRequest.bits.byteMask.peek().litValue
+          val delay = if (write && a >= colorBase && a < depthBase + stride * 16) 31 else 1
+          respQ.enqueue(LowerResponse(id, a, data, write, mask, guard + delay))
         }
         if (dut.io.done.peek().litToBoolean) doneSeen = true
         dut.clock.step()
         guard += 1
       }
       assert(doneSeen, "core-backed renderer over the L2 did not drain")
+      assert(respQ.isEmpty, "DONE must not leave any lower-memory response pending")
+      assert(delayedWriteCycles >= 30, "exercise delayed framebuffer visibility")
 
       def rgb(x: Int, y: Int): (Int, Int, Int) = {
         val c = m.word(colorBase + (y * 16 + x) * 4).toInt
