@@ -128,10 +128,11 @@ record words 36/37/35 (see [STENCIL_BLEND_DESIGN.md](STENCIL_BLEND_DESIGN.md)).
 | 0x13C | STENCIL_CONFIG | RW | enable bit 0; func 6:4; fail op 9:7; depth-fail op 12:10; depth-pass op 15:13 |
 | 0x140 | STENCIL_REF_MASKS | RW | reference 7:0, read mask 15:8, write mask 23:16 |
 | 0x144 | BLEND_CONFIG | RW | present bit 0, source factor 7:4, destination factor 11:8, equation 14:12 |
+| 0x148 | UCMD_SAMPLE_MODE | RW | bits 1:0 sample mode staged for a unified `GPU_UCMD_OP_RESOLVE` |
 
-The exclusive mapped end is `0x148`. Unified-command routing covers
-`[0xC4, 0x134)` and `0x138`; the other mapped registers route to `RenderHost`.
-Stencil/blend state is snapshotted at START.
+The exclusive mapped end is `0x14C`. Unified-command routing covers
+`[0xC4, 0x134)`, `0x138` and `0x148`; the other mapped registers route to
+`RenderHost`. Stencil/blend state is snapshotted at START.
 
 START snapshots the programmed job state. On queue-capable hardware, the host
 writes a 64-byte descriptor to the job ring and advances `JOB_WPTR`. Jobs

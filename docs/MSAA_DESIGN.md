@@ -164,9 +164,10 @@ Legacy `START` snapshots `MSAA_CONFIG` with the other render state. An invalid
 mode or a mode above the elaborated maximum reports a submission error rather
 than silently falling back.
 
-`GpuHostAxi` routes `[0xC4, 0x134)` and the safe-reset register at `0x138`
-to `GpuCommandMmio`. `0x134` routes to `RenderHost`, as do the stencil/blend
-registers at `0x13C`–`0x144`. The current exclusive mapped end is `0x148`.
+`GpuHostAxi` routes `[0xC4, 0x134)`, the safe-reset register at `0x138` and
+the resolve `UCMD_SAMPLE_MODE` register at `0x148` to `GpuCommandMmio`. `0x134`
+routes to `RenderHost`, as do the stencil/blend registers at `0x13C`–`0x144`.
+The current exclusive mapped end is `0x14C`.
 
 ### Job Ring and Linux UAPI
 
@@ -377,9 +378,11 @@ implemented. The following describes the intended interface and fence contract.
 The RTL path exists ahead of the driver: `GPU_UCMD_OP_RESOLVE` carries a
 `ResolveDescriptor` through `GpuCommandRouter` to the `MsaaResolveEngine`
 (behind an `OmWordToLinePort` into the shared L2), both verified end to end by
-`GpuSystemSpec`. Range admission, buffer validation, the typed driver operation,
-scheduler fences and KMS ordering remain to be added; until then the MMIO
-bridge does not stage a resolve descriptor.
+`GpuSystemSpec`. The unified MMIO bridge stages the source/destination,
+extent, strides and the `UCMD_SAMPLE_MODE` register (0x148), so a host can
+submit a resolve with the existing unified command path. Range admission,
+buffer validation, the typed driver operation, scheduler fences and KMS
+ordering remain to be added.
 
 Resolve averages every pixel's physical colour samples into a separate
 single-sample RGBA8888 buffer. Depth resolve is out of scope.

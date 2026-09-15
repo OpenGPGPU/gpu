@@ -193,10 +193,11 @@ class GpuHostAxi(
     val lastBeat = beat === lenReg
     // RenderHost owns 0x000..0xC4, MSAA_CONFIG at 0x134, and the
     // stencil/blend registers at 0x13C..0x144; the unified block owns
-    // 0xC4..0x130 and the RESET register at 0x138. The overall map ends at
-    // RenderHostRegs.END (0x148) for both build flavours; non-unified builds
-    // read the unified range as reserved zero.
-    val mappedEnd = RenderHostRegs.END.U
+    // 0xC4..0x130, the RESET register at 0x138 and the resolve SAMPLE_MODE
+    // register at 0x148. The overall map ends at GpuCommandMmioRegs.END
+    // (0x14C) for both build flavours; non-unified builds read the unified
+    // range as reserved zero.
+    val mappedEnd = GpuCommandMmioRegs.END.U
     val beatOk = (beatAddr & 0x3.U) === 0.U && beatAddr < mappedEnd
 
     val writeBeat = writeActive && !bPending
@@ -210,7 +211,8 @@ class GpuHostAxi(
     val targetUnified =
       (beatAddr >= GpuCommandMmioRegs.COMMAND_ID.U &&
         beatAddr < RenderHostRegs.MSAA_CONFIG.U) ||
-        beatAddr === GpuCommandMmioRegs.RESET.U
+        beatAddr === GpuCommandMmioRegs.RESET.U ||
+        beatAddr === GpuCommandMmioRegs.SAMPLE_MODE.U
     reg.req.valid := busRegValid && !targetUnified
     reg.req.bits.isWrite := writeActive
     reg.req.bits.addr := beatAddr(9, 0)

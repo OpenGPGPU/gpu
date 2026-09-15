@@ -171,8 +171,8 @@ class GpuHostAxiSpec extends AnyFlatSpec {
       axiRead(dut, 0x200)
       assert(respVar == 2L, s"out-of-map read must return SLVERR, got RRESP=$respVar")
 
-      // END (0x148) is past the end of the register map.
-      axiRead(dut, RenderHostRegs.END)
+      // END is past the end of the whole register map.
+      axiRead(dut, GpuCommandMmioRegs.END)
       assert(respVar == 2L, s"read past END must return SLVERR, got RRESP=$respVar")
 
       // MSAA_CONFIG is routed to RenderHost at 0x134.

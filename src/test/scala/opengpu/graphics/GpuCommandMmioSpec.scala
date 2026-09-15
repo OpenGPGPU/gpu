@@ -55,8 +55,11 @@ class GpuCommandMmioSpec extends AnyFlatSpec {
       write(dut, GpuCommandMmioRegs.DMA_DEPENDENCY, 0x5502)
       write(dut, GpuCommandMmioRegs.WAIT_EVENT, 0x0321)
       write(dut, GpuCommandMmioRegs.SIGNAL_EVENT, 0x0443)
+      write(dut, GpuCommandMmioRegs.SAMPLE_MODE, 2)
       write(dut, GpuCommandMmioRegs.SUBMIT, 1)
 
+      assert(read(dut, GpuCommandMmioRegs.SAMPLE_MODE) == 2L,
+        "the resolve sample mode must round-trip")
       dut.io.command.valid.expect(true.B)
       dut.io.command.bits.commandId.expect(0x2a.U)
       dut.io.command.bits.opcode.expect(GpuCommandOpcode.stridedCopy)
@@ -75,6 +78,7 @@ class GpuCommandMmioSpec extends AnyFlatSpec {
       dut.io.command.bits.signalEvent.expect(true.B)
       dut.io.command.bits.signalEventId.expect(0x43.U)
       dut.io.command.bits.signalEventGeneration.expect(4.U)
+      dut.io.command.bits.sampleMode.expect(2.U)
       dut.io.command.ready.poke(true.B)
       dut.clock.step()
       dut.io.command.ready.poke(false.B)

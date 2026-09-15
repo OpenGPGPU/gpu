@@ -40,7 +40,11 @@ object GpuCommandMmioRegs {
     * event.  Lives outside the contiguous staging bank (MSAA_CONFIG owns
     * 0x134); the AXI top routes this one address here explicitly. */
   val RESET = 0x138
-  val END = 0x13c
+  /** MSAA sample mode staged for a typed resolve submission (bits 1:0; 0/1/2).
+    * Placed past `RenderHostRegs.END` (0x148), which was previously invalid, so
+    * the AXI top routes this one address here as well. */
+  val SAMPLE_MODE = 0x148
+  val END = 0x14c
 }
 
 /** Register-programmed bridge to the ordered unified GPU command stream. */
@@ -95,6 +99,7 @@ class GpuCommandMmio(
   private val destinationStride = RegInit(0.U(32.W))
   private val waitEvent = RegInit(0.U(32.W))
   private val signalEvent = RegInit(0.U(32.W))
+  private val sampleMode = RegInit(0.U(32.W))
   private val submitOverflow = RegInit(false.B)
   private val resetActive = RegInit(false.B)
   private val resetRejected = RegInit(false.B)
@@ -141,9 +146,8 @@ class GpuCommandMmio(
   queue.io.enq.bits.height := height
   queue.io.enq.bits.sourceStride := sourceStride
   queue.io.enq.bits.destinationStride := destinationStride
-  // Resolve sample mode has no staged register yet; typed resolve submission is
-  // wired through the command router before this MMIO bridge exposes it.
-  queue.io.enq.bits.sampleMode := 0.U
+  // Typed resolve sample mode (1x/2x/4x); ignored by other opcodes.
+  queue.io.enq.bits.sampleMode := sampleMode(1, 0)
   queue.io.enq.bits.waitForEvent := flags(1)
   queue.io.enq.bits.waitEventId := waitEvent(commandIdWidth - 1, 0)
   queue.io.enq.bits.waitEventGeneration := waitEvent(15, 8)
@@ -211,6 +215,9 @@ class GpuCommandMmio(
       is(GpuCommandMmioRegs.SIGNAL_EVENT.U) {
         signalEvent := io.reg.req.bits.data
       }
+      is(GpuCommandMmioRegs.SAMPLE_MODE.U) {
+        sampleMode := io.reg.req.bits.data
+      }
       is(GpuCommandMmioRegs.STATUS.U) {
         when(io.reg.req.bits.data(2)) { submitOverflow := false.B }
         when(io.reg.req.bits.data(4)) { resetRejected := false.B }
@@ -247,6 +254,7 @@ class GpuCommandMmio(
     GpuCommandMmioRegs.DESTINATION_STRIDE.U -> destinationStride,
     GpuCommandMmioRegs.WAIT_EVENT.U -> waitEvent,
     GpuCommandMmioRegs.SIGNAL_EVENT.U -> signalEvent,
+    GpuCommandMmioRegs.SAMPLE_MODE.U -> sampleMode,
     GpuCommandMmioRegs.STATUS.U -> status,
     GpuCommandMmioRegs.COMPLETION.U -> completionMeta,
     GpuCommandMmioRegs.COMPLETION_BYTES_LO.U -> completion.bytesProcessed(31, 0),

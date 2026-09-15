@@ -119,6 +119,10 @@
  * the completion IRQ.  Submissions during the drain are refused with
  * STATUS.RESET_REJECTED.  Present only when GPU_CAP_UNIFIED_RESET is set. */
 #define GPU_REG_UCMD_RESET          0x138
+/* MSAA sample mode staged for the next unified command (GPU_UCMD_OP_RESOLVE
+ * reads it; bits 1:0 are 0 = 1x, 1 = 2x, 2 = 4x).  Placed past the legacy
+ * RenderHost register map, which ended at 0x148. */
+#define GPU_REG_UCMD_SAMPLE_MODE    0x148
 
 /* MSAA sample-mode register (bits 1:0; 0 = 1x, 1 = 2x, 2 = 4x).  Snapshotted
  * on the legacy START path exactly like the other execution config; the
