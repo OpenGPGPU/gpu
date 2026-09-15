@@ -209,6 +209,10 @@ qualify a capability as implemented end to end.
 - Add the typed resolve operation, validated source/destination ranges and
   scheduler ownership. Start with the trusted compute-kernel design in
   [MSAA_DESIGN.md](MSAA_DESIGN.md); measure before adding a dedicated engine.
+  The streaming backend (`MsaaResolveEngine`) is implemented and unit-tested
+  behind a word-request port (channel averaging, half-up rounding, padded
+  strides); only the typed driver operation, range validation, scheduler
+  fences and KMS ordering remain.
 - Attach source-read and destination-write reservation fences and sync objects;
   KMS must wait for resolved output before scanout.
 - Enable programmable MSAA only after helper-lane, derivative, discard,

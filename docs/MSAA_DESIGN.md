@@ -374,6 +374,10 @@ depth; increasing it is a measured optimisation, not a correctness dependency.
 
 No typed resolve ioctl, scheduler job or trusted resolve kernel is currently
 implemented. The following describes the intended interface and fence contract.
+The streaming average itself is implemented as the standalone
+`MsaaResolveEngine` backend (`MsaaResolve.scala`, verified by `MsaaResolveSpec`)
+so the execution backend can be qualified before the typed driver operation,
+bounds validation and scheduler fencing are added.
 
 Resolve averages every pixel's physical colour samples into a separate
 single-sample RGBA8888 buffer. Depth resolve is out of scope.
@@ -490,7 +494,7 @@ memory-port utilisation under 2x and 4x workloads.
 | Coverage/depth | Mode-specific LUT, scalar/quad masks, expanded bounds, shared triangle gradients and sample depth implemented | Broaden edge and precision regression coverage |
 | Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented internally | Advertised Linux support and integrated multisample qualification |
 | Expansion/OM | Backpressured expander, sample addresses, address-hazard ordering and acknowledged write drain implemented | Broader integrated multisample regressions |
-| Resolve | Design only | Typed operation, trusted kernel, bounds validation, scheduler fences and KMS integration |
+| Resolve | Streaming `MsaaResolveEngine` backend implemented and unit-tested (channel averaging, rounding, padded strides, one-outstanding-request protocol) | Typed operation, trusted kernel, bounds validation, scheduler fences and KMS integration |
 
 ## Verification
 
@@ -499,7 +503,8 @@ selection and full-width control-word decisions), `MsaaSpec` (sample patterns, e
 reference/clamping), `RenderPipelineSpec` (sample depth and 1x core-backed
 expansion), `KernelFragStageSpec` (ABI-1 emit/depth override, malformed-control
 discard/retirement and overlapping batch ABI snapshots), and
-`OutputMergerSpec` (write-acknowledgement drain, blending and stencil).
+`OutputMergerSpec` (write-acknowledgement drain, blending and stencil) and
+`MsaaResolveSpec` (resolve channel averaging, rounding and padded strides).
 `RenderCoreSpec`, `RenderHostSpec` and `GpuHostAxiSpec` cover integration and
 host behavior. Test presence is not a claim that all cases below are complete
 or that a full regression has passed.
@@ -507,7 +512,7 @@ or that a full regression has passed.
 Run the focused suites from the repository root:
 
 ```sh
-sbt 'testOnly opengpu.graphics.FragmentShaderAbiSpec opengpu.graphics.MsaaSpec opengpu.graphics.OutputMergerSpec opengpu.graphics.KernelFragStageSpec opengpu.graphics.RenderPipelineSpec opengpu.graphics.RenderCoreSpec opengpu.graphics.RenderHostSpec opengpu.graphics.GpuHostAxiSpec'
+sbt 'testOnly opengpu.graphics.FragmentShaderAbiSpec opengpu.graphics.MsaaSpec opengpu.graphics.MsaaResolveSpec opengpu.graphics.OutputMergerSpec opengpu.graphics.KernelFragStageSpec opengpu.graphics.RenderPipelineSpec opengpu.graphics.RenderCoreSpec opengpu.graphics.RenderHostSpec opengpu.graphics.GpuHostAxiSpec'
 ```
 
 The lists below are the target verification matrix, including pending resolve
