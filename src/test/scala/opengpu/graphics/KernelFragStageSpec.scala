@@ -956,6 +956,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       // accepted while batch 1 executes, and its flush commits batch 2 as
       // the parked slot.
       val emitted = scala.collection.mutable.ArrayBuffer.empty[Int]
+      val depthOverrides = scala.collection.mutable.ArrayBuffer.empty[Boolean]
       val kQueue = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
       val wQueue = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
       var guard = 0
@@ -967,6 +968,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
         // the parked slot (inject 2/3).
         inject match {
           case 0 =>
+            dut.io.abi1.poke(true.B) // draw 2 must not change draw 1
             pokeQuadLanes(dut, Seq(Frag(2, 0, 1, r = 0x22, g = 0, b = 0)))
             dut.io.fragIn.valid.poke(true.B)
             inject = 1
@@ -975,6 +977,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
             dut.io.flush.poke(true.B)
             inject = 2
           case 2 =>
+            dut.io.abi1.poke(false.B) // neither batch may use live ABI state
             dut.io.flush.poke(false.B)
             inject = 3
           case _ =>
@@ -1014,6 +1017,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
         }
         if (dut.io.out.valid.peek().litToBoolean) {
           emitted += dut.io.out.bits.color.r.peek().litValue.toInt
+          depthOverrides += dut.io.depthOverride.peek().litToBoolean
           dut.io.out.ready.poke(true.B)
         } else dut.io.out.ready.poke(false.B)
         dut.clock.step()
@@ -1029,6 +1033,9 @@ class KernelFragStageSpec extends AnyFlatSpec {
       }
       assert(emitted == Seq(0x11, 0x22),
         s"overlapped draws emitted out of order: $emitted")
+
+      assert(depthOverrides.toSeq == Seq(true, false),
+        s"each overlapping batch must retain its ABI: $depthOverrides")
 
       // Drain, then exactly one further retire event (draw 1's fired during
       // the emission loop once the OM-facing output drained).
@@ -1104,7 +1111,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       mem.putWord(0x1000L, 0, lw(10, 1, 288))
       mem.putWord(0x1000L, 1, sw(10, 1, 256))
       mem.putWord(0x1000L, 2, cease)
-      mem.putWord(0x8100L, 8, BigInt(controlWord))
+      mem.putWord(0x8100L, 8, BigInt(controlWord & 0xffffffffL))
 
       val depths = Seq(0x111, 0x222, 0x333, 0x444)
       pokeQuadLanes(dut, Seq(Frag(3, 4, 0x20,
@@ -1112,9 +1119,13 @@ class KernelFragStageSpec extends AnyFlatSpec {
       for (s <- depths.indices) dut.io.fragDepths(0)(s).poke(depths(s).U)
       dut.io.fragIn.valid.poke(true.B); dut.clock.step()
       dut.io.fragIn.valid.poke(false.B)
+      // A later draw may change the live selector before this batch executes.
+      dut.io.abi1.poke((!abi1).B)
       dut.io.flush.poke(true.B); dut.clock.step(); dut.io.flush.poke(false.B)
 
-      if (pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean)) {
+      assert(pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean ||
+        dut.io.drawRetire.valid.peek().litToBoolean), "ABI draw must emit or retire")
+      if (dut.io.out.valid.peek().litToBoolean) {
         result = AbiResult(true,
           dut.io.out.bits.coverageMask.peek().litValue.toInt,
           dut.io.depthOverride.peek().litToBoolean,
@@ -1157,6 +1168,13 @@ class KernelFragStageSpec extends AnyFlatSpec {
     assert(abi1Override.emitted, "ABI 1 word 0x3 must emit")
     assert(abi1Override.overrideDepth,
       "ABI 1 bit 1 set must select the shader-depth word")
+
+    // Reserved bits discard in ABI 1 even with emit set; ABI 0 keeps the
+    // full-width nonzero convention for the identical shader output.
+    assert(!runAbiCase(abi1 = true, controlWord = 0x80000001, mask = 0xf,
+      covered = true).emitted, "ABI 1 reserved bits must discard and retire")
+    assert(runAbiCase(abi1 = false, controlWord = 0x80000001, mask = 0xf,
+      covered = true).emitted, "ABI 0 high-bit words must remain compatible")
 
     // An uncovered helper lane never emits under either ABI.
     assert(!runAbiCase(abi1 = false, controlWord = 1, mask = 0x1,

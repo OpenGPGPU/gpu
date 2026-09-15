@@ -392,9 +392,22 @@ struct gpu_draw_record {
  *   [5*stride, 6*stride)   perspective-correct v (unsigned Q16.16)
  *   [6*stride, 7*stride)   colour outputs (u32)
  *   [7*stride, 8*stride)   depth outputs (i32)
- *   [8*stride, 9*stride)   output-valid words (1 = emit, 0 = discard)
+ *   [8*stride, 9*stride)   output-control words (GPU_FRAGMENT_* below)
  *   [9*stride, ...)        per-draw uniforms
  * ------------------------------------------------------------------------ */
+/* ABI selection is coupled to a validated sample mode: 0 -> ABI 0,
+ * 1/2 -> ABI 1. ABI 0 emits for ANY nonzero control word and always selects
+ * shader depth. ABI 1 uses bit 0 to emit and bit 1 to replicate shader depth
+ * to covered samples; otherwise raster sample depths are retained. Nonzero
+ * reserved bits discard the pixel without a job error. Helpers never emit.
+ * These definitions do not advertise programmable-MSAA support: software
+ * must still check capabilities before submitting multisample shaders. */
+#define GPU_FRAGMENT_ABI_LEGACY       0u
+#define GPU_FRAGMENT_ABI_MULTISAMPLE  1u
+#define GPU_FRAGMENT_CONTROL_EMIT           (1u << 0)
+#define GPU_FRAGMENT_CONTROL_DEPTH_OVERRIDE (1u << 1)
+#define GPU_FRAGMENT_CONTROL_VALID_MASK     0x3u
+
 #define GPU_KERNARG_STRIDE(w, l)  (4u * (w) * (l))
 #define GPU_KERNARG_X_OFF(s)      (0u * (s))
 #define GPU_KERNARG_Y_OFF(s)      (1u * (s))

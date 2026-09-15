@@ -621,7 +621,7 @@ class RenderPipeline(
     // The programmable path selects ABI 1 exactly when MSAA is active; the
     // 1x ABI 0 path is observationally identical (the depth-output slice is
     // pre-initialised to the interpolated centre depth).
-    kernelFrag.io.abi1 := ctxFifo.io.tail.sampleMode.orR
+    kernelFrag.io.abi1 := FragmentShaderAbi.usesMultisample(ctxFifo.io.tail.sampleMode)
     kernelFrag.io.shaderPc := ctxFifo.io.tail.shaderPc
     kernelFrag.io.kernargBase := ctxFifo.io.tail.kernargBase
     kernelFrag.io.kernargBankStride := ctxFifo.io.tail.kernargBankStride

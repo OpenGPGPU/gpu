@@ -178,9 +178,11 @@ Close the current feature set before adding more shader operations.
   ordered DONE|ERROR with IH status 1 and waits for IH write acknowledgements
   before interrupt delivery. Queue regressions cover 1/2/4-sample builds,
   consecutive invalid jobs, prefetch, backpressure and valid-job recovery.
-- Define the programmable fragment ABI selection contract. The current pipeline
-  derives ABI 1 from nonzero sample mode; an independent selector or an explicit
-  versioned mode-coupled contract must be settled before software exposure.
+- Fragment ABI selection is defined by named mode-coupled profiles: sample
+  mode 0 uses ABI 0; modes 1/2 use ABI 1. ABI 0 preserves any-nonzero emit and
+  shader depth. ABI 1 discards reserved-bit violations and selects emit/depth
+  override from bits 0/1. Per-batch snapshots and overlapping draws are covered
+  by shader regressions. Programmable-MSAA advertising remains a P1 gate.
 - Keep draw-context retirement distinct from job completion: context state may
   retire after its final sample reaches an OM entry that snapshots the state;
   job DONE/fences must wait for acknowledged memory writes and lower-path drain.

@@ -77,9 +77,11 @@ private class KernelFragEmitLane(gfxConfig: GraphicsConfig) extends Bundle {
   *   [7*stride, 8*stride)  per-fragment depth outputs
   *   [8*stride, 9*stride)  output-control words (ABI 0: nonzero = emit; ABI 1:
   *                         bit 0 = emit, bit 1 = shader-depth override, bits
-  *                         31:2 reserved)
+  *                         31:2 reserved-zero; malformed words discard)
   *   [9*stride, ...)       per-draw uniforms
-  * The output-control ABI is selected by `io.abi1` per draw.  The full-width
+  * The output-control ABI is selected by `io.abi1` per draw and snapshotted
+  * at the first quad of each batch. RenderPipeline maps sample mode 0 to
+  * ABI 0 and modes 1/2 to ABI 1 (see FragmentShaderAbi). The full-width
   * depth-output word is always written back by ABI 0; ABI 1 additionally
   * accepts the rasterizer's per-sample depths, which ride beside the lanes as
   * a register sideband (`io.fragDepths`/`io.outDepths`) rather than in this
@@ -117,8 +119,8 @@ private class KernelFragEmitLane(gfxConfig: GraphicsConfig) extends Bundle {
   * `drawRetire` is an ordered valid/ready handshake carrying one completion
   * event per rising `flush` (i.e. per draw, including empty draws).  An event
   * is presented once that draw's last batch has been emitted, and is accepted
-  * by the owner only when the output merger is idle, so the draw's context
-  * can be retired without reordering.
+  * by the owner after its sample expander drains into OM entries that snapshot
+  * their state. Job completion additionally waits for acknowledged OM writes.
   *
   * The shader program, kernarg, and output all sit in the line-based memory
   * behind the two memory ports: `memReq/memResp` serve the compute unit and
@@ -831,12 +833,12 @@ class KernelFragStage(
           // derivatives, but no shader store can promote one into an OM write.
           // ABI 0 keeps the legacy "any nonzero word emits" contract and always
           // takes the shader-depth word; ABI 1 gates emit on bit 0 and selects
-          // the depth override on bit 1.
+          // the depth override on bit 1, discarding reserved-bit violations.
           val ctrl = bridge.io.out.bits.data
           val abi1Exec = slotAbi1(execSlot)
           outValid(indexIdx) :=
-            Mux(abi1Exec, ctrl(0), ctrl.orR) && execCovered
-          outOverride(indexIdx) := !abi1Exec || ctrl(1)
+            FragmentShaderAbi.emits(ctrl, abi1Exec) && execCovered
+          outOverride(indexIdx) := FragmentShaderAbi.overridesDepth(ctrl, abi1Exec)
           field := 0.U
           when(index === execCount - 1.U) {
             index := 0.U

@@ -259,19 +259,34 @@ uses widening signed additions and clamps multisample results to
 staging records, rather than as a field of `RasterFragment`. Colour and UV
 remain evaluated at the pixel centre.
 
-`KernelFragStage.abi1` selects output-control semantics. ABI 0 retains the
-legacy contract: any nonzero output-valid word emits a covered pixel and the
-shader depth-output word is used unconditionally. The current `RenderPipeline`
-derives `abi1` from the draw's nonzero sample mode; it does not expose an
-independent fragment-ABI selector in MMIO, job records or Linux UAPI. An explicit
-selector remains future interface work. Programmable MSAA is not advertised
-by the host capability even though this internal path exists.
+The fragment ABI is deliberately coupled to validated sample mode. The named
+profiles in `FragmentShaderAbi.scala` and `GPU_FRAGMENT_ABI_*` in
+`driver/gpu_abi.h` define the contract:
+
+| Sample mode | Fragment ABI | Output-control interpretation |
+|---|---|---|
+| 0 (1x) | 0, legacy | Any nonzero 32-bit word emits; shader depth is always selected |
+| 1 or 2 (2x/4x) | 1, multisample | Bit 0 emits; bit 1 selects shader depth; high bits must be zero |
+
+There is no independent selector in MMIO, job records or Linux UAPI. An
+independent profile for 1x would require a separately versioned extension;
+it is not a prerequisite for the current mode-coupled ABI. Fixed-function
+rendering has no fragment output-control word. Programmable MSAA remains
+unadvertised pending integration qualification, so Linux's exposed shader
+path continues to use ABI 0.
+
+`KernelFragStage` snapshots the selector with the first accepted quad of each
+batch. Later draws and live input changes cannot reinterpret an executing
+batch; ping-pong slots retain their own selectors.
 
 ABI 1 interprets the fragment kernarg output-control word as follows:
 
 - bit 0: emit pixel (`0` means discard).
 - bit 1: shader depth override is valid.
-- bits 31:2: reserved-zero.
+- bits 31:2: reserved-zero. A nonzero reserved bit discards the pixel, even
+  with bit 0 set; the draw still retires normally and no job error is raised.
+  This rule is exclusive to ABI 1: ABI 0 preserves all nonzero values,
+  including `0x80000000`, as emit requests.
 
 ABI 1 shaders write 0 or 1 to select interpolated per-sample
 depth. When bit 1 is set, the shader's single depth result is replicated to all
@@ -288,7 +303,9 @@ quad derivatives but its initial output-control word is zero.
 After shader completion, effective coverage is:
 
 ```text
-effectiveMask = (ABI1 ? outputControl.bit0 : outputControl != 0) ? coverageMask : 0
+abi1Emit = outputControl[31:2] == 0 && outputControl.bit0
+emit = ABI1 ? abi1Emit : outputControl != 0
+effectiveMask = covered && emit ? coverageMask : 0
 ```
 
 `KernelFragStage` emits one shaded pixel record with that mask; it does not
@@ -471,15 +488,17 @@ memory-port utilisation under 2x and 4x workloads.
 |---|---|---|
 | ABI/state | MSAA register, fixed-function capabilities, validated queue word 9 with ordered error completion and Linux physical-stride checks implemented | Expose programmable MSAA only after its contract is complete |
 | Coverage/depth | Mode-specific LUT, scalar/quad masks, expanded bounds, shared triangle gradients and sample depth implemented | Broaden edge and precision regression coverage |
-| Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented internally | Independent ABI selection and advertised Linux support |
+| Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented internally | Advertised Linux support and integrated multisample qualification |
 | Expansion/OM | Backpressured expander, sample addresses, address-hazard ordering and acknowledged write drain implemented | Broader integrated multisample regressions |
 | Resolve | Design only | Typed operation, trusted kernel, bounds validation, scheduler fences and KMS integration |
 
 ## Verification
 
-Existing test sources include `MsaaSpec` (sample patterns, expansion and depth
+Existing test sources include `FragmentShaderAbiSpec` (mode-to-profile
+selection and full-width control-word decisions), `MsaaSpec` (sample patterns, expansion and depth
 reference/clamping), `RenderPipelineSpec` (sample depth and 1x core-backed
-expansion), `KernelFragStageSpec` (ABI-1 emit/depth override), and
+expansion), `KernelFragStageSpec` (ABI-1 emit/depth override, malformed-control
+discard/retirement and overlapping batch ABI snapshots), and
 `OutputMergerSpec` (write-acknowledgement drain, blending and stencil).
 `RenderCoreSpec`, `RenderHostSpec` and `GpuHostAxiSpec` cover integration and
 host behavior. Test presence is not a claim that all cases below are complete
@@ -488,7 +507,7 @@ or that a full regression has passed.
 Run the focused suites from the repository root:
 
 ```sh
-sbt 'testOnly opengpu.graphics.MsaaSpec opengpu.graphics.OutputMergerSpec opengpu.graphics.KernelFragStageSpec opengpu.graphics.RenderPipelineSpec opengpu.graphics.RenderCoreSpec opengpu.graphics.RenderHostSpec opengpu.graphics.GpuHostAxiSpec'
+sbt 'testOnly opengpu.graphics.FragmentShaderAbiSpec opengpu.graphics.MsaaSpec opengpu.graphics.OutputMergerSpec opengpu.graphics.KernelFragStageSpec opengpu.graphics.RenderPipelineSpec opengpu.graphics.RenderCoreSpec opengpu.graphics.RenderHostSpec opengpu.graphics.GpuHostAxiSpec'
 ```
 
 The lists below are the target verification matrix, including pending resolve

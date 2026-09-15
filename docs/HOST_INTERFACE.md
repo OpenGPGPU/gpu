@@ -352,11 +352,17 @@ With `stride = 4 * warps * lanes`, fragment data uses structure-of-arrays:
 | 8 | output-valid/discard output |
 | 9+ | uniforms |
 
-The Linux-visible fragment path uses ABI 0: any nonzero slice-8 word emits
-a covered pixel and slice 7 supplies depth. Internally, `KernelFragStage`
-also implements ABI 1 (bit 0 emit, bit 1 depth override); `RenderPipeline`
-selects it for nonzero sample modes. Programmable MSAA is not advertised,
-and there is no independent userspace ABI selector yet.
+The fragment profile is coupled to validated sample mode: mode 0 selects
+`GPU_FRAGMENT_ABI_LEGACY` (0), modes 1/2 select
+`GPU_FRAGMENT_ABI_MULTISAMPLE` (1). There is no independent selector. ABI 0
+emits for any nonzero 32-bit slice-8 word and uses slice 7 as shader depth.
+ABI 1 requires bits 31:2 to be zero, bit 0 to emit, and bit 1 to override
+raster sample depths with the shader depth. A reserved-bit violation discards
+the pixel without failing the job; helpers never emit under either profile.
+`GPU_FRAGMENT_CONTROL_*` defines the ABI-1 masks in `driver/gpu_abi.h`.
+The selector is snapshotted per batch, so overlapping draws keep their own
+interpretation. Programmable MSAA remains unadvertised; Linux's exposed
+fragment path therefore continues to use ABI 0.
 
 Two identical banks may be supplied with a validated aligned bank stride so
 raster staging can overlap SIMT execution without aliasing scratch data.
