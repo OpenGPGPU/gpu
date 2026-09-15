@@ -904,4 +904,84 @@ class RenderHostSpec extends AnyFlatSpec {
     }
   }
 
+  it should "apply per-draw stencil state through the job ring" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    val cfg = GpuConfig(lanes = 4, warps = 2)
+    val stride = 16 * 4
+    val colorBase = 0x8000
+    val depthBase = 0x9000
+    val cmdBase = 0x4000
+    val ringBase = 0x10000
+    val ihBase = 0x20000
+
+    def tri(x: Int, y: Int, r: Int, g: Int, b: Int, d: Int) =
+      ((x, y, 0, q(1.0)), (r, g, b), d)
+    val big = Seq(
+      tri(q(-1.0), q(-1.0), 0, 255, 0, 0x10),
+      tri(q(1.0), q(-1.0), 0, 255, 0, 0x10),
+      tri(q(-1.0), q(1.0), 0, 255, 0, 0x10))
+
+    // Same geometry for all three layers, LEQUAL so the pass layer reaches the
+    // stencil/blend stage.  State: OVERRIDE | DEPTH_TEST | func LEQUAL |
+    // DEPTH_WRITE | STENCIL_TEST.
+    val state = 1 | (1 << 1) | (1 << 4) | (1 << 7) | (1 << 17)
+    val masks = (0xff << 8) | (0xff << 16)
+    def record(blend: Int, stencilCfg: Int, ref: Int): Array[Int] = {
+      val w = encode(big).toArray
+      w(32) = state
+      w(35) = blend
+      w(36) = stencilCfg
+      w(37) = ref
+      w
+    }
+    val draw0 = record(0, 6 | (2 << 9), 0x5a | masks) // ALWAYS, REPLACE 0x5a
+    val blendPass = 1 | (1 << 4) | (1 << 8) | (2 << 12) // ONE/ONE, REV_SUB
+    val draw1 = record(blendPass, 4, 0x5a | masks)    // EQUAL 0x5a, blend
+    val draw2 = record(0, 4, 0x33 | masks)            // EQUAL 0x33 blocked
+
+    val m = new MemModel
+    (draw0 ++ draw1 ++ draw2).zipWithIndex.foreach {
+      case (v, i) => m.wwrite(cmdBase + i * 4, v)
+    }
+    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0x00ffffff)
+
+    val descriptor = Seq((1 & 0xffff) | ((3 & 0xffff) << 16),
+      cmdBase, colorBase, depthBase, stride, 0, 0, 0, 0, 0) ++ Seq.fill(6)(0)
+    descriptor.zipWithIndex.foreach {
+      case (v, i) => m.wwrite(ringBase + i * 4, v)
+    }
+
+    simulate(new RenderHost(config, cfg, fragCore = false)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.cbMem.req.ready.poke(true.B)
+      dut.io.cbMem.resp.valid.poke(false.B)
+      dut.io.fbMem.req.ready.poke(true.B)
+      dut.io.fbMem.resp.valid.poke(false.B)
+
+      regWrite(dut, RenderHostRegs.JOB_RING_BASE, ringBase)
+      regWrite(dut, RenderHostRegs.JOB_RING_SIZE, 4)
+      regWrite(dut, RenderHostRegs.JOB_WPTR, 1)
+      regWrite(dut, RenderHostRegs.IH_BASE, ihBase)
+      regWrite(dut, RenderHostRegs.IH_SIZE, 4)
+      regWrite(dut, RenderHostRegs.JOB_CONTROL, 1) // ENABLE
+      regWrite(dut, RenderHostRegs.IRQ, 1)
+
+      serviceMem(dut, m, 400000, drainCycles = 8) { m.word(ihBase) != 0 }
+
+      def rgb(x: Int, y: Int): (Int, Int, Int) = {
+        val c = m.word(colorBase + (y * 16 + x) * 4).toInt
+        (((c >> 24) & 0xff), ((c >> 16) & 0xff), ((c >> 8) & 0xff))
+      }
+      assert(m.word(depthBase + (5 * 16 + 5) * 4) == ((0x5aL << 24) | 0x10),
+        f"stencil/depth at (5,5) = " +
+          f"0x${m.word(depthBase + (5 * 16 + 5) * 4)}%08x, rgb=${rgb(5, 5)}")
+      assert(rgb(5, 5) == (0, 0, 0),
+        s"(5,5) must be blended to black by the EQUAL 0x5a pass draw, got ${rgb(5, 5)}")
+      // All three layers cover the whole triangle, so the blend blackens it.
+      assert(rgb(1, 14) == (0, 0, 0),
+        s"(1,14) must also be blended to black, got ${rgb(1, 14)}")
+    }
+  }
+
 }
