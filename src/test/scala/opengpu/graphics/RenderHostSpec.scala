@@ -802,4 +802,106 @@ class RenderHostSpec extends AnyFlatSpec {
     }
   }
 
+  it should "reset per-job sample state across a 1x/4x/2x/1x queued sequence" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    val cfg = GpuConfig(lanes = 4, warps = 2)
+    val ringBase = 0x50000
+    val ihBase = 0x60000
+    val wordsPerJob = 16
+    val wordsPerIh = 4
+
+    // mode, packed RGBA8888, colour base, depth base, stride.
+    val jobs = Seq(
+      (0, 0xff0000ffL, 0x8000, 0x8800),
+      (2, 0x00ff00ffL, 0x10000, 0x12000),
+      (1, 0x0000ffffL, 0x20000, 0x21000),
+      (0, 0xffffffffL, 0x30000, 0x31000))
+    val cmdBase = jobs.indices.map(j => 0x4000 + j * 0x200)
+
+    def drawRecord(colour: (Int, Int, Int)): Seq[Int] = {
+      val verts = Seq(
+        (q(-1.0), q(-1.0)), (q(1.0), q(-1.0)), (q(-1.0), q(1.0)))
+      val w = Seq.newBuilder[Int]
+      for ((x, y) <- verts) { w += x; w += y; w += 0; w += q(1.0) }
+      for (_ <- verts) { w += colour._1; w += colour._2; w += colour._3 }
+      for (_ <- verts) { w += 0x10 }
+      w += 0; w += 0
+      for (_ <- 0 until 6) { w += 0 } // uv0..uv2
+      for (_ <- 0 until 8) { w += 0 } // state override + reserved
+      w.result()
+    }
+
+    def descriptor(jobId: Int, cmd: Int, colour: Int, depth: Int,
+      stride: Int, mode: Int): Seq[Int] =
+      Seq((jobId & 0xffff) | (1 << 16), cmd, colour, depth, stride,
+        0, 0, 0, 0, mode) ++ Seq.fill(6)(0)
+
+    val colours = Seq((255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255))
+    val m = new MemModel
+    for (((mode, _, colourBase, depthBase), j) <- jobs.zipWithIndex) {
+      drawRecord(colours(j)).zipWithIndex.foreach {
+        case (w, i) => m.wwrite(cmdBase(j) + i * 4, w)
+      }
+      // Sentinel every word of the colour plane so any extra sample write or
+      // leftover state is observable at the untouched pixels.
+      val words = 16 * 16 * (1 << mode)
+      for (i <- 0 until words) m.wwrite(colourBase + i * 4, 0x12345678)
+      descriptor(j + 1, cmdBase(j), colourBase, depthBase,
+        16 * (1 << mode) * 4, mode).zipWithIndex.foreach {
+        case (w, i) => m.wwrite(ringBase + j * wordsPerJob * 4 + i * 4, w)
+      }
+    }
+
+    simulate(new RenderHost(config, cfg, fragCore = false)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.cbMem.req.ready.poke(true.B)
+      dut.io.cbMem.resp.valid.poke(false.B)
+      dut.io.fbMem.req.ready.poke(true.B)
+      dut.io.fbMem.resp.valid.poke(false.B)
+
+      regWrite(dut, RenderHostRegs.JOB_RING_BASE, ringBase)
+      regWrite(dut, RenderHostRegs.JOB_RING_SIZE, 4)
+      regWrite(dut, RenderHostRegs.JOB_WPTR, 4)
+      regWrite(dut, RenderHostRegs.IH_BASE, ihBase)
+      regWrite(dut, RenderHostRegs.IH_SIZE, 4)
+      regWrite(dut, RenderHostRegs.JOB_CONTROL, 1) // ENABLE
+      regWrite(dut, RenderHostRegs.IRQ, 1)
+
+      serviceMem(dut, m, 400000, drainCycles = 8) {
+        m.word(ihBase + 3 * wordsPerIh * 4) != 0
+      }
+
+      assert(regRead(dut, RenderHostRegs.JOB_RPTR) == 4L,
+        "all queued jobs must be fetched")
+      assert(regRead(dut, RenderHostRegs.IH_WPTR) == 4L,
+        "all queued jobs must publish an IH record")
+      assert((regRead(dut, RenderHostRegs.STATUS) & 0x3L) == 0x2L,
+        "the sequence must end DONE without BUSY")
+
+      for (((mode, packed, colourBase, _), j) <- jobs.zipWithIndex) {
+        val samples = 1 << mode
+        val stride = 16 * samples * 4
+        // Every sample of the covered interior pixel takes this job's colour,
+        // proving the sample count and layout followed the job's own mode.
+        for (s <- 0 until samples) {
+          val addr = colourBase + 5 * stride + (5 * samples + s) * 4
+          assert(m.word(addr) == packed,
+            s"job $j (mode=$mode) sample $s of (5,5) should be " +
+              f"0x$packed%08x, got 0x${m.word(addr)}%08x")
+        }
+        // A pixel outside the triangle keeps its caller-initialized samples.
+        for (s <- 0 until samples) {
+          val addr = colourBase + 12 * stride + (12 * samples + s) * 4
+          assert(m.word(addr) == 0x12345678L,
+            s"job $j (mode=$mode) clobbered uncovered sample $s of (12,12)")
+        }
+        val hdr = m.word(ihBase + j * wordsPerIh * 4)
+        assert((hdr & 0xffff) == (j + 1) && (hdr & (1 << 16)) != 0 &&
+          (hdr & (1 << 17)) == 0,
+          s"job $j must complete without an IH error, got 0x${hdr.toHexString}")
+      }
+    }
+  }
+
 }

@@ -202,7 +202,10 @@ qualify a capability as implemented end to end.
 ### P1: Complete render, resolve and scanout
 
 - Qualify fixed-function 1x/2x/4x rendering, including depth, stencil, blending
-  and caller-initialized uncovered colour samples.
+  and caller-initialized uncovered colour samples. A queued 1x/4x/2x/1x job
+  sequence now checks that each job's sample layout follows its own mode and
+  that uncovered pixels keep their caller-initialized samples; per-sample
+  depth/stencil/blend stay covered by the `OutputMerger` unit regressions.
 - Add the typed resolve operation, validated source/destination ranges and
   scheduler ownership. Start with the trusted compute-kernel design in
   [MSAA_DESIGN.md](MSAA_DESIGN.md); measure before adding a dedicated engine.
