@@ -150,11 +150,59 @@ static void test_rejects_overlap(void)
 
 static void test_rejects_overflow(void)
 {
+	/* A large row span added to a near-maximum offset overflows u64 even
+	 * though the extent and strides are individually valid. */
 	struct opengpu_resolve_desc d =
-		desc(0xfffffffffffffffcull, 0, 1, 0xffffffffu,
+		desc(0xfffffffffffffff0ull, 0, 1, 0xffffu,
 		     0xfffffffcu, 16, OPENGPU_RESOLVE_MODE_1X);
 
 	assert(opengpu_resolve_validate(&d, ~0ull, ~0ull, 2, NULL) ==
+	       OPENGPU_RESOLVE_E_OVERFLOW);
+}
+
+static void test_rejects_large_extent(void)
+{
+	/* The hardware descriptor holds width/height in 16 bits. */
+	struct opengpu_resolve_desc d =
+		desc(0, 0x1000, 0x10000, 4, 0x40000, 16, OPENGPU_RESOLVE_MODE_1X);
+
+	assert(opengpu_resolve_validate(&d, ~0ull, ~0ull, 2, NULL) ==
+	       OPENGPU_RESOLVE_E_EXTENT);
+	d = desc(0, 0x1000, 4, 0x10000, 16, 16, OPENGPU_RESOLVE_MODE_1X);
+	assert(opengpu_resolve_validate(&d, ~0ull, ~0ull, 2, NULL) ==
+	       OPENGPU_RESOLVE_E_EXTENT);
+}
+
+static void test_build_command(void)
+{
+	struct opengpu_resolve_desc d =
+		desc(0x40, 0x100000, 16, 8, 256, 64, OPENGPU_RESOLVE_MODE_4X);
+	struct opengpu_resolve_command cmd;
+
+	assert(opengpu_resolve_validate(&d, 0x200000, 0x200000, 2, NULL) ==
+	       OPENGPU_RESOLVE_OK);
+	assert(opengpu_resolve_build_command(&d, 0x10000000, 0x20000000,
+					     &cmd) == OPENGPU_RESOLVE_OK);
+	assert(cmd.opcode == OPENGPU_RESOLVE_UCMD_OPCODE);
+	assert(cmd.source_address == 0x10000040ull);
+	assert(cmd.destination_address == 0x20100000ull);
+	assert(cmd.width == 16 && cmd.height == 8);
+	assert(cmd.source_stride == 256 && cmd.destination_stride == 64);
+	assert(cmd.sample_mode == OPENGPU_RESOLVE_MODE_4X);
+}
+
+static void test_build_command_address_limits(void)
+{
+	struct opengpu_resolve_desc d =
+		desc(0x100, 0, 4, 4, 16, 16, OPENGPU_RESOLVE_MODE_1X);
+	struct opengpu_resolve_command cmd;
+
+	/* A DMA base whose sum reaches 2^32 is out of the RV32 address space. */
+	assert(opengpu_resolve_build_command(&d, 0xffffff00ull, 0, &cmd) ==
+	       OPENGPU_RESOLVE_E_RANGE);
+	/* An overflowing u64 addition is reported as overflow. */
+	d.source_offset = ~0ull - 3;
+	assert(opengpu_resolve_build_command(&d, 0x100, 0, &cmd) ==
 	       OPENGPU_RESOLVE_E_OVERFLOW);
 }
 
@@ -169,5 +217,8 @@ int main(void)
 	test_rejects_out_of_range();
 	test_rejects_overlap();
 	test_rejects_overflow();
+	test_rejects_large_extent();
+	test_build_command();
+	test_build_command_address_limits();
 	return 0;
 }

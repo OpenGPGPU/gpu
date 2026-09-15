@@ -34,6 +34,12 @@ typedef uint64_t opengpu_resolve_u64;
 #define OPENGPU_RESOLVE_MAX_MODE 2u
 #define OPENGPU_RESOLVE_BYTES_PER_SAMPLE 4u
 #define OPENGPU_RESOLVE_ALIGNMENT 4u
+/* The hardware descriptor carries width/height in 16 bits. */
+#define OPENGPU_RESOLVE_MAX_EXTENT 0xffffu
+/* Logical opcode, mirroring GPU_UCMD_OP_RESOLVE in gpu_abi.h. */
+#define OPENGPU_RESOLVE_UCMD_OPCODE 4u
+/* The RV32 hardware computes 32-bit DMA addresses. */
+#define OPENGPU_RESOLVE_ADDRESS_LIMIT (1ull << 32)
 
 /* Return values are 0 or a negative errno-compatible code. */
 enum opengpu_resolve_status {
@@ -65,6 +71,18 @@ struct opengpu_resolve_layout {
 	opengpu_resolve_u64 destination_bytes;
 };
 
+/* The unified-command fields the driver stages for GPU_UCMD_OP_RESOLVE. */
+struct opengpu_resolve_command {
+	opengpu_resolve_u32 opcode;
+	opengpu_resolve_u64 source_address;
+	opengpu_resolve_u64 destination_address;
+	opengpu_resolve_u32 width;
+	opengpu_resolve_u32 height;
+	opengpu_resolve_u32 source_stride;
+	opengpu_resolve_u32 destination_stride;
+	opengpu_resolve_u32 sample_mode;
+};
+
 /* Validate one resolve against its backing allocation sizes and the maximum
  * sample mode advertised by the device.  On success, and when `out` is
  * non-NULL, the computed layout is written for the descriptor builder. */
@@ -84,6 +102,10 @@ opengpu_resolve_validate(const struct opengpu_resolve_desc *desc,
 		return OPENGPU_RESOLVE_E_MODE;
 
 	if (desc->width == 0 || desc->height == 0)
+		return OPENGPU_RESOLVE_E_EXTENT;
+
+	if (desc->width > OPENGPU_RESOLVE_MAX_EXTENT ||
+	    desc->height > OPENGPU_RESOLVE_MAX_EXTENT)
 		return OPENGPU_RESOLVE_E_EXTENT;
 
 	if ((desc->source_offset & (OPENGPU_RESOLVE_ALIGNMENT - 1)) != 0 ||
@@ -133,6 +155,40 @@ opengpu_resolve_validate(const struct opengpu_resolve_desc *desc,
 		out->source_bytes = source_span;
 		out->destination_bytes = destination_span;
 	}
+
+	return OPENGPU_RESOLVE_OK;
+}
+
+/* Build the unified-command fields from a validated descriptor and the two
+ * GEM DMA base addresses.  The offsets are added to the DMA bases; the result
+ * must fit the 32-bit hardware address space.  The caller must have run
+ * opengpu_resolve_validate() on the same descriptor first. */
+static inline enum opengpu_resolve_status
+opengpu_resolve_build_command(const struct opengpu_resolve_desc *desc,
+			      opengpu_resolve_u64 source_dma,
+			      opengpu_resolve_u64 destination_dma,
+			      struct opengpu_resolve_command *out)
+{
+	opengpu_resolve_u64 source_address, destination_address;
+
+	if (__builtin_add_overflow(source_dma, desc->source_offset,
+				   &source_address) ||
+	    __builtin_add_overflow(destination_dma, desc->destination_offset,
+				   &destination_address))
+		return OPENGPU_RESOLVE_E_OVERFLOW;
+
+	if (source_address >= OPENGPU_RESOLVE_ADDRESS_LIMIT ||
+	    destination_address >= OPENGPU_RESOLVE_ADDRESS_LIMIT)
+		return OPENGPU_RESOLVE_E_RANGE;
+
+	out->opcode = OPENGPU_RESOLVE_UCMD_OPCODE;
+	out->source_address = source_address;
+	out->destination_address = destination_address;
+	out->width = desc->width;
+	out->height = desc->height;
+	out->source_stride = desc->source_stride;
+	out->destination_stride = desc->destination_stride;
+	out->sample_mode = desc->sample_mode;
 
 	return OPENGPU_RESOLVE_OK;
 }

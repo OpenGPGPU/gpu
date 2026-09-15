@@ -274,6 +274,30 @@ struct drm_opengpu_strided_blit {
     __u32 signal_event;
 };
 
+/* Ordered MSAA resolve. The source is a multisample colour buffer and the
+ * destination is a single-sample colour buffer; both are validated
+ * GEM-relative ranges that must not overlap. sample_mode is 0/1/2 (1x/2x/4x)
+ * and must not exceed the device's advertised maximum. Completion follows the
+ * render/blit scheduler and syncobj model, and the destination fence gates
+ * scanout. */
+struct drm_opengpu_resolve {
+    __u32 context_id;
+    __u32 source_handle;
+    __u32 destination_handle;
+    __u32 flags;
+    __u64 source_offset;
+    __u64 destination_offset;
+    __u32 width;
+    __u32 height;
+    __u32 source_stride;
+    __u32 destination_stride;
+    __u32 sample_mode;
+    __u32 in_syncobj;
+    __u32 out_syncobj;
+    __u32 wait_event;
+    __u32 signal_event;
+};
+
 /* Ordered general-compute launch. The program and kernarg addresses are
  * binding-relative offsets; the kernel validates and relocates both before
  * submitting the launch through the unified command path. */
@@ -317,6 +341,7 @@ struct drm_opengpu_compute {
 #define DRM_OPENGPU_STRIDED_BLIT 0x08
 #define DRM_OPENGPU_COMPUTE 0x09
 #define DRM_OPENGPU_GET_FAULT 0x0a
+#define DRM_OPENGPU_RESOLVE 0x0b
 #define DRM_IOCTL_OPENGPU_SUBMIT \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_SUBMIT, \
              struct drm_opengpu_submit)
@@ -350,5 +375,8 @@ struct drm_opengpu_compute {
 #define DRM_IOCTL_OPENGPU_GET_FAULT \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_GET_FAULT, \
              struct drm_opengpu_fault)
+#define DRM_IOCTL_OPENGPU_RESOLVE \
+    DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_RESOLVE, \
+             struct drm_opengpu_resolve)
 
 #endif /* OPENGPU_DRM_H */
