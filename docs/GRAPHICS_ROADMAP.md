@@ -173,9 +173,11 @@ Close the current feature set before adding more shader operations.
   capability discovery. The stencil/blend portion of this item is complete
   (draw words 35–37, job words 10–12, registers 0x13C–0x144, validation and
   negative UAPI tests); remaining items track the other features below.
-- Apply equivalent sample-mode admission rules to legacy START and raw job-ring
-  submission; define how rejected queued jobs report completion/error without
-  stalling later jobs.
+- Sample-mode admission is implemented for START and raw job-ring submission:
+  both reject reserved/high-bit or above-build modes; queued rejection emits
+  ordered DONE|ERROR with IH status 1 and waits for IH write acknowledgements
+  before interrupt delivery. Queue regressions cover 1/2/4-sample builds,
+  consecutive invalid jobs, prefetch, backpressure and valid-job recovery.
 - Define the programmable fragment ABI selection contract. The current pipeline
   derives ABI 1 from nonzero sample mode; an independent selector or an explicit
   versioned mode-coupled contract must be settled before software exposure.

@@ -5,6 +5,12 @@ import chisel3.util._
 
 /** Fixed, centre-relative quarter-pixel sample positions. */
 object Msaa {
+  /** Validate the entire host word, including reserved bits, before decoding. */
+  def validModeWord(word: UInt, maxSampleCount: Int): Bool = {
+    require(Set(1, 2, 4)(maxSampleCount))
+    word <= log2Ceil(maxSampleCount).U
+  }
+
   def positions(mode: Int): Seq[(Int, Int)] = mode match {
     case 0 => Seq((0, 0))
     case 1 => Seq((-1, -1), (1, 1))

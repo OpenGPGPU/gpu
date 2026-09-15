@@ -580,6 +580,10 @@ struct gpu_job_record {
  *   reserved                                                             [3]
  * ------------------------------------------------------------------------ */
 #define GPU_IH_WORDS 4u
+#define GPU_IH_STATUS_COMPLETED           0u
+/* Rejected before launch: reserved mode, above-build maximum, or nonzero
+ * reserved bits in job word 9. DONE and ERROR are both set in the header. */
+#define GPU_IH_STATUS_INVALID_SAMPLE_MODE 1u
 struct gpu_ih_record {
     u32 header;
     u32 slot;

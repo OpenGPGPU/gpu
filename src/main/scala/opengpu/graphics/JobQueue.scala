@@ -40,6 +40,12 @@ class JobConfig extends Bundle {
   val texMaxLevel = UInt(4.W)
 }
 
+/** Status codes shared with GPU_IH_STATUS_* in driver/gpu_abi.h. */
+object JobQueueStatus {
+  val Completed = 0
+  val InvalidSampleMode = 1
+}
+
 /** Host-memory job submission ring and interrupt-history (IH) ring reader.
   *
   * AMDGPU-style submission for the renderer: the host writes fixed-size job
@@ -78,10 +84,11 @@ class JobConfig extends Bundle {
   * IH record layout (4 words):
   *   [0] bits 15:0 job id, bit16 DONE, bit17 ERROR
   *   [1] bits 15:0 job-ring slot index (queue position)
-  *   [2] status code (0 = completed)
+  *   [2] status code (0 = completed, 1 = invalid sample-mode word)
   *   [3] reserved
   */
-class JobQueue extends Module {
+class JobQueue(maxSampleCount: Int = 4) extends Module {
+  require(Set(1, 2, 4)(maxSampleCount))
   override def desiredName: String = "JobQueue"
 
   private val wordsPerJob = 16
@@ -112,6 +119,8 @@ class JobQueue extends Module {
     val done = Input(Bool())
     /** Pulses only after the completed job's IH record and WPTR are visible. */
     val ihCommitted = Output(Bool())
+    /** Error flag for the record being committed; qualified by ihCommitted. */
+    val ihError = Output(Bool())
 
     /** Configuration of the running job; stable between launch accept cycles. */
     val cfg = Output(new JobConfig)
@@ -138,18 +147,21 @@ class JobQueue extends Module {
   private val pendingJobId = RegInit(0.U(16.W))
   private val pendingSlot = RegInit(0.U(16.W))
   private val pendingValid = RegInit(false.B)
+  private val pendingInvalidMode = RegInit(false.B)
 
   // In-flight descriptor fetch.
   private val fetchCfg = RegInit(0.U.asTypeOf(new JobConfig))
   private val fetchJobId = RegInit(0.U(16.W))
   private val fetchSlot = RegInit(0.U(16.W))
   private val fetchWord = RegInit(0.U(log2Ceil(wordsPerJob).W))
+  private val fetchInvalidMode = RegInit(false.B)
 
   // Completion awaiting its IH record.
   private val ihValid = RegInit(false.B)
   private val ihJobId = RegInit(0.U(16.W))
   private val ihSlot = RegInit(0.U(16.W))
   private val ihWord = RegInit(0.U(log2Ceil(wordsPerIh).W))
+  private val ihStatus = RegInit(JobQueueStatus.Completed.U(32.W))
 
   // Ring positions. These are free-running (mod 2^16) so the doorbell
   // comparison never wraps as long as the host keeps fewer jobs in flight
@@ -162,6 +174,7 @@ class JobQueue extends Module {
   io.running := running
   io.pendingValid := pendingValid
   io.ihCommitted := false.B
+  io.ihError := ihStatus =/= JobQueueStatus.Completed.U
   io.cfg := runCfg
   io.launch := false.B
 
@@ -185,6 +198,7 @@ class JobQueue extends Module {
     ihValid := true.B
     ihJobId := runJobId
     ihSlot := runSlot
+    ihStatus := JobQueueStatus.Completed.U
   }
 
   // Host-driven reset pulse (JOB_CONTROL bit1).
@@ -210,14 +224,22 @@ class JobQueue extends Module {
         // by a newer one.
         ihWord := 0.U
         state := sIhReq
-      }.elsewhen(pendingValid && io.launchReady && !io.done) {
-        // Launch the prefetched job.
+      }.elsewhen(pendingValid && !running && io.launchReady && !io.done) {
+        // Reject in submission order, after the preceding job's IH commit.
+        // Rejection never changes the engine's configuration or starts work.
         pendingValid := false.B
-        running := true.B
-        runCfg := pendingCfg
-        runJobId := pendingJobId
-        runSlot := pendingSlot
-        io.launch := true.B
+        when(pendingInvalidMode) {
+          ihValid := true.B
+          ihJobId := pendingJobId
+          ihSlot := pendingSlot
+          ihStatus := JobQueueStatus.InvalidSampleMode.U
+        }.otherwise {
+          running := true.B
+          runCfg := pendingCfg
+          runJobId := pendingJobId
+          runSlot := pendingSlot
+          io.launch := true.B
+        }
       }.elsewhen(wantFetch) {
         fetchWord := 0.U
         fetchSlot := rptr
@@ -261,7 +283,10 @@ class JobQueue extends Module {
             fetchCfg.texMaxLevel := data(5, 2)
             fetchCfg.texEnable := data(8)
           }
-          is(9.U) { fetchCfg.sampleMode := data(1, 0) }
+          is(9.U) {
+            fetchCfg.sampleMode := data(1, 0)
+            fetchInvalidMode := !Msaa.validModeWord(data, maxSampleCount)
+          }
           is(10.U) {
             fetchCfg.stencilFunc := data(2, 0)
             fetchCfg.stencilFailOp := data(5, 3)
@@ -286,6 +311,7 @@ class JobQueue extends Module {
           pendingJobId := fetchJobId
           pendingSlot := fetchSlot & io.ringMask
           pendingValid := true.B
+          pendingInvalidMode := fetchInvalidMode
           rptr := rptr + 1.U
           state := sIdle
         }.otherwise {
@@ -301,9 +327,10 @@ class JobQueue extends Module {
       io.mem.req.bits.addr := ihAddr
       io.mem.req.bits.data :=
         MuxLookup(ihWord, 0.U(32.W))(Seq(
-          0.U -> (ihJobId | (1 << 16).U), // DONE, no ERROR
+          0.U -> (ihJobId | (1 << 16).U |
+            Mux(io.ihError, (1 << 17).U, 0.U)),
           1.U -> ihSlot,
-          2.U -> 0.U // status: completed
+          2.U -> ihStatus
         ))
       when(io.mem.req.fire) { state := sIhResp }
     }

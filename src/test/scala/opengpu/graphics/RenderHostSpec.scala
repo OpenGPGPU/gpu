@@ -435,13 +435,18 @@ class RenderHostSpec extends AnyFlatSpec {
       regWrite(dut, RenderHostRegs.MSAA_CONFIG, 2)
       assert(regRead(dut, RenderHostRegs.MSAA_CONFIG) == 2L)
 
-      // Mode 3 exceeds the maximum: START is rejected and ERROR latched.
-      regWrite(dut, RenderHostRegs.MSAA_CONFIG, 3)
-      regWrite(dut, RenderHostRegs.CONTROL, 1)
-      assert((regRead(dut, RenderHostRegs.STATUS) & 0x1L) == 0L,
-        "an invalid sample mode must not leave the engine BUSY")
-      assert((regRead(dut, RenderHostRegs.STATUS) & 0x4L) == 0x4L,
-        "an invalid sample mode must latch STATUS.ERROR")
+      // Reserved mode and high reserved bits must all reject before launch.
+      for (modeWord <- Seq(3, 4, 0x100)) {
+        regWrite(dut, RenderHostRegs.STATUS, 4) // clear the preceding error
+        regWrite(dut, RenderHostRegs.MSAA_CONFIG, modeWord)
+        regWrite(dut, RenderHostRegs.CONTROL, 1)
+        val status = regRead(dut, RenderHostRegs.STATUS)
+        assert((status & 1) == 0, "invalid sample state must not make the engine BUSY")
+        assert((status & 4) == 4, "invalid sample state must latch STATUS.ERROR")
+        assert(!dut.io.cbMem.req.valid.peek().litToBoolean,
+          "rejected START must not fetch a command")
+      }
+
     }
   }
 
@@ -508,8 +513,9 @@ class RenderHostSpec extends AnyFlatSpec {
     }
   }
 
-  it should "run queued jobs from the host ring and record completions in the IH ring" in {
-    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+  it should "render valid queued jobs around rejected modes and report ordered IH errors" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8,
+      maxSampleCount = 2)
     val cfg = GpuConfig(lanes = 4, warps = 2)
     val stride = 16 * 4
     val colorBase = 0x8000
@@ -561,9 +567,22 @@ class RenderHostSpec extends AnyFlatSpec {
     descriptor(1, 1, cmdBase1).zipWithIndex.foreach {
       case (w, i) => m.wwrite(ringBase + i * 4, w)
     }
-    descriptor(2, 1, cmdBase2).zipWithIndex.foreach {
+    descriptor(2, 1, 0x6000).updated(9, 2).zipWithIndex.foreach {
       case (w, i) => m.wwrite(ringBase + wordsPerJob * 4 + i * 4, w)
     }
+    descriptor(3, 1, cmdBase2).zipWithIndex.foreach {
+      case (w, i) => m.wwrite(ringBase + 2 * wordsPerJob * 4 + i * 4, w)
+    }
+    descriptor(4, 1, 0x6000).updated(9, 4).zipWithIndex.foreach {
+      case (w, i) => m.wwrite(ringBase + 3 * wordsPerJob * 4 + i * 4, w)
+    }
+    // Rejected descriptors point at a closer blue draw. If either launches,
+    // it would overwrite the green result and leave observable depth changes.
+    encodeDraw(Seq(
+      tri(q(-1.0), q(-1.0), 1, (0, 0, 255)),
+      tri(q(1.0), q(-1.0), 1, (0, 0, 255)),
+      tri(q(-1.0), q(1.0), 1, (0, 0, 255))))
+      .zipWithIndex.foreach { case (w, i) => m.wwrite(0x6000 + i * 4, w) }
 
     simulate(new RenderHost(config, cfg, fragCore = false)) { dut =>
       dut.io.externalCompletion.poke(false.B)
@@ -576,51 +595,62 @@ class RenderHostSpec extends AnyFlatSpec {
 
       // Program the rings, ring the doorbell, then enable the queue.
       regWrite(dut, RenderHostRegs.JOB_RING_BASE, ringBase)
-      regWrite(dut, RenderHostRegs.JOB_RING_SIZE, 2)
-      regWrite(dut, RenderHostRegs.JOB_WPTR, 2) // two descriptors queued
+      regWrite(dut, RenderHostRegs.JOB_RING_SIZE, 4)
+      regWrite(dut, RenderHostRegs.JOB_WPTR, 4) // valid, invalid, valid, invalid
       regWrite(dut, RenderHostRegs.IH_BASE, ihBase)
       regWrite(dut, RenderHostRegs.IH_SIZE, 4)
       regWrite(dut, RenderHostRegs.JOB_CONTROL, 1) // ENABLE
       regWrite(dut, RenderHostRegs.IRQ, 1)         // completion IRQ enable
 
-      // Wait until job 2's IH record has been written into host memory.
+      // Wait until the last rejected job's IH record has been written into host memory.
       // (The condition must not step the clock: register reads would let
       // in-flight memory handshakes complete unserviced.)
       serviceMem(dut, m, 200000, drainCycles = 8) {
-        m.word(ihBase + wordsPerIh * 4) != 0
+        m.word(ihBase + 3 * wordsPerIh * 4) != 0
       }
 
-      // Both jobs consumed; the device read pointer caught the doorbell up.
-      assert(regRead(dut, RenderHostRegs.JOB_RPTR) == 2L,
-        "both descriptors must be fetched from the ring")
-      assert(regRead(dut, RenderHostRegs.IH_WPTR) == 2L,
-        "both completions must be recorded in the IH ring")
+      // All jobs consumed; the device read pointer caught the doorbell up.
+      assert(regRead(dut, RenderHostRegs.JOB_RPTR) == 4L,
+        "all descriptors must be fetched from the ring")
+      assert(regRead(dut, RenderHostRegs.IH_WPTR) == 4L,
+        "all completions must be recorded in the IH ring")
       assert((regRead(dut, RenderHostRegs.JOB_CONTROL) & 0x100L) == 0L,
         "the queue must not report a running job at the end")
 
       // IH record details: job id, DONE flag, ring slot, status.
       def ihWord(entry: Int, word: Int): BigInt =
         m.word(ihBase + entry * wordsPerIh * 4 + word * 4)
-      for ((jobId, entry) <- Seq((1, 0), (2, 1))) {
+      for (entry <- 0 until 4) {
+        val jobId = entry + 1
+        val rejected = entry == 1 || entry == 3
         val hdr = ihWord(entry, 0)
         assert((hdr & 0xffff) == jobId,
           s"IH entry $entry must carry job id $jobId, got $hdr")
         assert((hdr & (1 << 16)) != 0, s"IH entry $entry must flag DONE")
-        assert((hdr & (1 << 17)) == 0, s"IH entry $entry must not flag ERROR")
+        assert(((hdr & (1 << 17)) != 0) == rejected,
+          s"IH entry $entry error flag must match admission")
         assert((ihWord(entry, 1) & 0xffff) == entry,
           s"IH entry $entry must carry the job-ring slot index")
-        assert(ihWord(entry, 2) == 0, s"IH entry $entry must report status 0")
+        assert(ihWord(entry, 2) == (if (rejected) 1 else 0),
+          s"IH entry $entry must distinguish admission error from completion")
       }
 
       // Jobs ran strictly in order: the closer green triangle wins (5,5).
       val c = m.word(colorBase + (5 * 16 + 5) * 4).toInt
       assert(((c >> 16) & 0xff) == 255 && ((c >> 8) & 0xff) == 0 &&
-        ((c >> 24) & 0xff) == 0, s"(5,5) should be green after job 2, got 0x${c.toHexString}")
+        ((c >> 24) & 0xff) == 0, s"(5,5) should be green after job 3, got 0x${c.toHexString}")
       assert(m.word(depthBase + (5 * 16 + 5) * 4) == 0x10,
-        s"depth (5,5) must come from job 2, got " +
+        s"depth (5,5) must come from job 3, got " +
         s"0x${m.word(depthBase + (5 * 16 + 5) * 4).toHexString}")
 
-      // Completion raised the interrupt; STATUS reports DONE.
+      // The trailing rejection raises ERROR and IRQ after its IH commit.
+      assert(dut.io.irq.peek().litToBoolean)
+      assert((regRead(dut, RenderHostRegs.STATUS) & 4) == 4)
+      regWrite(dut, RenderHostRegs.IRQ, 3)
+      assert(!dut.io.irq.peek().litToBoolean)
+      regWrite(dut, RenderHostRegs.STATUS, 4)
+      assert((regRead(dut, RenderHostRegs.STATUS) & 4) == 0)
+      // DONE from the last rendered job remains set.
       assert((regRead(dut, RenderHostRegs.STATUS) & 0x3) == 0x2L,
         "STATUS must report DONE after the last queued job")
     }

@@ -371,7 +371,7 @@ class RenderHost(
   // Hardware job queue: fetches descriptors from the host-memory ring and
   // writes IH records into a second host-memory ring before raising IRQs.
   // ---------------------------------------------------------------------------
-  private val jq = Module(new JobQueue)
+  private val jq = Module(new JobQueue(config.maxSampleCount))
   private val jqEnabled = jobEnableReg && jobRingSizeReg.orR &&
     jobRingBaseReg.orR && ihSizeReg.orR && ihBaseReg.orR
   jq.io.enable := jqEnabled
@@ -658,10 +658,8 @@ class RenderHost(
     jqResetPulse := true.B
   }
 
-  // The legacy START path validates the programmed sample mode; the job-ring
-  // path trusts the driver, which builds word 9 itself and rejects invalid
-  // modes before submission.
-  private val msaaModeValid = msaaConfigReg(1, 0) <= maxSampleMode.U
+  // START and queued descriptors share the same full-word admission rule.
+  private val msaaModeValid = Msaa.validModeWord(msaaConfigReg, config.maxSampleCount)
   private val launch = startWrite && !busy && msaaModeValid
 
   when(blitStartWrite &&
@@ -745,7 +743,10 @@ class RenderHost(
   // Queue completions become interrupt-visible only after all IH words have
   // completed and JobQueue has advanced IH_WPTR.  Raising IRQ at core.done
   // races the handler against the still-empty IH ring.
-  when(jq.io.ihCommitted) { irqPending := true.B }
+  when(jq.io.ihCommitted) {
+    irqPending := true.B
+    when(jq.io.ihError) { error := true.B }
+  }
   // Integrated compute/DMA completions share the same sticky, AXI-visible
   // pending bit and W1C acknowledgement as graphics completions.
   when(io.externalCompletion) { irqPending := true.B }

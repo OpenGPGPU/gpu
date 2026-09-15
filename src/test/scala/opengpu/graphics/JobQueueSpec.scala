@@ -227,4 +227,110 @@ class JobQueueSpec extends AnyFlatSpec {
       assert(dut.io.ihWptr.peek().litValue == 0, "reset must rewind the IH pointer")
     }
   }
+
+  for (maxSamples <- Seq(1, 2, 4)) {
+    it should s"retire invalid sample words in order under backpressure (max $maxSamples)" in {
+      val ringBase = 0x10000L
+      val ihBase = 0x20000L
+      val maxMode = Integer.numberOfTrailingZeros(maxSamples)
+      // Valid jobs surround consecutive errors; exercise bit 31 as well as
+      // the low reserved bit, and the first mode beyond each build's limit.
+      val modes = Seq(0L, maxMode + 1L, 3L, maxMode.toLong, 4L, 0x80000000L, 0L)
+      val m = new MemModel
+      modes.zipWithIndex.foreach { case (mode, slot) =>
+        descriptor(slot + 1, 1, 0x4000 + slot * 0x100)
+          .updated(9, mode.toInt).zipWithIndex.foreach { case (word, i) =>
+            m.wwrite(ringBase + slot * 64 + i * 4, word)
+          }
+      }
+      simulate(new JobQueue(maxSamples)) { dut =>
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        dut.io.enable.poke(true.B)
+        dut.io.ringBase.poke(ringBase.U)
+        dut.io.ringMask.poke(7.U)
+        dut.io.hostWptr.poke(modes.size.U)
+        dut.io.ihBase.poke(ihBase.U)
+        dut.io.ihMask.poke(7.U)
+        dut.io.reset.poke(false.B)
+        // Keep ready high even while busy: the queue must own serialization.
+        dut.io.launchReady.poke(true.B)
+        var cycle = 0
+        var completeAt = -1
+        var response = Option.empty[(Boolean, Long, Long, Int)]
+        val launched = mutable.ArrayBuffer.empty[Int]
+        val committed = mutable.ArrayBuffer.empty[Boolean]
+        var prefetchedWhileRunning = false
+        while (committed.size < modes.size && cycle < 10000) {
+          val done = completeAt == cycle
+          dut.io.done.poke(done.B)
+          dut.io.mem.req.ready.poke((cycle % 4 != 0).B)
+          dut.io.mem.resp.valid.poke(false.B)
+          response.foreach { case (write, addr, data, readyAt) =>
+            if (cycle >= readyAt) {
+              dut.io.mem.resp.valid.poke(true.B)
+              dut.io.mem.resp.bits.write.poke(write.B)
+              dut.io.mem.resp.bits.addr.poke(addr.U)
+              dut.io.mem.resp.bits.data.poke(data.U)
+            }
+          }
+          assert(dut.io.ihWptr.peek().litValue == committed.size,
+            "IH pointer must count only acknowledged records")
+          val respFire = dut.io.mem.resp.valid.peek().litToBoolean &&
+            dut.io.mem.resp.ready.peek().litToBoolean
+          if (dut.io.ihCommitted.peek().litToBoolean) {
+            val slot = committed.size
+            assert(respFire && response.exists(r => r._1 && r._2 == ihBase + slot * 16 + 12),
+              "completion must coincide with the final IH write acknowledgement")
+            assert(completeAt < 0, "no error may overtake a running job")
+            committed += dut.io.ihError.peek().litToBoolean
+          }
+          if (respFire) {
+            val (write, addr, data, _) = response.get
+            if (write) m.wwrite(addr, data.toInt)
+            response = None
+          }
+          if (dut.io.mem.req.valid.peek().litToBoolean &&
+              dut.io.mem.req.ready.peek().litToBoolean) {
+            assert(response.isEmpty)
+            val write = dut.io.mem.req.bits.write.peek().litToBoolean
+            val addr = dut.io.mem.req.bits.addr.peek().litValue.toLong
+            val data = if (write) dut.io.mem.req.bits.data.peek().litValue.toLong else m.word(addr)
+            response = Some((write, addr, data, cycle + (if (write) 11 else 5)))
+          }
+          val launch = dut.io.launch.peek().litToBoolean
+          if (launch) {
+            assert(completeAt < 0, "queue must never launch over an active engine")
+            completeAt = cycle + 300 // allow the next descriptor to prefetch
+          }
+          if (dut.io.pendingValid.peek().litToBoolean && dut.io.running.peek().litToBoolean)
+            prefetchedWhileRunning = true
+          dut.clock.step()
+          if (launch) {
+            val slot = ((dut.io.cfg.cmdBase.peek().litValue.toInt - 0x4000) / 0x100)
+            assert(modes(slot) <= maxMode, "invalid descriptors must not launch")
+            assert(dut.io.cfg.sampleMode.peek().litValue == modes(slot))
+            launched += slot
+          }
+          if (done) completeAt = -1
+          cycle += 1
+        }
+        assert(cycle < 10000, "a rejected job must not block later work")
+        assert(prefetchedWhileRunning, "exercise rejection behind an active job")
+        assert(launched.toSeq == modes.indices.filter(i => modes(i) <= maxMode))
+        assert(committed.toSeq == modes.map(_ > maxMode))
+        assert(dut.io.rptr.peek().litValue == modes.size)
+        assert(dut.io.ihWptr.peek().litValue == modes.size)
+        assert(!dut.io.running.peek().litToBoolean)
+        modes.indices.foreach { slot =>
+          val error = modes(slot) > maxMode
+          assert(m.word(ihBase + slot * 16) ==
+            ((slot + 1L) | (1L << 16) | (if (error) 1L << 17 else 0L)))
+          assert(m.word(ihBase + slot * 16 + 4) == slot)
+          assert(m.word(ihBase + slot * 16 + 8) == (if (error) 1L else 0L))
+          assert(m.word(ihBase + slot * 16 + 12) == 0L)
+        }
+      }
+    }
+  }
+
 }

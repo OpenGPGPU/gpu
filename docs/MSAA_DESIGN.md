@@ -59,9 +59,12 @@ case class GraphicsConfig(
 ```
 
 `maxSampleCount` must be 1, 2, or 4. Runtime modes above that limit are
-rejected by the driver. Legacy START checks the configured hardware maximum;
-the raw job queue decodes word 9 without equivalent mode validation, so raw
-queue producers must supply a valid mode.
+rejected by the driver. Legacy START and the raw job queue check the full
+sample-mode word against the elaborated maximum, including reserved bits 31:2.
+START reports `STATUS.ERROR` without launch. An invalid queued descriptor
+produces an ordered DONE|ERROR IH record with status 1 without rendering;
+subsequent valid jobs continue after the error record's write acknowledgements.
+Programmable-MSAA capability advertising remains unchanged.
 
 ## Sample Coordinate Convention
 
@@ -466,7 +469,7 @@ memory-port utilisation under 2x and 4x workloads.
 
 | Area | Current state | Remaining work |
 |---|---|---|
-| ABI/state | MSAA register, fixed-function capabilities, queue word 9 and Linux physical-stride checks implemented | Validate raw queued modes; expose programmable MSAA only after its contract is complete |
+| ABI/state | MSAA register, fixed-function capabilities, validated queue word 9 with ordered error completion and Linux physical-stride checks implemented | Expose programmable MSAA only after its contract is complete |
 | Coverage/depth | Mode-specific LUT, scalar/quad masks, expanded bounds, shared triangle gradients and sample depth implemented | Broaden edge and precision regression coverage |
 | Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented internally | Independent ABI selection and advertised Linux support |
 | Expansion/OM | Backpressured expander, sample addresses, address-hazard ordering and acknowledged write drain implemented | Broader integrated multisample regressions |

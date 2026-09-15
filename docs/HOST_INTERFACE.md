@@ -164,8 +164,18 @@ explicit wedge rather than a silent hang.
 `CAPABILITIES[7]` advertises MSAA and is set only on fixed-function builds
 (`!fragCore`); bits 17:16 carry the maximum supported sample mode
 (`log2Ceil(maxSampleCount)`). `MSAA_CONFIG[1:0]` selects 1x/2x/4x for the next
-START; an invalid or over-maximum mode is rejected with `STATUS.ERROR` and no
-launch. The same mode travels in queued job-record word 9. In multi-sample
+START. Both START and queued job word 9 reject mode 3, a mode above the
+elaborated `maxSampleCount`, or nonzero bits 31:2. Rejected START sets
+`STATUS.ERROR` without launching. Queue rejection consumes the descriptor and
+writes an ordered IH record with DONE and ERROR, the original job id/slot,
+and status `GPU_IH_STATUS_INVALID_SAMPLE_MODE` (1); normal completion uses
+`GPU_IH_STATUS_COMPLETED` (0). No render commands execute for a rejected job.
+The next queued job waits for that IH record to commit, then can proceed.
+`IH_WPTR`, IRQ pending and host `STATUS.ERROR` update only after the final IH
+write acknowledgement. Linux's existing IH error handling signals an `-EIO`
+fence. A rejected queue job does not itself set host `STATUS.DONE`; software
+uses IH records to identify queue completions. The existing DONE latch from
+earlier rendered jobs is preserved. In multi-sample
 modes a pixel's samples are contiguous words at
 `base + y*stride + ((x << mode) + sample)*4`, so the physical stride must
 cover `width << mode` pixels.
