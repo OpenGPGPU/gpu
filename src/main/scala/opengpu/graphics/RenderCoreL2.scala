@@ -76,6 +76,18 @@ class RenderCoreL2(
     val depthTestEnable = Input(Bool())
     val depthFunc = Input(UInt(3.W))
     val depthWriteEnable = Input(Bool())
+    val blendCfgEnable = Input(Bool())
+    val blendSrcFactor = Input(UInt(4.W))
+    val blendDstFactor = Input(UInt(4.W))
+    val blendEquation = Input(UInt(3.W))
+    val stencilTestEnable = Input(Bool())
+    val stencilFunc = Input(UInt(3.W))
+    val stencilRef = Input(UInt(8.W))
+    val stencilReadMask = Input(UInt(8.W))
+    val stencilWriteMask = Input(UInt(8.W))
+    val stencilFailOp = Input(UInt(3.W))
+    val stencilZFailOp = Input(UInt(3.W))
+    val stencilZPassOp = Input(UInt(3.W))
     val cullMode = Input(UInt(2.W))
     /** bits[1:0] sample mode: 0 = 1x, 1 = 2x, 2 = 4x. */
     val sampleMode = Input(UInt(2.W))
@@ -111,6 +123,18 @@ class RenderCoreL2(
   core.io.depthTestEnable := io.depthTestEnable
   core.io.depthFunc := io.depthFunc
   core.io.depthWriteEnable := io.depthWriteEnable
+  core.io.blendCfgEnable := io.blendCfgEnable
+  core.io.blendSrcFactor := io.blendSrcFactor
+  core.io.blendDstFactor := io.blendDstFactor
+  core.io.blendEquation := io.blendEquation
+  core.io.stencilTestEnable := io.stencilTestEnable
+  core.io.stencilFunc := io.stencilFunc
+  core.io.stencilRef := io.stencilRef
+  core.io.stencilReadMask := io.stencilReadMask
+  core.io.stencilWriteMask := io.stencilWriteMask
+  core.io.stencilFailOp := io.stencilFailOp
+  core.io.stencilZFailOp := io.stencilZFailOp
+  core.io.stencilZPassOp := io.stencilZPassOp
   core.io.cullMode := io.cullMode
   core.io.sampleMode := io.sampleMode
   core.io.texEnable := io.texEnable

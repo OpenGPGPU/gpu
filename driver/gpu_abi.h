@@ -125,6 +125,14 @@
  * job-ring path carries the same mode in job-record word 9. */
 #define GPU_REG_MSAA_CONFIG 0x134
 
+/* Stencil/blend execution config, snapshotted on START like DEPTH_FUNC and
+ * mirrored by job-record words 10/11/12.  The unified-command block owns
+ * 0xC4..0x130 (plus RESET at 0x138), so these live after it.  Layouts match
+ * the per-draw record words 36/37/35. */
+#define GPU_REG_STENCIL_CONFIG    0x13c
+#define GPU_REG_STENCIL_REF_MASKS 0x140
+#define GPU_REG_BLEND_CONFIG      0x144
+
 #define GPU_CAP_FRAGMENT_CORE   (1u << 0)
 #define GPU_CAP_JOB_QUEUE       (1u << 1)
 #define GPU_CAP_VERTEX_CORE     (1u << 2)
@@ -228,6 +236,44 @@
 #define GPU_CULL_BACK          1u
 #define GPU_CULL_FRONT         2u
 
+/* Full depth-func / stencil-func encoding (0=LESS .. 7=NEVER); the stencil
+ * func shares the hardware depth-func comparator. */
+#define GPU_STENCIL_FUNC_NEVER   7u
+
+/* GL stencil ops (3 bits, GL order). */
+#define GPU_STENCIL_OP_KEEP     0u
+#define GPU_STENCIL_OP_ZERO     1u
+#define GPU_STENCIL_OP_REPLACE  2u
+#define GPU_STENCIL_OP_INCR     3u
+#define GPU_STENCIL_OP_DECR     4u
+#define GPU_STENCIL_OP_INVERT   5u
+#define GPU_STENCIL_OP_INCRWRAP 6u
+#define GPU_STENCIL_OP_DECRWRAP 7u
+
+/* GL blend factors (4 bits, GL order).  11-15 are reserved and rejected by
+ * the driver; SRC_ALPHA_SATURATE is a source-RGB factor per GL. */
+#define GPU_BLEND_FACTOR_ZERO                0u
+#define GPU_BLEND_FACTOR_ONE                 1u
+#define GPU_BLEND_FACTOR_SRC_COLOR           2u
+#define GPU_BLEND_FACTOR_ONE_MINUS_SRC_COLOR 3u
+#define GPU_BLEND_FACTOR_SRC_ALPHA           4u
+#define GPU_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA 5u
+#define GPU_BLEND_FACTOR_DST_COLOR           6u
+#define GPU_BLEND_FACTOR_ONE_MINUS_DST_COLOR 7u
+#define GPU_BLEND_FACTOR_DST_ALPHA           8u
+#define GPU_BLEND_FACTOR_ONE_MINUS_DST_ALPHA 9u
+#define GPU_BLEND_FACTOR_SRC_ALPHA_SATURATE  10u
+#define GPU_BLEND_FACTOR_MAX                 10u
+
+/* GL blend equations (3 bits, GL order).  5-7 are reserved and rejected by
+ * the driver; MIN/MAX ignore the factors. */
+#define GPU_BLEND_EQ_ADD     0u
+#define GPU_BLEND_EQ_SUB     1u
+#define GPU_BLEND_EQ_REV_SUB 2u
+#define GPU_BLEND_EQ_MIN     3u
+#define GPU_BLEND_EQ_MAX     4u
+#define GPU_BLEND_EQ_MAX_VAL 4u
+
 /* ---- Pixel format: packed r8g8b8a8 (word 0xRRGGBBAA; little-endian bytes
  *      [AA BB GG RR]), matching RenderPipeline and TextureUnit. ------------ */
 #define GPU_PIXEL_RGBA(r, g, b, a) \
@@ -245,7 +291,13 @@
  *   optional per-draw depth/cull/texture state override                      [32]
  *   signed integer LOD bias [4:0], minimum mip clamp [11:8]                  [33]
   *   optional two-bank kernarg stride in bytes (zero = legacy single bank)   [34]
-  *   reserved, must be zero                                               [35..39]
+ *   optional GL-style blend config (bit0 present; bits 7:4 src factor,
+ *          bits 11:8 dst factor, bits 14:12 equation; present overrides the
+ *          legacy source-over BLEND_ENABLE)                                 [35]
+ *   stencil config: bits 2:0 func, 5:3 fail op, 8:6 z-fail op,
+ *          11:9 z-pass op                                                   [36]
+ *   stencil ref [7:0], read mask [15:8], write mask [23:16]                  [37]
+  *   reserved, must be zero                                               [38..39]
   *
   * Consecutive batches must not re-read lines a previous batch's kernel also
   * loaded (the kernel's loads hit the CU's L1 while staging writes go to
@@ -281,8 +333,50 @@ struct gpu_draw_record {
     u32 state;
     u32 sampler;
     u32 kernarg_bank_stride;
-    u32 reserved[5];
+    u32 blend_config;
+    u32 stencil_config;
+    u32 stencil_ref;
+    u32 reserved[2];
 };
+
+/* word 35 (blend config) layout */
+#define GPU_BLEND_PRESENT        (1u << 0)
+#define GPU_BLEND_SRC_SHIFT      4u
+#define GPU_BLEND_SRC_MASK       (0xfu << GPU_BLEND_SRC_SHIFT)
+#define GPU_BLEND_DST_SHIFT      8u
+#define GPU_BLEND_DST_MASK       (0xfu << GPU_BLEND_DST_SHIFT)
+#define GPU_BLEND_EQ_SHIFT       12u
+#define GPU_BLEND_EQ_MASK        (0x7u << GPU_BLEND_EQ_SHIFT)
+#define GPU_BLEND_CONFIG(src, dst, eq) \
+    (GPU_BLEND_PRESENT | (((u32)(src)) << GPU_BLEND_SRC_SHIFT) | \
+     (((u32)(dst)) << GPU_BLEND_DST_SHIFT) | (((u32)(eq)) << GPU_BLEND_EQ_SHIFT))
+
+/* word 36 (stencil config) layout; func shares the depth-func encoding */
+#define GPU_STENCIL_CFG_FUNC_SHIFT   0u
+#define GPU_STENCIL_CFG_FUNC_MASK    (0x7u << 0)
+#define GPU_STENCIL_CFG_FAIL_SHIFT   3u
+#define GPU_STENCIL_CFG_FAIL_MASK    (0x7u << 3)
+#define GPU_STENCIL_CFG_ZFAIL_SHIFT  6u
+#define GPU_STENCIL_CFG_ZFAIL_MASK   (0x7u << 6)
+#define GPU_STENCIL_CFG_ZPASS_SHIFT  9u
+#define GPU_STENCIL_CFG_ZPASS_MASK   (0x7u << 9)
+#define GPU_STENCIL_CONFIG(func, fail, zfail, zpass) \
+    ((((u32)(func)) << GPU_STENCIL_CFG_FUNC_SHIFT) | \
+     (((u32)(fail)) << GPU_STENCIL_CFG_FAIL_SHIFT) | \
+     (((u32)(zfail)) << GPU_STENCIL_CFG_ZFAIL_SHIFT) | \
+     (((u32)(zpass)) << GPU_STENCIL_CFG_ZPASS_SHIFT))
+
+/* word 37 (stencil ref/masks) layout */
+#define GPU_STENCIL_REF_SHIFT    0u
+#define GPU_STENCIL_REF_MASK     0xffu
+#define GPU_STENCIL_RMASK_SHIFT  8u
+#define GPU_STENCIL_RMASK_MASK   (0xffu << 8)
+#define GPU_STENCIL_WMASK_SHIFT  16u
+#define GPU_STENCIL_WMASK_MASK   (0xffu << 16)
+#define GPU_STENCIL_REF(ref, rmask, wmask) \
+    ((((u32)(ref)) << GPU_STENCIL_REF_SHIFT) | \
+     (((u32)(rmask)) << GPU_STENCIL_RMASK_SHIFT) | \
+     (((u32)(wmask)) << GPU_STENCIL_WMASK_SHIFT))
 
 /* ---------------------------------------------------------------------------
  * Kernarg SoA ABI (core-backed fragment shading, batched).  The batch packs
@@ -334,7 +428,10 @@ struct gpu_draw_record {
  *   state override flags (same encoding as legacy record)              [32]
  *   LOD bias [4:0], minimum mip clamp [11:8]                          [33]
  *   fragment kernarg bank stride                                       [34]
- *   reserved                                                           [35..39]
+ *   optional blend config (same encoding as legacy word 35)            [35]
+ *   stencil config (same encoding as legacy word 36)                   [36]
+ *   stencil ref/masks (same encoding as legacy word 37)                [37]
+ *   reserved                                                           [38..39]
  *
  * Vertex buffer layout (format=0, 32 bytes per vertex):
  *   word 0-3: posX/Y/Z/W (Q16.16 signed)
@@ -360,7 +457,10 @@ struct gpu_vert_draw_record {
     u32 state;
     u32 sampler;
     u32 frag_kernarg_bank_stride;
-    u32 reserved2[5];
+    u32 blend_config;
+    u32 stencil_config;
+    u32 stencil_ref;
+    u32 reserved2[2];
 };
 
 /* ---------------------------------------------------------------------------
@@ -428,7 +528,10 @@ struct gpu_vert_draw_record {
  *   bits 13:0 texture width, bits 29:16 texture height                   [7]
  *   TEX_CONFIG (bit0 CLAMP, bits 5:2 max mip level, bit8 enable)         [8]
  *   sample mode in bits 1:0 (0 = 1x, 1 = 2x, 2 = 4x), bits 31:2 reserved [9]
- *   reserved                                                             [10..15]
+ *   stencil ops (bits 2:0 func, 5:3 fail, 8:6 z-fail, 11:9 z-pass)       [10]
+ *   stencil ref [7:0], read mask [15:8], write mask [23:16]              [11]
+ *   blend config (same layout as draw-record word 35)                    [12]
+ *   reserved                                                             [13..15]
  * ------------------------------------------------------------------------ */
 #define GPU_JOB_WORDS 16u
 struct gpu_job_record {
@@ -442,7 +545,10 @@ struct gpu_job_record {
     u32 tex_size;
     u32 tex_config;
     u32 msaa;
-    u32 reserved[6];
+    u32 stencil_config;
+    u32 stencil_ref_masks;
+    u32 blend_config;
+    u32 reserved[3];
 };
 
 #define GPU_JOB_HDR_ID(h)       ((h) & 0xffffu)
@@ -451,6 +557,15 @@ struct gpu_job_record {
 #define GPU_JOB_STATE(test, func, write, cull) \
     ((((u32)(cull)) << 8) | (((u32)(write)) << 7) | \
      (((u32)(func)) << 4) | ((u32)!!(test)))
+/* Stencil-test enable rides the job state word bit 17 (matching the draw
+ * record's state override bit 17); the ops/ref/masks live in words 10/11. */
+#define GPU_JOB_STATE_STENCIL_TEST (1u << 17)
+#define GPU_JOB_STENCIL(func, fail, zfail, zpass) \
+    GPU_STENCIL_CONFIG(func, fail, zfail, zpass)
+#define GPU_JOB_STENCIL_REF(ref, rmask, wmask) \
+    GPU_STENCIL_REF(ref, rmask, wmask)
+#define GPU_JOB_BLEND(src, dst, eq) \
+    GPU_BLEND_CONFIG(src, dst, eq)
 #define GPU_JOB_TEX_SIZE(w, h)  ((((u32)(h)) << 16) | ((u32)(w) & 0x3fffu))
 
 /* ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # GPU Graphics Roadmap
 
-## Plan
+## Architecture and Goals
 
 OpenGPU extends the existing RISC-V SIMT compute core into an integrated GPU.
 Vertex and fragment programs execute on the shared SIMT lanes; rasterization,
@@ -21,11 +21,12 @@ clipping, texture filtering and output merging remain fixed-function blocks.
 - Synchronization: driver-managed cache maintenance, job fences and interrupts;
   no v1 CPU/GPU hardware snooping protocol. GPU-internal L1 invalidation and
   global atomics do not provide coherence with CPU caches.
-- Colour: RGBA8888. Depth: D24 in a 32-bit word.
+- Colour: RGBA8888. Depth: D24S8 in a 32-bit word (depth bits 23:0, stencil
+  bits 31:24).
 - Coordinates: top-left origin, y down, CCW front faces and top-left fill rule.
-- Interpolation: perspective-correct by default, with flat interpolation where
-  required.
-- Output: ordered per-pixel depth/blend operations against software buffers.
+- Interpolation: perspective-correct colour/UV and affine screen-space depth.
+- Output: ordered per-sample depth/stencil/blend operations against software
+  buffers, with per-pixel shading.
 - Display boundary: GPU RTL publishes render targets and scanout control state;
   an external display subsystem performs scanout and signal generation.
 
@@ -38,12 +39,18 @@ vertex fetch -> SIMT vertex shader -> clip -> viewport
       |
 quad rasterizer -> interpolation -> SIMT fragment shader -> texture sampler
       |
-parallel output merger -> GPU L2 -> AXI4 / SoC fabric -> shared DRAM
+sample expansion -> parallel output merger -> GPU L2 -> AXI4 -> shared DRAM
                                                            |
                                                      scanout handoff
 ```
 
-## Implemented
+## Implementation Inventory
+
+This inventory describes code present in the working tree, including ongoing
+extensions. It is not a release qualification report. A feature is ready for
+software use only when RTL, ABI definitions, driver validation, capability
+advertising and integration tests agree. The milestone exit criteria below
+track that distinction.
 
 ### Geometry and rasterization
 
@@ -52,7 +59,8 @@ parallel output merger -> GPU L2 -> AXI4 / SoC fabric -> shared DRAM
 - Perspective divide, viewport mapping and fixed-point screen coordinates.
 - Winding-independent top-left coverage, culling and degenerate rejection.
 - Incremental edge stepping and one 2x2 raster quad per beat.
-- Perspective-correct colour, depth and UV interpolation.
+- Perspective-correct colour and UV interpolation; affine screen-space depth.
+- 1x/2x/4x sample coverage and per-sample depth with fixed quarter-pixel patterns.
 
 ### Shading and texturing
 
@@ -96,6 +104,12 @@ parallel output merger -> GPU L2 -> AXI4 / SoC fabric -> shared DRAM
 
 - Parallel in-flight output merging with same-pixel hazard ordering.
 - Programmable depth test/write and rounded source-over blending.
+- D24S8 single-sided stencil and GL-style blend factors/equations, carried
+  through the host registers, job record, both draw forms and the Linux UAPI
+  with full driver validation (see [STENCIL_BLEND_DESIGN.md](STENCIL_BLEND_DESIGN.md)).
+- Post-shading sample expansion and per-sample framebuffer addressing. MSAA is
+  advertised for fixed-function builds; programmable-path staging and ABI-1
+  depth selection exist internally but are not advertised to Linux.
 - GPU-internal shared L2 arbitration for command, shader, texture and
   framebuffer traffic.
 - Multi-CU dispatch plus copy, fill and strided DMA share the integrated memory
@@ -149,31 +163,107 @@ parallel output merger -> GPU L2 -> AXI4 / SoC fabric -> shared DRAM
   host, graphics, compute/DMA and GPU-internal shared-L2 integration top.
 - Parameterized power-of-two render targets of at least 16x16.
 
-## Next
+## Prioritized Milestones
 
-### Product integration
+### P0: Complete and verify the submission contract
 
-- Add further high-value RVV widening/narrowing operations, extending
-  validation only with matching hardware support.
-- Measure full-system cost by resolution, remove avoidable host-memory work and
-  establish a practical regression default.
+Close the current feature set before adding more shader operations.
 
-### Graphics capability
+- Synchronize RTL registers, draw/job record layouts, C/UAPI definitions and
+  capability discovery. The stencil/blend portion of this item is complete
+  (draw words 35–37, job words 10–12, registers 0x13C–0x144, validation and
+  negative UAPI tests); remaining items track the other features below.
+- Apply equivalent sample-mode admission rules to legacy START and raw job-ring
+  submission; define how rejected queued jobs report completion/error without
+  stalling later jobs.
+- Define the programmable fragment ABI selection contract. The current pipeline
+  derives ABI 1 from nonzero sample mode; an independent selector or an explicit
+  versioned mode-coupled contract must be settled before software exposure.
+- Keep draw-context retirement distinct from job completion: context state may
+  retire after its final sample reaches an OM entry that snapshots the state;
+  job DONE/fences must wait for acknowledged memory writes and lower-path drain.
+- Add ABI layout/encoding checks and a bounded integration matrix covering
+  fixed-function, fragment-core and vertex-core builds, legacy/ring submission,
+  padded strides, invalid input and delayed/backpressured memory responses.
 
-- Add stencil, more blend modes and MSAA.
-- Broaden the shader/RVV subset together with its validator.
-- Close timing and area on the complete integrated graphics top. Current
-  measured blockers are KernelFragStage (best measured 846.2 MHz after packed
-  quad records, a single request register and registered request selectors; a
-  later micro-op register experiment regressed to 711.6 MHz) and SharedL2Slice
-  (SRAM access timing and routing DRC).
-  VectorIntegerAlu has passed the documented 1 GHz physical recipe.
-  See `timing/README.md` for recipes, limitations and measured results;
-  per-block closure does not establish full-top closure.
+Exit: accepted submissions have consistent semantics across supported paths;
+invalid submissions have documented error behavior; mixed-draw state and
+completion-visibility regressions pass. Header declarations alone do not
+qualify a capability as implemented end to end.
+
+### P1: Complete render, resolve and scanout
+
+- Qualify fixed-function 1x/2x/4x rendering, including depth, stencil, blending
+  and caller-initialized uncovered colour samples.
+- Add the typed resolve operation, validated source/destination ranges and
+  scheduler ownership. Start with the trusted compute-kernel design in
+  [MSAA_DESIGN.md](MSAA_DESIGN.md); measure before adding a dedicated engine.
+- Attach source-read and destination-write reservation fences and sync objects;
+  KMS must wait for resolved output before scanout.
+- Enable programmable MSAA only after helper-lane, derivative, discard,
+  per-sample depth and shader-depth-override tests cover its advertised modes.
+- Keep one render submission as one pass with private cleared depth. Persistent
+  depth attachments and cross-submission load/store semantics are separate work.
+
+Exit: clear/render/resolve/fence/scanout runs through Linux under ARTI/QEMU;
+1x -> 4x -> 2x -> 1x jobs do not leak state, and delayed writes cannot produce
+early completion. No implicit resolve is required after every draw.
+
+### P2: Consolidate state and ownership incrementally
+
+Do this alongside P0/P1 when changing the relevant boundary, preserving each
+stage's independent snapshot lifetime.
+
+- Factor reusable depth/stencil/blend/target/sampler state bundles and explicit
+  decode/copy helpers. These fields currently recur in `JobConfig`,
+  `DrawRenderState`, `DrawContext`, vertex records and wrapper IOs.
+- Reduce `RenderPipeline` wiring duplication around state selection, shader
+  dispatch and output retirement; retain explicit ready/valid and drain rules.
+- Separate driver command validation/job preparation from common scheduler,
+  context and fence services in `opengpu_compute.c`. Render, compute, DMA and
+  resolve should reuse those services rather than create parallel schedulers.
+- Move root DRM lifetime toward platform ownership. Today `opengpu_display.c`
+  allocates/registers DRM and probe hands it `gpu->compute.color`; remove this
+  bring-up coupling when separating render-only and display configurations.
+- Consider one machine-readable ABI description for generated constants/layout
+  checks after encodings settle. Avoid a large framework rewrite first.
+
+Exit: adding one render-state field has a small, explicit set of integration
+points; behavior and supported configurations retain regression coverage;
+display and execution no longer depend on bring-up buffer ownership.
+
+### P3: Establish performance and physical closure baselines
+
+Collect baseline measurements now; optimize after the functional contract is
+stable. This work need not wait for all structural cleanup.
+
+- Record cycles, shader staging traffic, OM stalls/conflicts, L2 misses and
+  lower-memory bandwidth for representative resolutions and sample modes.
+- Choose a practical small regression default plus larger workload sweeps.
+  Rank changes using measured cost before expanding RVV or OM concurrency.
+- Refresh PPA for the current RTL, including MSAA/stencil/blend. Historical
+  block measurements do not qualify newly changed logic or the integrated top.
+- The recorded KernelFragStage `emitquadsel` u50 run reaches 1022.98 MHz core
+  Fmax with +13.27 ps worst setup slack and zero setup violations across groups.
+  It still has 990 virtual-IO boundary hold violations (worst -34.79 ps);
+  register-to-register hold is reported clean. Resolve interface constraints
+  and physical integration before declaring closure.
+- SharedL2Slice remains unclosed at 1 GHz in the recorded SRAM/routing runs.
+  VectorIntegerAlu has passed its documented block recipe. See
+  [timing/README.md](../timing/README.md) for configurations and limitations.
+
+Exit: reproducible functional/performance workloads and full-top PPA reports
+identify the remaining limits; setup, hold and routing checks are all accounted
+for. A block Fmax above 1 GHz alone is not full-top timing closure.
+
+### Later capability expansion
+
+- Prioritize additional shader/RVV operations from real workload or compiler
+  needs, with matching hardware, validator and ABI tests.
+- Start Mesa Gallium/OpenGL ES integration after the submission/render-pass
+  contract and performance envelope stabilize; Vulkan follows separately.
 
 ### Deferred
 
-- Mesa Gallium/OpenGL ES, followed by Vulkan and shader compiler integration,
-  after the kernel ABI and performance envelope stabilize.
 - Discrete PCIe/IOMMU/local-VRAM productization.
 - Tile-based deferred rendering, scanout DMA and on-GPU display PHY/timing.

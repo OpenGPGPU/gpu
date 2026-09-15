@@ -22,7 +22,7 @@ import opengpu.core.memory.{
   */
 object RenderHostRegs {
   /** First invalid byte offset (exclusive end of the register file). */
-  val END               = 0x13c
+  val END               = 0x148
   val ID                = 0x00
   val CONTROL           = 0x04
   val STATUS            = 0x08
@@ -98,6 +98,17 @@ object RenderHostRegs {
   /** bits[1:0] sample mode: 0 = 1x, 1 = 2x, 2 = 4x.  Reserved on
     * programmable (fragment-core) builds, which do not advertise MSAA. */
   val MSAA_CONFIG       = 0x134
+  /** The unified-command block owns 0xC4..0x130 plus RESET at 0x138, so the
+    * stencil/blend registers live immediately after it.  Layouts mirror the
+    * per-draw record words 36/37/35 (see CommandBufferStage). */
+  /** bit0 stencil-test enable; bits[6:4] func; bits[9:7] fail op;
+    * bits[12:10] z-fail op; bits[15:13] z-pass op. */
+  val STENCIL_CONFIG    = 0x13c
+  /** bits[7:0] ref, bits[15:8] read mask, bits[23:16] write mask. */
+  val STENCIL_REF_MASKS = 0x140
+  /** bit0 present; bits[7:4] src factor; bits[11:8] dst factor;
+    * bits[14:12] equation.  Present overrides legacy source-over. */
+  val BLEND_CONFIG      = 0x144
 }
 
 /** A host memory-mapped register access (read or write of one 32-bit word). */
@@ -305,6 +316,9 @@ class RenderHost(
   private val texHeightReg = RegInit(0.U(32.W))
   private val texConfigReg = RegInit(0.U(32.W))
   private val msaaConfigReg = RegInit(0.U(32.W))
+  private val stencilConfigReg = RegInit(0.U(32.W))
+  private val stencilRefMasksReg = RegInit(0.U(32.W))
+  private val blendConfigReg = RegInit(0.U(32.W))
   private val scanoutBaseReg = RegInit(0.U(32.W))
   private val scanoutStrideReg = RegInit(0.U(32.W))
   private val scanoutWidthReg = RegInit(0.U(32.W))
@@ -336,6 +350,9 @@ class RenderHost(
   private val activeTexHeight = RegInit(0.U(32.W))
   private val activeTexConfig = RegInit(0.U(32.W))
   private val activeMsaaConfig = RegInit(0.U(32.W))
+  private val activeStencilConfig = RegInit(0.U(32.W))
+  private val activeStencilRefMasks = RegInit(0.U(32.W))
+  private val activeBlendConfig = RegInit(0.U(32.W))
 
   private val busy = RegInit(false.B)
   private val done = RegInit(false.B)
@@ -433,6 +450,9 @@ class RenderHost(
       RenderHostRegs.TEX_HEIGHT.U -> texHeightReg,
       RenderHostRegs.TEX_CONFIG.U -> texConfigReg,
       RenderHostRegs.MSAA_CONFIG.U -> msaaConfigReg,
+      RenderHostRegs.STENCIL_CONFIG.U -> stencilConfigReg,
+      RenderHostRegs.STENCIL_REF_MASKS.U -> stencilRefMasksReg,
+      RenderHostRegs.BLEND_CONFIG.U -> blendConfigReg,
       RenderHostRegs.SCANOUT_BASE.U -> scanoutBaseReg,
       RenderHostRegs.SCANOUT_STRIDE.U -> scanoutStrideReg,
       RenderHostRegs.SCANOUT_WIDTH.U -> scanoutWidthReg,
@@ -616,6 +636,18 @@ class RenderHost(
         msaaConfigReg := merge(msaaConfigReg,
           io.reg.req.bits.data, io.reg.req.bits.strb)
       }
+      is(RenderHostRegs.STENCIL_CONFIG.U) {
+        stencilConfigReg := merge(stencilConfigReg,
+          io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.STENCIL_REF_MASKS.U) {
+        stencilRefMasksReg := merge(stencilRefMasksReg,
+          io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
+      is(RenderHostRegs.BLEND_CONFIG.U) {
+        blendConfigReg := merge(blendConfigReg,
+          io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
     }
   }
 
@@ -675,6 +707,9 @@ class RenderHost(
       activeTexHeight := texHeightReg
       activeTexConfig := texConfigReg
       activeMsaaConfig := msaaConfigReg
+      activeStencilConfig := stencilConfigReg
+      activeStencilRefMasks := stencilRefMasksReg
+      activeBlendConfig := blendConfigReg
     }
   }
   // An invalid programmed sample mode rejects the launch and latches ERROR.
@@ -730,6 +765,30 @@ class RenderHost(
   core.io.depthFunc := muxActive(activeDepthFunc(2, 0), jq.io.cfg.depthFunc)
   core.io.depthWriteEnable := muxActive(
     activeDepthWriteEnable(0), jq.io.cfg.depthWriteEnable)
+  core.io.blendCfgEnable := muxActive(
+    activeBlendConfig(0), jq.io.cfg.blendCfgEnable)
+  core.io.blendSrcFactor := muxActive(
+    activeBlendConfig(7, 4), jq.io.cfg.blendSrcFactor)
+  core.io.blendDstFactor := muxActive(
+    activeBlendConfig(11, 8), jq.io.cfg.blendDstFactor)
+  core.io.blendEquation := muxActive(
+    activeBlendConfig(14, 12), jq.io.cfg.blendEquation)
+  core.io.stencilTestEnable := muxActive(
+    activeStencilConfig(0), jq.io.cfg.stencilTestEnable)
+  core.io.stencilFunc := muxActive(
+    activeStencilConfig(6, 4), jq.io.cfg.stencilFunc)
+  core.io.stencilRef := muxActive(
+    activeStencilRefMasks(7, 0), jq.io.cfg.stencilRef)
+  core.io.stencilReadMask := muxActive(
+    activeStencilRefMasks(15, 8), jq.io.cfg.stencilReadMask)
+  core.io.stencilWriteMask := muxActive(
+    activeStencilRefMasks(23, 16), jq.io.cfg.stencilWriteMask)
+  core.io.stencilFailOp := muxActive(
+    activeStencilConfig(9, 7), jq.io.cfg.stencilFailOp)
+  core.io.stencilZFailOp := muxActive(
+    activeStencilConfig(12, 10), jq.io.cfg.stencilZFailOp)
+  core.io.stencilZPassOp := muxActive(
+    activeStencilConfig(15, 13), jq.io.cfg.stencilZPassOp)
   core.io.cullMode := muxActive(activeCullMode(1, 0), jq.io.cfg.cullMode)
   core.io.texEnable := muxActive(activeTexConfig(8), jq.io.cfg.texEnable)
   core.io.texBase := muxActive(activeTexBase, jq.io.cfg.texBase)

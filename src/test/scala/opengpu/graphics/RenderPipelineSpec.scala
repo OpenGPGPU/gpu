@@ -31,7 +31,7 @@ class RenderPipelineSpec extends AnyFlatSpec {
     simulate(new RenderPipeline(config)) { dut =>
       val mem = Array.fill(1 << 15)(0x00000000)
       // depth buffer starts "far" so the near triangle passes the LESS test.
-      for (i <- 0 until (16 * 16)) mem(depthBase / 4 + i) = 0xffffffff
+      for (i <- 0 until (16 * 16)) mem(depthBase / 4 + i) = 0x00ffffff // stencil 0, depth far
 
       dut.reset.poke(true.B)
       dut.clock.step()
@@ -449,7 +449,7 @@ class RenderPipelineSpec extends AnyFlatSpec {
       addi(6, 5, 64), vle32(6, 3), vaddVi(3, 3, 1),
       addi(6, 5, 224), vse32(6, 3), cease)
     program.zipWithIndex.foreach { case (w, i) => wwrite(shaderPc + i * 4, w) }
-    for (i <- 0 until (16 * 16)) wwrite(depthBase + i * 4, 0xffffffff) // depth far
+    for (i <- 0 until (16 * 16)) wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
 
     simulate(new RenderPipeline(config, gpu, fragCore = true)) { dut =>
       dut.reset.poke(true.B)

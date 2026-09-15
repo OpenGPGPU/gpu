@@ -19,6 +19,14 @@
 
 #include "opengpu_drm.h"
 
+/* Stencil/blend encodings (GL order), mirroring gpu_abi.h.  The UAPI masks
+ * above carry the field layout; these name the values. */
+#define TEST_STENCIL_FUNC_ALWAYS 6u
+#define TEST_STENCIL_FUNC_EQUAL  4u
+#define TEST_STENCIL_OP_REPLACE  2u
+#define TEST_BLEND_FACTOR_ONE    1u
+#define TEST_BLEND_EQ_REV_SUB    2u
+
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 /* Overridable so the ARTI runner can compile the guest test for the same
  * resolution the RTL was elaborated with (-DTEST_WIDTH/-DTEST_HEIGHT). */
@@ -319,6 +327,10 @@ static int create_command_buffer(int fd, struct command_buffer *commands)
         OPENGPU_DRAW_STATE_TEX_ENABLE |
         OPENGPU_DRAW_STATE_TEX_CLAMP |
         (2u << OPENGPU_DRAW_STATE_MAX_MIP_SHIFT);
+    /* Pass-through blend config (src ONE, dst ZERO, ADD): the new word 35
+     * must decode without changing the expected texel colours. */
+    draw->blend_config = OPENGPU_DRAW_BLEND_PRESENT |
+        (TEST_BLEND_FACTOR_ONE << OPENGPU_DRAW_BLEND_SRC_SHIFT);
     return 0;
 }
 
@@ -338,6 +350,62 @@ static void convert_to_vertex_command(struct command_buffer *commands)
         OPENGPU_DRAW_STATE_TEX_ENABLE |
         OPENGPU_DRAW_STATE_TEX_CLAMP |
         (2u << OPENGPU_DRAW_STATE_MAX_MIP_SHIFT);
+}
+
+/* Three-record command buffer that proves the D24S8 stencil path: record 0
+ * stamps stencil 0x5a over the triangle, record 1 passes EQUAL 0x5a and
+ * blends the covered pixels to zero (REV_SUB of identical src/dst), and
+ * record 2 (EQUAL 0x33) must be blocked by the stored stencil byte. */
+static int create_stencil_command_buffer(
+    int fd, const struct command_buffer *base, struct command_buffer *commands)
+{
+    struct drm_mode_create_dumb create = {
+        .width = (uint32_t)(3 * sizeof(struct drm_opengpu_draw) / 4),
+        .height = 1,
+        .bpp = 32,
+    };
+    struct drm_mode_map_dumb map = { 0 };
+    struct drm_opengpu_draw *draws;
+    const struct drm_opengpu_draw *src = base->map;
+    uint32_t stencil_state = src->state | OPENGPU_DRAW_STATE_STENCIL_TEST;
+    uint32_t masks = OPENGPU_DRAW_STENCIL_RMASK_MASK |
+                     OPENGPU_DRAW_STENCIL_WMASK_MASK;
+
+    if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0)
+        return -1;
+    commands->handle = create.handle;
+    commands->size = create.size;
+    map.handle = commands->handle;
+    if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0)
+        return -1;
+    commands->map = mmap(NULL, commands->size, PROT_READ | PROT_WRITE,
+                         MAP_SHARED, fd, map.offset);
+    if (commands->map == MAP_FAILED)
+        return -1;
+
+    draws = commands->map;
+    /* Stamp: func ALWAYS, z-pass REPLACE 0x5a. */
+    draws[0] = *src;
+    draws[0].state = stencil_state;
+    draws[0].stencil_config = TEST_STENCIL_FUNC_ALWAYS |
+        (TEST_STENCIL_OP_REPLACE << OPENGPU_DRAW_STENCIL_ZPASS_SHIFT);
+    draws[0].stencil_ref = 0x5au | masks;
+    /* Pass: func EQUAL 0x5a; the blend subtracts the destination from
+     * itself, so a passing fragment visibly zeroes the covered pixels. */
+    draws[1] = *src;
+    draws[1].state = stencil_state;
+    draws[1].stencil_config = TEST_STENCIL_FUNC_EQUAL;
+    draws[1].stencil_ref = 0x5au | masks;
+    draws[1].blend_config = OPENGPU_DRAW_BLEND_PRESENT |
+        (TEST_BLEND_FACTOR_ONE << OPENGPU_DRAW_BLEND_SRC_SHIFT) |
+        (TEST_BLEND_FACTOR_ONE << OPENGPU_DRAW_BLEND_DST_SHIFT) |
+        (TEST_BLEND_EQ_REV_SUB << OPENGPU_DRAW_BLEND_EQ_SHIFT);
+    /* Block: func EQUAL 0x33 never matches the stamped byte. */
+    draws[2] = *src;
+    draws[2].state = stencil_state;
+    draws[2].stencil_config = TEST_STENCIL_FUNC_EQUAL;
+    draws[2].stencil_ref = 0x33u | masks;
+    return 0;
 }
 
 static int create_vertex_buffer(int fd, struct resource_buffer *buffer)
@@ -498,18 +566,19 @@ static int unbind_resource(int fd, uint32_t context_id, uint32_t slot)
     return ioctl(fd, DRM_IOCTL_OPENGPU_RESOURCE_UNBIND, &resource);
 }
 
-static int submit_render(int fd, uint32_t context_id,
-                         const struct command_buffer *commands,
-                         const struct dumb_fb *fb, uint32_t texture_slot,
-                         uint32_t shader_slot, uint32_t kernarg_slot,
-                         uint32_t in_syncobj, uint32_t out_syncobj)
+static int submit_render_count(int fd, uint32_t context_id,
+                               const struct command_buffer *commands,
+                               const struct dumb_fb *fb, uint32_t count,
+                               uint32_t texture_slot, uint32_t shader_slot,
+                               uint32_t kernarg_slot, uint32_t in_syncobj,
+                               uint32_t out_syncobj)
 {
     struct drm_opengpu_submit submit = {
         .context_id = context_id,
         .command_handle = commands->handle,
         .color_handle = fb->handle,
         .stride = fb->pitch,
-        .command_count = 1,
+        .command_count = count,
         .flags = OPENGPU_SUBMIT_TEST_FENCE_DELAY,
         .texture_slot = texture_slot,
         .shader_slot = shader_slot,
@@ -519,6 +588,17 @@ static int submit_render(int fd, uint32_t context_id,
     };
 
     return ioctl(fd, DRM_IOCTL_OPENGPU_SUBMIT, &submit);
+}
+
+static int submit_render(int fd, uint32_t context_id,
+                         const struct command_buffer *commands,
+                         const struct dumb_fb *fb, uint32_t texture_slot,
+                         uint32_t shader_slot, uint32_t kernarg_slot,
+                         uint32_t in_syncobj, uint32_t out_syncobj)
+{
+    return submit_render_count(fd, context_id, commands, fb, 1, texture_slot,
+                               shader_slot, kernarg_slot, in_syncobj,
+                               out_syncobj);
 }
 
 static int submit_vertex_render(
@@ -741,6 +821,32 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
     errno = 0;
     ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
     commands->map->sampler = 0;
+    if (ret != -1 || errno != EINVAL)
+        goto fail;
+
+    /* Reserved blend source factor (11-15 are rejected). */
+    commands->map->blend_config = OPENGPU_DRAW_BLEND_PRESENT |
+        (11u << OPENGPU_DRAW_BLEND_SRC_SHIFT);
+    errno = 0;
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
+    commands->map->blend_config = 0;
+    if (ret != -1 || errno != EINVAL)
+        goto fail;
+
+    /* Reserved blend equation (5-7 are rejected). */
+    commands->map->blend_config = OPENGPU_DRAW_BLEND_PRESENT |
+        (5u << OPENGPU_DRAW_BLEND_EQ_SHIFT);
+    errno = 0;
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
+    commands->map->blend_config = 0;
+    if (ret != -1 || errno != EINVAL)
+        goto fail;
+
+    /* Stencil words without the stencil-test enable bit. */
+    commands->map->stencil_ref = 1u;
+    errno = 0;
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
+    commands->map->stencil_ref = 0;
     if (ret == -1 && errno == EINVAL)
         return 0;
 fail:
@@ -1016,6 +1122,7 @@ int main(void)
     struct dumb_fb first = { 0 }, second = { 0 };
     struct dumb_fb strided_source = { 0 }, strided_destination = { 0 };
     struct command_buffer commands = { 0 };
+    struct command_buffer stencil_commands = { 0 };
     struct resource_buffer texture = { 0 };
     struct resource_buffer shader = { 0 }, kernarg = { 0 };
     struct resource_buffer vertex_buffer = { 0 };
@@ -1023,7 +1130,7 @@ int main(void)
     struct resource_buffer compute_shader = { 0 }, compute_kernarg = { 0 };
     struct drm_event_vblank event = { 0 };
     struct drm_opengpu_fault initial_fault = { 0 }, final_fault = { 0 };
-    uint32_t syncobjs[7] = { 0 };
+    uint32_t syncobjs[8] = { 0 };
     uint32_t output_syncobjs[2];
     uint64_t capabilities;
     uint32_t batch_capacity;
@@ -1197,6 +1304,8 @@ int main(void)
           "create strided blit output syncobj");
     CHECK(create_syncobj(fd, &syncobjs[6]),
           "create compute output syncobj");
+    CHECK(create_syncobj(fd, &syncobjs[7]),
+          "create stencil output syncobj");
     CHECK(fill_resource(fd, context_id, &compute_kernarg, 0xcafe0001u,
                         syncobjs[4], OPENGPU_COMMAND_EVENT(7, 1)),
           "initialize compute kernarg and signal hardware event");
@@ -1394,6 +1503,30 @@ int main(void)
             perror("OPENGPU USERSPACE DRM FAIL strided blit result");
             return 1;
         }
+    }
+    /* Stencil-gated render: the second draw passes EQUAL 0x5a and blends the
+     * covered pixels to black (REV_SUB of identical src/dst), while the third
+     * (EQUAL 0x33) is blocked by the stamped byte.  The colour output proves
+     * both the stencil pass and fail paths. */
+    CHECK(create_stencil_command_buffer(fd, &commands, &stencil_commands),
+          "stencil command buffer");
+    CHECK(submit_render_count(fd, context_id, &stencil_commands, &first, 3,
+                              texture_slot, shader_slot, kernarg_slot,
+                              0, syncobjs[7]),
+          "queue stencil-gated render");
+    CHECK(wait_syncobjs(fd, &syncobjs[7], 1), "wait stencil render syncobj");
+    if ((frag_core &&
+         (framebuffer_count(&first, 0x00000000u) != 60 ||
+          framebuffer_count(&first, expected_pixel) != 0)) ||
+        (!frag_core &&
+         *(uint32_t *)((uint8_t *)first.map + first.pitch + 4) !=
+             0x00000000u)) {
+        if (!frag_core)
+            fprintf(stderr, "stencil pixel got=0x%08x expected=0x00000000\n",
+                    *(uint32_t *)((uint8_t *)first.map + first.pitch + 4));
+        errno = EIO;
+        perror("OPENGPU USERSPACE DRM FAIL stencil result");
+        return 1;
     }
     if (vert_core)
         CHECK(unbind_resource(fd, context_id, 5), "unbind vertex shader");

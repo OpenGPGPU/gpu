@@ -186,12 +186,12 @@ class SampleDepthSpec extends AnyFlatSpec {
   private def sampleRef(centre: Long, qdx: Long, qdy: Long, mode: Int): Seq[Long] = {
     val positions = Msaa.positions(mode)
     (0 until 4).map { i =>
-      if (mode == 0 && i == 0) centre & 0x3fffffffL
+      if (mode == 0 && i == 0) centre & 0xffffffL
       else if (i < positions.length) {
         val (sx, sy) = positions(i)
         val v = BigInt(centre) + BigInt(sx) * BigInt(qdx) + BigInt(sy) * BigInt(qdy)
         if (v < 0) 0L
-        else if (v > ((1L << 30) - 1)) (1L << 30) - 1
+        else if (v > ((1L << 24) - 1)) (1L << 24) - 1
         else v.toLong
       } else 0L
     }
@@ -219,13 +219,13 @@ class SampleDepthSpec extends AnyFlatSpec {
   it should "saturate multi-sample depths at both ends" in {
     // (-1,-1) underflows to zero; (+1,+1) overflows the D24 range.
     simulate(new SampleDepth(4)) { dut => check(dut, 5L, 10L, 10L) }
-    simulate(new SampleDepth(4)) { dut => check(dut, (1L << 30) - 1, 10L, 10L) }
+    simulate(new SampleDepth(4)) { dut => check(dut, (1L << 24) - 1, 10L, 10L) }
   }
 
   it should "keep the 1x sample as the legacy truncated centre" in {
     simulate(new SampleDepth(4)) { dut =>
       check(dut, 123456789L, 999L, -999L)
-      // Negative and over-range centres truncate to the low 30 bits rather
+      // Negative and over-range centres truncate to the low 24 D24 bits rather
       // than saturating, preserving the pre-MSAA single-sample output.
       check(dut, -1L, 999L, -999L)
       check(dut, 0x7fffffffL, 999L, -999L)

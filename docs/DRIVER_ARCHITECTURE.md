@@ -1,6 +1,6 @@
 # Linux Driver Architecture
 
-## Plan
+## Architecture
 
 The driver uses a layered DRM architecture with downward-only dependencies:
 
@@ -72,8 +72,18 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
 - Ordered strided copies with validated two-dimensional source/destination
   ranges and the same reservation-fence contracts.
 - Fragment and vertex core submissions using the shared SIMT compute unit.
+- General-compute submissions with separate shader/kernarg bindings, immutable
+  validated shader snapshots, GEM dependencies and sync-object fences.
+- Generation-tagged compute/DMA events and atomic unified-command fault queries.
+- Fixed-function MSAA submission with capability checks, physical-stride
+  validation and a private depth allocation/clear sized to the sample layout.
+  Resolve is not yet exposed by the driver.
 - Texture sampling, shader depth output, discard, quad derivatives, mipmapping
   and source-over blending in the validated graphics path.
+- D24S8 stencil and GL-style blend factor/equation state: UAPI words 35–37 on
+  both draw forms, layout/enum validation (reserved factors, equations and
+  stencil words rejected), job words 10–12, the `0x13C`–`0x144` registers, and
+  a stencil-gated multi-draw integration test.
 - Atomic modeset, render-fence-aware page flip and virtual vblank events.
 - Fixed-function and shader-backed probe paths selected from capabilities.
 - Unified compute/DMA MMIO register definitions, capability discovery and
@@ -91,7 +101,6 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
 
 ## Next
 
-- Add general-compute job payloads without duplicating queue, memory or fence
-  machinery.
+- Add a typed MSAA resolve operation with validated buffers and scheduler fences.
 - Grow the admitted shader ISA only with matching RTL, validator and ABI rules.
 - Add runtime power management when required by the SoC integration.

@@ -15,10 +15,13 @@ import chisel3.util._
   *   [24]     shader entry PC (the draw's shader descriptor)
   *   [25]     kernarg buffer address
   *   [26..31] v0/v1/v2 texture u,v as unsigned Q16.16
-  *   [32]     optional depth/cull/texture/blend state override
+  *   [32]     optional depth/cull/texture/blend/stencil state override
   *   [33]     signed integer LOD bias and minimum mip clamp
   *   [34]     optional two-bank kernarg byte stride
-  *   [35..39] reserved
+  *   [35]     optional GL-style blend config (bit0 present, factors, equation)
+  *   [36]     stencil config: func [2:0], fail [5:3], zfail [8:6], zpass [11:9]
+  *   [37]     stencil ref [7:0], read mask [15:8], write mask [23:16]
+  *   [38..39] reserved
   *
   * This is the hardware side of "the driver writes a command list, the GPU
   * executes it", the prerequisite for a host-driven (M6) Linux device.  The
@@ -80,12 +83,24 @@ class CommandBufferStage(config: GraphicsConfig, vertCore: Boolean = false) exte
     d.depthFunc := words(32)(6, 4)
     d.depthWriteEnable := words(32)(7)
     d.blendEnable := words(32)(16)
+    d.stencilTestEnable := words(32)(17)
     d.cullMode := words(32)(9, 8)
     d.texEnable := words(32)(10)
     d.texWrapClamp := words(32)(11)
     d.texMaxLevel := words(32)(15, 12)
     d.texLodBias := words(33)(4, 0).asSInt
     d.texMinLevel := words(33)(11, 8)
+    d.blendCfgEnable := words(35)(0)
+    d.blendSrcFactor := words(35)(7, 4)
+    d.blendDstFactor := words(35)(11, 8)
+    d.blendEquation := words(35)(14, 12)
+    d.stencilFunc := words(36)(2, 0)
+    d.stencilFailOp := words(36)(5, 3)
+    d.stencilZFailOp := words(36)(8, 6)
+    d.stencilZPassOp := words(36)(11, 9)
+    d.stencilRef := words(37)(7, 0)
+    d.stencilReadMask := words(37)(15, 8)
+    d.stencilWriteMask := words(37)(23, 16)
     d
   } else {
     val d = Wire(new SceneTriangle(config))
@@ -131,9 +146,21 @@ class CommandBufferStage(config: GraphicsConfig, vertCore: Boolean = false) exte
     d.texWrapClamp := words(32)(11)
     d.texMaxLevel := words(32)(15, 12)
     d.blendEnable := words(32)(16)
+    d.stencilTestEnable := words(32)(17)
     d.texLodBias := words(33)(4, 0).asSInt
     d.texMinLevel := words(33)(11, 8)
     d.kernargBankStride := words(34)
+    d.blendCfgEnable := words(35)(0)
+    d.blendSrcFactor := words(35)(7, 4)
+    d.blendDstFactor := words(35)(11, 8)
+    d.blendEquation := words(35)(14, 12)
+    d.stencilFunc := words(36)(2, 0)
+    d.stencilFailOp := words(36)(5, 3)
+    d.stencilZFailOp := words(36)(8, 6)
+    d.stencilZPassOp := words(36)(11, 9)
+    d.stencilRef := words(37)(7, 0)
+    d.stencilReadMask := words(37)(15, 8)
+    d.stencilWriteMask := words(37)(23, 16)
     d
   }
 

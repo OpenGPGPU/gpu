@@ -1,6 +1,6 @@
 # Host Interface and Driver
 
-## Plan
+## Interface
 
 ### SoC interface
 
@@ -43,7 +43,11 @@ protocol.
 
 ### Register ABI
 
-`RenderHostRegs` and `driver/gpu_abi.h` must remain synchronized.
+The table describes the current RTL register map. `RenderHostRegs` and
+`driver/gpu_abi.h` must remain synchronized; the stencil/blend registers at
+`0x13C`–`0x144` are defined in both (`GPU_REG_STENCIL_CONFIG`,
+`GPU_REG_STENCIL_REF_MASKS`, `GPU_REG_BLEND_CONFIG`) and mirror the per-draw
+record words 36/37/35 (see [STENCIL_BLEND_DESIGN.md](STENCIL_BLEND_DESIGN.md)).
 
 | Offset | Name | Access | Meaning |
 |---|---|---|---|
@@ -57,7 +61,7 @@ protocol.
 | 0x1C | DEPTH_BASE | RW | depth-buffer byte address |
 | 0x20 | STRIDE | RW | framebuffer stride in bytes |
 | 0x24 | DEPTH_TEST_ENABLE | RW | depth-test enable |
-| 0x28 | DEPTH_FUNC | RW | LESS, LEQUAL, GREATER or ALWAYS |
+| 0x28 | DEPTH_FUNC | RW | 0 LESS, 1 LEQUAL, 2 GREATER, 3 GEQUAL, 4 EQUAL, 5 NOTEQUAL, 6 ALWAYS, 7 NEVER |
 | 0x2C | DEPTH_WRITE_ENABLE | RW | depth-write enable |
 | 0x30 | CULL_MODE | RW | none, back or front |
 | 0x34 | TEX_BASE | RW | texture-chain byte address |
@@ -121,6 +125,13 @@ protocol.
 | 0x130 | UCMD_COMPLETION_POP | W1P | consume completion when bit 0 is written |
 | 0x134 | MSAA_CONFIG | RW | bits 1:0 sample mode (0 = 1x, 1 = 2x, 2 = 4x), snapshotted at START |
 | 0x138 | UCMD_RESET | W1P | request a safe unified-command reset when bit 0 is written |
+| 0x13C | STENCIL_CONFIG | RW | enable bit 0; func 6:4; fail op 9:7; depth-fail op 12:10; depth-pass op 15:13 |
+| 0x140 | STENCIL_REF_MASKS | RW | reference 7:0, read mask 15:8, write mask 23:16 |
+| 0x144 | BLEND_CONFIG | RW | present bit 0, source factor 7:4, destination factor 11:8, equation 14:12 |
+
+The exclusive mapped end is `0x148`. Unified-command routing covers
+`[0xC4, 0x134)` and `0x138`; the other mapped registers route to `RenderHost`.
+Stencil/blend state is snapshotted at START.
 
 START snapshots the programmed job state. On queue-capable hardware, the host
 writes a 64-byte descriptor to the job ring and advances `JOB_WPTR`. Jobs
@@ -276,7 +287,8 @@ unaffected.
 
 ### Shared-memory ABI
 
-The canonical layouts are defined in `driver/gpu_abi.h`.
+The Linux layouts are defined in `driver/gpu_abi.h`. The RTL extensions
+below are explicitly marked where they differ from those layouts.
 
 #### Draw record
 
@@ -293,12 +305,23 @@ Each draw record contains 40 little-endian words. The inline-triangle form is:
 | 32 | per-draw depth, cull, texture, mip and blend state |
 | 33 | signed LOD bias and minimum mip clamp |
 | 34 | optional 64-byte-aligned fragment kernarg bank stride |
-| 35-39 | reserved, zero |
+| 35 | RTL blend config: present bit 0, source factor 7:4, destination factor 11:8, equation 14:12 |
+| 36 | RTL stencil func 2:0, fail op 5:3, depth-fail op 8:6, depth-pass op 11:9 |
+| 37 | RTL stencil reference 7:0, read mask 15:8, write mask 23:16 |
+| 38-39 | reserved, zero |
 
 On vertex-core hardware the record instead carries vertex-buffer base/count/
 stride/format, vertex shader and kernarg fields in words 0-6, fragment shader
-and kernarg fields in words 24-25, and the common state in words 32-34. The
-fixed vertex format is eight words: Q16.16 position, RGBA8888 colour, depth and
+and kernarg fields in words 24-25, and the common state in words 32-34.
+Both record forms decode words 35–37. Word 32 bit 17 enables stencil when
+per-draw state is selected. Linux defines words 35–37 in
+`struct drm_opengpu_draw` / `struct drm_opengpu_vertex_draw`
+(`blend_config`, `stencil_config`, `stencil_ref`), validates their layout and
+value ranges (blend factors 0–10, equations 0–4, func/op fields 0–7), and
+rejects stencil words without the stencil-enable bit; words 38–39 stay
+reserved-zero.
+
+The fixed vertex format is eight words: Q16.16 position, RGBA8888 colour, depth and
 Q16.16 UV. Resource addresses are relocated from validated bindings rather
 than trusted from userspace command data.
 
@@ -319,13 +342,24 @@ With `stride = 4 * warps * lanes`, fragment data uses structure-of-arrays:
 | 8 | output-valid/discard output |
 | 9+ | uniforms |
 
+The Linux-visible fragment path uses ABI 0: any nonzero slice-8 word emits
+a covered pixel and slice 7 supplies depth. Internally, `KernelFragStage`
+also implements ABI 1 (bit 0 emit, bit 1 depth override); `RenderPipeline`
+selects it for nonzero sample modes. Programmable MSAA is not advertised,
+and there is no independent userspace ABI selector yet.
+
 Two identical banks may be supplied with a validated aligned bank stride so
 raster staging can overlap SIMT execution without aliasing scratch data.
 
 #### Buffers and textures
 
-- Colour is RGBA8888 (`0xRRGGBBAA`); depth is D24 in a 32-bit word.
-- Pixel address is `base + (y * stride + x) * 4`.
+- Colour is RGBA8888 (`0xRRGGBBAA`); depth is D24S8 in a 32-bit word
+  (depth bits 23:0, stencil bits 31:24).
+- `stride` is in bytes: a 1x pixel address is `base + y * stride + x * 4`.
+  MSAA uses `base + y * stride + ((x << sampleMode) + sampleIndex) * 4`.
+- Depth comparison and writes use bits 23:0; a plain depth write preserves the
+  stored stencil byte. Stencil testing precedes depth testing. The driver
+  clears every private depth plane to `0x00ffffff` (stencil 0, far depth).
 - Mip levels are tightly packed from `TEX_BASE`, largest to smallest, without
   row padding. The driver validates the full advertised chain.
 
@@ -340,15 +374,33 @@ The 16-word job descriptor is:
 | 2 | colour buffer base |
 | 3 | depth buffer base |
 | 4 | framebuffer stride (bytes, physically padded for the sample mode) |
-| 5 | bit 0 depth test, bits 6:4 depth func, bit 7 depth write, bits 9:8 cull mode |
+| 5 | bit 0 depth test, bits 6:4 depth func, bit 7 depth write, bits 9:8 cull mode, bit 17 stencil test |
 | 6 | texture base |
 | 7 | bits 13:0 texture width, bits 29:16 texture height |
 | 8 | TEX_CONFIG (bit 0 clamp, bits 5:2 max mip level, bit 8 enable) |
 | 9 | bits 1:0 sample mode (0 = 1x, 1 = 2x, 2 = 4x), bits 31:2 reserved |
-| 10-15 | reserved, zero |
+| 10 | RTL stencil func 2:0, fail op 5:3, depth-fail op 8:6, depth-pass op 11:9 |
+| 11 | RTL stencil reference 7:0, read mask 15:8, write mask 23:16 |
+| 12 | RTL blend config, same layout as draw word 35 |
+| 13-15 | reserved, zero |
 
-Unused words are zero. The four-word IH record contains job id, done/error
-flags, ring slot and status.
+Job word 5 bit 17 enables stencil. Linux defines words 10–12 in
+`struct gpu_job_record` (`stencil_config`, `stencil_ref_masks`,
+`blend_config`) and publishes them as zero for its own submissions — per-draw
+state rides the command records, and the job-level words act as global
+defaults for records that select no per-draw override. Unused words are zero.
+The four-word IH record contains job id and flags in word 0, ring slot in
+word 1, status in word 2 and reserved zero in word 3.
+
+RTL stencil operations 0–7 are KEEP, ZERO, REPLACE, saturating INCR/DECR,
+INVERT and wrapping INCR/DECR. Stencil funcs share the depth-func encoding.
+Blend factors 0–10 are ZERO, ONE, SRC_COLOR, ONE_MINUS_SRC_COLOR, SRC_ALPHA,
+ONE_MINUS_SRC_ALPHA, DST_COLOR, ONE_MINUS_DST_COLOR, DST_ALPHA,
+ONE_MINUS_DST_ALPHA and SRC_ALPHA_SATURATE. Equations 0–4 are ADD, SUBTRACT,
+REVERSE_SUBTRACT, MIN and MAX; MIN/MAX ignore factors. A present blend config
+overrides legacy source-over, using one factor pair/equation for RGBA.
+The driver validates these fields for both record forms and rejects reserved
+encodings; see [STENCIL_BLEND_DESIGN.md](STENCIL_BLEND_DESIGN.md).
 
 ### Linux ownership and synchronization
 

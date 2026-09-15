@@ -20,6 +20,18 @@ class JobConfig extends Bundle {
   val depthWriteEnable = Bool()
   val cullMode = UInt(2.W)
   val sampleMode = UInt(2.W)
+  val blendCfgEnable = Bool()
+  val blendSrcFactor = UInt(4.W)
+  val blendDstFactor = UInt(4.W)
+  val blendEquation = UInt(3.W)
+  val stencilTestEnable = Bool()
+  val stencilFunc = UInt(3.W)
+  val stencilRef = UInt(8.W)
+  val stencilReadMask = UInt(8.W)
+  val stencilWriteMask = UInt(8.W)
+  val stencilFailOp = UInt(3.W)
+  val stencilZFailOp = UInt(3.W)
+  val stencilZPassOp = UInt(3.W)
   val texEnable = Bool()
   val texBase = UInt(32.W)
   val texWidth = UInt(14.W)
@@ -52,12 +64,16 @@ class JobConfig extends Bundle {
   *   [3]  depth buffer base
   *   [4]  framebuffer stride (bytes)
   *   [5]  bit0 depth-test enable, bits 6:4 depth func, bit7 depth-write
-  *        enable, bits 9:8 cull mode
+  *        enable, bits 9:8 cull mode, bit17 stencil-test enable
   *   [6]  texture base
   *   [7]  bits 13:0 texture width, bits 29:16 texture height
   *   [8]  TEX_CONFIG (bit0 CLAMP, bits 5:2 max mip level, bit8 enable)
   *   [9]  bits 1:0 sample mode (0 = 1x, 1 = 2x, 2 = 4x), bits 31:2 reserved
-  *   [10..15] reserved
+  *   [10] stencil ops: bits 2:0 func, 5:3 fail, 8:6 z-fail, 11:9 z-pass
+  *   [11] stencil ref [7:0], read mask [15:8], write mask [23:16]
+  *   [12] blend config: bit0 present, bits 7:4 src factor, bits 11:8 dst
+  *        factor, bits 14:12 equation
+  *   [13..15] reserved
   *
   * IH record layout (4 words):
   *   [0] bits 15:0 job id, bit16 DONE, bit17 ERROR
@@ -233,6 +249,7 @@ class JobQueue extends Module {
             fetchCfg.depthFunc := data(6, 4)
             fetchCfg.depthWriteEnable := data(7)
             fetchCfg.cullMode := data(9, 8)
+            fetchCfg.stencilTestEnable := data(17)
           }
           is(6.U) { fetchCfg.texBase := data }
           is(7.U) {
@@ -245,6 +262,23 @@ class JobQueue extends Module {
             fetchCfg.texEnable := data(8)
           }
           is(9.U) { fetchCfg.sampleMode := data(1, 0) }
+          is(10.U) {
+            fetchCfg.stencilFunc := data(2, 0)
+            fetchCfg.stencilFailOp := data(5, 3)
+            fetchCfg.stencilZFailOp := data(8, 6)
+            fetchCfg.stencilZPassOp := data(11, 9)
+          }
+          is(11.U) {
+            fetchCfg.stencilRef := data(7, 0)
+            fetchCfg.stencilReadMask := data(15, 8)
+            fetchCfg.stencilWriteMask := data(23, 16)
+          }
+          is(12.U) {
+            fetchCfg.blendCfgEnable := data(0)
+            fetchCfg.blendSrcFactor := data(7, 4)
+            fetchCfg.blendDstFactor := data(11, 8)
+            fetchCfg.blendEquation := data(14, 12)
+          }
         }
         when(fetchWord === (wordsPerJob - 1).U) {
           // Descriptor consumed: advance the read pointer and stage the job.

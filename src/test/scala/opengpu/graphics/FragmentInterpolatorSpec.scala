@@ -220,7 +220,7 @@ class FragmentInterpolatorSpec extends AnyFlatSpec {
               for (s <- positions.indices) {
                 val (sx, sy) = positions(s)
                 val raw = centre + sx * 64L + sy * 32L
-                val expected = math.max(0L, math.min((1L << 30) - 1, raw))
+                val expected = math.max(0L, math.min((1L << 24) - 1, raw))
                 val got = dut.io.quadDepths(k)(s).peek().litValue.toLong
                 assert(got == expected,
                   s"lane $k sample $s centre=$centre: got $got expected $expected")

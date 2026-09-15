@@ -17,7 +17,10 @@ class RenderCoreSpec extends AnyFlatSpec {
     shaderPc: Int,
     kernarg: Int,
     state: Int = 0,
-    kernargBankStride: Int = 0
+    kernargBankStride: Int = 0,
+    blendCfg: Int = 0,
+    stencilCfg: Int = 0,
+    stencilRef: Int = 0
   ): Seq[Int] = {
     val w = Seq.newBuilder[Int]
     for (i <- 0 until 3) { w += tri(i)._1._1; w += tri(i)._1._2; w += tri(i)._1._3; w += tri(i)._1._4 }
@@ -28,7 +31,10 @@ class RenderCoreSpec extends AnyFlatSpec {
     w += state
     w += 0 // word 33: LOD bias/min-level
     w += kernargBankStride // word 34: optional alternate kernarg bank
-    for (_ <- 0 until 5) { w += 0 } // reserved
+    w += blendCfg // word 35: optional GL-style blend config
+    w += stencilCfg // word 36: stencil func/ops
+    w += stencilRef // word 37: stencil ref/read mask/write mask
+    for (_ <- 0 until 2) { w += 0 } // reserved
     w.result()
   }
 
@@ -76,7 +82,7 @@ class RenderCoreSpec extends AnyFlatSpec {
 
     simulate(new RenderCore(config)) { dut =>
       val fbMem = Array.fill(1 << 16)(0)
-      for (i <- 0 until (16 * 16)) fbMem(depthBase / 4 + i) = 0xffffffff
+      for (i <- 0 until (16 * 16)) fbMem(depthBase / 4 + i) = 0x00ffffff // stencil 0, depth far
 
       dut.reset.poke(true.B)
       dut.clock.step()
@@ -166,6 +172,132 @@ class RenderCoreSpec extends AnyFlatSpec {
     }
   }
 
+  it should "gate a later draw with per-draw stencil state in one command buffer" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    val stride = 16 * 4
+    val colorBase = 0x8000
+    val depthBase = 0x9000
+    val cmdBase = 0x4000
+
+    def tri(x: Int, y: Int, r: Int, g: Int, b: Int, d: Int) = ((x, y, 0, q(1.0)), (r, g, b), d)
+    val big = Seq(
+      tri(q(-1.0), q(-1.0), 0, 255, 0, 0x10),
+      tri(q(1.0), q(-1.0), 0, 255, 0, 0x10),
+      tri(q(-1.0), q(1.0), 0, 255, 0, 0x10)
+    )
+    val small = Seq(
+      tri(q(-0.5), q(-0.5), 255, 0, 0, 0x08),
+      tri(q(0.5), q(-0.5), 255, 0, 0, 0x08),
+      tri(q(-0.5), q(0.5), 255, 0, 0, 0x08)
+    )
+
+    // State word: OVERRIDE | DEPTH_TEST | DEPTH_WRITE | STENCIL_TEST.
+    val state = 1 | (1 << 1) | (1 << 7) | (1 << 17)
+    val masks = (0xff << 8) | (0xff << 16) // read and write masks all-ones
+    val stencilWritten = 6 | (2 << 9) // func ALWAYS, zpass REPLACE
+    val stencilBlocked = 4 // func EQUAL with a mismatching ref below
+    val stencilMatching = 4
+
+    val cbMem = Array.fill(1 << 15)(0)
+    // Draw 0 writes green everywhere and stamps stencil 0x5a.  Draw 1 (red,
+    // nearer) fails the stencil EQUAL test against 0x33, so its colour and
+    // depth never land (fail op KEEP).  Draw 2 (blue) passes EQUAL 0x5a and
+    // wins the overlap with depth 0x08.
+    (encode(big, 0x9000, 0x20000, state = state,
+      stencilCfg = stencilWritten, stencilRef = 0x5a | masks) ++
+      encode(small, 0x9000, 0x20000, state = state,
+        stencilCfg = stencilBlocked, stencilRef = 0x33 | masks) ++
+      encode(small.map(t => ((t._1), (0, 0, 255), t._3)), 0x9000, 0x20000,
+        state = state, stencilCfg = stencilMatching, stencilRef = 0x5a | masks))
+      .zipWithIndex.foreach { case (w, i) => cbMem(cmdBase / 4 + i) = w }
+
+    simulate(new RenderCore(config)) { dut =>
+      val fbMem = Array.fill(1 << 16)(0)
+      for (i <- 0 until (16 * 16)) fbMem(depthBase / 4 + i) = 0x00ffffff
+
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.cmdBase.poke(cmdBase.U)
+      dut.io.cmdCount.poke(3.U)
+      dut.io.colorBase.poke(colorBase.U)
+      dut.io.depthBase.poke(depthBase.U)
+      dut.io.stride.poke(stride.U)
+      dut.io.depthTestEnable.poke(true.B)
+      dut.io.depthFunc.poke(0.U)
+      dut.io.depthWriteEnable.poke(true.B)
+      dut.io.cullMode.poke(0.U)
+      dut.io.sampleMode.poke(0.U)
+      dut.io.texEnable.poke(false.B)
+      dut.io.texBase.poke(0.U)
+      dut.io.texWidth.poke(0.U)
+      dut.io.texHeight.poke(0.U)
+      dut.io.texWrapClamp.poke(false.B)
+      dut.io.texMaxLevel.poke(0.U)
+      dut.io.texMem.req.ready.poke(true.B)
+      dut.io.texMem.resp.valid.poke(false.B)
+      dut.io.cbMem.req.ready.poke(true.B)
+      dut.io.cbMem.resp.valid.poke(false.B)
+      dut.io.fbMem.req.ready.poke(true.B)
+      dut.io.fbMem.resp.valid.poke(false.B)
+
+      dut.io.start.poke(true.B)
+      dut.clock.step()
+      dut.io.start.poke(false.B)
+
+      val cbQ = scala.collection.mutable.Queue.empty[(Int, Long)]
+      val fbQ = scala.collection.mutable.Queue.empty[(Boolean, Int, Long)]
+      var guard = 0
+      while (!dut.io.done.peek().litToBoolean && guard < 30000) {
+        dut.io.cbMem.req.ready.poke(true.B)
+        if (cbQ.nonEmpty) {
+          val (a, d) = cbQ.head
+          dut.io.cbMem.resp.valid.poke(true.B)
+          dut.io.cbMem.resp.bits.data.poke(d.U)
+          dut.io.cbMem.resp.bits.addr.poke(a.U)
+        } else dut.io.cbMem.resp.valid.poke(false.B)
+        if (cbQ.nonEmpty && dut.io.cbMem.resp.ready.peek().litToBoolean) cbQ.dequeue()
+        if (dut.io.cbMem.req.valid.peek().litToBoolean && dut.io.cbMem.req.ready.peek().litToBoolean) {
+          val a = dut.io.cbMem.req.bits.addr.peek().litValue.toInt
+          cbQ.enqueue((a, cbMem(a / 4) & 0xffffffffL))
+        }
+        dut.io.fbMem.req.ready.poke(true.B)
+        if (fbQ.nonEmpty) {
+          val (write, a, d) = fbQ.head
+          dut.io.fbMem.resp.valid.poke(true.B)
+          dut.io.fbMem.resp.bits.write.poke(write.B)
+          dut.io.fbMem.resp.bits.data.poke(d.U)
+          dut.io.fbMem.resp.bits.addr.poke(a.U)
+        } else dut.io.fbMem.resp.valid.poke(false.B)
+        if (fbQ.nonEmpty && dut.io.fbMem.resp.ready.peek().litToBoolean) fbQ.dequeue()
+        if (dut.io.fbMem.req.valid.peek().litToBoolean && dut.io.fbMem.req.ready.peek().litToBoolean) {
+          val a = dut.io.fbMem.req.bits.addr.peek().litValue.toInt
+          val write = dut.io.fbMem.req.bits.write.peek().litToBoolean
+          if (write) fbMem(a / 4) = dut.io.fbMem.req.bits.data.peek().litValue.toInt
+          fbQ.enqueue((write, a, fbMem(a / 4) & 0xffffffffL))
+        }
+        dut.clock.step()
+        guard += 1
+      }
+      assert(guard < 30000, "stencil draw sequence did not drain")
+
+      def rgb(x: Int, y: Int): (Int, Int, Int) = rgbOf(fbMem, colorBase, x, y)
+      def depthWord(x: Int, y: Int): Int = fbMem(depthBase / 4 + y * 16 + x)
+
+      // Draw 1 was stencil-blocked: green stays under it and the stencil byte
+      // plus depth still come from draw 0.
+      assert(rgb(5, 5) == (0, 0, 255),
+        s"draw 2 (blue) must pass EQUAL 0x5a and win, got ${rgb(5, 5)}")
+      assert(depthWord(5, 5) == ((0x5a << 24) | 0x08),
+        f"winning sample should carry stencil 0x5a and depth 0x08, got 0x${depthWord(5, 5)}%08x")
+      // A pixel only the big triangle covers: green with draw 0's stamp.
+      assert(rgb(1, 14) == (0, 255, 0),
+        s"outside the small triangle green must remain, got ${rgb(1, 14)}")
+      assert(depthWord(1, 14) == ((0x5a << 24) | 0x10),
+        f"draw 0's stencil stamp and depth must persist, got 0x${depthWord(1, 14)}%08x")
+    }
+  }
+
   it should "render a command-driven scene through a core-backed kernel (fragCore)" in {
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
     val cfg = GpuConfig(lanes = 4, warps = 2)
@@ -227,7 +359,7 @@ class RenderCoreSpec extends AnyFlatSpec {
       addi(6, 5, 64), vle32(6, 3), vaddVi(3, 3, 1),
       addi(6, 5, 224), vse32(6, 3), cease)
     program.zipWithIndex.foreach { case (w, i) => wwrite(shaderPc + i * 4, w) }
-    for (i <- 0 until (16 * 16)) wwrite(depthBase + i * 4, 0xffffffff) // depth far
+    for (i <- 0 until (16 * 16)) wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
 
     simulate(new RenderCore(gfx, cfg, fragCore = true)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
@@ -429,7 +561,7 @@ class RenderCoreSpec extends AnyFlatSpec {
       addi(6, 5, 64), vle32(6, 3), vaddVi(3, 3, 1),
       addi(6, 5, 224), vse32(6, 3), cease)
     program.zipWithIndex.foreach { case (w, i) => wwrite(shaderPc + i * 4, w) }
-    for (i <- 0 until (16 * 16)) wwrite(depthBase + i * 4, 0xffffffff) // depth far
+    for (i <- 0 until (16 * 16)) wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
 
     simulate(new RenderCore(gfx, cfg, fragCore = true)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
@@ -551,7 +683,7 @@ class RenderCoreSpec extends AnyFlatSpec {
       assert(depth(5, 5) == 0x11, s"second draw depth (5,5) should be 0x11, got ${depth(5, 5)}")
       // A pixel off the anti-diagonal half-plane is covered by neither draw.
       assert(rgb(14, 3) == (0, 0, 0), s"uncovered (14,3) should be black, got ${rgb(14, 3)}")
-      assert(depth(14, 3) == 0xffffffff, s"uncovered depth (14,3) should be far, got ${depth(14, 3)}")
+      assert(depth(14, 3) == 0x00ffffff, s"uncovered depth (14,3) should be far, got ${depth(14, 3)}")
     }
   }
 
@@ -631,7 +763,7 @@ class RenderCoreSpec extends AnyFlatSpec {
       }
       program.zipWithIndex.foreach { case (w, i) => wwrite(shaderPc + i * 4, w) }
       uniforms.foreach { case (a, d) => wwrite(a, d) }
-      for (i <- 0 until (16 * wordsPerRow)) wwrite(depthBase + i * 4, 0xffffffff)
+      for (i <- 0 until (16 * wordsPerRow)) wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
 
       simulate(new RenderCore(gfx, cfg, fragCore = true)) { dut =>
         dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)

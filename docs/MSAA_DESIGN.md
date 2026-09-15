@@ -3,8 +3,16 @@
 ## Status and Goals
 
 This document defines a 1x, 2x, and 4x MSAA path for the existing graphics
-pipeline. It is a design proposal; none of the ABI described below is exposed
-until the corresponding RTL, Linux driver, and tests land together.
+pipeline. The current RTL implements sample coverage, depth generation,
+sample expansion and per-sample output merging. Linux exposes fixed-function
+MSAA submission and physical-stride validation. Programmable MSAA is not yet
+advertised, and typed resolve remains planned. Sections below distinguish the
+implemented path from the remaining interface and resolve work.
+
+Source references: `Msaa.scala`, `Rasterizer.scala`,
+`FragmentInterpolator.scala`, `KernelFragStage.scala`, `RenderPipeline.scala`,
+`OutputMerger.scala` and `RenderHost.scala` under
+`src/main/scala/opengpu/graphics/`, plus `driver/opengpu_compute.c`.
 
 The design has four invariants:
 
@@ -19,7 +27,9 @@ The design has four invariants:
 
 The initial implementation supports RGBA8888 colour and one 32-bit word per
 depth sample. Sample shading, alpha-to-coverage, programmable sample positions,
-centroid interpolation, and stencil are out of scope.
+and centroid interpolation remain out of scope. The depth word is D24S8:
+stencil rides bits [31:24] of the same word and ships alongside the GL-style
+blend configuration; see [STENCIL_BLEND_DESIGN.md](STENCIL_BLEND_DESIGN.md).
 
 ## Terminology and Encoding
 
@@ -49,7 +59,9 @@ case class GraphicsConfig(
 ```
 
 `maxSampleCount` must be 1, 2, or 4. Runtime modes above that limit are
-rejected by the driver and are not admitted by the hardware queue.
+rejected by the driver. Legacy START checks the configured hardware maximum;
+the raw job queue decodes word 9 without equivalent mode validation, so raw
+queue producers must supply a valid mode.
 
 ## Sample Coordinate Convention
 
@@ -74,8 +86,8 @@ These simple quarter-pixel positions are the initial hardware-quality tradeoff;
 a rotated pattern may replace them only through a versioned capability.
 
 With `subPixelBits = 8`, the quarter-pixel magnitude is 64. The implementation
-must either require `subPixelBits >= 2` or reject configurations that cannot
-represent the selected pattern exactly.
+requires `subPixelBits >= 2` in the depth-gradient module to represent the
+selected pattern exactly.
 
 The top-left fill rule is applied independently at each lookup-table position.
 It determines ownership of a sample on a shared edge; it does not determine the
@@ -110,16 +122,18 @@ For a tightly packed 128x128 4x target:
 
 The driver validates `stride >= width * samplesPerPixel * 4`, four-byte
 alignment, multiplication overflow, and `stride * height` against both backing
-allocations. It clears or loads every sample before a render pass. In
-particular, uncovered edge samples must contain the render-pass background
-colour and cleared depth rather than uninitialised data.
+allocations. The driver clears every private depth sample to `0x00ffffff`
+(stencil 0 under the far 24-bit depth) before rendering.
+The caller must initialize the colour samples, including uncovered edge
+samples, to the intended render-pass background; render submission does not
+implicitly clear the colour buffer.
 
 ## ABI
 
 ### Capabilities
 
 The existing `CAPABILITIES[15:8]` fragment-batch-capacity field is unchanged.
-MSAA uses currently unallocated fields:
+MSAA uses the following fields:
 
 | Bits | Meaning |
 |---|---|
@@ -127,7 +141,8 @@ MSAA uses currently unallocated fields:
 | 17:16 | Maximum supported `sampleMode`: 0=1x, 1=2x, 2=4x |
 
 Software tests bit 7 before programming MSAA state and rejects a requested mode
-above bits 17:16.
+above bits 17:16. Only fixed-function builds (`!fragCore`) advertise these
+fields; fragment-core builds expose neither field.
 
 ### Register-Programmed Submission
 
@@ -143,14 +158,12 @@ MSAA resolve-PC or resolve-kernarg registers; resolve uses the existing unified
 kernel command interface.
 
 Legacy `START` snapshots `MSAA_CONFIG` with the other render state. An invalid
-mode or a mode above the advertised maximum reports a submission error rather
+mode or a mode above the elaborated maximum reports a submission error rather
 than silently falling back.
 
-`GpuHostAxi` currently routes every address at or above `0xC4` to
-`GpuCommandMmio`. Adding this register therefore requires bounded routing:
-`0xC4 <= address < 0x134` selects the unified-command block, while `0x134`
-selects `RenderHost`. The overall mapped end becomes `0x138`. Merely increasing
-`RenderHostRegs.END` would shadow or misroute the existing unified registers.
+`GpuHostAxi` routes `[0xC4, 0x134)` and the safe-reset register at `0x138`
+to `GpuCommandMmio`. `0x134` routes to `RenderHost`, as do the stencil/blend
+registers at `0x13C`–`0x144`. The current exclusive mapped end is `0x148`.
 
 ### Job Ring and Linux UAPI
 
@@ -158,13 +171,12 @@ Queue submission must carry the same state as legacy register submission:
 
 - Job descriptor word 9 bits `[1:0]` carry `sampleMode`; bits `[31:2]` are zero.
 - `JobConfig`, `DrawRenderState`, and `DrawContext` carry `sampleMode`.
-- The render-submit UAPI consumes a reserved field as `sample_mode` in the ABI
-  version that advertises MSAA.
+- The render-submit UAPI exposes `sample_mode`; reserved bits must be zero.
 - The driver publishes word 9 when it constructs a job descriptor.
 
-The current single-sample check that render stride equals the platform's
-logical stride is replaced with the physical-stride validation in the memory
-layout section. The private depth allocation and clear size are both
+The driver uses the physical-stride validation in the memory layout section
+instead of requiring the platform’s logical stride. The private depth
+allocation and clear size are both
 `physicalStride * height`.
 
 ## Pipeline
@@ -190,7 +202,7 @@ the boundary between per-pixel work and per-sample work.
 
 ### Rasterization and Coverage
 
-`RasterPixel` gains a fixed-width mask sized by the elaboration-time maximum:
+`RasterPixel` carries a fixed-width mask sized by the elaboration-time maximum:
 
 ```scala
 val coverageMask = UInt(maxSampleCount.W)
@@ -231,21 +243,26 @@ plane and its one-pixel gradients. For every active sample:
 depthSample[s] = depthCentre + depthDx * dx[s] + depthDy * dy[s]
 ```
 
-The design must specify and test the fixed-point widths, signed rounding,
-overflow behaviour, and final D24 clamp/mask before implementation. Gradients
-are computed once per triangle, not by adding two multipliers to every
-interpolator lane.
+`DepthGradient` multiplies signed 34-bit plane coefficients by signed 32-bit
+depths, sums at the product width, shifts by `subPixelBits - 2`, and divides
+by signed triangle area. Division truncates toward zero; the result retains
+the low 32 bits. This is a shared combinational calculation from registered
+triangle state, not a multiplier pair in every interpolator lane. `SampleDepth`
+uses widening signed additions and clamps multisample results to
+`[0, 0xffffff]`; 1x retains the centre depth's low 24 bits.
 
-`RasterFragment` carries `coverageMask` and the active `depthSample` values
-through the fixed-function path and through `KernelFragStage`'s staging
-records. Edge values remain centre edge values for pixel-centre UV and colour
-interpolation.
+`RasterFragment` carries `coverageMask`. Per-sample depths travel on
+`RasterShader.depthSamples` / `quadDepths` sidebands and in `KernelFragStage`
+staging records, rather than as a field of `RasterFragment`. Colour and UV
+remain evaluated at the pixel centre.
 
-The fragment ABI is selected explicitly by submission state, independently of
-sample mode. ABI 0 retains the legacy contract: any nonzero output-valid word
-emits a covered pixel and the shader depth-output word is used unconditionally.
-ABI 0 is supported only with sample mode 0. Existing submissions default to ABI
-0, including shaders that write depth without changing output-valid.
+`KernelFragStage.abi1` selects output-control semantics. ABI 0 retains the
+legacy contract: any nonzero output-valid word emits a covered pixel and the
+shader depth-output word is used unconditionally. The current `RenderPipeline`
+derives `abi1` from the draw's nonzero sample mode; it does not expose an
+independent fragment-ABI selector in MMIO, job records or Linux UAPI. An explicit
+selector remains future interface work. Programmable MSAA is not advertised
+by the host capability even though this internal path exists.
 
 ABI 1 interprets the fragment kernarg output-control word as follows:
 
@@ -268,7 +285,7 @@ quad derivatives but its initial output-control word is zero.
 After shader completion, effective coverage is:
 
 ```text
-effectiveMask = outputControl.bit0 ? coverageMask : 0
+effectiveMask = (ABI1 ? outputControl.bit0 : outputControl != 0) ? coverageMask : 0
 ```
 
 `KernelFragStage` emits one shaded pixel record with that mask; it does not
@@ -323,7 +340,9 @@ sample:
 
 ```text
 conflict = existing.colorAddr == incoming.colorAddr ||
-           existing.depthAddr == incoming.depthAddr
+           existing.depthAddr == incoming.depthAddr ||
+           existing.colorAddr == incoming.depthAddr ||
+           existing.depthAddr == incoming.colorAddr
 ```
 
 Different samples of one pixel have different addresses and may occupy
@@ -331,7 +350,10 @@ different in-flight entries. Fragments for the same sample remain serialized,
 preserving draw order. The initial implementation keeps the current table
 depth; increasing it is a measured optimisation, not a correctness dependency.
 
-## Resolve
+## Resolve (Planned)
+
+No typed resolve ioctl, scheduler job or trusted resolve kernel is currently
+implemented. The following describes the intended interface and fence contract.
 
 Resolve averages every pixel's physical colour samples into a separate
 single-sample RGBA8888 buffer. Depth resolve is out of scope.
@@ -404,6 +426,7 @@ resolved colour to every sample; an ordinary linear copy is insufficient.
 
 ## Driver Behaviour
 
+Steps 1–5 describe current fixed-function submission. Step 6 is planned.
 For an MSAA render submission, the driver:
 
 1. Verifies the MSAA capability and requested `sampleMode`.
@@ -439,56 +462,34 @@ The in-flight table and single OM memory port are likely throughput limits.
 Before increasing table depth, measure slot occupancy, address conflicts, and
 memory-port utilisation under 2x and 4x workloads.
 
-## Implementation Phases
+## Implementation Status
 
-### Phase 1: ABI and State Plumbing
-
-Status: landed. `sampleMode` is programmable end-to-end (legacy register and job
-ring); mode 0 remains bit-identical on every path.
-
-- [x] Reserve `MSAA_CONFIG` at `0x134`, bound the unified-command address route,
-      and extend the overall mapped register end to `0x138`.
-- [x] Add capability bit 7 and maximum-mode bits 17:16 without changing the
-      fragment-batch field. Advertising is gated to fixed-function builds.
-- [x] Add `sampleMode` to the legacy snapshot, job descriptor word 9,
-      `JobConfig`, `DrawRenderState`, and `DrawContext`.
-- [x] Extend the render UAPI and driver validation for physical stride and
-      buffer size.
-- [x] Keep mode 0 bit-identical with existing submissions.
-
-### Phase 2: Coverage and Depth
-
-1. Add mode-specific fixed-point sample-position lookup tables.
-2. Produce a correctly sized coverage mask from centre edges and gradients.
-3. Conservatively expand and clamp the raster bounding box.
-4. Compute per-triangle depth gradients and per-sample depths with defined
-   precision and rounding.
-5. Extend scalar pixels, quad lanes, and fixed-function texturing payloads.
-
-### Phase 3: Programmable Fragment Path
-
-1. Carry coverage masks and sample depths through `KernelFragStage` records.
-2. Extend the output-control word with the depth-override bit.
-3. Preserve four pixel lanes per quad and one shader invocation per pixel.
-4. Verify helper lanes and `vquad.dfdx/dfdy` in every sample mode.
-
-### Phase 4: Sample Expansion and Output Merge
-
-1. Add a backpressured post-shader sample expander.
-2. Add `sampleIndex` to `OmFragment`.
-3. Use physical stride and decoded sample addressing.
-4. Serialize conflicts for the same sample while allowing different samples in
-   flight.
-5. Verify depth, blending, and draw-order behaviour independently per sample.
-
-### Phase 5: Resolve
-
-1. Add the typed resolve scheduler job and validated source/destination BOs.
-2. Add the driver-owned trusted resolve kernel and private kernarg.
-3. Attach correct reservation and sync-object fences.
-4. Connect resolved output to the existing KMS scanout path.
+| Area | Current state | Remaining work |
+|---|---|---|
+| ABI/state | MSAA register, fixed-function capabilities, queue word 9 and Linux physical-stride checks implemented | Validate raw queued modes; expose programmable MSAA only after its contract is complete |
+| Coverage/depth | Mode-specific LUT, scalar/quad masks, expanded bounds, shared triangle gradients and sample depth implemented | Broaden edge and precision regression coverage |
+| Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented internally | Independent ABI selection and advertised Linux support |
+| Expansion/OM | Backpressured expander, sample addresses, address-hazard ordering and acknowledged write drain implemented | Broader integrated multisample regressions |
+| Resolve | Design only | Typed operation, trusted kernel, bounds validation, scheduler fences and KMS integration |
 
 ## Verification
+
+Existing test sources include `MsaaSpec` (sample patterns, expansion and depth
+reference/clamping), `RenderPipelineSpec` (sample depth and 1x core-backed
+expansion), `KernelFragStageSpec` (ABI-1 emit/depth override), and
+`OutputMergerSpec` (write-acknowledgement drain, blending and stencil).
+`RenderCoreSpec`, `RenderHostSpec` and `GpuHostAxiSpec` cover integration and
+host behavior. Test presence is not a claim that all cases below are complete
+or that a full regression has passed.
+
+Run the focused suites from the repository root:
+
+```sh
+sbt 'testOnly opengpu.graphics.MsaaSpec opengpu.graphics.OutputMergerSpec opengpu.graphics.KernelFragStageSpec opengpu.graphics.RenderPipelineSpec opengpu.graphics.RenderCoreSpec opengpu.graphics.RenderHostSpec opengpu.graphics.GpuHostAxiSpec'
+```
+
+The lists below are the target verification matrix, including pending resolve
+and programmable-MSAA integration cases.
 
 ### Unit Tests
 

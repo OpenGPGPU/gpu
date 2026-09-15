@@ -6,6 +6,7 @@
 #include <linux/module.h>
 #include <linux/overflow.h>
 #include <linux/slab.h>
+#include <linux/stddef.h>
 #include <linux/uaccess.h>
 
 #include <drm/drm_device.h>
@@ -84,14 +85,20 @@ static void opengpu_fill_test_command(struct opengpu_device *gpu)
     BUILD_BUG_ON(sizeof(*r) != GPU_DRAW_WORDS * sizeof(u32));
 
     memset(gpu->compute.cmd.cpu, 0, sizeof(*r));
-    /* Prefer the hardware clear engine for the depth plane; the CPU memset
+    /* Prefer the hardware clear engine for the depth plane; the CPU loop
      * stays as the fallback for engines without GPU_CAP_CLEAR_ENGINE or with
-     * a misaligned self-test buffer.  The caller guarantees no draw is in
-     * flight, matching the explicit-sync contract. */
+     * a misaligned self-test buffer.  D24S8: stencil 0 under the far depth.
+     * The caller guarantees no draw is in flight, matching the
+     * explicit-sync contract. */
     if (opengpu_hw_clear(gpu,
                          lower_32_bits(gpu->compute.depth.dma),
-                         (u32)gpu->compute.depth.size, 0xffffffffu))
-        memset(gpu->compute.depth.cpu, 0xff, gpu->compute.depth.size);
+                         (u32)gpu->compute.depth.size, 0x00ffffffu)) {
+        u32 *word = gpu->compute.depth.cpu;
+        size_t n;
+
+        for (n = 0; n < gpu->compute.depth.size / sizeof(u32); n++)
+            word[n] = 0x00ffffffu;
+    }
     if (gpu->compute.kernarg.cpu)
         memset(gpu->compute.kernarg.cpu, 0, gpu->compute.kernarg.size);
 
@@ -108,6 +115,11 @@ static void opengpu_fill_test_command(struct opengpu_device *gpu)
     r->d0 = 0x10;
     r->d1 = 0x10;
     r->d2 = 0x10;
+    /* Pass-through blend config: exercises the word-35 decode on every
+     * self-test boot without changing the rendered colour. */
+    r->blend_config = GPU_BLEND_CONFIG(GPU_BLEND_FACTOR_ONE,
+                                       GPU_BLEND_FACTOR_ZERO,
+                                       GPU_BLEND_EQ_ADD);
     if (gpu->hw.capabilities & GPU_CAP_FRAGMENT_CORE) {
         r->shader_pc = lower_32_bits(gpu->compute.shader.dma);
         r->kernarg = lower_32_bits(gpu->compute.kernarg.dma);
@@ -714,6 +726,8 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
 
     BUILD_BUG_ON(sizeof(struct drm_opengpu_draw) !=
                  sizeof(struct gpu_draw_record));
+    BUILD_BUG_ON(offsetof(struct gpu_draw_record, reserved) !=
+                 38u * sizeof(u32));
     for (i = 0; i < args->command_count; i++) {
         struct gpu_draw_record *record = &records[i];
 
@@ -732,8 +746,15 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
             return -EINVAL;
         if (record->sampler & ~OPENGPU_DRAW_SAMPLER_VALID_MASK)
             return -EINVAL;
+        if (record->blend_config & ~OPENGPU_DRAW_BLEND_VALID_MASK)
+            return -EINVAL;
+        if (record->stencil_config & ~OPENGPU_DRAW_STENCIL_VALID_MASK)
+            return -EINVAL;
+        if (record->stencil_ref & ~OPENGPU_DRAW_STENCIL_REF_VALID_MASK)
+            return -EINVAL;
         if (!(record->state & OPENGPU_DRAW_STATE_OVERRIDE)) {
-            if (record->state || record->sampler)
+            if (record->state || record->sampler || record->blend_config ||
+                record->stencil_config || record->stencil_ref)
                 return -EINVAL;
         } else {
             u32 depth_func = (record->state &
@@ -750,6 +771,7 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
             u32 min_mip = (record->sampler &
                 OPENGPU_DRAW_SAMPLER_MIN_LOD_MASK) >>
                 OPENGPU_DRAW_SAMPLER_MIN_LOD_SHIFT;
+            bool stencil = record->state & OPENGPU_DRAW_STATE_STENCIL_TEST;
 
             if (depth_func > GPU_DEPTH_FUNC_ALWAYS ||
                 cull > GPU_CULL_FRONT ||
@@ -758,6 +780,25 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
                 (record->sampler && !texture) ||
                 max_mip > bound_max_mip || min_mip > max_mip)
                 return -EINVAL;
+            /* Stencil words are only meaningful with the test enabled. */
+            if (!stencil && (record->stencil_config || record->stencil_ref))
+                return -EINVAL;
+            if (record->blend_config) {
+                u32 src = (record->blend_config &
+                    OPENGPU_DRAW_BLEND_SRC_MASK) >>
+                    OPENGPU_DRAW_BLEND_SRC_SHIFT;
+                u32 dst = (record->blend_config &
+                    OPENGPU_DRAW_BLEND_DST_MASK) >>
+                    OPENGPU_DRAW_BLEND_DST_SHIFT;
+                u32 eq = (record->blend_config &
+                    OPENGPU_DRAW_BLEND_EQ_MASK) >>
+                    OPENGPU_DRAW_BLEND_EQ_SHIFT;
+
+                if (!(record->blend_config & OPENGPU_DRAW_BLEND_PRESENT) ||
+                    src > GPU_BLEND_FACTOR_MAX || dst > GPU_BLEND_FACTOR_MAX ||
+                    eq > GPU_BLEND_EQ_MAX_VAL)
+                    return -EINVAL;
+            }
         }
         if (!shader) {
             if (record->shader_pc || record->kernarg || record->sampler ||
@@ -790,6 +831,8 @@ static int opengpu_validate_vertex_commands(
 
     BUILD_BUG_ON(sizeof(struct drm_opengpu_vertex_draw) !=
                  sizeof(struct gpu_vert_draw_record));
+    BUILD_BUG_ON(offsetof(struct gpu_vert_draw_record, reserved2) !=
+                 38u * sizeof(u32));
     for (i = 0; i < args->command_count; i++) {
         struct gpu_vert_draw_record *record = &records[i];
         u64 address, bytes;
@@ -810,8 +853,13 @@ static int opengpu_validate_vertex_commands(
         if (record->state & ~OPENGPU_DRAW_STATE_VALID_MASK ||
             record->sampler & ~OPENGPU_DRAW_SAMPLER_VALID_MASK)
             return -EINVAL;
+        if (record->blend_config & ~OPENGPU_DRAW_BLEND_VALID_MASK ||
+            record->stencil_config & ~OPENGPU_DRAW_STENCIL_VALID_MASK ||
+            record->stencil_ref & ~OPENGPU_DRAW_STENCIL_REF_VALID_MASK)
+            return -EINVAL;
         if (!(record->state & OPENGPU_DRAW_STATE_OVERRIDE)) {
-            if (record->state || record->sampler)
+            if (record->state || record->sampler || record->blend_config ||
+                record->stencil_config || record->stencil_ref)
                 return -EINVAL;
         } else {
             u32 depth_func = (record->state &
@@ -828,6 +876,7 @@ static int opengpu_validate_vertex_commands(
             u32 min_mip = (record->sampler &
                 OPENGPU_DRAW_SAMPLER_MIN_LOD_MASK) >>
                 OPENGPU_DRAW_SAMPLER_MIN_LOD_SHIFT;
+            bool stencil = record->state & OPENGPU_DRAW_STATE_STENCIL_TEST;
 
             if (depth_func > GPU_DEPTH_FUNC_ALWAYS ||
                 cull > GPU_CULL_FRONT ||
@@ -836,6 +885,25 @@ static int opengpu_validate_vertex_commands(
                 (record->sampler && !texture) ||
                 max_mip > bound_max_mip || min_mip > max_mip)
                 return -EINVAL;
+            /* Stencil words are only meaningful with the test enabled. */
+            if (!stencil && (record->stencil_config || record->stencil_ref))
+                return -EINVAL;
+            if (record->blend_config) {
+                u32 src = (record->blend_config &
+                    OPENGPU_DRAW_BLEND_SRC_MASK) >>
+                    OPENGPU_DRAW_BLEND_SRC_SHIFT;
+                u32 dst = (record->blend_config &
+                    OPENGPU_DRAW_BLEND_DST_MASK) >>
+                    OPENGPU_DRAW_BLEND_DST_SHIFT;
+                u32 eq = (record->blend_config &
+                    OPENGPU_DRAW_BLEND_EQ_MASK) >>
+                    OPENGPU_DRAW_BLEND_EQ_SHIFT;
+
+                if (!(record->blend_config & OPENGPU_DRAW_BLEND_PRESENT) ||
+                    src > GPU_BLEND_FACTOR_MAX || dst > GPU_BLEND_FACTOR_MAX ||
+                    eq > GPU_BLEND_EQ_MAX_VAL)
+                    return -EINVAL;
+            }
         }
         if (check_mul_overflow((u64)(record->vert_count - 1),
                                (u64)record->vert_stride, &bytes) ||
@@ -956,7 +1024,7 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
     if (job->gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE)
         ret = opengpu_hw_clear_and_submit_async(
             job->gpu, &job->hw, lower_32_bits(job->depth.dma),
-            job->depth.size, 0xffffffffu, &fence);
+            job->depth.size, 0x00ffffffu, &fence);
     else
         ret = opengpu_hw_submit_async(job->gpu, &job->hw, &fence);
     if (ret)
@@ -1197,9 +1265,18 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     if (ret)
         goto out_job;
     /* Clear-capable hardware clears this private depth plane immediately
-     * before its draw. Older devices retain the coherent CPU fallback. */
-    if (!(gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE))
-        memset(sched_job->depth.cpu, 0xff, sched_job->depth.size);
+     * before its draw. Older devices retain the coherent CPU fallback.
+     * D24S8: the clear leaves stencil 0 under the far depth so stencil
+     * counters start from a defined state. */
+    if (!(gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE)) {
+        u32 *word = sched_job->depth.cpu;
+        size_t n;
+
+        for (n = 0; n < sched_job->depth.size / sizeof(u32); n++)
+            word[n] = 0x00ffffffu;
+    }
+    /* Per-draw stencil/blend state rides the command records; the job-level
+     * global defaults stay disabled so legacy records keep their meaning. */
     sched_job->hw = (struct opengpu_job) {
         .cmd = sched_job->commands.dma,
         .cmd_count = args->command_count,
@@ -1211,6 +1288,10 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         .depth_write = true,
         .cull_mode = GPU_CULL_NONE,
         .sample_mode = sample_mode,
+        .stencil_test = false,
+        .stencil_config = 0,
+        .stencil_ref_masks = 0,
+        .blend_config = 0,
         .texture = texture ? texture->dma : 0,
         .texture_width = texture ? texture->width : 0,
         .texture_height = texture ? texture->height : 0,

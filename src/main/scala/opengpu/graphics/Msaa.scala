@@ -127,7 +127,8 @@ class DepthGradient(config: GraphicsConfig) extends Module {
   * Lanes whose sample position is not part of the active mode are zero.  In 1x
   * mode the single sample is the legacy truncated centre depth, so single-
   * sample output is bit-identical; multi-sample results are saturated to the
-  * 30-bit D24 packing so an out-of-range sample cannot wrap into the buffer.
+  * 24-bit D24 packing (the depth word's low 24 bits, shared with stencil in
+  * bits [31:24]) so an out-of-range sample cannot wrap into the buffer.
   */
 class SampleDepth(maxSampleCount: Int = 4) extends Module {
   require(Set(1, 2, 4)(maxSampleCount))
@@ -138,7 +139,7 @@ class SampleDepth(maxSampleCount: Int = 4) extends Module {
     val quarterDy = Input(SInt(32.W))
     val depths = Output(Vec(maxSampleCount, UInt(30.W)))
   })
-  private val maxDepth = (1 << 30) - 1
+  private val maxDepth = (1 << 24) - 1
 
   // Mirrors SampleCoverage: a zero offset contributes nothing, and negating an
   // operand avoids widening literals.
@@ -154,7 +155,7 @@ class SampleDepth(maxSampleCount: Int = 4) extends Module {
     clamped(29, 0).asUInt
   }
 
-  private val legacyCentre = io.centre(29, 0).asUInt
+  private val legacyCentre = io.centre(23, 0).asUInt
   private def modeDepths(mode: Int): Vec[UInt] = {
     val positions = Msaa.positions(mode)
     VecInit((0 until maxSampleCount).map { i =>

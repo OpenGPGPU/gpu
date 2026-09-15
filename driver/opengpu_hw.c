@@ -227,6 +227,11 @@ static void opengpu_job_fill(struct gpu_job_record *rec, u32 id,
                                      job->texture_height);
     rec->tex_config = job->texture_config;
     rec->msaa = job->sample_mode & 0x3u;
+    rec->stencil_config = job->stencil_config;
+    rec->stencil_ref_masks = job->stencil_ref_masks;
+    rec->blend_config = job->blend_config;
+    if (job->stencil_test)
+        rec->state |= GPU_JOB_STATE_STENCIL_TEST;
 }
 
 /* Drain pending interrupt-history records and retire the fences they name.
@@ -785,6 +790,14 @@ static int opengpu_hw_submit_legacy_locked(struct opengpu_device *gpu,
     opengpu_reg_write(gpu, GPU_REG_TEX_HEIGHT, job->texture_height);
     opengpu_reg_write(gpu, GPU_REG_TEX_CONFIG, job->texture_config);
     opengpu_reg_write(gpu, GPU_REG_MSAA_CONFIG, job->sample_mode & 0x3u);
+    /* The register file packs the stencil enable at bit0 with func/ops one
+     * nibble above the draw-record word-36 layout; the ref/masks and blend
+     * words are register-compatible with job words 11/12. */
+    opengpu_reg_write(gpu, GPU_REG_STENCIL_CONFIG,
+                      (job->stencil_test ? 1u : 0u) |
+                      ((job->stencil_config & 0xfffu) << 4));
+    opengpu_reg_write(gpu, GPU_REG_STENCIL_REF_MASKS, job->stencil_ref_masks);
+    opengpu_reg_write(gpu, GPU_REG_BLEND_CONFIG, job->blend_config);
 
     opengpu_reg_write(gpu, GPU_REG_IRQ, GPU_IRQ_ENABLE);
     schedule_delayed_work(&gpu->hw.timeout_work,

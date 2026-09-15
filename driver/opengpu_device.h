@@ -170,6 +170,13 @@ struct opengpu_job {
     bool depth_write;
     u32 cull_mode;
     u32 sample_mode;
+    /* Global stencil/blend defaults (register/job-record encodings; per-draw
+     * records override them). stencil_config uses the draw-record word-36
+     * layout; stencil_test is the enable bit. */
+    bool stencil_test;
+    u32 stencil_config;
+    u32 stencil_ref_masks;
+    u32 blend_config;
     dma_addr_t texture;
     u32 texture_width;
     u32 texture_height;

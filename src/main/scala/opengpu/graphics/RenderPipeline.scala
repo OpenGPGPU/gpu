@@ -32,6 +32,22 @@ class SceneTriangle(config: GraphicsConfig) extends Bundle {
   val depthWriteEnable = Bool()
   /** Source-over RGBA8888 blending, valid when stateOverride is set. */
   val blendEnable = Bool()
+  /** GL-style blend config (draw word 35): bit0 present overrides source-over;
+    * bits[7:4] src factor, bits[11:8] dst factor, bits[14:12] equation. */
+  val blendCfgEnable = Bool()
+  val blendSrcFactor = UInt(4.W)
+  val blendDstFactor = UInt(4.W)
+  val blendEquation = UInt(3.W)
+  /** Single-sided stencil state (draw words 36/37): func shares the depth-func
+    * encoding; ops use the GL 3-bit encoding. */
+  val stencilTestEnable = Bool()
+  val stencilFunc = UInt(3.W)
+  val stencilFailOp = UInt(3.W)
+  val stencilZFailOp = UInt(3.W)
+  val stencilZPassOp = UInt(3.W)
+  val stencilRef = UInt(8.W)
+  val stencilReadMask = UInt(8.W)
+  val stencilWriteMask = UInt(8.W)
   val cullMode = UInt(2.W)
   val texEnable = Bool()
   val texWrapClamp = Bool()
@@ -50,6 +66,18 @@ private class DrawRenderState extends Bundle {
   val depthFunc = UInt(3.W)
   val depthWriteEnable = Bool()
   val blendEnable = Bool()
+  val blendCfgEnable = Bool()
+  val blendSrcFactor = UInt(4.W)
+  val blendDstFactor = UInt(4.W)
+  val blendEquation = UInt(3.W)
+  val stencilTestEnable = Bool()
+  val stencilFunc = UInt(3.W)
+  val stencilFailOp = UInt(3.W)
+  val stencilZFailOp = UInt(3.W)
+  val stencilZPassOp = UInt(3.W)
+  val stencilRef = UInt(8.W)
+  val stencilReadMask = UInt(8.W)
+  val stencilWriteMask = UInt(8.W)
   val cullMode = UInt(2.W)
   val sampleMode = UInt(2.W)
   val texEnable = Bool()
@@ -112,6 +140,18 @@ class RenderPipeline(
     val depthTestEnable = Input(Bool())
     val depthFunc = Input(UInt(3.W))
     val depthWriteEnable = Input(Bool())
+    val blendCfgEnable = Input(Bool())
+    val blendSrcFactor = Input(UInt(4.W))
+    val blendDstFactor = Input(UInt(4.W))
+    val blendEquation = Input(UInt(3.W))
+    val stencilTestEnable = Input(Bool())
+    val stencilFunc = Input(UInt(3.W))
+    val stencilRef = Input(UInt(8.W))
+    val stencilReadMask = Input(UInt(8.W))
+    val stencilWriteMask = Input(UInt(8.W))
+    val stencilFailOp = Input(UInt(3.W))
+    val stencilZFailOp = Input(UInt(3.W))
+    val stencilZPassOp = Input(UInt(3.W))
     val cullMode = Input(UInt(2.W))
     /** bits[1:0] sample mode: 0 = 1x, 1 = 2x, 2 = 4x. */
     val sampleMode = Input(UInt(2.W))
@@ -169,6 +209,18 @@ class RenderPipeline(
     kernelVert.io.depthFunc := io.draw.bits.asInstanceOf[VertexDrawCommand].depthFunc
     kernelVert.io.depthWriteEnable := io.draw.bits.asInstanceOf[VertexDrawCommand].depthWriteEnable
     kernelVert.io.blendEnable := io.draw.bits.asInstanceOf[VertexDrawCommand].blendEnable
+    kernelVert.io.blendCfgEnable := io.draw.bits.asInstanceOf[VertexDrawCommand].blendCfgEnable
+    kernelVert.io.blendSrcFactor := io.draw.bits.asInstanceOf[VertexDrawCommand].blendSrcFactor
+    kernelVert.io.blendDstFactor := io.draw.bits.asInstanceOf[VertexDrawCommand].blendDstFactor
+    kernelVert.io.blendEquation := io.draw.bits.asInstanceOf[VertexDrawCommand].blendEquation
+    kernelVert.io.stencilTestEnable := io.draw.bits.asInstanceOf[VertexDrawCommand].stencilTestEnable
+    kernelVert.io.stencilFunc := io.draw.bits.asInstanceOf[VertexDrawCommand].stencilFunc
+    kernelVert.io.stencilRef := io.draw.bits.asInstanceOf[VertexDrawCommand].stencilRef
+    kernelVert.io.stencilReadMask := io.draw.bits.asInstanceOf[VertexDrawCommand].stencilReadMask
+    kernelVert.io.stencilWriteMask := io.draw.bits.asInstanceOf[VertexDrawCommand].stencilWriteMask
+    kernelVert.io.stencilFailOp := io.draw.bits.asInstanceOf[VertexDrawCommand].stencilFailOp
+    kernelVert.io.stencilZFailOp := io.draw.bits.asInstanceOf[VertexDrawCommand].stencilZFailOp
+    kernelVert.io.stencilZPassOp := io.draw.bits.asInstanceOf[VertexDrawCommand].stencilZPassOp
     kernelVert.io.cullMode := io.draw.bits.asInstanceOf[VertexDrawCommand].cullMode
     kernelVert.io.texEnable := io.draw.bits.asInstanceOf[VertexDrawCommand].texEnable
     kernelVert.io.texWrapClamp := io.draw.bits.asInstanceOf[VertexDrawCommand].texWrapClamp
@@ -255,6 +307,30 @@ class RenderPipeline(
       drawState.depthWriteEnable := Mux(cmd.stateOverride,
         cmd.depthWriteEnable, io.depthWriteEnable)
       drawState.blendEnable := cmd.stateOverride && cmd.blendEnable
+      drawState.blendCfgEnable := Mux(cmd.stateOverride,
+        cmd.blendCfgEnable, io.blendCfgEnable)
+      drawState.blendSrcFactor := Mux(cmd.stateOverride,
+        cmd.blendSrcFactor, io.blendSrcFactor)
+      drawState.blendDstFactor := Mux(cmd.stateOverride,
+        cmd.blendDstFactor, io.blendDstFactor)
+      drawState.blendEquation := Mux(cmd.stateOverride,
+        cmd.blendEquation, io.blendEquation)
+      drawState.stencilTestEnable := Mux(cmd.stateOverride,
+        cmd.stencilTestEnable, io.stencilTestEnable)
+      drawState.stencilFunc := Mux(cmd.stateOverride,
+        cmd.stencilFunc, io.stencilFunc)
+      drawState.stencilRef := Mux(cmd.stateOverride,
+        cmd.stencilRef, io.stencilRef)
+      drawState.stencilReadMask := Mux(cmd.stateOverride,
+        cmd.stencilReadMask, io.stencilReadMask)
+      drawState.stencilWriteMask := Mux(cmd.stateOverride,
+        cmd.stencilWriteMask, io.stencilWriteMask)
+      drawState.stencilFailOp := Mux(cmd.stateOverride,
+        cmd.stencilFailOp, io.stencilFailOp)
+      drawState.stencilZFailOp := Mux(cmd.stateOverride,
+        cmd.stencilZFailOp, io.stencilZFailOp)
+      drawState.stencilZPassOp := Mux(cmd.stateOverride,
+        cmd.stencilZPassOp, io.stencilZPassOp)
       drawState.cullMode := Mux(cmd.stateOverride,
         cmd.cullMode, io.cullMode)
       drawState.texEnable := Mux(cmd.stateOverride,
@@ -280,6 +356,30 @@ class RenderPipeline(
       // Blending currently has no global host register: it is deliberately
       // opt-in per draw so legacy command streams remain bit-identical.
       drawState.blendEnable := triSource.bits.stateOverride && triSource.bits.blendEnable
+      drawState.blendCfgEnable := Mux(triSource.bits.stateOverride,
+        triSource.bits.blendCfgEnable, io.blendCfgEnable)
+      drawState.blendSrcFactor := Mux(triSource.bits.stateOverride,
+        triSource.bits.blendSrcFactor, io.blendSrcFactor)
+      drawState.blendDstFactor := Mux(triSource.bits.stateOverride,
+        triSource.bits.blendDstFactor, io.blendDstFactor)
+      drawState.blendEquation := Mux(triSource.bits.stateOverride,
+        triSource.bits.blendEquation, io.blendEquation)
+      drawState.stencilTestEnable := Mux(triSource.bits.stateOverride,
+        triSource.bits.stencilTestEnable, io.stencilTestEnable)
+      drawState.stencilFunc := Mux(triSource.bits.stateOverride,
+        triSource.bits.stencilFunc, io.stencilFunc)
+      drawState.stencilRef := Mux(triSource.bits.stateOverride,
+        triSource.bits.stencilRef, io.stencilRef)
+      drawState.stencilReadMask := Mux(triSource.bits.stateOverride,
+        triSource.bits.stencilReadMask, io.stencilReadMask)
+      drawState.stencilWriteMask := Mux(triSource.bits.stateOverride,
+        triSource.bits.stencilWriteMask, io.stencilWriteMask)
+      drawState.stencilFailOp := Mux(triSource.bits.stateOverride,
+        triSource.bits.stencilFailOp, io.stencilFailOp)
+      drawState.stencilZFailOp := Mux(triSource.bits.stateOverride,
+        triSource.bits.stencilZFailOp, io.stencilZFailOp)
+      drawState.stencilZPassOp := Mux(triSource.bits.stateOverride,
+        triSource.bits.stencilZPassOp, io.stencilZPassOp)
       drawState.cullMode := Mux(triSource.bits.stateOverride,
         triSource.bits.cullMode, io.cullMode)
       drawState.texEnable := Mux(triSource.bits.stateOverride,
@@ -479,6 +579,18 @@ class RenderPipeline(
     ctxFifo.io.enq.bits.depthFunc := drawState.depthFunc
     ctxFifo.io.enq.bits.depthWriteEnable := drawState.depthWriteEnable
     ctxFifo.io.enq.bits.blendEnable := drawState.blendEnable
+    ctxFifo.io.enq.bits.blendCfgEnable := drawState.blendCfgEnable
+    ctxFifo.io.enq.bits.blendSrcFactor := drawState.blendSrcFactor
+    ctxFifo.io.enq.bits.blendDstFactor := drawState.blendDstFactor
+    ctxFifo.io.enq.bits.blendEquation := drawState.blendEquation
+    ctxFifo.io.enq.bits.stencilTestEnable := drawState.stencilTestEnable
+    ctxFifo.io.enq.bits.stencilFunc := drawState.stencilFunc
+    ctxFifo.io.enq.bits.stencilRef := drawState.stencilRef
+    ctxFifo.io.enq.bits.stencilReadMask := drawState.stencilReadMask
+    ctxFifo.io.enq.bits.stencilWriteMask := drawState.stencilWriteMask
+    ctxFifo.io.enq.bits.stencilFailOp := drawState.stencilFailOp
+    ctxFifo.io.enq.bits.stencilZFailOp := drawState.stencilZFailOp
+    ctxFifo.io.enq.bits.stencilZPassOp := drawState.stencilZPassOp
     // Ordered retire handshake: the stage presents one completion event per
     // draw boundary in submission order and holds it until the owner accepts
     // it.  Every OM entry snapshots its render-target state at fragment
@@ -532,11 +644,11 @@ class RenderPipeline(
     // presents one OM fragment per set coverage bit.  At 1x the mask is one
     // bit and the expander is 1-in/1-out (sampleIndex = 0), so the OM stream
     // is bit-identical to the pre-MSAA direct path.
-    val kfDepth30 = kernelFrag.io.out.bits.depth(29, 0).asUInt
+    val kfDepth24 = kernelFrag.io.out.bits.depth(23, 0).asUInt
     // ABI 1 bit 1 selects the shader-written depth word (replicated over the
     // samples); otherwise each sample takes its rasterizer-derived depth.
     val kfDepths = VecInit(Seq.tabulate(config.maxSampleCount)(s =>
-      Mux(kernelFrag.io.depthOverride, kfDepth30,
+      Mux(kernelFrag.io.depthOverride, kfDepth24,
         kernelFrag.io.outDepths(s))))
     expander.io.in.valid := kernelFrag.io.out.valid
     expander.io.in.bits.x := kernelFrag.io.out.bits.x(15, 0).asUInt
@@ -613,6 +725,18 @@ class RenderPipeline(
     om.io.depthFunc := ctxFifo.io.head.depthFunc
     om.io.depthWriteEnable := ctxFifo.io.head.depthWriteEnable
     om.io.blendEnable := ctxFifo.io.head.blendEnable
+    om.io.blendCfgEnable := ctxFifo.io.head.blendCfgEnable
+    om.io.blendSrcFactor := ctxFifo.io.head.blendSrcFactor
+    om.io.blendDstFactor := ctxFifo.io.head.blendDstFactor
+    om.io.blendEquation := ctxFifo.io.head.blendEquation
+    om.io.stencilTestEnable := ctxFifo.io.head.stencilTestEnable
+    om.io.stencilFunc := ctxFifo.io.head.stencilFunc
+    om.io.stencilRef := ctxFifo.io.head.stencilRef
+    om.io.stencilReadMask := ctxFifo.io.head.stencilReadMask
+    om.io.stencilWriteMask := ctxFifo.io.head.stencilWriteMask
+    om.io.stencilFailOp := ctxFifo.io.head.stencilFailOp
+    om.io.stencilZFailOp := ctxFifo.io.head.stencilZFailOp
+    om.io.stencilZPassOp := ctxFifo.io.head.stencilZPassOp
     om.io.sampleMode := ctxFifo.io.head.sampleMode
 
     // Done only once every rasterized fragment has been flushed, shaded, and
@@ -631,6 +755,18 @@ class RenderPipeline(
     om.io.depthFunc := drawState.depthFunc
     om.io.depthWriteEnable := drawState.depthWriteEnable
     om.io.blendEnable := drawState.blendEnable
+    om.io.blendCfgEnable := drawState.blendCfgEnable
+    om.io.blendSrcFactor := drawState.blendSrcFactor
+    om.io.blendDstFactor := drawState.blendDstFactor
+    om.io.blendEquation := drawState.blendEquation
+    om.io.stencilTestEnable := drawState.stencilTestEnable
+    om.io.stencilFunc := drawState.stencilFunc
+    om.io.stencilRef := drawState.stencilRef
+    om.io.stencilReadMask := drawState.stencilReadMask
+    om.io.stencilWriteMask := drawState.stencilWriteMask
+    om.io.stencilFailOp := drawState.stencilFailOp
+    om.io.stencilZFailOp := drawState.stencilZFailOp
+    om.io.stencilZPassOp := drawState.stencilZPassOp
     om.io.sampleMode := drawState.sampleMode
     // As in the core-backed path, wait for the final fragment's serialized
     // depth/color RMW to retire (in-flight entries drained) before declaring

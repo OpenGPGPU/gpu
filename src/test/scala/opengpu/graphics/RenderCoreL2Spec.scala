@@ -105,7 +105,7 @@ class RenderCoreL2Spec extends AnyFlatSpec {
       slli(5, 8, 2), add(5, 1, 5), vsetivli(4), addi(6, 5, 96),
       vle32(6, 2), addi(6, 5, 192), vse32(6, 2), cease)
     program.zipWithIndex.foreach { case (w, i) => m.wwrite(shaderPc + i * 4, w) }
-    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0xffffffff)
+    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
     // Record the kernarg base so the shader descriptor points at the same
     // SoA ABI the fixed-function stage writes.
     m.wwrite(cmdBase + 24 * 4 + 4, kernarg)
@@ -244,7 +244,7 @@ class RenderCoreL2Spec extends AnyFlatSpec {
     w.result().zipWithIndex.foreach { case (word, i) =>
       m.wwrite(cmdBase + i * 4, word)
     }
-    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0xffffffff)
+    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
     // Solid half-strength red texture in the renderer's 0xRRGGBBAA layout:
     // every modulated fragment halves R.
     for (y <- 0 until 16; x <- 0 until 16)

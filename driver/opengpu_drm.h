@@ -25,7 +25,10 @@ struct drm_opengpu_draw {
     __u32 state;
     __u32 sampler;
     __u32 kernarg_bank_stride;
-    __u32 reserved[5];
+    __u32 blend_config;
+    __u32 stencil_config;
+    __u32 stencil_ref;
+    __u32 reserved[2];
 };
 
 /* Vertex-core form of the same 40-word command record. All addresses are
@@ -46,7 +49,10 @@ struct drm_opengpu_vertex_draw {
     __u32 state;
     __u32 sampler;
     __u32 fragment_kernarg_bank_stride;
-    __u32 reserved2[5];
+    __u32 blend_config;
+    __u32 stencil_config;
+    __u32 stencil_ref;
+    __u32 reserved2[2];
 };
 
 /* Per-draw state override. Resource addresses and extents remain job-owned. */
@@ -62,13 +68,46 @@ struct drm_opengpu_vertex_draw {
 #define OPENGPU_DRAW_STATE_MAX_MIP_SHIFT  12u
 #define OPENGPU_DRAW_STATE_MAX_MIP_MASK   (0xfu << 12)
 #define OPENGPU_DRAW_STATE_BLEND_ENABLE   (1u << 16)
-#define OPENGPU_DRAW_STATE_VALID_MASK     0x1ffffu
+#define OPENGPU_DRAW_STATE_STENCIL_TEST   (1u << 17)
+#define OPENGPU_DRAW_STATE_VALID_MASK     0x3ffffu
 
 /* Signed integer LOD bias plus an inclusive minimum-level clamp. */
 #define OPENGPU_DRAW_SAMPLER_LOD_BIAS_MASK 0x1fu
 #define OPENGPU_DRAW_SAMPLER_MIN_LOD_SHIFT 8u
 #define OPENGPU_DRAW_SAMPLER_MIN_LOD_MASK  (0xfu << 8)
 #define OPENGPU_DRAW_SAMPLER_VALID_MASK    0x0f1fu
+
+/* Per-draw GL-style blend config (draw-record word 35).  Present overrides
+ * the legacy source-over OPENGPU_DRAW_STATE_BLEND_ENABLE. */
+#define OPENGPU_DRAW_BLEND_PRESENT        (1u << 0)
+#define OPENGPU_DRAW_BLEND_SRC_SHIFT      4u
+#define OPENGPU_DRAW_BLEND_SRC_MASK       (0xfu << 4)
+#define OPENGPU_DRAW_BLEND_DST_SHIFT      8u
+#define OPENGPU_DRAW_BLEND_DST_MASK       (0xfu << 8)
+#define OPENGPU_DRAW_BLEND_EQ_SHIFT       12u
+#define OPENGPU_DRAW_BLEND_EQ_MASK        (0x7u << 12)
+#define OPENGPU_DRAW_BLEND_VALID_MASK     0x7ff1u
+
+/* Per-draw stencil config (draw-record word 36): the func shares the
+ * depth-func encoding, ops use the GL 3-bit encoding. */
+#define OPENGPU_DRAW_STENCIL_FUNC_SHIFT   0u
+#define OPENGPU_DRAW_STENCIL_FUNC_MASK    (0x7u << 0)
+#define OPENGPU_DRAW_STENCIL_FAIL_SHIFT   3u
+#define OPENGPU_DRAW_STENCIL_FAIL_MASK    (0x7u << 3)
+#define OPENGPU_DRAW_STENCIL_ZFAIL_SHIFT  6u
+#define OPENGPU_DRAW_STENCIL_ZFAIL_MASK   (0x7u << 6)
+#define OPENGPU_DRAW_STENCIL_ZPASS_SHIFT  9u
+#define OPENGPU_DRAW_STENCIL_ZPASS_MASK   (0x7u << 9)
+#define OPENGPU_DRAW_STENCIL_VALID_MASK   0xfffu
+
+/* Per-draw stencil reference and masks (draw-record word 37). */
+#define OPENGPU_DRAW_STENCIL_REF_SHIFT    0u
+#define OPENGPU_DRAW_STENCIL_REF_MASK     0xffu
+#define OPENGPU_DRAW_STENCIL_RMASK_SHIFT  8u
+#define OPENGPU_DRAW_STENCIL_RMASK_MASK   (0xffu << 8)
+#define OPENGPU_DRAW_STENCIL_WMASK_SHIFT  16u
+#define OPENGPU_DRAW_STENCIL_WMASK_MASK   (0xffu << 16)
+#define OPENGPU_DRAW_STENCIL_REF_VALID_MASK 0xffffffu
 
 struct drm_opengpu_context {
     __u32 id;

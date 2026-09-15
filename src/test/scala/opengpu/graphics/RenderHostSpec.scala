@@ -350,7 +350,7 @@ class RenderHostSpec extends AnyFlatSpec {
 
     val m = new MemModel
     encode(record).zipWithIndex.foreach { case (w, i) => m.wwrite(cmdBase + i * 4, w) }
-    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0xffffffff)
+    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
 
     simulate(new RenderHost(config, cfg, fragCore = false)) { dut =>
       dut.io.externalCompletion.poke(false.B)
@@ -557,7 +557,7 @@ class RenderHostSpec extends AnyFlatSpec {
     val m = new MemModel
     record1.zipWithIndex.foreach { case (w, i) => m.wwrite(cmdBase1 + i * 4, w) }
     record2.zipWithIndex.foreach { case (w, i) => m.wwrite(cmdBase2 + i * 4, w) }
-    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0xffffffff)
+    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
     descriptor(1, 1, cmdBase1).zipWithIndex.foreach {
       case (w, i) => m.wwrite(ringBase + i * 4, w)
     }

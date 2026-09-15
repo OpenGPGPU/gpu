@@ -23,6 +23,18 @@ class DrawContext extends Bundle {
   val depthFunc = UInt(3.W)
   val depthWriteEnable = Bool()
   val blendEnable = Bool()
+  val blendCfgEnable = Bool()
+  val blendSrcFactor = UInt(4.W)
+  val blendDstFactor = UInt(4.W)
+  val blendEquation = UInt(3.W)
+  val stencilTestEnable = Bool()
+  val stencilFunc = UInt(3.W)
+  val stencilRef = UInt(8.W)
+  val stencilReadMask = UInt(8.W)
+  val stencilWriteMask = UInt(8.W)
+  val stencilFailOp = UInt(3.W)
+  val stencilZFailOp = UInt(3.W)
+  val stencilZPassOp = UInt(3.W)
 }
 
 /**

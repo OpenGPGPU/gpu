@@ -109,11 +109,127 @@ class OutputMergerSpec extends AnyFlatSpec {
     dut.io.depthFunc.poke(depthFunc.U)
     dut.io.depthWriteEnable.poke(depthWrite.B)
     dut.io.blendEnable.poke(blend.B)
+    dut.io.blendCfgEnable.poke(false.B)
+    dut.io.blendSrcFactor.poke(0.U)
+    dut.io.blendDstFactor.poke(0.U)
+    dut.io.blendEquation.poke(0.U)
+    dut.io.stencilTestEnable.poke(false.B)
+    dut.io.stencilFunc.poke(0.U)
+    dut.io.stencilRef.poke(0.U)
+    dut.io.stencilReadMask.poke(0.U)
+    dut.io.stencilWriteMask.poke(0.U)
+    dut.io.stencilFailOp.poke(0.U)
+    dut.io.stencilZFailOp.poke(0.U)
+    dut.io.stencilZPassOp.poke(0.U)
     dut.io.mem.req.ready.poke(true.B)
     dut.io.mem.resp.valid.poke(false.B)
     dut.io.mem.resp.bits.write.poke(false.B)
     dut.io.mem.resp.bits.addr.poke(0.U)
     dut.io.mem.resp.bits.data.poke(0.U)
+  }
+
+  private def pokeBlendCfg(dut: OutputMerger, present: Boolean,
+    srcFactor: Int, dstFactor: Int, equation: Int): Unit = {
+    dut.io.blendCfgEnable.poke(present.B)
+    dut.io.blendSrcFactor.poke(srcFactor.U)
+    dut.io.blendDstFactor.poke(dstFactor.U)
+    dut.io.blendEquation.poke(equation.U)
+  }
+
+  private def pokeStencil(dut: OutputMerger, enable: Boolean, func: Int,
+    ref: Int, readMask: Int, writeMask: Int, failOp: Int, zFailOp: Int,
+    zPassOp: Int): Unit = {
+    dut.io.stencilTestEnable.poke(enable.B)
+    dut.io.stencilFunc.poke(func.U)
+    dut.io.stencilRef.poke(ref.U)
+    dut.io.stencilReadMask.poke(readMask.U)
+    dut.io.stencilWriteMask.poke(writeMask.U)
+    dut.io.stencilFailOp.poke(failOp.U)
+    dut.io.stencilZFailOp.poke(zFailOp.U)
+    dut.io.stencilZPassOp.poke(zPassOp.U)
+  }
+
+  /** Software mirror of the stencil func (shares the depth-func encoding). */
+  private def stencilFuncPass(func: Int, ref: Int, stored: Int, mask: Int): Boolean = {
+    val a = ref & mask
+    val b = stored & mask
+    func match {
+      case 0 => a < b
+      case 1 => a <= b
+      case 2 => a > b
+      case 3 => a >= b
+      case 4 => a == b
+      case 5 => a != b
+      case 6 => true
+      case _ => false
+    }
+  }
+
+  /** Software mirror of the 3-bit GL stencil op. */
+  private def stencilRefOp(op: Int, stored: Int, ref: Int): Int = op match {
+    case 0 => stored
+    case 1 => 0
+    case 2 => ref
+    case 3 => math.min(255, stored + 1)
+    case 4 => math.max(0, stored - 1)
+    case 5 => (~stored) & 0xff
+    case 6 => (stored + 1) & 0xff
+    case _ => (stored - 1) & 0xff
+  }
+
+  /** One depth-tested fragment against a seeded D24S8 word; returns
+    * (colour word written, depth word written). */
+  private def stencilOnce(dut: OutputMerger, model: OooModel, mem: Array[Int],
+    x: Int, y: Int, color: Int, fragDepth: Int, storedWord: Int): (Int, Int) = {
+    val cAddr = addrOf(colorBase, x, y)
+    val dAddr = addrOf(depthBase, x, y)
+    mem(cAddr) = 0xdeadbeef
+    mem(dAddr) = storedWord
+    dut.io.fragIn.valid.poke(true.B)
+    pokeFrag(dut, x, y, color, fragDepth)
+    tick(dut, model)
+    dut.io.fragIn.valid.poke(false.B)
+    drain(dut, model)
+    (mem(cAddr), mem(dAddr))
+  }
+
+  /** Software mirror of the OM's GL-style blendGeneral on RGBA8888 words
+    * (R = bits 31:24 ... A = bits 7:0). */
+  private def blendRef(src: Int, dst: Int, sf: Int, df: Int, eq: Int): Int = {
+    def ch(w: Int, hi: Int) = (w >> hi) & 0xff
+    def mul255(c: Int, m: Int) = (c * m + 127) / 255
+    def inv(x: Int) = 255 - x
+    def fm(f: Int, sc: Int, sa: Int, dc: Int, da: Int): Int = f match {
+      case 0 => 0
+      case 1 => 255
+      case 2 => sc
+      case 3 => inv(sc)
+      case 4 => sa
+      case 5 => inv(sa)
+      case 6 => dc
+      case 7 => inv(dc)
+      case 8 => da
+      case 9 => inv(da)
+      case 10 => math.min(sa, inv(da))
+      case _ => 0
+    }
+    val sa = ch(src, 0)
+    val da = ch(dst, 0)
+    (0 to 3).map { i =>
+      val hi = 24 - 8 * i
+      val sc = ch(src, hi)
+      val dc = ch(dst, hi)
+      val s = mul255(sc, fm(sf, sc, sa, dc, da))
+      val d = mul255(dc, fm(df, sc, sa, dc, da))
+      eq match {
+        case 0 => math.min(255, s + d)
+        case 1 => math.max(0, s - d)
+        case 2 => math.max(0, d - s)
+        case 3 => math.min(sc, dc)
+        case 4 => math.max(sc, dc)
+        case _ => math.min(255, s + d)
+      }
+    }.foldLeft(0)((acc, v) => (acc << 8) | v)
   }
 
   private def pokeFrag(dut: OutputMerger, x: Int, y: Int, color: Int, depth: Int): Unit = {
@@ -170,7 +286,7 @@ class OutputMergerSpec extends AnyFlatSpec {
 
   it should "write color and depth for a passing fragment" in {
     simulate(new OutputMerger(GraphicsConfig())) { dut =>
-      val mem = Array.fill(1 << 15)(0xffffffff)
+      val mem = Array.fill(1 << 15)(0x00ffffff) // stencil 0, depth far (D24S8 clear)
       newDut(dut)
       pokeConfig(dut, true, 0, true, false)
       val model = new OooModel(mem)
@@ -186,9 +302,28 @@ class OutputMergerSpec extends AnyFlatSpec {
     }
   }
 
+  it should "preserve the stored stencil byte on a plain depth write" in {
+    simulate(new OutputMerger(GraphicsConfig())) { dut =>
+      val mem = Array.fill(1 << 15)(0x00ffffff)
+      newDut(dut)
+      pokeConfig(dut, true, 0, true, false)
+      val model = new OooModel(mem)
+      // Non-zero stored stencil byte: a plain (stencil-disabled) depth write
+      // must keep it and replace only the D24 depth.
+      mem(addrOf(depthBase, 2, 1)) = 0xabffffff
+      dut.io.fragIn.valid.poke(true.B)
+      pokeFrag(dut, 2, 1, 0x00ff00ff, 0x00000020)
+      tick(dut, model)
+      dut.io.fragIn.valid.poke(false.B)
+      drain(dut, model)
+      assert(mem(addrOf(depthBase, 2, 1)) == 0xab000020,
+        f"depth write was 0x${mem(addrOf(depthBase, 2, 1))}%08x, expected 0xab000020")
+    }
+  }
+
   it should "keep the nearer (smaller depth) of two overlapping fragments" in {
     simulate(new OutputMerger(GraphicsConfig())) { dut =>
-      val mem = Array.fill(1 << 15)(0xffffffff)
+      val mem = Array.fill(1 << 15)(0x00ffffff) // stencil 0, depth far (D24S8 clear)
       newDut(dut)
       pokeConfig(dut, true, 0, true, false)
       val model = new OooModel(mem)
@@ -224,7 +359,7 @@ class OutputMergerSpec extends AnyFlatSpec {
 
   it should "reject a fragment that fails the depth test and not write it" in {
     simulate(new OutputMerger(GraphicsConfig())) { dut =>
-      val mem = Array.fill(1 << 15)(0xffffffff)
+      val mem = Array.fill(1 << 15)(0x00ffffff) // stencil 0, depth far (D24S8 clear)
       newDut(dut)
       pokeConfig(dut, true, 0, true, false)
       val model = new OooModel(mem)
@@ -246,7 +381,7 @@ class OutputMergerSpec extends AnyFlatSpec {
 
   it should "source-over blend a passing fragment and preserve depth semantics" in {
     simulate(new OutputMerger(GraphicsConfig())) { dut =>
-      val mem = Array.fill(1 << 15)(0xffffffff)
+      val mem = Array.fill(1 << 15)(0x00ffffff) // stencil 0, depth far (D24S8 clear)
       newDut(dut)
       pokeConfig(dut, true, 0, true, true)
       val model = new OooModel(mem)
@@ -271,7 +406,7 @@ class OutputMergerSpec extends AnyFlatSpec {
     // them and keep waiting for the real read data; consuming the ack as
     // depth (0) would fail every LESS test and reject the fragment.
     simulate(new OutputMerger(GraphicsConfig())) { dut =>
-      val mem = Array.fill(1 << 15)(0xffffffff)
+      val mem = Array.fill(1 << 15)(0x00ffffff) // stencil 0, depth far (D24S8 clear)
       newDut(dut)
       pokeConfig(dut, true, 0, true, false)
       val model = new OooModel(mem)
@@ -300,7 +435,7 @@ class OutputMergerSpec extends AnyFlatSpec {
     // outstanding at once (attributed by address) instead of one serialized
     // read-modify-write at a time.
     simulate(new OutputMerger(GraphicsConfig())) { dut =>
-      val mem = Array.fill(1 << 15)(0xffffffff)
+      val mem = Array.fill(1 << 15)(0x00ffffff) // stencil 0, depth far (D24S8 clear)
       newDut(dut)
       pokeConfig(dut, true, 0, true, false)
       val model = new OooModel(mem)
@@ -339,7 +474,7 @@ class OutputMergerSpec extends AnyFlatSpec {
     // accepted.  Four back-to-back same-pixel fragments with descending
     // depth must still leave the nearest one written.
     simulate(new OutputMerger(GraphicsConfig())) { dut =>
-      val mem = Array.fill(1 << 15)(0xffffffff)
+      val mem = Array.fill(1 << 15)(0x00ffffff) // stencil 0, depth far (D24S8 clear)
       newDut(dut)
       pokeConfig(dut, true, 0, true, false)
       val model = new OooModel(mem)
@@ -377,7 +512,7 @@ class OutputMergerSpec extends AnyFlatSpec {
 
   it should "blend distinct pixels concurrently without cross-talk" in {
     simulate(new OutputMerger(GraphicsConfig())) { dut =>
-      val mem = Array.fill(1 << 15)(0xffffffff)
+      val mem = Array.fill(1 << 15)(0x00ffffff) // stencil 0, depth far (D24S8 clear)
       newDut(dut)
       pokeConfig(dut, true, 0, true, true)
       val model = new OooModel(mem)
@@ -403,6 +538,192 @@ class OutputMergerSpec extends AnyFlatSpec {
         f"blend B was 0x${mem(dstB)}%08x, expected 0x807f00ff")
       assert(mem(addrOf(depthBase, 0, 0)) == 0x10)
       assert(mem(addrOf(depthBase, 3, 3)) == 0x11)
+    }
+  }
+
+  /** One blended RMW: seed the destination, submit the fragment, return the
+    * written colour word. */
+  private def blendOnce(dut: OutputMerger, model: OooModel, mem: Array[Int],
+    x: Int, y: Int, src: Int, dst: Int): Int = {
+    val addr = addrOf(colorBase, x % W, y % H)
+    mem(addr) = dst
+    dut.io.fragIn.valid.poke(true.B)
+    pokeFrag(dut, x % W, y % H, src, 0)
+    tick(dut, model)
+    dut.io.fragIn.valid.poke(false.B)
+    drain(dut, model)
+    mem(addr)
+  }
+
+  it should "blend with every GL factor and equation" in {
+    simulate(new OutputMerger(GraphicsConfig())) { dut =>
+      val mem = Array.fill(1 << 15)(0x00ffffff)
+      newDut(dut)
+      // Depth testing disabled: only the colour RMW is exercised.
+      pokeConfig(dut, false, 0, false, false)
+      val model = new OooModel(mem)
+      val src = 0x40c08020
+      val dst = 0x8040c0ff
+      var n = 0
+      var mismatches = List.empty[String]
+      for (sf <- 0 to 10; df <- 0 to 10; eq <- 0 to 4) {
+        pokeBlendCfg(dut, true, sf, df, eq)
+        val got = blendOnce(dut, model, mem, n % W, (n / W) % H, src, dst)
+        val expected = blendRef(src, dst, sf, df, eq)
+        if (got != expected)
+          mismatches = mismatches :+
+            f"sf=$sf df=$df eq=$eq: got 0x$got%08x expected 0x$expected%08x"
+        n += 1
+      }
+      assert(mismatches.isEmpty, s"${mismatches.size} factor/equation " +
+        s"mismatches:\n${mismatches.take(8).mkString("\n")}")
+    }
+  }
+
+  it should "let a present blend config override legacy source-over" in {
+    simulate(new OutputMerger(GraphicsConfig())) { dut =>
+      val mem = Array.fill(1 << 15)(0x00ffffff)
+      newDut(dut)
+      pokeConfig(dut, false, 0, false, blend = true)
+      val model = new OooModel(mem)
+      // src ONE, dst ZERO, ADD: the pass-through equation.  Legacy source-over
+      // on this destination would have produced 0x80007fff.
+      pokeBlendCfg(dut, true, 1, 0, 0)
+      val got = blendOnce(dut, model, mem, 1, 1, 0xff000080, 0x0000ffff)
+      assert(got == 0xff000080,
+        f"blend config must override source-over, got 0x$got%08x")
+    }
+  }
+
+  it should "run every stencil func before the depth test and apply the z-pass op" in {
+    simulate(new OutputMerger(GraphicsConfig())) { dut =>
+      val mem = Array.fill(1 << 15)(0x00ffffff)
+      newDut(dut)
+      // Depth ALWAYS so the depth test never gates the stencil sweep.
+      pokeConfig(dut, true, 6, true, false)
+      val model = new OooModel(mem)
+      val pairs = Seq((0x00, 0xff), (0xff, 0x00), (0x80, 0x80), (0x7f, 0x80),
+        (0x80, 0x7f), (0xff, 0xff), (0x00, 0x00), (0x01, 0x02))
+      var n = 0
+      var bad = List.empty[String]
+      for (func <- 0 to 7; (ref, stored) <- pairs) {
+        pokeStencil(dut, true, func, ref, 0xff, 0xff,
+          failOp = 1, zFailOp = 1, zPassOp = 2) // fail/zfail ZERO, zpass REPLACE
+        val expectPass = stencilFuncPass(func, ref, stored, 0xff)
+        val (colour, depth) = stencilOnce(dut, model, mem,
+          n % W, (n / W) % H, 0x11223344, 0x30, (stored << 24) | 0x00ffff)
+        if (expectPass) {
+          if (colour != 0x11223344)
+            bad = bad :+ s"func=$func ref=$ref stored=$stored: colour skipped on pass"
+          if (depth != ((ref << 24) | 0x30))
+            bad = bad :+ f"func=$func ref=$ref stored=$stored: depth 0x$depth%08x"
+        } else {
+          if (colour != 0xdeadbeef)
+            bad = bad :+ s"func=$func ref=$ref stored=$stored: colour written on stencil fail"
+          // The fail op (ZERO) applies to the stored byte; the D24 stays.
+          val failByte = stencilRefOp(1, stored, ref)
+          if (depth != ((failByte << 24) | 0x00ffff))
+            bad = bad :+ f"func=$func ref=$ref stored=$stored: stencil-fail word 0x$depth%08x"
+        }
+        n += 1
+      }
+      assert(bad.isEmpty, s"${bad.size} stencil-func mismatches:\n${bad.take(8).mkString("\n")}")
+    }
+  }
+
+  it should "apply every stencil op with saturation, wrap, and masks" in {
+    simulate(new OutputMerger(GraphicsConfig())) { dut =>
+      val mem = Array.fill(1 << 15)(0x00ffffff)
+      newDut(dut)
+      pokeConfig(dut, true, 6, true, false)
+      val model = new OooModel(mem)
+      val ref = 0x42
+      var n = 0
+      var bad = List.empty[String]
+      // (op, stored, writeMask, expected op result before masking)
+      val cases = for (op <- 0 to 7; stored <- Seq(0x9c, 0x00, 0xff)) yield (op, stored)
+      for ((op, stored) <- cases) {
+        val mask = 0xff
+        pokeStencil(dut, true, 6, ref, 0xff, mask, 1, 1, op)
+        val (colour, depth) = stencilOnce(dut, model, mem,
+          n % W, (n / W) % H, 0x00ff00ff, 0x40, (stored << 24) | 0x11ffff)
+        val expectedByte = stencilRefOp(op, stored, ref)
+        if (colour != 0x00ff00ff)
+          bad = bad :+ f"op=$op stored=$stored: colour 0x$colour%08x"
+        if (depth != ((expectedByte << 24) | 0x40))
+          bad = bad :+ f"op=$op stored=$stored: depth 0x$depth%08x expected byte 0x$expectedByte%02x"
+        n += 1
+      }
+      // Partial write mask: only the masked nibble of the stored byte
+      // changes (0xcd & 0x0f) | (0xab & 0xf0) = 0xad; the D24 takes the
+      // fragment depth because depth write is enabled.
+      pokeStencil(dut, true, 6, 0xcd, 0xff, 0x0f, 1, 1, 2) // zpass REPLACE
+      val (_, depthMasked) = stencilOnce(dut, model, mem, 0, 0, 0xff,
+        0x50, 0xab123456)
+      assert(depthMasked == 0xad000050,
+        f"masked stencil write was 0x$depthMasked%08x, expected 0xad000050")
+      assert(bad.isEmpty, s"${bad.size} stencil-op mismatches:\n${bad.take(8).mkString("\n")}")
+    }
+  }
+
+  it should "apply zfail on a depth fail and skip colour on stencil fail" in {
+    simulate(new OutputMerger(GraphicsConfig())) { dut =>
+      val mem = Array.fill(1 << 15)(0x00ffffff)
+      newDut(dut)
+      pokeConfig(dut, true, 0, true, false) // depth LESS, write enabled
+      val model = new OooModel(mem)
+      // Depth fail: fragDepth 0x30 is not < stored 0x20; zfail INVERT.
+      pokeStencil(dut, true, 6, 0, 0xff, 0xff, 1, 5, 2)
+      val (colourFail, depthFail) = stencilOnce(dut, model, mem, 0, 0,
+        0x12345678, 0x30, 0x3c000020)
+      assert(colourFail == 0xdeadbeef, "a depth fail must not write colour")
+      assert(depthFail == ((0xc3 << 24) | 0x20),
+        f"zfail INVERT gave 0x$depthFail%08x")
+      // Stencil fail: func NOTEQUAL with ref == stored; fail INCR.
+      pokeStencil(dut, true, 5, 0x55, 0xff, 0xff, 3, 5, 2)
+      val (colourSkip, depthSkip) = stencilOnce(dut, model, mem, 1, 1,
+        0x12345678, 0x05, 0x55000020)
+      assert(colourSkip == 0xdeadbeef, "a stencil fail must not write colour")
+      assert(depthSkip == ((0x56 << 24) | 0x20),
+        f"stencil fail kept stored depth but applied INCR: 0x$depthSkip%08x")
+    }
+  }
+
+  it should "update the stencil byte with depth write disabled and keep the depth value" in {
+    simulate(new OutputMerger(GraphicsConfig())) { dut =>
+      val mem = Array.fill(1 << 15)(0x00ffffff)
+      newDut(dut)
+      pokeConfig(dut, true, 6, depthWrite = false, false)
+      val model = new OooModel(mem)
+      pokeStencil(dut, true, 6, 0x77, 0xff, 0xff, 1, 1, 2) // zpass REPLACE
+      val (colour, depth) = stencilOnce(dut, model, mem, 2, 2,
+        0x00c0ffee, 0x99, 0x12000040)
+      assert(colour == 0x00c0ffee, "the fragment still passes and writes colour")
+      assert(depth == ((0x77 << 24) | 0x40),
+        f"stencil update must force the depth-word write with the stored D24: 0x$depth%08x")
+    }
+  }
+
+  it should "run the stencil test with the depth test disabled" in {
+    simulate(new OutputMerger(GraphicsConfig())) { dut =>
+      val mem = Array.fill(1 << 15)(0x00ffffff)
+      newDut(dut)
+      // Depth test disabled; the stencil test still rides the D24S8 read.
+      pokeConfig(dut, false, 0, true, false)
+      val model = new OooModel(mem)
+      // Stencil pass (EQUAL to the stored byte): zpass REPLACE + colour.
+      pokeStencil(dut, true, 4, 0xa5, 0xff, 0xff, 1, 1, 2)
+      val (colourPass, depthPass) = stencilOnce(dut, model, mem, 3, 0,
+        0x0badf00d, 0x77, 0xa5000060)
+      assert(colourPass == 0x0badf00d, "stencil pass with depth test disabled writes colour")
+      assert(depthPass == ((0xa5 << 24) | 0x77),
+        f"implicit depth pass must write the fragment depth: 0x$depthPass%08x")
+      // Stencil fail: fail op ZERO and no colour.
+      pokeStencil(dut, true, 5, 0xa5, 0xff, 0xff, 1, 1, 2)
+      val (colourFail, depthFail) = stencilOnce(dut, model, mem, 3, 1,
+        0x0badf00d, 0x77, 0xa5000060)
+      assert(colourFail == 0xdeadbeef, "stencil fail with depth test disabled skips colour")
+      assert(depthFail == 0x00000060, f"fail ZERO cleared the byte: 0x$depthFail%08x")
     }
   }
 }

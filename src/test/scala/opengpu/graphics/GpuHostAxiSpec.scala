@@ -171,14 +171,25 @@ class GpuHostAxiSpec extends AnyFlatSpec {
       axiRead(dut, 0x200)
       assert(respVar == 2L, s"out-of-map read must return SLVERR, got RRESP=$respVar")
 
-      // 0x13C is past the end of the (extended) register map.
+      // END (0x148) is past the end of the register map.
       axiRead(dut, RenderHostRegs.END)
-      assert(respVar == 2L, s"0x13c read must return SLVERR, got RRESP=$respVar")
+      assert(respVar == 2L, s"read past END must return SLVERR, got RRESP=$respVar")
 
       // MSAA_CONFIG is routed to RenderHost at 0x134.
       axiWrite(dut, RenderHostRegs.MSAA_CONFIG, 2)
       assert(axiRead(dut, RenderHostRegs.MSAA_CONFIG) == 2L,
         "MSAA_CONFIG must round-trip through the AXI4 register path")
+
+      // The stencil/blend registers round-trip through the AXI4 register path.
+      axiWrite(dut, RenderHostRegs.STENCIL_CONFIG, 0x1055)
+      assert(axiRead(dut, RenderHostRegs.STENCIL_CONFIG) == 0x1055L,
+        "STENCIL_CONFIG must round-trip through the AXI4 register path")
+      axiWrite(dut, RenderHostRegs.STENCIL_REF_MASKS, 0x00ff5aa5)
+      assert(axiRead(dut, RenderHostRegs.STENCIL_REF_MASKS) == 0x00ff5aa5L,
+        "STENCIL_REF_MASKS must round-trip through the AXI4 register path")
+      axiWrite(dut, RenderHostRegs.BLEND_CONFIG, 0x2111)
+      assert(axiRead(dut, RenderHostRegs.BLEND_CONFIG) == 0x2111L,
+        "BLEND_CONFIG must round-trip through the AXI4 register path")
 
       // Program and read back a few registers via single-beat AXis.
       axiWrite(dut, RenderHostRegs.CMD_BASE, 0x4000)
@@ -246,7 +257,7 @@ class GpuHostAxiSpec extends AnyFlatSpec {
     )
     val m = new MemModel
     encode(record).zipWithIndex.foreach { case (w, i) => m.wwrite(cmdBase + i * 4, w) }
-    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0xffffffff)
+    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
 
     simulate(new GpuHostAxi(config, cfg, fragCore = false)) { dut =>
       dut.io.s_axi_aresetn.poke(false.B)
