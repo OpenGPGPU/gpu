@@ -380,9 +380,12 @@ The RTL path exists ahead of the driver: `GPU_UCMD_OP_RESOLVE` carries a
 (behind an `OmWordToLinePort` into the shared L2), both verified end to end by
 `GpuSystemSpec`. The unified MMIO bridge stages the source/destination,
 extent, strides and the `UCMD_SAMPLE_MODE` register (0x148), so a host can
-submit a resolve with the existing unified command path. Range admission,
-buffer validation, the typed driver operation, scheduler fences and KMS
-ordering remain to be added.
+submit a resolve with the existing unified command path. The range and overlap
+rules the driver must enforce are implemented in
+`opengpu_resolve_validator.h` and unit-tested by
+`tests/opengpu_resolve_validator_test.c` (mode/alignment/stride/overflow,
+two-dimensional bounds and source/destination overlap). Buffer validation, the
+typed driver ioctl, scheduler fences and KMS ordering remain to be wired.
 
 Resolve averages every pixel's physical colour samples into a separate
 single-sample RGBA8888 buffer. Depth resolve is out of scope.
@@ -499,7 +502,7 @@ memory-port utilisation under 2x and 4x workloads.
 | Coverage/depth | Mode-specific LUT, scalar/quad masks, expanded bounds, shared triangle gradients and sample depth implemented | Broaden edge and precision regression coverage |
 | Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented internally | Advertised Linux support and integrated multisample qualification |
 | Expansion/OM | Backpressured expander, sample addresses, address-hazard ordering and acknowledged write drain implemented | Broader integrated multisample regressions |
-| Resolve | `MsaaResolveEngine` backend plus the `GPU_UCMD_OP_RESOLVE` router path integrated through the shared L2 and unit/integration tested | Typed driver operation, bounds validation, scheduler fences, MMIO staging and KMS integration |
+| Resolve | `MsaaResolveEngine` backend, the `GPU_UCMD_OP_RESOLVE` router path through the shared L2, unified MMIO staging (`UCMD_SAMPLE_MODE`), and the validated range rules (`opengpu_resolve_validator.h` + userspace test) | Typed driver ioctl and scheduler/fence/KMS wiring |
 
 ## Verification
 

@@ -19,6 +19,7 @@
 
 #include "opengpu_device.h"
 #include "opengpu_drm.h"
+#include "opengpu_resolve_validator.h"
 #include "opengpu_shader_validator.h"
 
 static const struct file_operations opengpu_compute_fops;

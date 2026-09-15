@@ -211,8 +211,9 @@ qualify a capability as implemented end to end.
   [MSAA_DESIGN.md](MSAA_DESIGN.md); measure before adding a dedicated engine.
   The streaming backend (`MsaaResolveEngine`) and the `GPU_UCMD_OP_RESOLVE`
   router path into the shared L2 are implemented and tested, and the unified
-  MMIO bridge stages the resolve fields plus `UCMD_SAMPLE_MODE` (0x148); only the
-  typed driver operation, range validation, scheduler fences and KMS ordering
+  MMIO bridge stages the resolve fields plus `UCMD_SAMPLE_MODE` (0x148). The
+  driver-side range/overlap rules live in `opengpu_resolve_validator.h` with a
+  userspace test; only the typed driver ioctl, scheduler fences and KMS ordering
   remain.
 - Attach source-read and destination-write reservation fences and sync objects;
   KMS must wait for resolved output before scanout.
