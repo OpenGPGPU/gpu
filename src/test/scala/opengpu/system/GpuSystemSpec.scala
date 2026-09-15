@@ -653,4 +653,90 @@ class GpuSystemSpec extends AnyFlatSpec {
       dut.io.gpuCompletion.bits.success.expect(true.B)
     }
   }
+
+  it should "resolve a 4x pixel through the shared L2 and unified command path" in {
+    val config = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuSystem(config, numComputeUnits = 2,
+      enableUnifiedCommands = true)) { dut =>
+      initialize(dut, 2)
+      val srcBase = 0x1000L
+      val dstBase = 0x2000L
+      val samples = Seq(BigInt(0), BigInt("ffffffff", 16),
+        BigInt("ff00ff00", 16), BigInt("00ff00ff", 16))
+      val srcLine = samples.zipWithIndex
+        .map { case (w, i) => w << (32 * i) }.reduce(_ | _)
+      val lower = scala.collection.mutable.LongMap[BigInt]()
+      lower(srcBase) = srcLine
+      var dstWritten: Option[BigInt] = None
+
+      dut.io.gpuCommand.bits.commandId.poke(7.U)
+      dut.io.gpuCommand.bits.opcode.poke(GpuCommandOpcode.resolve)
+      dut.io.gpuCommand.bits.sourceAddress.poke(srcBase.U)
+      dut.io.gpuCommand.bits.destinationAddress.poke(dstBase.U)
+      dut.io.gpuCommand.bits.widthBytes.poke(1.U)
+      dut.io.gpuCommand.bits.height.poke(1.U)
+      dut.io.gpuCommand.bits.sourceStride.poke(16.U)
+      dut.io.gpuCommand.bits.destinationStride.poke(4.U)
+      dut.io.gpuCommand.bits.sampleMode.poke(2.U)
+      dut.io.gpuCommand.valid.poke(true.B)
+      dut.clock.step(); dut.io.gpuCommand.valid.poke(false.B)
+
+      // Service the single lower port until the resolve completion appears:
+      // reads return the modeled line, writes update it and capture the
+      // destination word.
+      var pending: Option[BigInt] = None
+      var pendingData = BigInt(0)
+      var complete = false
+      var completionId = BigInt(-1)
+      var completionOpcode = BigInt(-1)
+      var completionSuccess = false
+      var completionBytes = BigInt(-1)
+      var guard = 0
+      while (!complete && guard < 4000) {
+        dut.io.memoryResponse.valid.poke(false.B)
+        if (pending.nonEmpty) {
+          dut.io.memoryResponse.valid.poke(true.B)
+          dut.io.memoryResponse.bits.transactionId.poke(pending.get.U)
+          dut.io.memoryResponse.bits.readData.poke(pendingData.U)
+          dut.io.memoryResponse.bits.fault.poke(false.B)
+          if (dut.io.memoryResponse.ready.peek().litToBoolean) pending = None
+        }
+        if (dut.io.memoryRequest.valid.peek().litToBoolean &&
+            dut.io.memoryRequest.ready.peek().litToBoolean &&
+            pending.isEmpty) {
+          val addr = dut.io.memoryRequest.bits.address.peek().litValue.toLong
+          val id = dut.io.memoryRequest.bits.transactionId.peek().litValue
+          val write = dut.io.memoryRequest.bits.isWrite.peek().litToBoolean
+          val wdata = dut.io.memoryRequest.bits.writeData.peek().litValue
+          val mask = dut.io.memoryRequest.bits.byteMask.peek().litValue
+          if (write) {
+            lower(addr) = wdata
+            if (addr == dstBase && ((mask >> 0) & 0xfL) == 0xfL)
+              dstWritten = Some(wdata & 0xffffffffL)
+          }
+          pending = Some(id)
+          pendingData =
+            if (write) BigInt(0) else lower.getOrElse(addr, BigInt(0))
+        }
+        if (dut.io.gpuCompletion.valid.peek().litToBoolean) {
+          completionId = dut.io.gpuCompletion.bits.commandId.peek().litValue
+          completionOpcode = dut.io.gpuCompletion.bits.opcode.peek().litValue
+          completionSuccess =
+            dut.io.gpuCompletion.bits.success.peek().litToBoolean
+          completionBytes =
+            dut.io.gpuCompletion.bits.bytesProcessed.peek().litValue
+          complete = true
+        }
+        dut.clock.step(); guard += 1
+      }
+      assert(complete, "resolve did not complete through the unified path")
+      assert(completionId == 7, s"completion id was $completionId")
+      assert(completionOpcode == GpuCommandOpcode.resolve.litValue,
+        s"completion opcode was $completionOpcode")
+      assert(completionSuccess, "resolve completion must report success")
+      assert(completionBytes == 4, s"resolved bytes was $completionBytes")
+      assert(dstWritten.contains(BigInt(0x80808080L)),
+        s"resolved pixel must be 0x80808080, got ${dstWritten.map(_.toString(16))}")
+    }
+  }
 }

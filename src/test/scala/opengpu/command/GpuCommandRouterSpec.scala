@@ -19,6 +19,7 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
     dut.io.copy.ready.poke(false.B)
     dut.io.fill.ready.poke(false.B)
     dut.io.stridedCopy.ready.poke(false.B)
+    dut.io.resolve.ready.poke(false.B)
     dut.io.kernelCompletion.valid.poke(false.B)
     dut.io.kernelCompletion.bits.poke(
       0.U.asTypeOf(dut.io.kernelCompletion.bits))
@@ -29,6 +30,9 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
     dut.io.stridedCopyCompletion.valid.poke(false.B)
     dut.io.stridedCopyCompletion.bits.poke(
       0.U.asTypeOf(dut.io.stridedCopyCompletion.bits))
+    dut.io.resolveCompletion.valid.poke(false.B)
+    dut.io.resolveCompletion.bits.poke(
+      0.U.asTypeOf(dut.io.resolveCompletion.bits))
     dut.io.blockDispatch.poke(false.B)
     dut.io.pathReset.poke(false.B)
   }
@@ -220,6 +224,45 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
       dut.io.completion.ready.poke(true.B)
       dut.clock.step()
       dut.io.busy.expect(false.B)
+    }
+  }
+
+  it should "route a typed resolve descriptor and return its unified completion" in {
+    simulate(new GpuCommandRouter(
+      GpuConfig(lanes = 4), commandIdWidth = 4,
+      commandQueueDepth = 2, completionQueueDepth = 2)) { dut =>
+      initialize(dut)
+      dut.io.command.bits.sourceAddress.poke(0x8000.U)
+      dut.io.command.bits.destinationAddress.poke(0x9000.U)
+      dut.io.command.bits.widthBytes.poke(16.U)
+      dut.io.command.bits.height.poke(8.U)
+      dut.io.command.bits.sourceStride.poke(256.U)
+      dut.io.command.bits.destinationStride.poke(64.U)
+      dut.io.command.bits.sampleMode.poke(2.U)
+      submit(dut, 6, GpuCommandOpcode.resolve)
+
+      dut.io.resolve.valid.expect(true.B)
+      dut.io.resolve.bits.descriptorId.expect(6.U)
+      dut.io.resolve.bits.sourceAddress.expect(0x8000.U)
+      dut.io.resolve.bits.destinationAddress.expect(0x9000.U)
+      dut.io.resolve.bits.imgWidth.expect(16.U)
+      dut.io.resolve.bits.imgHeight.expect(8.U)
+      dut.io.resolve.bits.sourceStride.expect(256.U)
+      dut.io.resolve.bits.destinationStride.expect(64.U)
+      dut.io.resolve.bits.sampleMode.expect(2.U)
+      dut.io.resolve.ready.poke(true.B); dut.clock.step()
+
+      dut.io.resolveCompletion.bits.descriptorId.poke(6.U)
+      dut.io.resolveCompletion.bits.status.poke(ResolveStatus.success)
+      dut.io.resolveCompletion.bits.success.poke(true.B)
+      dut.io.resolveCompletion.bits.bytesResolved.poke(16L * 8 * 4)
+      dut.io.resolveCompletion.valid.poke(true.B)
+      dut.clock.step(); dut.io.resolveCompletion.valid.poke(false.B)
+
+      dut.io.completion.valid.expect(true.B)
+      dut.io.completion.bits.commandId.expect(6.U)
+      dut.io.completion.bits.opcode.expect(GpuCommandOpcode.resolve)
+      dut.io.completion.bits.bytesProcessed.expect(16L * 8 * 4)
     }
   }
 }

@@ -374,10 +374,12 @@ depth; increasing it is a measured optimisation, not a correctness dependency.
 
 No typed resolve ioctl, scheduler job or trusted resolve kernel is currently
 implemented. The following describes the intended interface and fence contract.
-The streaming average itself is implemented as the standalone
-`MsaaResolveEngine` backend (`MsaaResolve.scala`, verified by `MsaaResolveSpec`)
-so the execution backend can be qualified before the typed driver operation,
-bounds validation and scheduler fencing are added.
+The RTL path exists ahead of the driver: `GPU_UCMD_OP_RESOLVE` carries a
+`ResolveDescriptor` through `GpuCommandRouter` to the `MsaaResolveEngine`
+(behind an `OmWordToLinePort` into the shared L2), both verified end to end by
+`GpuSystemSpec`. Range admission, buffer validation, the typed driver operation,
+scheduler fences and KMS ordering remain to be added; until then the MMIO
+bridge does not stage a resolve descriptor.
 
 Resolve averages every pixel's physical colour samples into a separate
 single-sample RGBA8888 buffer. Depth resolve is out of scope.
@@ -494,7 +496,7 @@ memory-port utilisation under 2x and 4x workloads.
 | Coverage/depth | Mode-specific LUT, scalar/quad masks, expanded bounds, shared triangle gradients and sample depth implemented | Broaden edge and precision regression coverage |
 | Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented internally | Advertised Linux support and integrated multisample qualification |
 | Expansion/OM | Backpressured expander, sample addresses, address-hazard ordering and acknowledged write drain implemented | Broader integrated multisample regressions |
-| Resolve | Streaming `MsaaResolveEngine` backend implemented and unit-tested (channel averaging, rounding, padded strides, one-outstanding-request protocol) | Typed operation, trusted kernel, bounds validation, scheduler fences and KMS integration |
+| Resolve | `MsaaResolveEngine` backend plus the `GPU_UCMD_OP_RESOLVE` router path integrated through the shared L2 and unit/integration tested | Typed driver operation, bounds validation, scheduler fences, MMIO staging and KMS integration |
 
 ## Verification
 

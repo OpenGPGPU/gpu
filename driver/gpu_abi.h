@@ -189,6 +189,11 @@
 #define GPU_UCMD_OP_COPY         1u
 #define GPU_UCMD_OP_FILL         2u
 #define GPU_UCMD_OP_STRIDED_COPY 3u
+/* Typed MSAA resolve: average the interleaved colour samples of a validated
+ * source region into a single-sample destination.  SOURCE/DESTINATION,
+ * WIDTH/HEIGHT, SOURCE/DEST_STRIDE and MSAA_CONFIG carry the operation; the
+ * MSAA_CONFIG sample-mode field selects 1x/2x/4x. */
+#define GPU_UCMD_OP_RESOLVE      4u
 #define GPU_UCMD_FLAG_WAIT_DMA   (1u << 0)
 #define GPU_UCMD_FLAG_WAIT_EVENT (1u << 1)
 #define GPU_UCMD_FLAG_SIGNAL_EVENT (1u << 2)

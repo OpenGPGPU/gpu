@@ -3,6 +3,7 @@ package opengpu.graphics
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
 
+import opengpu.command.GpuCommandOpcode
 import org.scalatest.flatspec.AnyFlatSpec
 
 /** Synchronization checks between the hardware/Scala definitions and the
@@ -155,6 +156,16 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
       "GPU_FRAGMENT_CONTROL_DEPTH_OVERRIDE" ->
         (1L << FragmentShaderAbi.DepthOverrideBit),
       "GPU_FRAGMENT_CONTROL_VALID_MASK" -> 0x3L
+    ))
+  }
+
+  it should "match the unified-command opcodes" in {
+    checkAll(Seq(
+      "GPU_UCMD_OP_KERNEL" -> GpuCommandOpcode.kernel.litValue.toLong,
+      "GPU_UCMD_OP_COPY" -> GpuCommandOpcode.copy.litValue.toLong,
+      "GPU_UCMD_OP_FILL" -> GpuCommandOpcode.fill.litValue.toLong,
+      "GPU_UCMD_OP_STRIDED_COPY" -> GpuCommandOpcode.stridedCopy.litValue.toLong,
+      "GPU_UCMD_OP_RESOLVE" -> GpuCommandOpcode.resolve.litValue.toLong
     ))
   }
 

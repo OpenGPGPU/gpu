@@ -3,7 +3,7 @@ package opengpu.system
 import chisel3._
 import chisel3.util._
 import opengpu.config.GpuConfig
-import opengpu.command.{GpuCommand, GpuCommandResult, GpuCommandRouter}
+import opengpu.command.{GpuCommand, GpuCommandResult, GpuCommandRouter, ResolveStatus}
 import opengpu.core.GpuComputeUnit
 import opengpu.core.backend.FpuFlags
 import opengpu.core.backend.issue.{ScalarIssuedInstruction, VectorIssuedInstruction}
@@ -14,6 +14,7 @@ import opengpu.core.memory._
 import opengpu.core.trap.CoreTrapEvent
 import opengpu.dispatch._
 import opengpu.dma._
+import opengpu.graphics.{MsaaResolveEngine, OmWordToLinePort}
 
 class GpuPerformanceCounters extends Bundle {
   val cycles = UInt(64.W)
@@ -28,13 +29,15 @@ object GpuSystem {
   private[system] val copyTransactions = 4
   private[system] val fillTransactions = 2
   private[system] val stridedCopyTransactions = 4
+  private[system] val resolveTransactions = 4
 
   def totalMemoryTransactions(
     numComputeUnits: Int,
     transactionsPerCu: Int,
     graphicsHostTransactions: Int
   ): Int = (numComputeUnits + 1) * transactionsPerCu + copyTransactions +
-    fillTransactions + stridedCopyTransactions + graphicsHostTransactions
+    fillTransactions + stridedCopyTransactions + resolveTransactions +
+    graphicsHostTransactions
 }
 
 /** Scalable compute-first GPU integration point.
@@ -70,11 +73,12 @@ class GpuSystem(
   private val copyTransactions = GpuSystem.copyTransactions
   private val fillTransactions = GpuSystem.fillTransactions
   private val stridedCopyTransactions = GpuSystem.stridedCopyTransactions
+  private val resolveTransactions = GpuSystem.resolveTransactions
   private val copyBase = coherentTransactions
   private val fillBase = copyBase + copyTransactions
   private val stridedCopyBase = fillBase + fillTransactions
-  private val graphicsHostBase =
-    stridedCopyBase + stridedCopyTransactions
+  private val resolveBase = stridedCopyBase + stridedCopyTransactions
+  private val graphicsHostBase = resolveBase + resolveTransactions
   private val totalSystemTransactions =
     GpuSystem.totalMemoryTransactions(
       numComputeUnits, transactionsPerCu, graphicsHostTransactions)
@@ -236,6 +240,13 @@ class GpuSystem(
     config, descriptorIdWidth = commandIdWidth, lineBytes = 64,
     maxOutstanding = stridedCopyTransactions,
     descriptorQueueDepth = config.stridedCopyDescriptorQueueDepth))
+  // MSAA resolve: a word-level engine behind a word-to-line bridge, so it
+  // shares the same line-based L2 as the DMA engines.
+  private val resolveEngine = Module(new MsaaResolveEngine())
+  private val resolvePort = Module(new OmWordToLinePort(
+    config, lineBytes = 64, maxOutstanding = resolveTransactions))
+  resolvePort.io.in <> resolveEngine.io.mem.req
+  resolveEngine.io.mem.resp <> resolvePort.io.out
 
   dispatcher.io.launch <> commandProcessor.io.dispatch
   commandProcessor.io.dispatchCompletion <> dispatcher.io.completion
@@ -249,6 +260,37 @@ class GpuSystem(
   io.stridedCopyEngineBusy := stridedCopyEngine.io.busy
   io.unifiedCommandRouterBusy := commandRouter.io.busy
   io.duplicateUnifiedCommandId := commandRouter.io.duplicateCommandId
+
+  // Typed resolve adapter: latch one descriptor, pulse the engine, publish one
+  // completion.  The engine's memory traffic is already wired to `resolvePort`.
+  private val resolveActive = RegInit(false.B)
+  private val resolveDonePending = RegInit(false.B)
+  private val resolveCommandId = Reg(UInt(commandIdWidth.W))
+  private val resolveBytes = Reg(UInt(64.W))
+  private val resolveDesc = commandRouter.io.resolve
+  resolveDesc.ready := !resolveActive && !resolveDonePending
+  resolveEngine.io.start := resolveDesc.fire
+  resolveEngine.io.srcBase := resolveDesc.bits.sourceAddress
+  resolveEngine.io.dstBase := resolveDesc.bits.destinationAddress
+  resolveEngine.io.srcStride := resolveDesc.bits.sourceStride
+  resolveEngine.io.dstStride := resolveDesc.bits.destinationStride
+  resolveEngine.io.imgWidth := resolveDesc.bits.imgWidth
+  resolveEngine.io.imgHeight := resolveDesc.bits.imgHeight
+  resolveEngine.io.sampleMode := resolveDesc.bits.sampleMode
+  when(resolveDesc.fire) {
+    resolveActive := true.B
+    resolveCommandId := resolveDesc.bits.descriptorId
+    resolveBytes :=
+      (resolveDesc.bits.imgWidth * resolveDesc.bits.imgHeight * 4.U).pad(64)
+  }
+  when(resolveEngine.io.done) { resolveActive := false.B }
+  commandRouter.io.resolveCompletion.valid := resolveDonePending
+  commandRouter.io.resolveCompletion.bits.descriptorId := resolveCommandId
+  commandRouter.io.resolveCompletion.bits.status := ResolveStatus.success
+  commandRouter.io.resolveCompletion.bits.success := true.B
+  commandRouter.io.resolveCompletion.bits.bytesResolved := resolveBytes
+  when(resolveEngine.io.done) { resolveDonePending := true.B }
+  when(commandRouter.io.resolveCompletion.fire) { resolveDonePending := false.B }
 
   // Safe unified-command reset: while the MMIO bridge holds
   // commandResetActive, stop dispatching queued commands, wait for every
@@ -264,7 +306,9 @@ class GpuSystem(
     object ResetState extends ChiselEnum { val idle, draining, resetting = Value }
     val resetState = RegInit(ResetState.idle)
     val quiesced = !copyEngine.io.busy && !fillEngine.io.busy &&
-      !stridedCopyEngine.io.busy && !commandProcessor.io.busy &&
+      !stridedCopyEngine.io.busy && !resolveEngine.io.busy &&
+      !resolveActive && !resolveDonePending &&
+      !commandProcessor.io.busy &&
       l2.io.drained && !commandRouter.io.completion.valid
     // Held across the resetting cycle too: otherwise a queue flush and a
     // dispatch fire on the same edge and launch the flushed command.
@@ -411,7 +455,7 @@ class GpuSystem(
     stridedCopyEngine.io.completion.bits.success
 
   private val l2RequestArbiter = Module(new RRArbiter(
-    new ComputeMemoryRequest(config, 64, totalSystemTransactions), 6))
+    new ComputeMemoryRequest(config, 64, totalSystemTransactions), 7))
   l2RequestArbiter.io.in(0).valid := memory.io.memoryRequest.valid
   l2RequestArbiter.io.in(0).bits := memory.io.memoryRequest.bits
   memory.io.memoryRequest.ready := l2RequestArbiter.io.in(0).ready
@@ -445,6 +489,12 @@ class GpuSystem(
     graphicsHostBase.U(systemTransactionWidth.W) +
     io.graphicsHostRequest.bits.transactionId
   io.graphicsHostRequest.ready := l2RequestArbiter.io.in(5).ready
+  l2RequestArbiter.io.in(6).valid := resolvePort.io.memoryRequest.valid
+  l2RequestArbiter.io.in(6).bits := resolvePort.io.memoryRequest.bits
+  l2RequestArbiter.io.in(6).bits.transactionId :=
+    resolveBase.U(systemTransactionWidth.W) +
+    resolvePort.io.memoryRequest.bits.transactionId
+  resolvePort.io.memoryRequest.ready := l2RequestArbiter.io.in(6).ready
   l2.io.request <> l2RequestArbiter.io.out
 
   private val l2ResponseForCu =
@@ -460,6 +510,9 @@ class GpuSystem(
       l2.io.response.bits.transactionId < stridedCopyBase.U
   private val l2ResponseForStridedCopy =
     l2.io.response.bits.transactionId >= stridedCopyBase.U &&
+      l2.io.response.bits.transactionId < resolveBase.U
+  private val l2ResponseForResolve =
+    l2.io.response.bits.transactionId >= resolveBase.U &&
       l2.io.response.bits.transactionId < graphicsHostBase.U
   private val l2ResponseForGraphicsHost =
     l2.io.response.bits.transactionId >= graphicsHostBase.U &&
@@ -495,6 +548,12 @@ class GpuSystem(
     l2.io.response.bits.fault
   stridedCopyEngine.io.memoryResponse.bits.transactionId :=
     l2.io.response.bits.transactionId - stridedCopyBase.U
+  resolvePort.io.memoryResponse.valid :=
+    l2.io.response.valid && l2ResponseForResolve
+  resolvePort.io.memoryResponse.bits.readData := l2.io.response.bits.readData
+  resolvePort.io.memoryResponse.bits.fault := l2.io.response.bits.fault
+  resolvePort.io.memoryResponse.bits.transactionId :=
+    l2.io.response.bits.transactionId - resolveBase.U
   io.graphicsHostResponse.valid :=
     l2.io.response.valid && l2ResponseForGraphicsHost
   io.graphicsHostResponse.bits.readData := l2.io.response.bits.readData
@@ -508,12 +567,14 @@ class GpuSystem(
         Mux(l2ResponseForFill, fillEngine.io.memoryResponse.ready,
           Mux(l2ResponseForStridedCopy,
             stridedCopyEngine.io.memoryResponse.ready,
-            l2ResponseForGraphicsHost && io.graphicsHostResponse.ready)))))
+            Mux(l2ResponseForResolve,
+              resolvePort.io.memoryResponse.ready,
+              l2ResponseForGraphicsHost && io.graphicsHostResponse.ready))))))
   when(l2.io.response.valid) {
     assert(l2ResponseForCu || l2ResponseForGraphicsShader ||
       l2ResponseForCopy || l2ResponseForFill || l2ResponseForStridedCopy ||
-      l2ResponseForGraphicsHost,
-      "L2 response must target a CU, graphics shader, DMA, or host transaction")
+      l2ResponseForResolve || l2ResponseForGraphicsHost,
+      "L2 response must target a CU, graphics shader, DMA, resolve, or host transaction")
   }
   io.memoryRequest <> l2.io.memoryRequest
   l2.io.memoryResponse <> io.memoryResponse

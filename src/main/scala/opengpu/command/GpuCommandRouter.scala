@@ -12,6 +12,7 @@ object GpuCommandOpcode {
   val copy = 1.U(width.W)
   val fill = 2.U(width.W)
   val stridedCopy = 3.U(width.W)
+  val resolve = 4.U(width.W)
 }
 
 /** One software queue format. Unused payload fields are ignored by opcode. */
@@ -30,6 +31,8 @@ class GpuCommand(config: GpuConfig, val commandIdWidth: Int) extends Bundle {
   val height = UInt(32.W)
   val sourceStride = UInt(32.W)
   val destinationStride = UInt(32.W)
+  /** MSAA resolve sample mode (0 = 1x, 1 = 2x, 2 = 4x). */
+  val sampleMode = UInt(2.W)
   val waitForEvent = Bool()
   val waitEventId = UInt(commandIdWidth.W)
   val waitEventGeneration = UInt(8.W)
@@ -74,12 +77,16 @@ class GpuCommandRouter(
     val fill = Decoupled(new FillDescriptor(config, commandIdWidth))
     val stridedCopy = Decoupled(
       new StridedCopyDescriptor(config, commandIdWidth))
+    val resolve = Decoupled(
+      new ResolveDescriptor(config, commandIdWidth))
     val kernelCompletion = Flipped(Decoupled(
       new KernelCommandResult(commandIdWidth)))
     val copyCompletion = Flipped(Decoupled(new CopyCompletion(commandIdWidth)))
     val fillCompletion = Flipped(Decoupled(new FillCompletion(commandIdWidth)))
     val stridedCopyCompletion = Flipped(Decoupled(
       new StridedCopyCompletion(commandIdWidth)))
+    val resolveCompletion = Flipped(Decoupled(
+      new ResolveCompletion(commandIdWidth)))
     val duplicateCommandId = Output(Bool())
     val busy = Output(Bool())
     /** While high the router stops dispatching queued commands to the
@@ -117,7 +124,8 @@ class GpuCommandRouter(
   val isCopy = head.opcode === GpuCommandOpcode.copy
   val isFill = head.opcode === GpuCommandOpcode.fill
   val isStrided = head.opcode === GpuCommandOpcode.stridedCopy
-  val opcodeValid = isKernel || isCopy || isFill || isStrided
+  val isResolve = head.opcode === GpuCommandOpcode.resolve
+  val opcodeValid = isKernel || isCopy || isFill || isStrided || isResolve
   val waitedEventMatches = eventValid(head.waitEventId) &&
     eventGeneration(head.waitEventId) === head.waitEventGeneration
   val dependencyKnown = !head.waitForEvent || waitedEventMatches
@@ -152,9 +160,19 @@ class GpuCommandRouter(
   io.stridedCopy.bits.height := head.height
   io.stridedCopy.bits.sourceStride := head.sourceStride
   io.stridedCopy.bits.destinationStride := head.destinationStride
+  io.resolve.valid := commands.io.deq.valid && dependencyKnown &&
+    !dependencyFailed && isResolve && !io.blockDispatch
+  io.resolve.bits.descriptorId := head.commandId
+  io.resolve.bits.sourceAddress := head.sourceAddress
+  io.resolve.bits.destinationAddress := head.destinationAddress
+  io.resolve.bits.imgWidth := head.widthBytes(15, 0)
+  io.resolve.bits.imgHeight := head.height(15, 0)
+  io.resolve.bits.sourceStride := head.sourceStride
+  io.resolve.bits.destinationStride := head.destinationStride
+  io.resolve.bits.sampleMode := head.sampleMode
 
   val completionEvents = Module(new RRArbiter(
-    new GpuCommandResult(commandIdWidth), 5))
+    new GpuCommandResult(commandIdWidth), 6))
   def mapCompletion(index: Int, valid: Bool, commandId: UInt,
                             status: UInt, success: Bool,
                             bytes: UInt): Unit = {
@@ -183,17 +201,24 @@ class GpuCommandRouter(
     io.stridedCopyCompletion.bits.success,
     io.stridedCopyCompletion.bits.bytesCopied)
   io.stridedCopyCompletion.ready := completionEvents.io.in(3).ready
-  mapCompletion(4, commands.io.deq.valid && dependencyKnown &&
+  mapCompletion(4, io.resolveCompletion.valid,
+    io.resolveCompletion.bits.descriptorId,
+    io.resolveCompletion.bits.status,
+    io.resolveCompletion.bits.success,
+    io.resolveCompletion.bits.bytesResolved)
+  io.resolveCompletion.ready := completionEvents.io.in(4).ready
+  mapCompletion(5, commands.io.deq.valid && dependencyKnown &&
     (!opcodeValid || dependencyFailed) && !io.blockDispatch, head.commandId,
     Mux(dependencyFailed, GpuCommandResultStatus.eventDependencyFailed,
       GpuCommandResultStatus.invalidOpcode), false.B, 0.U)
 
   commands.io.deq.ready := !io.blockDispatch && dependencyKnown && MuxCase(
-    completionEvents.io.in(4).ready, Seq(
+    completionEvents.io.in(5).ready, Seq(
     isKernel -> io.kernel.ready,
     isCopy -> io.copy.ready,
     isFill -> io.fill.ready,
-    isStrided -> io.stridedCopy.ready))
+    isStrided -> io.stridedCopy.ready,
+    isResolve -> io.resolve.ready))
   completions.io.enq <> completionEvents.io.out
   io.completion <> completions.io.deq
 

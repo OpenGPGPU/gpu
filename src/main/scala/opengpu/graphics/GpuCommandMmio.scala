@@ -141,6 +141,9 @@ class GpuCommandMmio(
   queue.io.enq.bits.height := height
   queue.io.enq.bits.sourceStride := sourceStride
   queue.io.enq.bits.destinationStride := destinationStride
+  // Resolve sample mode has no staged register yet; typed resolve submission is
+  // wired through the command router before this MMIO bridge exposes it.
+  queue.io.enq.bits.sampleMode := 0.U
   queue.io.enq.bits.waitForEvent := flags(1)
   queue.io.enq.bits.waitEventId := waitEvent(commandIdWidth - 1, 0)
   queue.io.enq.bits.waitEventGeneration := waitEvent(15, 8)
