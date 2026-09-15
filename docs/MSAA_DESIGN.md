@@ -515,8 +515,9 @@ expansion), `KernelFragStageSpec` (ABI-1 emit/depth override, malformed-control
 discard/retirement and overlapping batch ABI snapshots), and
 `OutputMergerSpec` (write-acknowledgement drain, blending and stencil) and
 `MsaaResolveSpec` (resolve channel averaging, rounding and padded strides).
-`RenderCoreSpec`, `RenderHostSpec` and `GpuHostAxiSpec` cover integration and
-host behavior. Test presence is not a claim that all cases below are complete
+`RenderCoreSpec`, `RenderHostSpec`, `GpuHostAxiSpec` and `GpuHostSystemAxiSpec`
+(including an AXI-submitted 4x resolve end to end) cover integration and host
+behavior. Test presence is not a claim that all cases below are complete
 or that a full regression has passed.
 
 Run the focused suites from the repository root:

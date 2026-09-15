@@ -182,6 +182,93 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
     (address, id)
   }
 
+  /** Services the 64-bit AXI memory master until `until` holds, accepting any
+    * mix of full-line reads and writes.  `readLine` supplies the 64-byte line
+    * for a read address; `onWrite` receives every completed write burst as
+    * (address, data, byte strobe). */
+  private def serviceMemoryMaster(
+    dut: GpuHostSystemAxi,
+    readLine: BigInt => BigInt
+  )(onWrite: (BigInt, BigInt, BigInt) => Unit)(until: => Boolean): Unit = {
+    val mask64 = (BigInt(1) << 64) - 1
+    var arDone = false
+    var arAddr = BigInt(0)
+    var arId = BigInt(0)
+    var rBeat = 0
+    var rLine = BigInt(0)
+    var awDone = false
+    var awAddr = BigInt(0)
+    var awId = BigInt(0)
+    var wBeat = 0
+    var wData = BigInt(0)
+    var wStrb = BigInt(0)
+    var wDone = false
+    var bPending = false
+    var guard = 0
+    while (!until && guard < 20000) {
+      // Read address channel.
+      dut.io.m_axi_arready.poke((!arDone && rBeat == 0).B)
+      if (!arDone && dut.io.m_axi_arvalid.peek().litToBoolean &&
+          dut.io.m_axi_arready.peek().litToBoolean) {
+        arAddr = dut.io.m_axi_araddr.peek().litValue
+        arId = dut.io.m_axi_arid.peek().litValue
+        rLine = readLine(arAddr)
+        arDone = true
+        rBeat = 0
+      }
+      // Read data channel: eight 64-bit beats per line.
+      if (arDone) {
+        dut.io.m_axi_rvalid.poke(true.B)
+        dut.io.m_axi_rid.poke(arId.U)
+        dut.io.m_axi_rdata.poke(((rLine >> (rBeat * 64)) & mask64).U)
+        dut.io.m_axi_rresp.poke(0.U)
+        dut.io.m_axi_rlast.poke((rBeat == 7).B)
+        if (dut.io.m_axi_rready.peek().litToBoolean) {
+          if (rBeat == 7) { arDone = false; rBeat = 0 } else rBeat += 1
+        }
+      } else {
+        dut.io.m_axi_rvalid.poke(false.B)
+        dut.io.m_axi_rlast.poke(false.B)
+      }
+      // Write address channel.
+      dut.io.m_axi_awready.poke((!awDone && !wDone).B)
+      if (!awDone && dut.io.m_axi_awvalid.peek().litToBoolean &&
+          dut.io.m_axi_awready.peek().litToBoolean) {
+        awAddr = dut.io.m_axi_awaddr.peek().litValue
+        awId = dut.io.m_axi_awid.peek().litValue
+        awDone = true
+      }
+      // Write data channel.
+      dut.io.m_axi_wready.poke((!wDone).B)
+      if (!wDone && dut.io.m_axi_wvalid.peek().litToBoolean &&
+          dut.io.m_axi_wready.peek().litToBoolean) {
+        wData |= dut.io.m_axi_wdata.peek().litValue << (wBeat * 64)
+        wStrb |= dut.io.m_axi_wstrb.peek().litValue << (wBeat * 8)
+        wBeat += 1
+        if (dut.io.m_axi_wlast.peek().litToBoolean) wDone = true
+      }
+      if (awDone && wDone && !bPending) {
+        onWrite(awAddr, wData, wStrb)
+        bPending = true
+      }
+      // Write response channel.
+      dut.io.m_axi_bvalid.poke(bPending.B)
+      dut.io.m_axi_bid.poke(awId.U)
+      dut.io.m_axi_bresp.poke(0.U)
+      if (bPending && dut.io.m_axi_bready.peek().litToBoolean) {
+        bPending = false
+        awDone = false
+        wDone = false
+        wBeat = 0
+        wData = BigInt(0)
+        wStrb = BigInt(0)
+      }
+      dut.io.s_axi_aclk.step()
+      guard += 1
+    }
+    assert(guard < 20000, "AXI memory master service timed out")
+  }
+
   it should "route an AXI-programmed clear through the shared L2" in {
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
     val gpu = GpuConfig(
@@ -429,6 +516,51 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
       assert(((completion >> 8) & 0x7L) ==
         GpuCommandOpcode.kernel.litValue)
       assert(((completion >> 15) & 1L) == 1L)
+    }
+  }
+
+  it should "resolve a 4x pixel through the AXI unified command path" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      val srcBase = 0x1000
+      val dstBase = 0x2000
+      val samples = Seq(BigInt(0), BigInt("ffffffff", 16),
+        BigInt("ff00ff00", 16), BigInt("00ff00ff", 16))
+      val srcLine = samples.zipWithIndex
+        .map { case (w, i) => w << (32 * i) }.reduce(_ | _)
+      var dstWritten: Option[BigInt] = None
+
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 7)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE,
+        GpuCommandOpcode.resolve.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.SOURCE, srcBase)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, dstBase)
+      axiWrite(dut, GpuCommandMmioRegs.WIDTH, 1)
+      axiWrite(dut, GpuCommandMmioRegs.HEIGHT, 1)
+      axiWrite(dut, GpuCommandMmioRegs.SOURCE_STRIDE, 16)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION_STRIDE, 4)
+      axiWrite(dut, GpuCommandMmioRegs.SAMPLE_MODE, 2)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+
+      serviceMemoryMaster(dut,
+        addr => if (addr == BigInt(srcBase)) srcLine else BigInt(0)) {
+        (addr, data, strb) =>
+          if (addr == BigInt(dstBase) && (strb & 0xfL) == 0xfL)
+            dstWritten = Some(data & 0xffffffffL)
+      } { dut.io.m_irq.peek().litToBoolean }
+
+      dut.io.m_irq.expect(true.B)
+      val completion = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+      assert((completion & 0xffL) == 7L, s"completion id was $completion")
+      assert(((completion >> 8) & 0x7L) ==
+        GpuCommandOpcode.resolve.litValue)
+      assert(((completion >> 15) & 1L) == 1L)
+      assert(axiRead(dut, GpuCommandMmioRegs.COMPLETION_BYTES_LO) == 4L)
+      assert(dstWritten.contains(BigInt(0x80808080L)),
+        s"resolved pixel must be 0x80808080, got ${dstWritten.map(_.toString(16))}")
     }
   }
 }
