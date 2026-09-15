@@ -18,6 +18,7 @@
 
 #include "opengpu_device.h"
 #include "opengpu_drm.h"
+#include "opengpu_resolve_validator.h"
 
 struct opengpu_fence {
     struct dma_fence base;
@@ -927,8 +928,9 @@ static int opengpu_hw_unified_submit_locked(
     const struct opengpu_kernel_launch *launch,
     const struct opengpu_command_events *events,
     u32 opcode, u32 source, u32 destination,
-    u32 bytes, u32 pattern, u32 height, u32 source_stride,
-    u32 destination_stride, u64 expected_bytes, struct dma_fence **out_fence)
+    u32 bytes, u32 pattern, u32 sample_mode, u32 height,
+    u32 source_stride, u32 destination_stride, u64 expected_bytes,
+    struct dma_fence **out_fence)
 {
     struct opengpu_fence *fence;
     unsigned long flags;
@@ -1024,6 +1026,7 @@ static int opengpu_hw_unified_submit_locked(
     opengpu_reg_write(gpu, GPU_REG_UCMD_SOURCE_STRIDE, source_stride);
     opengpu_reg_write(gpu, GPU_REG_UCMD_DEST_STRIDE,
                       destination_stride);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_SAMPLE_MODE, sample_mode & 0x3u);
     opengpu_reg_write(gpu, GPU_REG_UCMD_SUBMIT, 1);
     mod_delayed_work(system_dfl_wq, &gpu->hw.timeout_work,
                      msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS));
@@ -1040,8 +1043,8 @@ static int opengpu_hw_unified_dma_submit_locked(
     struct dma_fence **out_fence)
 {
     return opengpu_hw_unified_submit_locked(
-        gpu, NULL, events, opcode, source, destination, bytes, pattern, height,
-        source_stride, destination_stride, expected_bytes, out_fence);
+        gpu, NULL, events, opcode, source, destination, bytes, pattern, 0,
+        height, source_stride, destination_stride, expected_bytes, out_fence);
 }
 
 /* Submit one DMA operation through the integrated common command payload.
@@ -1471,6 +1474,56 @@ int opengpu_hw_strided_blit_async(struct opengpu_device *gpu, u32 source,
     return ret;
 }
 
+int opengpu_hw_resolve_async(struct opengpu_device *gpu, u32 source,
+                             u32 destination, u32 width, u32 height,
+                             u32 source_stride, u32 destination_stride,
+                             u32 sample_mode,
+                             const struct opengpu_command_events *events,
+                             struct dma_fence **out_fence)
+{
+    struct opengpu_resolve_desc desc;
+    struct opengpu_resolve_layout layout;
+    u32 max_sample_mode;
+    int ret;
+
+    if (!out_fence)
+        return -EINVAL;
+    *out_fence = NULL;
+    /* Resolve averages the samples of a fixed-function MSAA target through the
+     * unified command path; both capabilities must be present. */
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS) ||
+        !(gpu->hw.capabilities & GPU_CAP_MSAA))
+        return -EOPNOTSUPP;
+
+    max_sample_mode = (gpu->hw.capabilities & GPU_CAP_MSAA_MAX_MODE_MASK) >>
+                      GPU_CAP_MSAA_MAX_MODE_SHIFT;
+
+    desc.source_offset = source;
+    desc.destination_offset = destination;
+    desc.width = width;
+    desc.height = height;
+    desc.source_stride = source_stride;
+    desc.destination_stride = destination_stride;
+    desc.sample_mode = sample_mode;
+
+    /* The ioctl already validated the ranges against the GEM objects; here the
+     * absolute DMA addresses are re-checked for arithmetic, the 32-bit address
+     * window and overlap before programming the registers. */
+    ret = opengpu_resolve_validate(&desc, 1ull << 32, 1ull << 32,
+                                   max_sample_mode, &layout);
+    if (ret)
+        return ret;
+
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
+        opengpu_hw_unified_submit_locked(
+            gpu, NULL, events, GPU_UCMD_OP_RESOLVE, source, destination,
+            width, 0, sample_mode, height, source_stride,
+            destination_stride, (u64)width * height * 4ull, out_fence);
+    mutex_unlock(&gpu->hw.submit_lock);
+    return ret;
+}
+
 int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              const struct opengpu_kernel_launch *launch,
                              const struct opengpu_command_events *events,
@@ -1499,7 +1552,7 @@ int opengpu_hw_compute_async(struct opengpu_device *gpu,
     ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
         opengpu_hw_unified_submit_locked(
             gpu, launch, events, GPU_UCMD_OP_KERNEL, 0, 0, 0, 0, 0, 0, 0, 0,
-            out_fence);
+            0, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }

@@ -386,8 +386,11 @@ rules the driver must enforce are implemented in
 `tests/opengpu_resolve_validator_test.c` (mode/alignment/stride/overflow,
 two-dimensional bounds and source/destination overlap); the same header builds
 the unified-command fields (`opengpu_resolve_build_command`). The UAPI is
-`drm_opengpu_resolve` / `DRM_IOCTL_OPENGPU_RESOLVE`. The kernel ioctl handler,
-scheduler job and fence/KMS wiring remain to be added.
+`drm_opengpu_resolve` / `DRM_IOCTL_OPENGPU_RESOLVE`, and
+`opengpu_compute_resolve_ioctl` submits it through the DRM scheduler with the
+source read and destination write reservations and an optional output syncobj.
+The guest DRM test exercises the ioctl. Scheduler fences and KMS ordering are
+the remaining pieces.
 
 Resolve averages every pixel's physical colour samples into a separate
 single-sample RGBA8888 buffer. Depth resolve is out of scope.
@@ -504,7 +507,7 @@ memory-port utilisation under 2x and 4x workloads.
 | Coverage/depth | Mode-specific LUT, scalar/quad masks, expanded bounds, shared triangle gradients and sample depth implemented | Broaden edge and precision regression coverage |
 | Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented internally | Advertised Linux support and integrated multisample qualification |
 | Expansion/OM | Backpressured expander, sample addresses, address-hazard ordering and acknowledged write drain implemented | Broader integrated multisample regressions |
-| Resolve | `MsaaResolveEngine` backend, the `GPU_UCMD_OP_RESOLVE` router path through the shared L2, unified MMIO staging (`UCMD_SAMPLE_MODE`), the validated range rules and command builder (`opengpu_resolve_validator.h` + userspace test), and the `DRM_IOCTL_OPENGPU_RESOLVE` UAPI | Kernel ioctl handler, scheduler job, fence and KMS wiring |
+| Resolve | `MsaaResolveEngine` backend, the `GPU_UCMD_OP_RESOLVE` router path through the shared L2, unified MMIO staging (`UCMD_SAMPLE_MODE`), the validated range rules and command builder, the `DRM_IOCTL_OPENGPU_RESOLVE` UAPI and the scheduler-backed ioctl (source read / destination write reservations, output syncobj) | KMS ordering that waits for the resolved buffer before scanout |
 
 ## Verification
 

@@ -49,6 +49,7 @@ enum opengpu_sched_job_type {
     OPENGPU_SCHED_BLIT,
     OPENGPU_SCHED_FILL,
     OPENGPU_SCHED_STRIDED_BLIT,
+    OPENGPU_SCHED_RESOLVE,
 };
 
 struct opengpu_sched_job {
@@ -61,6 +62,7 @@ struct opengpu_sched_job {
     u32 dma_height;
     u32 dma_source_stride;
     u32 dma_destination_stride;
+    u32 dma_sample_mode;
     u32 fill_pattern;
     struct opengpu_command_events events;
     struct opengpu_kernel_launch kernel;
@@ -1022,6 +1024,15 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
             job->dma_destination_stride, &job->events, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
+    if (job->type == OPENGPU_SCHED_RESOLVE) {
+        ret = opengpu_hw_resolve_async(
+            job->gpu, lower_32_bits(job->dma_source),
+            lower_32_bits(job->dma_destination), job->dma_bytes,
+            job->dma_height, job->dma_source_stride,
+            job->dma_destination_stride, job->dma_sample_mode,
+            &job->events, &fence);
+        return ret ? ERR_PTR(ret) : fence;
+    }
     if (job->gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE)
         ret = opengpu_hw_clear_and_submit_async(
             job->gpu, &job->hw, lower_32_bits(job->depth.dma),
@@ -1911,10 +1922,177 @@ out_source:
     return ret;
 }
 
+int opengpu_compute_resolve_ioctl(struct drm_device *drm, void *data,
+                                  struct drm_file *file)
+{
+    struct drm_opengpu_resolve *args = data;
+    struct opengpu_device *gpu = dev_get_drvdata(drm->dev);
+    struct opengpu_file *render_file = file->driver_priv;
+    struct opengpu_render_context *context;
+    struct drm_gem_object *source_object = NULL;
+    struct drm_gem_object *destination_object = NULL;
+    struct drm_gem_dma_object *source_dma, *destination_dma;
+    struct opengpu_sched_job *sched_job = NULL;
+    struct drm_syncobj *out_sync = NULL;
+    struct dma_fence *fence = NULL;
+    struct drm_exec exec;
+    struct opengpu_command_events events;
+    struct opengpu_resolve_desc desc;
+    struct opengpu_resolve_layout layout;
+    u64 source_address, destination_address, source_end, destination_end;
+    u32 max_sample_mode;
+    bool sched_initialized = false;
+    int ret;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_MSAA))
+        return -EOPNOTSUPP;
+    max_sample_mode = (gpu->hw.capabilities & GPU_CAP_MSAA_MAX_MODE_MASK) >>
+                      GPU_CAP_MSAA_MAX_MODE_SHIFT;
+    ret = opengpu_command_events_init(gpu, &events, args->flags,
+                                      args->wait_event,
+                                      args->signal_event);
+    if (ret)
+        return ret;
+    if (!args->context_id || !args->source_handle ||
+        !args->destination_handle)
+        return -EINVAL;
+
+    source_object = drm_gem_object_lookup(file, args->source_handle);
+    if (!source_object)
+        return -ENOENT;
+    destination_object = drm_gem_object_lookup(file,
+                                                args->destination_handle);
+    if (!destination_object) {
+        ret = -ENOENT;
+        goto out_source;
+    }
+
+    desc.source_offset = args->source_offset;
+    desc.destination_offset = args->destination_offset;
+    desc.width = args->width;
+    desc.height = args->height;
+    desc.source_stride = args->source_stride;
+    desc.destination_stride = args->destination_stride;
+    desc.sample_mode = args->sample_mode;
+    ret = opengpu_resolve_validate(&desc, source_object->size,
+                                   destination_object->size,
+                                   max_sample_mode, &layout);
+    if (ret)
+        goto out_destination;
+
+    source_dma = to_drm_gem_dma_obj(source_object);
+    destination_dma = to_drm_gem_dma_obj(destination_object);
+    if (check_add_overflow((u64)source_dma->dma_addr, layout.source_end,
+                           &source_end) ||
+        check_add_overflow((u64)destination_dma->dma_addr,
+                           layout.destination_end, &destination_end) ||
+        check_add_overflow((u64)source_dma->dma_addr, args->source_offset,
+                           &source_address) ||
+        check_add_overflow((u64)destination_dma->dma_addr,
+                           args->destination_offset, &destination_address) ||
+        source_address > U32_MAX || destination_address > U32_MAX ||
+        source_end > (1ull << 32) || destination_end > (1ull << 32)) {
+        ret = -ERANGE;
+        goto out_destination;
+    }
+    if (args->out_syncobj) {
+        out_sync = drm_syncobj_find(file, args->out_syncobj);
+        if (!out_sync) {
+            ret = -ENOENT;
+            goto out_destination;
+        }
+    }
+
+    mutex_lock(&render_file->lock);
+    context = idr_find(&render_file->contexts, args->context_id);
+    if (!context) {
+        ret = -ENOENT;
+        goto out_file;
+    }
+    drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
+                         DRM_EXEC_IGNORE_DUPLICATES, 0);
+    drm_exec_until_all_locked(&exec) {
+        ret = drm_exec_prepare_obj(&exec, source_object, 1);
+        if (!ret)
+            ret = drm_exec_prepare_obj(&exec, destination_object, 1);
+        drm_exec_retry_on_contention(&exec);
+        if (ret)
+            goto out_exec;
+    }
+
+    sched_job = kzalloc(sizeof(*sched_job), GFP_KERNEL);
+    if (!sched_job) {
+        ret = -ENOMEM;
+        goto out_exec;
+    }
+    sched_job->gpu = gpu;
+    sched_job->type = OPENGPU_SCHED_RESOLVE;
+    sched_job->dma_source = source_address;
+    sched_job->dma_destination = destination_address;
+    sched_job->dma_bytes = args->width;
+    sched_job->dma_height = args->height;
+    sched_job->dma_source_stride = args->source_stride;
+    sched_job->dma_destination_stride = args->destination_stride;
+    sched_job->dma_sample_mode = args->sample_mode;
+    sched_job->events = events;
+    ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
+                             render_file, file->client_id);
+    if (ret)
+        goto out_job;
+    sched_initialized = true;
+    if (args->in_syncobj)
+        ret = drm_sched_job_add_syncobj_dependency(&sched_job->base, file,
+                                                    args->in_syncobj, 0);
+    if (!ret)
+        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
+                                                   source_object->resv,
+                                                   DMA_RESV_USAGE_WRITE);
+    if (!ret)
+        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
+                                                   destination_object->resv,
+                                                   DMA_RESV_USAGE_READ);
+    if (ret)
+        goto out_job;
+
+    drm_gem_object_get(source_object);
+    sched_job->objects[sched_job->object_count++] = source_object;
+    drm_gem_object_get(destination_object);
+    sched_job->objects[sched_job->object_count++] = destination_object;
+    drm_sched_job_arm(&sched_job->base);
+    fence = dma_fence_get(&sched_job->base.s_fence->finished);
+    dma_fence_put(context->last_fence);
+    context->last_fence = dma_fence_get(fence);
+    dma_resv_add_fence(source_object->resv, fence, DMA_RESV_USAGE_READ);
+    dma_resv_add_fence(destination_object->resv, fence,
+                       DMA_RESV_USAGE_WRITE);
+    if (out_sync)
+        drm_syncobj_replace_fence(out_sync, fence);
+    drm_sched_entity_push_job(&sched_job->base);
+    sched_job = NULL;
+    dma_fence_put(fence);
+    ret = 0;
+    goto out_exec;
+
+out_job:
+    if (sched_initialized)
+        drm_sched_job_cleanup(&sched_job->base);
+    kfree(sched_job);
+out_exec:
+    drm_exec_fini(&exec);
+out_file:
+    mutex_unlock(&render_file->lock);
+    if (out_sync)
+        drm_syncobj_put(out_sync);
+out_destination:
+    drm_gem_object_put(destination_object);
+out_source:
+    drm_gem_object_put(source_object);
+    return ret;
+}
+
 int opengpu_compute_launch_ioctl(struct drm_device *drm, void *data,
                                  struct drm_file *file)
-{
-    struct drm_opengpu_compute *args = data;
+{    struct drm_opengpu_compute *args = data;
     struct opengpu_device *gpu = dev_get_drvdata(drm->dev);
     struct opengpu_file *render_file = file->driver_priv;
     struct opengpu_render_context *context;

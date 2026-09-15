@@ -721,13 +721,40 @@ static int submit_strided_blit(int fd, uint32_t context_id,
     return ioctl(fd, DRM_IOCTL_OPENGPU_STRIDED_BLIT, &blit);
 }
 
+static int submit_resolve(int fd, uint32_t context_id,
+                          const struct dumb_fb *source,
+                          const struct dumb_fb *destination,
+                          uint64_t source_offset, uint64_t destination_offset,
+                          uint32_t width, uint32_t height,
+                          uint32_t source_stride, uint32_t destination_stride,
+                          uint32_t sample_mode, uint32_t in_syncobj,
+                          uint32_t out_syncobj, uint32_t flags)
+{
+    struct drm_opengpu_resolve resolve = {
+        .context_id = context_id,
+        .source_handle = source->handle,
+        .destination_handle = destination->handle,
+        .source_offset = source_offset,
+        .destination_offset = destination_offset,
+        .width = width,
+        .height = height,
+        .source_stride = source_stride,
+        .destination_stride = destination_stride,
+        .sample_mode = sample_mode,
+        .in_syncobj = in_syncobj,
+        .out_syncobj = out_syncobj,
+        .flags = flags,
+    };
+
+    return ioctl(fd, DRM_IOCTL_OPENGPU_RESOLVE, &resolve);
+}
+
 static int submit_compute(int fd, uint32_t context_id, uint32_t shader_slot,
                           uint32_t kernarg_slot, uint32_t local_x,
                           uint32_t in_syncobj, uint32_t out_syncobj,
                           uint32_t flags, uint32_t wait_event,
                           uint32_t signal_event)
-{
-    struct drm_opengpu_compute compute = {
+{    struct drm_opengpu_compute compute = {
         .context_id = context_id,
         .shader_slot = shader_slot,
         .kernarg_slot = kernarg_slot,
@@ -1502,6 +1529,75 @@ int main(void)
             errno = EIO;
             perror("OPENGPU USERSPACE DRM FAIL strided blit result");
             return 1;
+        }
+    }
+    /* Typed MSAA resolve: average the interleaved colour samples of a small
+     * region into a single-sample destination.  The driver validates both
+     * ranges; a mode above the advertised maximum is rejected. */
+    if (msaa_capable) {
+        uint32_t resolve_sync = 0;
+        uint32_t width = 4;
+        uint32_t height = 2;
+        uint32_t samples = 1u << msaa_max_mode;
+        uint32_t src_stride = strided_source.pitch;
+        uint32_t dst_stride = strided_destination.pitch;
+
+        CHECK(create_syncobj(fd, &resolve_sync), "create resolve syncobj");
+
+        errno = 0;
+        if (submit_resolve(fd, context_id, &strided_source,
+                           &strided_destination, 0, 0, width, height,
+                           src_stride, dst_stride, msaa_max_mode + 1,
+                           0, resolve_sync, 0) != -1 || errno != EINVAL) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL above-max resolve accepted");
+            return 1;
+        }
+        errno = 0;
+        if (submit_resolve(fd, context_id, &strided_source,
+                           &strided_destination, 0, 0, width, height,
+                           src_stride / 2, dst_stride, msaa_max_mode,
+                           0, resolve_sync, 0) != -1 || errno != EINVAL) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL short resolve stride accepted");
+            return 1;
+        }
+
+        memset(strided_destination.map, 0x5a, strided_destination.size);
+        for (uint32_t y = 0; y < height; y++) {
+            uint32_t *row = (uint32_t *)((uint8_t *)strided_source.map +
+                                         y * src_stride);
+
+            for (uint32_t x = 0; x < width; x++)
+                for (uint32_t s = 0; s < samples; s++)
+                    row[x * samples + s] =
+                        (s < samples / 2) ? 0xffffffffu : 0x00000000u;
+        }
+        CHECK(submit_resolve(fd, context_id, &strided_source,
+                             &strided_destination, 0, 0, width, height,
+                             src_stride, dst_stride, msaa_max_mode,
+                             0, resolve_sync, 0),
+              "queue ordered MSAA resolve");
+        CHECK(wait_syncobjs(fd, &resolve_sync, 1), "wait resolve syncobj");
+        for (uint32_t y = 0; y < height; y++) {
+            uint32_t *row = (uint32_t *)((uint8_t *)strided_destination.map +
+                                         y * dst_stride);
+
+            for (uint32_t x = 0; x < width; x++) {
+                if (row[x] != 0x80808080u) {
+                    fprintf(stderr,
+                            "resolve (%u,%u)=0x%08x expected 0x80808080\n",
+                            x, y, row[x]);
+                    errno = EIO;
+                    perror("OPENGPU USERSPACE DRM FAIL resolve result");
+                    return 1;
+                }
+            }
+            if (row[width] != 0x5a5a5a5au) {
+                errno = EIO;
+                perror("OPENGPU USERSPACE DRM FAIL resolve padding");
+                return 1;
+            }
         }
     }
     /* Stencil-gated render: the second draw passes EQUAL 0x5a and blends the

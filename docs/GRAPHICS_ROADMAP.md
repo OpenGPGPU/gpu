@@ -212,9 +212,10 @@ qualify a capability as implemented end to end.
   The streaming backend (`MsaaResolveEngine`) and the `GPU_UCMD_OP_RESOLVE`
   router path into the shared L2 are implemented and tested, the unified MMIO
   bridge stages the resolve fields plus `UCMD_SAMPLE_MODE` (0x148), and the
-  driver-side range/overlap rules, command builder and `DRM_IOCTL_OPENGPU_RESOLVE`
-  UAPI live in `opengpu_resolve_validator.h` with a userspace test. Only the
-  kernel ioctl handler, scheduler fences and KMS ordering remain.
+  driver-side range/overlap rules, command builder, `DRM_IOCTL_OPENGPU_RESOLVE`
+  UAPI and scheduler-backed ioctl (source read / destination write reservations,
+  output syncobj) are in place. Only KMS ordering before scanout of the resolved
+  buffer remains.
 - Attach source-read and destination-write reservation fences and sync objects;
   KMS must wait for resolved output before scanout.
 - Enable programmable MSAA only after helper-lane, derivative, discard,
