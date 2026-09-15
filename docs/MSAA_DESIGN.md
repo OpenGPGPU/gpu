@@ -391,8 +391,11 @@ the unified-command fields (`opengpu_resolve_build_command`). The UAPI is
 source read and destination write reservations and an optional output syncobj.
 The guest DRM test exercises the ioctl end to end under ARTI/QEMU, and
 `GpuSystemSpec` / `GpuHostSystemAxiSpec` cover multi-row resolves through the
-shared L2 and the full AXI top. Scheduler fences and KMS ordering are the
-remaining pieces.
+shared L2 and the full AXI top. The resolve fence is published to the
+destination BO's reservation as `DMA_RESV_USAGE_WRITE`, so the standard KMS
+implicit-sync path (`prepare_fb` extracts the exclusive fence; the atomic
+commit tail waits for it) already orders scanout of a resolved buffer. The
+remaining work is the programmable-MSAA qualification gate.
 
 Resolve averages every pixel's physical colour samples into a separate
 single-sample RGBA8888 buffer. Depth resolve is out of scope.
@@ -509,7 +512,7 @@ memory-port utilisation under 2x and 4x workloads.
 | Coverage/depth | Mode-specific LUT, scalar/quad masks, expanded bounds, shared triangle gradients and sample depth implemented | Broaden edge and precision regression coverage |
 | Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented internally | Advertised Linux support and integrated multisample qualification |
 | Expansion/OM | Backpressured expander, sample addresses, address-hazard ordering and acknowledged write drain implemented | Broader integrated multisample regressions |
-| Resolve | `MsaaResolveEngine` backend, the `GPU_UCMD_OP_RESOLVE` router path through the shared L2, unified MMIO staging (`UCMD_SAMPLE_MODE`), the validated range rules and command builder, the `DRM_IOCTL_OPENGPU_RESOLVE` UAPI and the scheduler-backed ioctl (source read / destination write reservations, output syncobj) | KMS ordering that waits for the resolved buffer before scanout |
+| Resolve | `MsaaResolveEngine` backend, the `GPU_UCMD_OP_RESOLVE` router path through the shared L2, unified MMIO staging (`UCMD_SAMPLE_MODE`), the validated range rules and command builder, the `DRM_IOCTL_OPENGPU_RESOLVE` UAPI, the scheduler-backed ioctl with source read / destination write reservations and output syncobj, and KMS ordering via the standard implicit-sync path | Programmable-MSAA qualification (separate gate); broader ARTI resolve coverage |
 
 ## Verification
 
