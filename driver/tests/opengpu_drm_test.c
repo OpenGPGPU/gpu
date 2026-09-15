@@ -1533,20 +1533,29 @@ int main(void)
     }
     /* Typed MSAA resolve: average the interleaved colour samples of a small
      * region into a single-sample destination.  The driver validates both
-     * ranges; a mode above the advertised maximum is rejected. */
+     * ranges; a mode above the advertised maximum is rejected.  The region is
+     * one physical row here; the multi-row crossing is covered by the RTL
+     * integration tests (GpuSystemSpec / GpuHostSystemAxiSpec). */
     if (msaa_capable) {
+        struct dumb_fb resolve_source = { 0 }, resolve_destination = { 0 };
         uint32_t resolve_sync = 0;
         uint32_t width = 4;
-        uint32_t height = 2;
+        uint32_t height = 1;
         uint32_t samples = 1u << msaa_max_mode;
-        uint32_t src_stride = strided_source.pitch;
-        uint32_t dst_stride = strided_destination.pitch;
+        uint32_t src_stride, dst_stride;
 
+        /* Fresh buffers: the source is CPU-initialized and then read by the
+         * GPU, so it must not carry data from an earlier GPU access. */
+        CHECK(create_fb(fd, 0, &resolve_source), "resolve source buffer");
+        CHECK(create_fb(fd, 0, &resolve_destination),
+              "resolve destination buffer");
+        src_stride = resolve_source.pitch;
+        dst_stride = resolve_destination.pitch;
         CHECK(create_syncobj(fd, &resolve_sync), "create resolve syncobj");
 
         errno = 0;
-        if (submit_resolve(fd, context_id, &strided_source,
-                           &strided_destination, 0, 0, width, height,
+        if (submit_resolve(fd, context_id, &resolve_source,
+                           &resolve_destination, 0, 0, width, height,
                            src_stride, dst_stride, msaa_max_mode + 1,
                            0, resolve_sync, 0) != -1 || errno != EINVAL) {
             errno = EPROTO;
@@ -1554,8 +1563,8 @@ int main(void)
             return 1;
         }
         errno = 0;
-        if (submit_resolve(fd, context_id, &strided_source,
-                           &strided_destination, 0, 0, width, height,
+        if (submit_resolve(fd, context_id, &resolve_source,
+                           &resolve_destination, 0, 0, width, height,
                            src_stride / 2, dst_stride, msaa_max_mode,
                            0, resolve_sync, 0) != -1 || errno != EINVAL) {
             errno = EPROTO;
@@ -1563,31 +1572,36 @@ int main(void)
             return 1;
         }
 
-        memset(strided_destination.map, 0x5a, strided_destination.size);
+        memset(resolve_destination.map, 0x5a, resolve_destination.size);
         for (uint32_t y = 0; y < height; y++) {
-            uint32_t *row = (uint32_t *)((uint8_t *)strided_source.map +
+            uint32_t *row = (uint32_t *)((uint8_t *)resolve_source.map +
                                          y * src_stride);
 
-            for (uint32_t x = 0; x < width; x++)
-                for (uint32_t s = 0; s < samples; s++)
-                    row[x * samples + s] =
-                        (s < samples / 2) ? 0xffffffffu : 0x00000000u;
+            for (uint32_t x = 0; x < width; x++) {
+                row[x * samples + 0] = 0x00000000u;
+                row[x * samples + 1] = 0xffffffffu;
+                if (samples == 4) {
+                    row[x * samples + 2] = 0xff00ff00u;
+                    row[x * samples + 3] = 0x00ff00ffu;
+                }
+            }
         }
-        CHECK(submit_resolve(fd, context_id, &strided_source,
-                             &strided_destination, 0, 0, width, height,
+        CHECK(submit_resolve(fd, context_id, &resolve_source,
+                             &resolve_destination, 0, 0, width, height,
                              src_stride, dst_stride, msaa_max_mode,
                              0, resolve_sync, 0),
               "queue ordered MSAA resolve");
         CHECK(wait_syncobjs(fd, &resolve_sync, 1), "wait resolve syncobj");
         for (uint32_t y = 0; y < height; y++) {
-            uint32_t *row = (uint32_t *)((uint8_t *)strided_destination.map +
+            uint32_t *row = (uint32_t *)((uint8_t *)resolve_destination.map +
                                          y * dst_stride);
 
             for (uint32_t x = 0; x < width; x++) {
                 if (row[x] != 0x80808080u) {
                     fprintf(stderr,
-                            "resolve (%u,%u)=0x%08x expected 0x80808080\n",
-                            x, y, row[x]);
+                            "resolve (%u,%u)=0x%08x expected 0x80808080 "
+                            "src_stride=%u dst_stride=%u\n",
+                            x, y, row[x], src_stride, dst_stride);
                     errno = EIO;
                     perror("OPENGPU USERSPACE DRM FAIL resolve result");
                     return 1;

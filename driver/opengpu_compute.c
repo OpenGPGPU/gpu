@@ -1967,30 +1967,36 @@ int opengpu_compute_resolve_ioctl(struct drm_device *drm, void *data,
         goto out_source;
     }
 
-    desc.source_offset = args->source_offset;
-    desc.destination_offset = args->destination_offset;
+    source_dma = to_drm_gem_dma_obj(source_object);
+    destination_dma = to_drm_gem_dma_obj(destination_object);
+    /* Overlap is meaningful only in the absolute address space: the source and
+     * destination are separate GEM objects whose relative offsets commonly
+     * both start at zero.  Translate first, then validate the whole address
+     * space; object containment is checked against each backing allocation. */
+    if (check_add_overflow((u64)source_dma->dma_addr, args->source_offset,
+                           &source_address) ||
+        check_add_overflow((u64)destination_dma->dma_addr,
+                           args->destination_offset, &destination_address)) {
+        ret = -ERANGE;
+        goto out_destination;
+    }
+    desc.source_offset = source_address;
+    desc.destination_offset = destination_address;
     desc.width = args->width;
     desc.height = args->height;
     desc.source_stride = args->source_stride;
     desc.destination_stride = args->destination_stride;
     desc.sample_mode = args->sample_mode;
-    ret = opengpu_resolve_validate(&desc, source_object->size,
-                                   destination_object->size,
+    ret = opengpu_resolve_validate(&desc, 1ull << 32, 1ull << 32,
                                    max_sample_mode, &layout);
     if (ret)
         goto out_destination;
 
-    source_dma = to_drm_gem_dma_obj(source_object);
-    destination_dma = to_drm_gem_dma_obj(destination_object);
-    if (check_add_overflow((u64)source_dma->dma_addr, layout.source_end,
-                           &source_end) ||
-        check_add_overflow((u64)destination_dma->dma_addr,
-                           layout.destination_end, &destination_end) ||
-        check_add_overflow((u64)source_dma->dma_addr, args->source_offset,
-                           &source_address) ||
-        check_add_overflow((u64)destination_dma->dma_addr,
-                           args->destination_offset, &destination_address) ||
-        source_address > U32_MAX || destination_address > U32_MAX ||
+    source_end = layout.source_end;
+    destination_end = layout.destination_end;
+    if (source_end > (u64)source_dma->dma_addr + source_object->size ||
+        destination_end >
+            (u64)destination_dma->dma_addr + destination_object->size ||
         source_end > (1ull << 32) || destination_end > (1ull << 32)) {
         ret = -ERANGE;
         goto out_destination;

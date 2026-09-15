@@ -739,4 +739,89 @@ class GpuSystemSpec extends AnyFlatSpec {
         s"resolved pixel must be 0x80808080, got ${dstWritten.map(_.toString(16))}")
     }
   }
+
+  it should "resolve a multi-row 4x region through the shared L2" in {
+    val config = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuSystem(config, numComputeUnits = 2,
+      enableUnifiedCommands = true)) { dut =>
+      initialize(dut, 2)
+      val srcBase = 0x1000L
+      val dstBase = 0x2000L
+      val srcStride = 64L
+      val dstStride = 64L
+      val width = 4
+      val height = 2
+      val samples = Seq(BigInt(0), BigInt("ffffffff", 16),
+        BigInt("ff00ff00", 16), BigInt("00ff00ff", 16))
+      val words = scala.collection.mutable.LongMap[BigInt]()
+      for (y <- 0 until height; x <- 0 until width; s <- 0 until 4)
+        words(srcBase + y * srcStride + (x * 4 + s) * 4L) = samples(s)
+      def lineAt(addr: Long): BigInt = {
+        val base = addr & ~63L
+        (0 until 16)
+          .map(i => words.getOrElse(base + i * 4L, BigInt(0)) << (32 * i))
+          .reduce(_ | _)
+      }
+      def applyWrite(addr: Long, data: BigInt, mask: BigInt): Unit = {
+        val base = addr & ~63L
+        for (i <- 0 until 16) {
+          var w = words.getOrElse(base + i * 4L, BigInt(0))
+          for (b <- 0 until 4) {
+            val byte = i * 4 + b
+            if (((mask >> byte) & 1) != 0)
+              w = (w & ~(BigInt(0xff) << (b * 8))) |
+                (((data >> (byte * 8)) & 0xff) << (b * 8))
+          }
+          words(base + i * 4L) = w
+        }
+      }
+
+      dut.io.gpuCommand.bits.commandId.poke(7.U)
+      dut.io.gpuCommand.bits.opcode.poke(GpuCommandOpcode.resolve)
+      dut.io.gpuCommand.bits.sourceAddress.poke(srcBase.U)
+      dut.io.gpuCommand.bits.destinationAddress.poke(dstBase.U)
+      dut.io.gpuCommand.bits.widthBytes.poke(width.U)
+      dut.io.gpuCommand.bits.height.poke(height.U)
+      dut.io.gpuCommand.bits.sourceStride.poke(srcStride.U)
+      dut.io.gpuCommand.bits.destinationStride.poke(dstStride.U)
+      dut.io.gpuCommand.bits.sampleMode.poke(2.U)
+      dut.io.gpuCommand.valid.poke(true.B)
+      dut.clock.step(); dut.io.gpuCommand.valid.poke(false.B)
+
+      var pending: Option[BigInt] = None
+      var pendingData = BigInt(0)
+      var complete = false
+      var guard = 0
+      while (!complete && guard < 40000) {
+        dut.io.memoryResponse.valid.poke(false.B)
+        if (pending.nonEmpty) {
+          dut.io.memoryResponse.valid.poke(true.B)
+          dut.io.memoryResponse.bits.transactionId.poke(pending.get.U)
+          dut.io.memoryResponse.bits.readData.poke(pendingData.U)
+          dut.io.memoryResponse.bits.fault.poke(false.B)
+          if (dut.io.memoryResponse.ready.peek().litToBoolean) pending = None
+        }
+        if (dut.io.memoryRequest.valid.peek().litToBoolean &&
+            dut.io.memoryRequest.ready.peek().litToBoolean &&
+            pending.isEmpty) {
+          val addr = dut.io.memoryRequest.bits.address.peek().litValue.toLong
+          val id = dut.io.memoryRequest.bits.transactionId.peek().litValue
+          val write = dut.io.memoryRequest.bits.isWrite.peek().litToBoolean
+          val wdata = dut.io.memoryRequest.bits.writeData.peek().litValue
+          val mask = dut.io.memoryRequest.bits.byteMask.peek().litValue
+          if (write) applyWrite(addr, wdata, mask)
+          pending = Some(id)
+          pendingData = if (write) BigInt(0) else lineAt(addr)
+        }
+        if (dut.io.gpuCompletion.valid.peek().litToBoolean) complete = true
+        dut.clock.step(); guard += 1
+      }
+      assert(complete, "multi-row resolve did not complete")
+      for (y <- 0 until height; x <- 0 until width) {
+        val got = words.getOrElse(dstBase + y * dstStride + x * 4L, BigInt(0))
+        assert(got == BigInt(0x80808080L),
+          s"dst($x,$y)=0x${got.toString(16)} expected 0x80808080")
+      }
+    }
+  }
 }

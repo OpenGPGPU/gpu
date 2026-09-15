@@ -7,6 +7,8 @@ import opengpu.config.GpuConfig
 import opengpu.graphics.{GpuCommandMmioRegs, GraphicsConfig, RenderHostRegs}
 import org.scalatest.flatspec.AnyFlatSpec
 
+import scala.collection.mutable
+
 class GpuHostSystemAxiSpec extends AnyFlatSpec {
   behavior of "GpuHostSystemAxi"
 
@@ -519,38 +521,58 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
     }
   }
 
-  it should "resolve a 4x pixel through the AXI unified command path" in {
+  it should "resolve a multi-row 4x region through the AXI unified command path" in {
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
     val gpu = GpuConfig(l2Sets = 8, l2Ways = 2)
     simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
       initialize(dut)
-      val srcBase = 0x1000
-      val dstBase = 0x2000
+      val srcBase = 0x1000L
+      val dstBase = 0x2000L
+      val srcStride = 64L
+      val dstStride = 64L
+      val width = 4
+      val height = 2
       val samples = Seq(BigInt(0), BigInt("ffffffff", 16),
         BigInt("ff00ff00", 16), BigInt("00ff00ff", 16))
-      val srcLine = samples.zipWithIndex
-        .map { case (w, i) => w << (32 * i) }.reduce(_ | _)
-      var dstWritten: Option[BigInt] = None
+      val words = mutable.LongMap[BigInt]()
+      for (y <- 0 until height; x <- 0 until width; s <- 0 until 4)
+        words(srcBase + y * srcStride + (x * 4 + s) * 4L) = samples(s)
+      def readLine(addr: BigInt): BigInt = {
+        val base = addr.toLong & ~63L
+        (0 until 16)
+          .map(i => words.getOrElse(base + i * 4L, BigInt(0)) << (32 * i))
+          .reduce(_ | _)
+      }
+      def writeLine(addr: BigInt, data: BigInt, strb: BigInt): Unit = {
+        val base = addr.toLong & ~63L
+        for (i <- 0 until 16) {
+          var w = words.getOrElse(base + i * 4L, BigInt(0))
+          for (b <- 0 until 4) {
+            val byte = i * 4 + b
+            if (((strb >> byte) & 1) != 0)
+              w = (w & ~(BigInt(0xff) << (b * 8))) |
+                (((data >> (byte * 8)) & 0xff) << (b * 8))
+          }
+          words(base + i * 4L) = w
+        }
+      }
 
       axiWrite(dut, RenderHostRegs.IRQ, 1)
       axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 7)
       axiWrite(dut, GpuCommandMmioRegs.OPCODE,
         GpuCommandOpcode.resolve.litValue.toInt)
-      axiWrite(dut, GpuCommandMmioRegs.SOURCE, srcBase)
-      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, dstBase)
-      axiWrite(dut, GpuCommandMmioRegs.WIDTH, 1)
-      axiWrite(dut, GpuCommandMmioRegs.HEIGHT, 1)
-      axiWrite(dut, GpuCommandMmioRegs.SOURCE_STRIDE, 16)
-      axiWrite(dut, GpuCommandMmioRegs.DESTINATION_STRIDE, 4)
+      axiWrite(dut, GpuCommandMmioRegs.SOURCE, srcBase.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, dstBase.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.WIDTH, width)
+      axiWrite(dut, GpuCommandMmioRegs.HEIGHT, height)
+      axiWrite(dut, GpuCommandMmioRegs.SOURCE_STRIDE, srcStride.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION_STRIDE, dstStride.toInt)
       axiWrite(dut, GpuCommandMmioRegs.SAMPLE_MODE, 2)
       axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
 
-      serviceMemoryMaster(dut,
-        addr => if (addr == BigInt(srcBase)) srcLine else BigInt(0)) {
-        (addr, data, strb) =>
-          if (addr == BigInt(dstBase) && (strb & 0xfL) == 0xfL)
-            dstWritten = Some(data & 0xffffffffL)
-      } { dut.io.m_irq.peek().litToBoolean }
+      serviceMemoryMaster(dut, readLine)(writeLine) {
+        dut.io.m_irq.peek().litToBoolean
+      }
 
       dut.io.m_irq.expect(true.B)
       val completion = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
@@ -558,9 +580,12 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
       assert(((completion >> 8) & 0x7L) ==
         GpuCommandOpcode.resolve.litValue)
       assert(((completion >> 15) & 1L) == 1L)
-      assert(axiRead(dut, GpuCommandMmioRegs.COMPLETION_BYTES_LO) == 4L)
-      assert(dstWritten.contains(BigInt(0x80808080L)),
-        s"resolved pixel must be 0x80808080, got ${dstWritten.map(_.toString(16))}")
+      assert(axiRead(dut, GpuCommandMmioRegs.COMPLETION_BYTES_LO) == 32L)
+      for (y <- 0 until height; x <- 0 until width) {
+        val got = words.getOrElse(dstBase + y * dstStride + x * 4L, BigInt(0))
+        assert(got == BigInt(0x80808080L),
+          s"dst($x,$y)=0x${got.toString(16)} expected 0x80808080")
+      }
     }
   }
 }

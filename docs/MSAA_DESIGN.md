@@ -389,8 +389,10 @@ the unified-command fields (`opengpu_resolve_build_command`). The UAPI is
 `drm_opengpu_resolve` / `DRM_IOCTL_OPENGPU_RESOLVE`, and
 `opengpu_compute_resolve_ioctl` submits it through the DRM scheduler with the
 source read and destination write reservations and an optional output syncobj.
-The guest DRM test exercises the ioctl. Scheduler fences and KMS ordering are
-the remaining pieces.
+The guest DRM test exercises the ioctl end to end under ARTI/QEMU, and
+`GpuSystemSpec` / `GpuHostSystemAxiSpec` cover multi-row resolves through the
+shared L2 and the full AXI top. Scheduler fences and KMS ordering are the
+remaining pieces.
 
 Resolve averages every pixel's physical colour samples into a separate
 single-sample RGBA8888 buffer. Depth resolve is out of scope.
