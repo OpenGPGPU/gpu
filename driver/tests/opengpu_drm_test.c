@@ -25,8 +25,15 @@
 #define TEST_STENCIL_FUNC_EQUAL  4u
 #define TEST_STENCIL_OP_REPLACE  2u
 #define TEST_DEPTH_FUNC_LEQUAL    1u
+#define TEST_DEPTH_FUNC_EQUAL     4u
 #define TEST_BLEND_FACTOR_ONE    1u
 #define TEST_BLEND_EQ_REV_SUB    2u
+
+/* The state word and the per-draw blend config live at the same word index in
+ * both 40-word draw-record forms (fixed-function and vertex-core), so the
+ * persistent-depth continuation can patch either without decoding the form. */
+#define DRAW_RECORD_STATE_WORD   32u
+#define DRAW_RECORD_BLEND_WORD   35u
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 /* Overridable so the ARTI runner can compile the guest test for the same
@@ -446,6 +453,50 @@ static int create_stencil_command_buffer(
     return 0;
 }
 
+/* Copy a draw command record and retarget it for the continuation pass of a
+ * persistent-depth render pass: only fragments at the exact stored depth pass
+ * (EQUAL), and a reverse-subtract blend of the identical source/destination
+ * zeroes the pixels the first submission wrote.  The record form is opaque
+ * here; state and blend share the same word index in both forms. */
+static int create_depth_continuation_buffer(
+    int fd, const struct command_buffer *base, struct command_buffer *commands)
+{
+    struct drm_mode_create_dumb create = {
+        .width = sizeof(struct drm_opengpu_draw) / 4,
+        .height = 1,
+        .bpp = 32,
+    };
+    struct drm_mode_map_dumb map = { 0 };
+    const uint32_t *base_words = (const uint32_t *)base->map;
+    uint32_t *words;
+    size_t copy_bytes;
+
+    if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0)
+        return -1;
+    commands->handle = create.handle;
+    commands->size = create.size;
+    map.handle = commands->handle;
+    if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0)
+        return -1;
+    commands->map = mmap(NULL, commands->size, PROT_READ | PROT_WRITE,
+                         MAP_SHARED, fd, map.offset);
+    if (commands->map == MAP_FAILED)
+        return -1;
+
+    copy_bytes = commands->size < base->size ? commands->size : base->size;
+    memcpy(commands->map, base->map, copy_bytes);
+    words = (uint32_t *)commands->map;
+    words[DRAW_RECORD_STATE_WORD] =
+        (base_words[DRAW_RECORD_STATE_WORD] &
+         ~OPENGPU_DRAW_STATE_DEPTH_FUNC_MASK) |
+        (TEST_DEPTH_FUNC_EQUAL << OPENGPU_DRAW_STATE_DEPTH_FUNC_SHIFT);
+    words[DRAW_RECORD_BLEND_WORD] = OPENGPU_DRAW_BLEND_PRESENT |
+        (TEST_BLEND_FACTOR_ONE << OPENGPU_DRAW_BLEND_SRC_SHIFT) |
+        (TEST_BLEND_FACTOR_ONE << OPENGPU_DRAW_BLEND_DST_SHIFT) |
+        (TEST_BLEND_EQ_REV_SUB << OPENGPU_DRAW_BLEND_EQ_SHIFT);
+    return 0;
+}
+
 static int create_vertex_buffer(int fd, struct resource_buffer *buffer)
 {
     static const struct vertex_data vertices[] = {
@@ -688,6 +739,43 @@ static int submit_selected_render(
     return submit_render(fd, context_id, commands, fb, texture_slot,
                          fragment_shader_slot, fragment_kernarg_slot,
                          sample_mode, in_syncobj, out_syncobj);
+}
+
+/* Render submission that binds a caller-owned persistent depth/stencil
+ * attachment.  The vertex-core slots mirror submit_selected_render; `flags`
+ * carries OPENGPU_SUBMIT_DEPTH_LOAD (or zero to clear the bound plane) and is
+ * combined with the fence-delay and vertex-core selector bits. */
+static int submit_depth_render(
+    int fd, bool vertex_core, uint32_t context_id,
+    const struct command_buffer *commands, const struct dumb_fb *fb,
+    uint32_t count, uint32_t texture_slot, uint32_t shader_slot,
+    uint32_t kernarg_slot, uint32_t vertex_buffer_slot,
+    uint32_t vertex_shader_slot, uint32_t vertex_kernarg_slot,
+    uint32_t sample_mode, uint32_t depth_handle, uint64_t depth_offset,
+    uint32_t flags, uint32_t in_syncobj, uint32_t out_syncobj)
+{
+    struct drm_opengpu_submit submit = {
+        .context_id = context_id,
+        .command_handle = commands->handle,
+        .color_handle = fb->handle,
+        .stride = fb->pitch,
+        .command_count = count,
+        .flags = OPENGPU_SUBMIT_TEST_FENCE_DELAY | flags |
+                 (vertex_core ? OPENGPU_SUBMIT_VERTEX_CORE : 0),
+        .texture_slot = texture_slot,
+        .shader_slot = shader_slot,
+        .kernarg_slot = kernarg_slot,
+        .sample_mode = sample_mode,
+        .depth_handle = depth_handle,
+        .depth_offset = depth_offset,
+        .in_syncobj = in_syncobj,
+        .out_syncobj = out_syncobj,
+        .vertex_buffer_slot = vertex_buffer_slot,
+        .vertex_shader_slot = vertex_shader_slot,
+        .vertex_kernarg_slot = vertex_kernarg_slot,
+    };
+
+    return ioctl(fd, DRM_IOCTL_OPENGPU_SUBMIT, &submit);
 }
 
 static int submit_blit(int fd, uint32_t context_id,
@@ -1289,6 +1377,11 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL vertex core without shared CU");
         return 1;
     }
+    if (!(capabilities & OPENGPU_CAP_PERSISTENT_DEPTH)) {
+        errno = EPROTO;
+        perror("OPENGPU USERSPACE DRM FAIL persistent depth capability");
+        return 1;
+    }
     CHECK(find_kms_objects(fd, &ids), "resource discovery");
     CHECK(create_fb(fd, 0x000000ffu, &first), "first dumb buffer");
     CHECK(create_fb(fd, 0x000000ffu, &second), "second dumb buffer");
@@ -1776,6 +1869,117 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL stencil result");
         return 1;
     }
+    /* Cross-submission render pass over a caller-owned persistent depth
+     * attachment.  Submission 1 clears the bound plane (no DEPTH_LOAD) and
+     * writes depth plus colour; submission 2 reloads the stored plane and only
+     * fragments at the exact stored depth pass (EQUAL).  The continuation's
+     * reverse-subtract blend zeroes every pixel the first submission covered,
+     * so a plane that was cleared instead of loaded would leave them
+     * untouched.  This drives depth_handle/depth_offset binding, the
+     * OPENGPU_SUBMIT_DEPTH_LOAD contract and the driver range checks end to
+     * end under ARTI/QEMU. */
+    if (capabilities & OPENGPU_CAP_PERSISTENT_DEPTH) {
+        struct dumb_fb depth_attachment = { 0 }, pass_colour = { 0 };
+        struct dumb_fb small_depth = { 0 };
+        struct command_buffer continuation = { 0 };
+        uint32_t pass_sync[2] = { 0 };
+        uint32_t total_pixels = TEST_WIDTH * TEST_HEIGHT;
+        uint32_t written;
+
+        CHECK(create_dumb_buffer(fd, TEST_WIDTH, TEST_HEIGHT, 0,
+                                 &depth_attachment),
+              "persistent depth attachment");
+        CHECK(create_dumb_buffer(fd, TEST_WIDTH, TEST_HEIGHT, 0x5a5a5a5au,
+                                 &pass_colour),
+              "persistent depth colour buffer");
+        CHECK(create_dumb_buffer(fd, TEST_WIDTH, 1, 0, &small_depth),
+              "undersized depth buffer");
+        CHECK(create_depth_continuation_buffer(fd, &commands, &continuation),
+              "depth continuation command buffer");
+        CHECK(create_syncobj(fd, &pass_sync[0]),
+              "persistent depth first syncobj");
+        CHECK(create_syncobj(fd, &pass_sync[1]),
+              "persistent depth second syncobj");
+
+        /* Validation rejects: DEPTH_LOAD without a handle, the colour object
+         * bound as the depth plane, a misaligned binding and an undersized
+         * allocation. */
+        errno = 0;
+        if (submit_depth_render(fd, vert_core, context_id, &commands,
+                                &pass_colour, 1, texture_slot, shader_slot,
+                                kernarg_slot, vertex_buffer_slot,
+                                vertex_shader_slot, vertex_kernarg_slot, 0, 0,
+                                0, OPENGPU_SUBMIT_DEPTH_LOAD, 0, 0) != -1 ||
+            errno != EINVAL) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL depth load without handle");
+            return 1;
+        }
+        errno = 0;
+        if (submit_depth_render(fd, vert_core, context_id, &commands,
+                                &pass_colour, 1, texture_slot, shader_slot,
+                                kernarg_slot, vertex_buffer_slot,
+                                vertex_shader_slot, vertex_kernarg_slot, 0,
+                                pass_colour.handle, 0, 0, 0, 0) != -1 ||
+            errno != EINVAL) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL colour bound as depth");
+            return 1;
+        }
+        errno = 0;
+        if (submit_depth_render(fd, vert_core, context_id, &commands,
+                                &pass_colour, 1, texture_slot, shader_slot,
+                                kernarg_slot, vertex_buffer_slot,
+                                vertex_shader_slot, vertex_kernarg_slot, 0,
+                                depth_attachment.handle, 2, 0, 0, 0) != -1 ||
+            errno != EINVAL) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL misaligned depth binding");
+            return 1;
+        }
+        errno = 0;
+        if (submit_depth_render(fd, vert_core, context_id, &commands,
+                                &pass_colour, 1, texture_slot, shader_slot,
+                                kernarg_slot, vertex_buffer_slot,
+                                vertex_shader_slot, vertex_kernarg_slot, 0,
+                                small_depth.handle, 0, 0, 0, 0) != -1 ||
+            errno != ERANGE) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL undersized depth binding");
+            return 1;
+        }
+
+        CHECK(submit_depth_render(fd, vert_core, context_id, &commands,
+                                  &pass_colour, 1, texture_slot, shader_slot,
+                                  kernarg_slot, vertex_buffer_slot,
+                                  vertex_shader_slot, vertex_kernarg_slot, 0,
+                                  depth_attachment.handle, 0, 0, 0,
+                                  pass_sync[0]),
+              "queue persistent depth first pass");
+        CHECK(wait_syncobjs(fd, &pass_sync[0], 1),
+              "wait persistent depth first pass");
+        written = total_pixels -
+                  framebuffer_count(&pass_colour, 0x5a5a5a5au);
+        if (!written) {
+            errno = EIO;
+            perror("OPENGPU USERSPACE DRM FAIL persistent depth first pass");
+            return 1;
+        }
+        CHECK(submit_depth_render(fd, vert_core, context_id, &continuation,
+                                  &pass_colour, 1, texture_slot, shader_slot,
+                                  kernarg_slot, vertex_buffer_slot,
+                                  vertex_shader_slot, vertex_kernarg_slot, 0,
+                                  depth_attachment.handle, 0,
+                                  OPENGPU_SUBMIT_DEPTH_LOAD, 0, pass_sync[1]),
+              "queue persistent depth continuation");
+        CHECK(wait_syncobjs(fd, &pass_sync[1], 1),
+              "wait persistent depth continuation");
+        if (framebuffer_count(&pass_colour, 0x00000000u) != written) {
+            errno = EIO;
+            perror("OPENGPU USERSPACE DRM FAIL persistent depth continuation");
+            return 1;
+        }
+    }
     if (vert_core)
         CHECK(unbind_resource(fd, context_id, 5), "unbind vertex shader");
     else if (frag_core)
@@ -1823,6 +2027,7 @@ int main(void)
            "slide/reduction/gather/masked/strided/indexed-memory compute + "
            "ordered colour "
            "blit/fill/strided blit + "
+           "persistent-depth cross-submission pass + "
            "fault-query ABI + vblank flip event sequence=%u\n",
            vert_core ? "vertex+fragment-core-backed" :
            frag_core ? "core-backed" : "texture",

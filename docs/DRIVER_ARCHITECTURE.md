@@ -80,6 +80,11 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
   allocation/clear sized to the sample layout. Typed resolve is exposed through
   `DRM_IOCTL_OPENGPU_RESOLVE` with validated ranges and scheduler fences, and
   the guest test renders a multisample target, resolves it and scans it out.
+- Caller-owned persistent depth/stencil attachments: `depth_handle`/
+  `depth_offset` bind a validated GEM range and `OPENGPU_SUBMIT_DEPTH_LOAD`
+  continues a render pass across submissions, advertised as
+  `OPENGPU_CAP_PERSISTENT_DEPTH` and exercised by the guest test's
+  two-submission pass.
 - Texture sampling, shader depth output, discard, quad derivatives, mipmapping
   and source-over blending in the validated graphics path.
 - D24S8 stencil and GL-style blend factor/equation state: UAPI words 35–37 on

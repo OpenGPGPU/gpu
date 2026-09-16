@@ -230,8 +230,10 @@ qualify a capability as implemented end to end.
   semantics are implemented: `depth_handle`/`depth_offset` bind a GEM range as
   the depth plane and `OPENGPU_SUBMIT_DEPTH_LOAD` keeps its contents, so a pass
   may be split across submissions that re-bind the attachment. Advertised as
-  `OPENGPU_CAP_PERSISTENT_DEPTH` (bit 19). Remaining work is end-to-end coverage
-  of a multi-submission pass under ARTI/QEMU.
+  `OPENGPU_CAP_PERSISTENT_DEPTH` (bit 19). The guest DRM test now continues a
+  pass across two submissions through the ARTI/QEMU path (bind/clear, then
+  re-bind/load with an EQUAL-depth continuation) and rejects malformed
+  bindings; broader multisample pass-continuation coverage remains.
 
 Exit: clear/render/resolve/fence/scanout runs through Linux under ARTI/QEMU;
 1x -> 4x -> 2x -> 1x jobs do not leak state, and delayed writes cannot produce
