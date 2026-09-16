@@ -7,31 +7,70 @@ with `scripts/run_graphics_ppa.py` (env `GRAPHICS_PPA_TIMING_EFFORT` selects
 `closure_no_cts` (default) or `explore`; the output directory suffix follows
 the effort). Timing: 1.0 GHz target unless noted, TC corner.
 
-Current state per block, 2026-09-11. Intermediate candidate/attempt history
+Current state per block, 2026-09-15. Intermediate candidate/attempt history
 has been pruned; only the latest closed result per block is kept.
 
 ## SharedL2Slice
 
-Not closed at 1 GHz. Two post-route attempts on record:
+Not closed at 1 GHz. Four post-route attempts on record:
 
 | Recipe | Core Fmax | Worst setup (all groups) | Worst hold | Area | Power | DRC |
 |---|---:|---:|---:|---:|---:|---:|
 | LVT closure_no_cts, `syn` engine, pendingEntry fanout split (no explicit io_delay) | 1069.09 MHz | -748.10 ps (1322 viol.) | -17.94 ps (4 viol.) | 20329.2 um^2 | 125.07 mW | 455 |
 | LVT closure_no_cts, yosys no-retime, io_delay 20%, margin 50 ps, util 15 / density 0.30 | 986.36 MHz | -378.07 ps (1142 viol.) | -16.20 ps (12 viol.) | 20729.9 um^2 | 129.85 mW | 469 |
+| LVT closure_no_cts, yosys no-retime, same recipe, registered missEngine fill -> SRAM write stage | 1046.57 MHz | -318.44 ps (1151 viol.) | -19.53 ps (33 viol.) | 20824.6 um^2 | 130.93 mW | 474 |
+| same fill-pipeline RTL, adaptive centered SRAM grid (`compute_unit_sram_macro_placement.tcl`) | 1027.75 MHz | -352.21 ps (1149 viol.) | +0.90 ps (0 viol.) | 21129.3 um^2 | 133.52 mW | 1 |
 
 The `syn`-engine run closes the reg-to-reg core (+64.62 ps core slack) but
 fails the virtual-IO groups wholesale; the yosys rerun fixes most of the IO
 gap but its core path degrades (`missEngine.table_0.valid_1 ->
 data_1.memory_6`, a miss-table register to SRAM-macro access, core slack
--13.8 ps) and GRT `repair_timing` plateaus at -91.6 ps WNS. Routing DRC is
-structural (~455-469 errors both runs) at this util/density. Next levers:
-pipeline/register the missEngine SRAM access path in RTL, and revisit the
-SRAM macro channel.
+-13.8 ps).
+
+The third run applies the first suggested lever: the fill handshake now
+captures the MSHR fill (`fillWriteValid`/`fillWriteSet`/`fillWriteWay`/
+`fillWriteTag`/`fillWriteData`/`fillWriteSharers`/`fillWriteFault` in
+`SharedL2Cache.scala`) one cycle before committing the write to the tag/data
+arrays, with a one-cycle lookup bubble while the fresh SRAM read relaunches
+(same-line requests still merge in the MSHR). That removes the former core
+critical path entirely. The new core critical path is
+`atomicRequest_address[3] -> data_0.memory_5` at +44.50 ps, so the core clock
+now closes: 986.36 -> 1046.57 MHz core Fmax and worst all-groups slack
+-378.07 -> -318.44 ps. Cost is ~544 sequential cells (the 512-bit refill data
+plus tag/index/way/sharers capture) and +94.7 um^2 / +1.07 mW; hold regresses
+slightly (-16.20 -> -19.53 ps, 12 -> 33 violations) from the added fill
+registers.
+
+The 455-474 routing DRCs are not structural to the macro or the RTL. Every
+violation is a macro pin-access error (`Cut Short`, `Lef58CutSpacingTable`,
+`Lef58SpacingEndOfLine`/`EolKeepOut` on M3/V3), and in the fill-pipeline run
+473 of the 474 land on the three macros in the x=225 column of the fixed 6x3
+`l2_sram_macro_placement.tcl` grid (`data_0.memory_4`, `data_1.memory_2`,
+`tags_0.memory`) - i.e. a placement-dependent pin-access collision, not a
+`64x4x64`-only or routing-congestion problem. DRT plateaus at ~474 from
+iteration ~5 to 64 (`-droute_end_iter 64`), so more iterations do not help.
+
+The fourth run tests the placement hypothesis: keeping the RTL identical and
+swapping only the placement for the adaptive centered grid that signs off DRC 0
+on ScalarBackend (`timing/asap7/compute_unit_sram_macro_placement.tcl`, 10 um
+channels, 9x2 grid) drops DRC 474 -> 1 and clears hold completely (+0.90 ps, 0
+violations vs -19.53 ps / 33). The trade is a virtual-IO setup regression
+(-318.44 -> -352.21 ps all groups); the core still closes at +27.0 ps on
+`atomicRequest_address[4] -> data_1.memory_2`. The single survivor is one
+`Cut Short` (V3, `net12581` vs a `data_0.memory` pin).
+
+The residual setup failure is the virtual-IO boundary group
+(`request_writeData`/`response_readData` capture registers), the same class the
+`syn`-engine run could not fix and which the whole-block section below
+classifies as a parent-level hierarchy concern rather than something the block
+can pipeline away. Next levers: tune the adaptive macro channel/target to clear
+the last DRC without the IO regression, and the parent IO boundary.
 
 Artifacts:
 
 - `generated/ppa_runs/025_shared_l2_slice_lvt_closure_no_cts_pendingentry_tc_lvt_1ghz/`
-- `generated/ppa_runs/head_shared_l2_slice_tc_lvt_1ghz_yosys_noretime_closure_u15_d30_margin50/`
+- `generated/ppa_runs/head_shared_l2_slice_tc_lvt_1ghz_yosys_noretime_closure_u15_d30_margin50/` (fill-pipeline yosys run; overwrote the pre-pipeline yosys baseline)
+- `generated/ppa_runs/probe_l2_adaptive_placement_shared_l2_slice_tc_lvt_1ghz_closure_u15_d30_margin50/` (adaptive-placement DRC probe)
 
 The ORFS GDS export step fails in the local image because the KLayout merge
 artifact is not produced; DEF/ODB and post-route SPEF STA remain valid.
