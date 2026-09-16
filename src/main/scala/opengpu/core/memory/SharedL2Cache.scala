@@ -111,6 +111,30 @@ class SharedL2Slice(
   private val allocatedVictimSharers = Reg(UInt(numComputeUnits.W))
   private val allocatedVictimAddress = Reg(UInt(config.xLen.W))
 
+  // Registered fill stage.  The MSHR fill handshake is captured one cycle
+  // before the tag/data/valid update so the miss-table selection cone
+  // (candidate priority encode plus the dynamic entry mux over the 512-bit
+  // refill data) does not drive the single-port SRAM access pins
+  // combinationally - that cone was the block's core critical path
+  // (missEngine.table.valid -> data SRAM write data).
+  private val fillWriteValid = RegInit(false.B)
+  private val fillWriteSet = Reg(UInt(indexWidth.W))
+  private val fillWriteWay = Reg(UInt(wayWidth.W))
+  private val fillWriteTag = Reg(UInt(tagWidth.W))
+  private val fillWriteData = Reg(UInt(lineWidth.W))
+  private val fillWriteSharers = Reg(UInt(numComputeUnits.W))
+  private val fillWriteFault = Reg(Bool())
+
+  // The registered fill commits to the single-port arrays in one cycle.
+  // That write suppresses any synchronous lookup read launched in the same
+  // cycle (write priority), so the tags visible in the following cycle are
+  // stale; hold the lookup decision for one bubble cycle while a fresh read
+  // is relaunched.  The commit cycle itself still evaluates a consistent
+  // pre-fill snapshot, and same-line requests merge in the MSHR because the
+  // filling entry is still valid then.
+  private val fillWriteCommit = fillWriteValid && !fillWriteFault
+  private val fillCommitBubble = RegNext(fillWriteCommit, false.B)
+
   private val tags = Seq.fill(ways)(Module(
     new L2SramArray(sets, tagWidth, useSramBlackBoxes)))
   private val data = Seq.fill(ways)(Module(
@@ -301,13 +325,14 @@ class SharedL2Slice(
   io.response <> responseArbiter.io.out
 
   // Fully drained for completion purposes: the FSM is idle, no miss fill is
-  // in flight, and no store transaction is pending or awaiting its
-  // acknowledgement (a freed store-table entry means its lower-memory write
-  // was acknowledged).  Store visibility - what a completion fence needs -
-  // does not depend on the responseWaiters presentation accounting, whose
-  // bits are cleared by the regular response path.
+  // in flight, no captured fill is still waiting for its SRAM write, and no
+  // store transaction is pending or awaiting its acknowledgement (a freed
+  // store-table entry means its lower-memory write was acknowledged).
+  // Store visibility - what a completion fence needs - does not depend on
+  // the responseWaiters presentation accounting, whose bits are cleared by
+  // the regular response path.
   io.drained := state === State.idle && !loadMissesActive &&
-    !storeTable.io.active
+    !storeTable.io.active && !fillWriteValid
 
   private val blockingMemoryRequest = Wire(Decoupled(
     new ComputeMemoryRequest(config, lineBytes, maxOutstanding)))
@@ -363,16 +388,19 @@ class SharedL2Slice(
   }
   storeTable.io.allocate.valid := state === State.storeAllocate
   storeTable.io.allocate.bits := request
-  loadHitCounter.io.increment := state === State.lookup && !atomicMode &&
-    cacheable && !request.isWrite && hit
+  loadHitCounter.io.increment := state === State.lookup && !fillCommitBubble &&
+    !atomicMode && cacheable && !request.isWrite && hit
   loadMissCounter.io.increment := missEngine.io.miss.fire
   mshrMergeCounter.io.increment := state === State.missAllocate &&
     missEngine.io.allocation.valid && missEngine.io.allocation.bits.merged
   storeAcceptedCounter.io.increment := storeTable.io.allocate.fire
   storeBlockedCounter.io.increment := state === State.storeAllocate &&
     !storeTable.io.allocate.ready
-  missEngine.io.miss.valid := state === State.lookup && !atomicMode &&
-    cacheable && !request.isWrite && !hit
+  // The bubble must suppress the handshake itself, not only the FSM's
+  // reaction to it: a miss captured by the table while the slice is held
+  // would never be authorized and would deadlock the entry.
+  missEngine.io.miss.valid := state === State.lookup && !fillCommitBubble &&
+    !atomicMode && cacheable && !request.isWrite && !hit
   missEngine.io.miss.bits.lineAddress := activeLine
   missEngine.io.miss.bits.transactionId := request.transactionId
   missEngine.io.miss.bits.requester := requesterCu
@@ -440,7 +468,7 @@ class SharedL2Slice(
     state := State.lookup
   }
 
-  when(state === State.lookup) {
+  when(state === State.lookup && !fillCommitBubble) {
     lookupHit := hit
     lookupHitWay := hitWay
     lookupHitData := hitData
@@ -663,24 +691,35 @@ class SharedL2Slice(
     when(!remaining.orR) { state := State.idle }
   }
 
-  when(missEngine.io.fill.fire && !missEngine.io.fill.bits.fault) {
-    val fillSet = missEngine.io.fill.bits.victimSet
-    val fillWay = missEngine.io.fill.bits.victimWay
-    val fillTag = missEngine.io.fill.bits.lineAddress(
+  when(missEngine.io.fill.fire) {
+    fillWriteValid := true.B
+    fillWriteSet := missEngine.io.fill.bits.victimSet
+    fillWriteWay := missEngine.io.fill.bits.victimWay
+    fillWriteTag := missEngine.io.fill.bits.lineAddress(
       config.xLen - 1, offsetWidth + indexWidth)
+    fillWriteData := missEngine.io.fill.bits.readData
+    fillWriteSharers := missEngine.io.fill.bits.sharers
+    fillWriteFault := missEngine.io.fill.bits.fault
+  }.elsewhen(fillWriteValid) {
+    // The captured fill commits to the arrays one cycle after the handshake;
+    // the write always completes in that cycle, so the stage self-clears.
+    fillWriteValid := false.B
+  }
+
+  when(fillWriteCommit) {
     for (way <- 0 until ways) {
-      when(fillWay === way.U) {
+      when(fillWriteWay === way.U) {
         tags(way).io.writeEnable := true.B
-        tags(way).io.writeAddress := fillSet
-        tags(way).io.writeData := fillTag
+        tags(way).io.writeAddress := fillWriteSet
+        tags(way).io.writeData := fillWriteTag
         data(way).io.writeEnable := true.B
-        data(way).io.writeAddress := fillSet
-        data(way).io.writeData := missEngine.io.fill.bits.readData
-        valid(way)(fillSet) := true.B
-        sharers(way)(fillSet) := missEngine.io.fill.bits.sharers
+        data(way).io.writeAddress := fillWriteSet
+        data(way).io.writeData := fillWriteData
+        valid(way)(fillWriteSet) := true.B
+        sharers(way)(fillWriteSet) := fillWriteSharers
       }
     }
-    nextVictim(fillSet) := followingWay(fillWay)
+    nextVictim(fillWriteSet) := followingWay(fillWriteWay)
   }
 }
 
