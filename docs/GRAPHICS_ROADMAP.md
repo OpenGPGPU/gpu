@@ -114,6 +114,10 @@ track that distinction.
   timing closure of the programmable stage remains a separate PPA gate.
 - GPU-internal shared L2 arbitration for command, shader, texture and
   framebuffer traffic.
+- Host-driven shared-L2 line invalidate: drops a resident line and snoops its
+  L1 holders with no lower-memory traffic, because stores are write-through.
+  It rides the normal lookup path and is used to make CPU-written memory
+  visible to later GPU reads.
 - Multi-CU dispatch plus copy, fill and strided DMA share the integrated memory
   hierarchy, with collision-free transaction-ID ranges for private clients.
 - Internal command-buffer, framebuffer and texture word-to-line bridges remove
@@ -139,6 +143,10 @@ track that distinction.
   model as rendering.
 - Ordered DRM patterned-fill jobs for validated GEM ranges.
 - Ordered DRM strided-copy jobs for validated two-dimensional GEM ranges.
+- Ordered DRM shared-L2 line-invalidate jobs (`DRM_IOCTL_OPENGPU_INVALIDATE`)
+  over validated 64-byte-aligned GEM ranges, using the unified `INVALIDATE`
+  command, so a driver can make CPU-written memory visible to a later GPU read.
+  The resolve operation invalidates its own source range implicitly.
 - Capability-selected unified-command submission for Linux fill, blit and
   strided-copy jobs, with legacy dedicated-register fallback.
 - ABI-defined unified-command MMIO and capability discovery cover the common

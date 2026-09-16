@@ -208,6 +208,11 @@
  * WIDTH/HEIGHT, SOURCE/DEST_STRIDE and MSAA_CONFIG carry the operation; the
  * MSAA_CONFIG sample-mode field selects 1x/2x/4x. */
 #define GPU_UCMD_OP_RESOLVE      4u
+/* Host line invalidate: drop every 64-byte L2 line in [SOURCE, SOURCE+BYTES)
+ * and snoop its L1 holders, with no lower-memory traffic.  A driver uses it to
+ * make CPU-written memory visible to later GPU reads; the operation completes
+ * reporting the aligned extent. */
+#define GPU_UCMD_OP_INVALIDATE   5u
 #define GPU_UCMD_FLAG_WAIT_DMA   (1u << 0)
 #define GPU_UCMD_FLAG_WAIT_EVENT (1u << 1)
 #define GPU_UCMD_FLAG_SIGNAL_EVENT (1u << 2)

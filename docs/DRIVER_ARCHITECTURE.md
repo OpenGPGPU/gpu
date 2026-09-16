@@ -85,6 +85,9 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
   continues a render pass across submissions, advertised as
   `OPENGPU_CAP_PERSISTENT_DEPTH`. The cross-submission continuation is covered
   by `RenderHostSpec` and the guest test under the Verilator backend.
+- Ordered shared-L2 line-invalidate jobs (`DRM_IOCTL_OPENGPU_INVALIDATE`) over
+  validated 64-byte-aligned GEM ranges, so a caller can make CPU-written memory
+  visible to a later GPU read without a full cache flush.
 - Texture sampling, shader depth output, discard, quad derivatives, mipmapping
   and source-over blending in the validated graphics path.
 - D24S8 stencil and GL-style blend factor/equation state: UAPI words 35–37 on

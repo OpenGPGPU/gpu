@@ -51,6 +51,7 @@ enum opengpu_sched_job_type {
     OPENGPU_SCHED_FILL,
     OPENGPU_SCHED_STRIDED_BLIT,
     OPENGPU_SCHED_RESOLVE,
+    OPENGPU_SCHED_INVALIDATE,
 };
 
 struct opengpu_sched_job {
@@ -1042,6 +1043,12 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
             lower_32_bits(job->dma_destination), job->dma_bytes,
             job->dma_height, job->dma_source_stride,
             job->dma_destination_stride, job->dma_sample_mode,
+            &job->events, &fence);
+        return ret ? ERR_PTR(ret) : fence;
+    }
+    if (job->type == OPENGPU_SCHED_INVALIDATE) {
+        ret = opengpu_hw_invalidate_async(
+            job->gpu, lower_32_bits(job->dma_source), job->dma_bytes,
             &job->events, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
@@ -2083,6 +2090,112 @@ out_destination:
     drm_gem_object_put(destination_object);
 out_source:
     drm_gem_object_put(source_object);
+    return ret;
+}
+
+int opengpu_compute_invalidate_ioctl(struct drm_device *drm, void *data,
+                                     struct drm_file *file)
+{
+    struct drm_opengpu_invalidate *args = data;
+    struct opengpu_device *gpu = dev_get_drvdata(drm->dev);
+    struct opengpu_file *render_file = file->driver_priv;
+    struct opengpu_render_context *context;
+    struct drm_gem_object *object;
+    struct drm_gem_dma_object *dma;
+    struct opengpu_sched_job *sched_job = NULL;
+    struct drm_syncobj *out_sync = NULL;
+    struct drm_exec exec;
+    struct opengpu_command_events events;
+    u64 address, end;
+    int ret;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
+        return -EOPNOTSUPP;
+    if (args->pad)
+        return -EINVAL;
+    ret = opengpu_command_events_init(gpu, &events, args->flags,
+                                      args->wait_event,
+                                      args->signal_event);
+    if (ret)
+        return ret;
+    if (!args->context_id || !args->handle || !args->bytes ||
+        (args->offset & 63) || (args->bytes & 63) ||
+        check_add_overflow(args->offset, args->bytes, &end))
+        return -EINVAL;
+
+    object = drm_gem_object_lookup(file, args->handle);
+    if (!object)
+        return -ENOENT;
+    if (end > object->size) {
+        ret = -EINVAL;
+        goto out_object;
+    }
+    dma = to_drm_gem_dma_obj(object);
+    if (check_add_overflow((u64)dma->dma_addr, args->offset, &address) ||
+        address > U32_MAX ||
+        check_add_overflow(address, args->bytes, &end) ||
+        end > (1ull << 32)) {
+        ret = -ERANGE;
+        goto out_object;
+    }
+    if (args->out_syncobj) {
+        out_sync = drm_syncobj_find(file, args->out_syncobj);
+        if (!out_sync) {
+            ret = -ENOENT;
+            goto out_object;
+        }
+    }
+
+    mutex_lock(&render_file->lock);
+    context = idr_find(&render_file->contexts, args->context_id);
+    if (!context) {
+        ret = -ENOENT;
+        goto out_file;
+    }
+    drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
+                         DRM_EXEC_IGNORE_DUPLICATES, 0);
+    drm_exec_until_all_locked(&exec) {
+        ret = drm_exec_prepare_obj(&exec, object, 1);
+        drm_exec_retry_on_contention(&exec);
+        if (ret)
+            goto out_exec;
+    }
+
+    sched_job = kzalloc(sizeof(*sched_job), GFP_KERNEL);
+    if (!sched_job) {
+        ret = -ENOMEM;
+        goto out_exec;
+    }
+    sched_job->gpu = gpu;
+    sched_job->type = OPENGPU_SCHED_INVALIDATE;
+    sched_job->dma_source = address;
+    sched_job->dma_bytes = args->bytes;
+    sched_job->events = events;
+    {
+        const struct opengpu_sched_dep deps[] = {
+            { object, DMA_RESV_USAGE_READ, DMA_RESV_USAGE_READ },
+        };
+
+        ret = opengpu_sched_job_submit(render_file, file, context, sched_job,
+                                       args->in_syncobj, out_sync, deps,
+                                       ARRAY_SIZE(deps), NULL);
+    }
+    if (ret)
+        goto out_job;
+    sched_job = NULL;
+    ret = 0;
+    goto out_exec;
+
+out_job:
+    kfree(sched_job);
+out_exec:
+    drm_exec_fini(&exec);
+out_file:
+    mutex_unlock(&render_file->lock);
+    if (out_sync)
+        drm_syncobj_put(out_sync);
+out_object:
+    drm_gem_object_put(object);
     return ret;
 }
 

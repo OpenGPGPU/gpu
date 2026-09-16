@@ -20,6 +20,7 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
     dut.io.fill.ready.poke(false.B)
     dut.io.stridedCopy.ready.poke(false.B)
     dut.io.resolve.ready.poke(false.B)
+    dut.io.invalidate.ready.poke(false.B)
     dut.io.kernelCompletion.valid.poke(false.B)
     dut.io.kernelCompletion.bits.poke(
       0.U.asTypeOf(dut.io.kernelCompletion.bits))
@@ -33,6 +34,9 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
     dut.io.resolveCompletion.valid.poke(false.B)
     dut.io.resolveCompletion.bits.poke(
       0.U.asTypeOf(dut.io.resolveCompletion.bits))
+    dut.io.invalidateCompletion.valid.poke(false.B)
+    dut.io.invalidateCompletion.bits.poke(
+      0.U.asTypeOf(dut.io.invalidateCompletion.bits))
     dut.io.blockDispatch.poke(false.B)
     dut.io.pathReset.poke(false.B)
   }
@@ -263,6 +267,35 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
       dut.io.completion.bits.commandId.expect(6.U)
       dut.io.completion.bits.opcode.expect(GpuCommandOpcode.resolve)
       dut.io.completion.bits.bytesProcessed.expect(16L * 8 * 4)
+    }
+  }
+
+  it should "route an invalidate descriptor and return its unified completion" in {
+    simulate(new GpuCommandRouter(
+      GpuConfig(lanes = 4), commandIdWidth = 4,
+      commandQueueDepth = 2, completionQueueDepth = 2)) { dut =>
+      initialize(dut)
+      dut.io.command.bits.sourceAddress.poke(0x4000.U)
+      dut.io.command.bits.bytes.poke(256.U)
+      submit(dut, 9, GpuCommandOpcode.invalidate)
+
+      dut.io.invalidate.valid.expect(true.B)
+      dut.io.invalidate.bits.descriptorId.expect(9.U)
+      dut.io.invalidate.bits.address.expect(0x4000.U)
+      dut.io.invalidate.bits.bytes.expect(256.U)
+      dut.io.invalidate.ready.poke(true.B); dut.clock.step()
+
+      dut.io.invalidateCompletion.bits.descriptorId.poke(9.U)
+      dut.io.invalidateCompletion.bits.status.poke(InvalidateStatus.success)
+      dut.io.invalidateCompletion.bits.success.poke(true.B)
+      dut.io.invalidateCompletion.bits.bytesInvalidated.poke(256L)
+      dut.io.invalidateCompletion.valid.poke(true.B)
+      dut.clock.step(); dut.io.invalidateCompletion.valid.poke(false.B)
+
+      dut.io.completion.valid.expect(true.B)
+      dut.io.completion.bits.commandId.expect(9.U)
+      dut.io.completion.bits.opcode.expect(GpuCommandOpcode.invalidate)
+      dut.io.completion.bits.bytesProcessed.expect(256L)
     }
   }
 }

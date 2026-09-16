@@ -314,6 +314,24 @@ struct drm_opengpu_resolve {
     __u32 signal_event;
 };
 
+/* Ordered L2 line invalidate over a validated GEM-relative range.  The range is
+ * 64-byte aligned and the operation issues no memory traffic: it drops the
+ * corresponding shared-L2 lines (and snoops their L1 holders) so a later GPU
+ * read observes what a non-coherent agent (the CPU) wrote to the same range.
+ * Completion follows the render/blit scheduler and syncobj model. */
+struct drm_opengpu_invalidate {
+    __u32 context_id;
+    __u32 handle;
+    __u32 flags;
+    __u32 in_syncobj;
+    __u64 offset;
+    __u64 bytes;
+    __u32 out_syncobj;
+    __u32 wait_event;
+    __u32 signal_event;
+    __u32 pad;
+};
+
 /* Ordered general-compute launch. The program and kernarg addresses are
  * binding-relative offsets; the kernel validates and relocates both before
  * submitting the launch through the unified command path. */
@@ -361,6 +379,7 @@ struct drm_opengpu_compute {
 #define DRM_OPENGPU_COMPUTE 0x09
 #define DRM_OPENGPU_GET_FAULT 0x0a
 #define DRM_OPENGPU_RESOLVE 0x0b
+#define DRM_OPENGPU_INVALIDATE 0x0c
 #define DRM_IOCTL_OPENGPU_SUBMIT \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_SUBMIT, \
              struct drm_opengpu_submit)
@@ -397,5 +416,8 @@ struct drm_opengpu_compute {
 #define DRM_IOCTL_OPENGPU_RESOLVE \
     DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_RESOLVE, \
              struct drm_opengpu_resolve)
+#define DRM_IOCTL_OPENGPU_INVALIDATE \
+    DRM_IOWR(DRM_COMMAND_BASE + DRM_OPENGPU_INVALIDATE, \
+             struct drm_opengpu_invalidate)
 
 #endif /* OPENGPU_DRM_H */

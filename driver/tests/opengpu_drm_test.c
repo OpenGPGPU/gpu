@@ -871,6 +871,22 @@ static int submit_resolve(int fd, uint32_t context_id,
     return ioctl(fd, DRM_IOCTL_OPENGPU_RESOLVE, &resolve);
 }
 
+static int submit_invalidate(int fd, uint32_t context_id, uint32_t handle,
+                             uint64_t offset, uint64_t bytes,
+                             uint32_t in_syncobj, uint32_t out_syncobj)
+{
+    struct drm_opengpu_invalidate invalidate = {
+        .context_id = context_id,
+        .handle = handle,
+        .offset = offset,
+        .bytes = bytes,
+        .in_syncobj = in_syncobj,
+        .out_syncobj = out_syncobj,
+    };
+
+    return ioctl(fd, DRM_IOCTL_OPENGPU_INVALIDATE, &invalidate);
+}
+
 static int submit_compute(int fd, uint32_t context_id, uint32_t shader_slot,
                           uint32_t kernarg_slot, uint32_t local_x,
                           uint32_t in_syncobj, uint32_t out_syncobj,
@@ -1676,6 +1692,42 @@ int main(void)
             perror("OPENGPU USERSPACE DRM FAIL strided blit result");
             return 1;
         }
+    }
+    /* L2 line invalidate: a validated 64-byte-aligned GEM range completes and
+     * malformed ranges are rejected.  It carries no memory traffic and lets a
+     * driver make CPU-written memory visible to a later GPU read. */
+    if (capabilities & OPENGPU_CAP_UNIFIED_COMMANDS) {
+        uint32_t invalidate_sync = 0;
+
+        CHECK(create_syncobj(fd, &invalidate_sync),
+              "create invalidate syncobj");
+        errno = 0;
+        if (submit_invalidate(fd, context_id, first.handle, 4, 64, 0,
+                              0) != -1 || errno != EINVAL) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL unaligned invalidate accepted");
+            return 1;
+        }
+        errno = 0;
+        if (submit_invalidate(fd, context_id, first.handle, 0, 60, 0,
+                              0) != -1 || errno != EINVAL) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL short invalidate accepted");
+            return 1;
+        }
+        errno = 0;
+        if (submit_invalidate(fd, context_id, first.handle, 0,
+                              first.size + 64, 0, 0) != -1 ||
+            errno != EINVAL) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL oversized invalidate accepted");
+            return 1;
+        }
+        CHECK(submit_invalidate(fd, context_id, first.handle, 0, 64, 0,
+                                invalidate_sync),
+              "queue L2 line invalidate");
+        CHECK(wait_syncobjs(fd, &invalidate_sync, 1),
+              "wait invalidate syncobj");
     }
     /* Typed MSAA resolve: average the interleaved colour samples of a small
      * region into a single-sample destination.  The driver validates both
