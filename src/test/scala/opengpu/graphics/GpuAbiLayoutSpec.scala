@@ -138,6 +138,7 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
       "GPU_CAP_STRIDED_ENGINE" -> (1L << GpuCapabilities.StridedEngine),
       "GPU_CAP_UNIFIED_COMMANDS" -> (1L << GpuCapabilities.UnifiedCommands),
       "GPU_CAP_UNIFIED_RESET" -> (1L << GpuCapabilities.UnifiedReset),
+      "GPU_CAP_PERSISTENT_DEPTH" -> (1L << GpuCapabilities.PersistentDepth),
       "GPU_CAP_MSAA" -> (1L << GpuCapabilities.Msaa),
       "GPU_CAP_MSAA_MAX_MODE_SHIFT" -> GpuCapabilities.MsaaMaxModeShift.toLong,
       "GPU_CAP_MSAA_MAX_MODE_MASK" ->

@@ -225,8 +225,13 @@ qualify a capability as implemented end to end.
   depth and shader-depth-override tests cover its advertised modes, and the
   guest test performs a multisample render, resolve and scanout. Physical timing
   closure of the programmable stage remains a separate PPA gate.
-- Keep one render submission as one pass with private cleared depth. Persistent
-  depth attachments and cross-submission load/store semantics are separate work.
+- A submission without a depth attachment stays one pass with private cleared
+  depth. Caller-owned persistent depth attachments and cross-submission load
+  semantics are implemented: `depth_handle`/`depth_offset` bind a GEM range as
+  the depth plane and `OPENGPU_SUBMIT_DEPTH_LOAD` keeps its contents, so a pass
+  may be split across submissions that re-bind the attachment. Advertised as
+  `OPENGPU_CAP_PERSISTENT_DEPTH` (bit 19). Remaining work is end-to-end coverage
+  of a multi-submission pass under ARTI/QEMU.
 
 Exit: clear/render/resolve/fence/scanout runs through Linux under ARTI/QEMU;
 1x -> 4x -> 2x -> 1x jobs do not leak state, and delayed writes cannot produce

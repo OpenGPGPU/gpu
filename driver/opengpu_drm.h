@@ -138,6 +138,10 @@ struct drm_opengpu_param {
 #define OPENGPU_CAP_FRAGMENT_BATCH_SHIFT 8u
 #define OPENGPU_CAP_FRAGMENT_BATCH_MASK \
     (0xffu << OPENGPU_CAP_FRAGMENT_BATCH_SHIFT)
+/* Persistent depth attachment (bit19). When advertised, a submission may carry
+ * its own depth attachment (depth_handle/depth_offset) and preserve it across
+ * submissions with OPENGPU_SUBMIT_DEPTH_LOAD. */
+#define OPENGPU_CAP_PERSISTENT_DEPTH (1u << 19)
 
 /* Sample mode field width (0 = 1x, 1 = 2x, 2 = 4x). */
 #define OPENGPU_MSAA_MODE_MASK 0x3u
@@ -222,6 +226,16 @@ struct drm_opengpu_submit {
     __u32 vertex_kernarg_slot;
     /* bits 1:0 sample mode (OPENGPU_MSAA_MODE_MASK); reserved bits must be 0. */
     __u32 sample_mode;
+    /* Persistent depth attachment. Zero depth_handle selects the driver's
+     * private depth plane, freshly cleared per submission (legacy behaviour).
+     * A nonzero handle binds that GEM's byte range [depth_offset,
+     * depth_offset + stride * height) as the depth/stencil plane; it must be
+     * word-aligned, large enough, and a different GEM object than the command
+     * and colour handles. Without OPENGPU_SUBMIT_DEPTH_LOAD the region is
+     * cleared to the D24S8 far value before the draw; with it the stored
+     * contents are kept so a render pass can continue across submissions. */
+    __u32 depth_handle;
+    __u64 depth_offset;
 };
 
 /* Ordered whole-cache-line copy. Source and destination ranges are validated
@@ -331,6 +345,9 @@ struct drm_opengpu_compute {
  * KMS implicit-sync wait is deterministically exercised under QEMU. */
 #define OPENGPU_SUBMIT_TEST_FENCE_DELAY (1u << 0)
 #define OPENGPU_SUBMIT_VERTEX_CORE      (1u << 1)
+/* Keep the bound depth attachment's stored contents instead of clearing it at
+ * the start of the submission (depth_handle must be nonzero). */
+#define OPENGPU_SUBMIT_DEPTH_LOAD       (1u << 2)
 
 #define DRM_OPENGPU_SUBMIT 0x00
 #define DRM_OPENGPU_CONTEXT_CREATE 0x01

@@ -33,4 +33,9 @@ object GpuCapabilities {
   val MsaaMaxModeShift = 16
   /** Safe unified-command reset is supported (bit18). */
   val UnifiedReset = 18
+  /** A render submission may bind its own persistent depth/stencil attachment
+    * and keep it across submissions with an explicit depth load (bit19). The
+    * depth datapath already reads and writes whichever plane is bound; this
+    * bit advertises the userspace/driver contract. */
+  val PersistentDepth = 19
 }

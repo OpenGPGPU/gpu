@@ -169,8 +169,8 @@ class RenderHostSpec extends AnyFlatSpec {
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       assert(regRead(dut, RenderHostRegs.ID) == 0x47550001L,
         "device ID register must report device<<16 | version")
-      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x208bbL,
-         "fragment-core builds must advertise support, batch capacity, the job queue and programmable MSAA")
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0xa08bbL,
+         "fragment-core builds must advertise support, batch capacity, the job queue, persistent depth and programmable MSAA")
 
       // An unmapped address yields ok=false.
       dut.io.reg.req.valid.poke(true.B)
@@ -239,7 +239,7 @@ class RenderHostSpec extends AnyFlatSpec {
       vertCore = true)) { dut =>
       dut.io.externalCompletion.poke(false.B)
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x208bfL,
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0xa08bfL,
         "shared vertex/fragment-core builds must advertise both shader stages and programmable MSAA")
     }
   }
@@ -411,9 +411,92 @@ class RenderHostSpec extends AnyFlatSpec {
     }
   }
 
+  it should "keep the depth plane across queued submissions so a pass can continue" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    val cfg = GpuConfig(lanes = 4, warps = 2)
+    val ringBase = 0x50000
+    val ihBase = 0x60000
+    val wordsPerJob = 16
+    val wordsPerIh = 4
+    val stride = 16 * 4
+    val depthBase = 0x9000
+    val cmdBase = Seq(0x4000, 0x4200)
+    val colorBase = Seq(0x8000, 0x8400)
+    val pixel = 5 * 16 + 5
+
+    // Job 1 (0x10) beats the depth an earlier pass left at 0x20 and stores
+    // 0x10. Job 2 (0x30) then loses to the depth job 1 stored, so the second
+    // submission really saw the first submission's write.
+    val depths = Seq(0x10, 0x30)
+    val colours = Seq((255, 0, 0), (0, 255, 0))
+
+    def drawRecord(colour: (Int, Int, Int), depth: Int): Seq[Int] = {
+      val verts = Seq((q(-1.0), q(-1.0)), (q(1.0), q(-1.0)), (q(-1.0), q(1.0)))
+      val w = Seq.newBuilder[Int]
+      for ((x, y) <- verts) { w += x; w += y; w += 0; w += q(1.0) }
+      for (_ <- verts) { w += colour._1; w += colour._2; w += colour._3 }
+      for (_ <- verts) { w += depth }
+      w += 0; w += 0
+      for (_ <- 0 until 6) { w += 0 } // uv0..uv2
+      for (_ <- 0 until 8) { w += 0 } // state override + reserved
+      w.result()
+    }
+
+    def descriptor(jobId: Int, cmd: Int, colour: Int, depth: Int,
+      stride: Int): Seq[Int] =
+      // Word 5: depth-test enable (bit0), LESS (bits 6:4 = 0), depth-write
+      // enable (bit7).
+      Seq((jobId & 0xffff) | (1 << 16), cmd, colour, depth, stride,
+        0x81, 0, 0, 0, 0) ++ Seq.fill(6)(0)
+
+    val m = new MemModel
+    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0x00ffffff)
+    m.wwrite(depthBase + pixel * 4, 0x20)
+    for (j <- 0 until 2) {
+      drawRecord(colours(j), depths(j)).zipWithIndex.foreach {
+        case (w, i) => m.wwrite(cmdBase(j) + i * 4, w)
+      }
+      for (i <- 0 until (16 * 16)) m.wwrite(colorBase(j) + i * 4, 0x12345678)
+      descriptor(j + 1, cmdBase(j), colorBase(j), depthBase,
+        stride).zipWithIndex.foreach {
+        case (w, i) => m.wwrite(ringBase + j * wordsPerJob * 4 + i * 4, w)
+      }
+    }
+
+    simulate(new RenderHost(config, cfg, fragCore = false)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.cbMem.req.ready.poke(true.B)
+      dut.io.cbMem.resp.valid.poke(false.B)
+      dut.io.fbMem.req.ready.poke(true.B)
+      dut.io.fbMem.resp.valid.poke(false.B)
+
+      regWrite(dut, RenderHostRegs.JOB_RING_BASE, ringBase)
+      regWrite(dut, RenderHostRegs.JOB_RING_SIZE, 2)
+      regWrite(dut, RenderHostRegs.JOB_WPTR, 2)
+      regWrite(dut, RenderHostRegs.IH_BASE, ihBase)
+      regWrite(dut, RenderHostRegs.IH_SIZE, 2)
+      regWrite(dut, RenderHostRegs.JOB_CONTROL, 1) // ENABLE
+      regWrite(dut, RenderHostRegs.IRQ, 1)
+
+      serviceMem(dut, m, 400000, drainCycles = 8) {
+        m.word(ihBase + 1 * wordsPerIh * 4) != 0
+      }
+
+      // Job 1 advanced the shared depth plane; job 2 could not.
+      assert(m.word(depthBase + pixel * 4) == 0x10,
+        s"depth (5,5) must hold job 1's 0x10, got 0x${m.word(depthBase + pixel * 4).toHexString}")
+      val c0 = m.word(colorBase(0) + pixel * 4).toInt
+      assert(((c0 >> 24) & 0xff, (c0 >> 16) & 0xff, (c0 >> 8) & 0xff) == (255, 0, 0),
+        s"job 1 must colour (5,5) red, got 0x${c0.toHexString}")
+      assert(m.word(colorBase(1) + pixel * 4) == 0x12345678,
+        "job 2 must lose to the depth job 1 stored and leave the pixel untouched")
+    }
+  }
+
   it should "advertise MSAA on both backends, selecting the backend by bit 0" in {
     val cfg = GpuConfig(lanes = 4, warps = 2)
-    for ((fragCore, expected) <- Seq(false -> 0x208baL, true -> 0x208bbL)) {
+    for ((fragCore, expected) <- Seq(false -> 0xa08baL, true -> 0xa08bbL)) {
       simulate(new RenderHost(gpuConfig = cfg, fragCore = fragCore)) { dut =>
         dut.io.externalCompletion.poke(false.B)
         dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)

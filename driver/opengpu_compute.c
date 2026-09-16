@@ -17,6 +17,7 @@
 #include <drm/drm_syncobj.h>
 #include <drm/gpu_scheduler.h>
 
+#include "opengpu_depth_validator.h"
 #include "opengpu_device.h"
 #include "opengpu_drm.h"
 #include "opengpu_resolve_validator.h"
@@ -71,7 +72,15 @@ struct opengpu_sched_job {
     struct opengpu_buffer shader;
     struct opengpu_buffer vertex_shader;
     struct opengpu_buffer depth;
-    struct drm_gem_object *objects[5];
+    /* Depth-plane clear staging. A user-supplied persistent attachment is not
+     * owned by the job (so `depth` stays empty), but the pass-start clear and
+     * the CPU fallback still target its range. */
+    bool depth_user;
+    bool depth_load;
+    dma_addr_t depth_clear_dma;
+    size_t depth_clear_bytes;
+    u8 *depth_clear_cpu;
+    struct drm_gem_object *objects[6];
     u32 object_count;
 };
 
@@ -939,6 +948,7 @@ static int opengpu_validate_vertex_commands(
 static int opengpu_prepare_submit_objects(
     struct drm_exec *exec, struct drm_gem_object *command,
     struct drm_gem_object *color,
+    struct drm_gem_object *depth,
     struct opengpu_resource_binding *shader,
     struct opengpu_resource_binding *kernarg,
     struct opengpu_resource_binding *texture,
@@ -952,6 +962,8 @@ static int opengpu_prepare_submit_objects(
         ret = drm_exec_lock_obj(exec, command);
         if (!ret)
             ret = drm_exec_prepare_obj(exec, color, 1);
+        if (!ret && depth)
+            ret = drm_exec_prepare_obj(exec, depth, 1);
         if (!ret && shader)
             ret = drm_exec_prepare_obj(exec, shader->object, 1);
         if (!ret && kernarg)
@@ -1033,10 +1045,13 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
             &job->events, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
-    if (job->gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE)
+    /* A loaded persistent depth attachment keeps its stored contents; every
+     * other submission starts from a cleared far plane (D24S8: stencil 0). */
+    if ((job->gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE) &&
+        !job->depth_load)
         ret = opengpu_hw_clear_and_submit_async(
-            job->gpu, &job->hw, lower_32_bits(job->depth.dma),
-            job->depth.size, 0x00ffffffu, &fence);
+            job->gpu, &job->hw, lower_32_bits(job->depth_clear_dma),
+            job->depth_clear_bytes, 0x00ffffffu, &fence);
     else
         ret = opengpu_hw_submit_async(job->gpu, &job->hw, &fence);
     if (ret)
@@ -1084,8 +1099,12 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     struct opengpu_render_context *context;
     struct drm_gem_object *command_object;
     struct drm_gem_object *color_object;
+    struct drm_gem_object *depth_object = NULL;
     struct drm_gem_dma_object *command_dma;
     struct drm_gem_dma_object *color_dma;
+    struct drm_gem_dma_object *depth_dma = NULL;
+    struct opengpu_depth_desc depth_desc;
+    dma_addr_t depth_address = 0;
     struct opengpu_resource_binding *shader, *kernarg, *texture;
     struct opengpu_resource_binding *vertex_buffer, *vertex_shader;
     struct opengpu_resource_binding *vertex_kernarg;
@@ -1107,7 +1126,10 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
                GPU_CAP_MSAA_MAX_MODE_SHIFT;
 
     if ((args->flags & ~(OPENGPU_SUBMIT_TEST_FENCE_DELAY |
-                         OPENGPU_SUBMIT_VERTEX_CORE)) ||
+                         OPENGPU_SUBMIT_VERTEX_CORE |
+                         OPENGPU_SUBMIT_DEPTH_LOAD)) ||
+        ((args->flags & OPENGPU_SUBMIT_DEPTH_LOAD) &&
+         !args->depth_handle) ||
         !args->context_id || !args->command_handle || !args->color_handle ||
         args->command_handle == args->color_handle ||
         !args->command_count || args->command_count > OPENGPU_MAX_COMMANDS ||
@@ -1150,6 +1172,27 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         ret = -EINVAL;
         goto out_color_object;
     }
+    if (args->depth_handle) {
+        if (args->depth_handle == args->command_handle ||
+            args->depth_handle == args->color_handle) {
+            ret = -EINVAL;
+            goto out_color_object;
+        }
+        depth_object = drm_gem_object_lookup(file, args->depth_handle);
+        if (!depth_object) {
+            ret = -ENOENT;
+            goto out_color_object;
+        }
+        depth_dma = to_drm_gem_dma_obj(depth_object);
+        depth_desc.offset = args->depth_offset;
+        depth_desc.stride = args->stride;
+        depth_desc.height = gpu->height;
+        ret = opengpu_depth_validate(&depth_desc, depth_object->size,
+                                     NULL);
+        if (ret)
+            goto out_color_object;
+        depth_address = depth_dma->dma_addr + args->depth_offset;
+    }
     if (args->out_syncobj) {
         out_sync = drm_syncobj_find(file, args->out_syncobj);
         if (!out_sync) {
@@ -1183,7 +1226,8 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         if (!resources[i])
             continue;
         if (resources[i]->object == command_object ||
-            resources[i]->object == color_object) {
+            resources[i]->object == color_object ||
+            resources[i]->object == depth_object) {
             ret = -EINVAL;
             goto out_file;
         }
@@ -1199,6 +1243,7 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
                          DRM_EXEC_IGNORE_DUPLICATES, 0);
     ret = opengpu_prepare_submit_objects(&exec, command_object, color_object,
+                                         depth_object,
                                          shader, kernarg, texture,
                                          vertex_buffer, vertex_shader,
                                          vertex_kernarg);
@@ -1257,10 +1302,24 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
                    vertex_shader->offset,
                vertex_shader->size);
     }
-    ret = opengpu_buffer_alloc(gpu, &sched_job->depth,
-                               (size_t)args->stride * gpu->height);
-    if (ret)
-        goto out_job;
+    if (depth_object) {
+        sched_job->depth_user = true;
+        sched_job->depth_load =
+            !!(args->flags & OPENGPU_SUBMIT_DEPTH_LOAD);
+        sched_job->depth_clear_dma = depth_address;
+        sched_job->depth_clear_bytes =
+            (size_t)args->stride * gpu->height;
+        sched_job->depth_clear_cpu = depth_dma->vaddr ?
+            (u8 *)depth_dma->vaddr + args->depth_offset : NULL;
+    } else {
+        ret = opengpu_buffer_alloc(gpu, &sched_job->depth,
+                                   (size_t)args->stride * gpu->height);
+        if (ret)
+            goto out_job;
+        sched_job->depth_clear_dma = sched_job->depth.dma;
+        sched_job->depth_clear_bytes = sched_job->depth.size;
+        sched_job->depth_clear_cpu = sched_job->depth.cpu;
+    }
 
     memcpy(sched_job->commands.cpu,
            (u8 *)command_dma->vaddr + args->command_offset,
@@ -1276,15 +1335,17 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
             shader ? &sched_job->shader : NULL, kernarg, texture);
     if (ret)
         goto out_job;
-    /* Clear-capable hardware clears this private depth plane immediately
-     * before its draw. Older devices retain the coherent CPU fallback.
-     * D24S8: the clear leaves stencil 0 under the far depth so stencil
-     * counters start from a defined state. */
-    if (!(gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE)) {
-        u32 *word = sched_job->depth.cpu;
+    /* Clear-capable hardware clears the depth plane immediately before its
+     * draw. Older devices retain the coherent CPU fallback. A persistent
+     * attachment submitted with OPENGPU_SUBMIT_DEPTH_LOAD keeps its stored
+     * contents instead. D24S8: the clear leaves stencil 0 under the far depth
+     * so stencil counters start from a defined state. */
+    if (!(gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE) &&
+        !sched_job->depth_load && sched_job->depth_clear_cpu) {
+        u32 *word = (u32 *)sched_job->depth_clear_cpu;
         size_t n;
 
-        for (n = 0; n < sched_job->depth.size / sizeof(u32); n++)
+        for (n = 0; n < sched_job->depth_clear_bytes / sizeof(u32); n++)
             word[n] = 0x00ffffffu;
     }
     /* Per-draw stencil/blend state rides the command records; the job-level
@@ -1293,7 +1354,8 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         .cmd = sched_job->commands.dma,
         .cmd_count = args->command_count,
         .color = color_dma->dma_addr,
-        .depth = sched_job->depth.dma,
+        .depth = sched_job->depth_user ? depth_address
+                                       : sched_job->depth.dma,
         .stride = args->stride,
         .depth_test = true,
         .depth_func = GPU_DEPTH_FUNC_LESS,
@@ -1329,6 +1391,10 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
                                                    color_object->resv,
                                                    DMA_RESV_USAGE_READ);
+    if (!ret && depth_object)
+        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
+                                                   depth_object->resv,
+                                                   DMA_RESV_USAGE_READ);
     if (!ret && kernarg)
         ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
                                                    kernarg->object->resv,
@@ -1350,6 +1416,10 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
 
     drm_gem_object_get(color_object);
     sched_job->objects[sched_job->object_count++] = color_object;
+    if (depth_object) {
+        drm_gem_object_get(depth_object);
+        sched_job->objects[sched_job->object_count++] = depth_object;
+    }
     if (kernarg) {
         drm_gem_object_get(kernarg->object);
         sched_job->objects[sched_job->object_count++] = kernarg->object;
@@ -1374,6 +1444,9 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     dma_fence_put(context->last_fence);
     context->last_fence = dma_fence_get(fence);
     dma_resv_add_fence(color_object->resv, fence, DMA_RESV_USAGE_WRITE);
+    if (depth_object)
+        dma_resv_add_fence(depth_object->resv, fence,
+                           DMA_RESV_USAGE_WRITE);
     if (kernarg)
         dma_resv_add_fence(kernarg->object->resv, fence,
                            DMA_RESV_USAGE_WRITE);
@@ -1417,6 +1490,8 @@ out_file:
         drm_syncobj_put(out_sync);
 out_color_object:
     drm_gem_object_put(color_object);
+    if (depth_object)
+        drm_gem_object_put(depth_object);
 out_command_object:
     drm_gem_object_put(command_object);
     return ret;

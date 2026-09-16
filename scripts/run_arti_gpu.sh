@@ -300,12 +300,14 @@ linux_src_valid "$LINUX_SRC" || \
     fail "Linux source not found (no Makefile) at $LINUX_SRC"
 HOST_CC="${HOST_CC:-cc}"
 command -v "$HOST_CC" >/dev/null 2>&1 || \
-    fail "host C compiler is required for the shader validator test"
-VALIDATOR_TEST="$DRIVER_OUTPUT/opengpu_shader_validator_test"
-"$HOST_CC" -std=c11 -O2 -Wall -Wextra -Werror -I"$GPU_DIR/driver" \
-    -o "$VALIDATOR_TEST" \
-    "$GPU_DIR/driver/tests/opengpu_shader_validator_test.c"
-"$VALIDATOR_TEST"
+    fail "host C compiler is required for the validator tests"
+for validator in shader resolve depth; do
+    VALIDATOR_TEST="$DRIVER_OUTPUT/opengpu_${validator}_validator_test"
+    "$HOST_CC" -std=c11 -O2 -Wall -Wextra -Werror -I"$GPU_DIR/driver" \
+        -o "$VALIDATOR_TEST" \
+        "$GPU_DIR/driver/tests/opengpu_${validator}_validator_test.c"
+    "$VALIDATOR_TEST"
+done
 if [ ! -f "$LINUX_HEADERS/include/drm/drm.h" ]; then
     HEADER_TOOLS_PATH="/opt/homebrew/bin:$PATH"
     if [ -x /opt/homebrew/opt/gnu-sed/libexec/gnubin/sed ]; then

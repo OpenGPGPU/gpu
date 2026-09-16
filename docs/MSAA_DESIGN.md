@@ -490,11 +490,21 @@ the driver:
 
 The render API does not resolve implicitly after every draw. Applications or a
 higher render-pass layer resolve only after the last draw that contributes to
-the multisample target. Initially one render submission is one complete render
-pass: all contributing draws must be in its command buffer. A later submission
-starts with fresh private depth and cannot continue that pass. Cross-submission
-continuation requires persistent depth attachments and explicit load/clear
-operations, which are not part of the initial implementation.
+the multisample target.
+
+A submission without a depth attachment is one complete render pass: the driver
+allocates a private depth plane, clears it, and frees it, so a later submission
+cannot continue that pass. Splitting a pass over several submissions uses the
+persistent depth attachment: `drm_opengpu_submit.depth_handle`/`depth_offset`
+bind a caller-owned GEM range as the depth/stencil plane, and
+`OPENGPU_SUBMIT_DEPTH_LOAD` keeps its stored contents instead of clearing it at
+the start of the submission. The first submission of a pass binds the
+attachment and may clear it (no load flag); later submissions re-bind the same
+range with the load flag so their depth tests see the accumulated results. The
+attachment is written in place by the output merger, so no explicit store
+operation is needed - a plain depth write persists - and the standard scheduler
+read/write reservations order it against other clients. The capability is
+advertised as `OPENGPU_CAP_PERSISTENT_DEPTH` (bit 19).
 
 ## Performance
 
@@ -521,6 +531,7 @@ memory-port utilisation under 2x and 4x workloads.
 | Coverage/depth | Mode-specific LUT, scalar/quad masks, expanded bounds, shared triangle gradients and sample depth implemented | Broaden edge and precision regression coverage |
 | Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented, advertised through bit 7 on fragment-core builds, and exercised by the guest MSAA round trip | Physical timing closure of the fragment stage (separate PPA gate) |
 | Expansion/OM | Backpressured expander, sample addresses, address-hazard ordering and acknowledged write drain implemented | Broader integrated multisample regressions |
+| Persistent depth | Caller-owned depth attachment (`drm_opengpu_submit.depth_handle`/`depth_offset`), `OPENGPU_SUBMIT_DEPTH_LOAD` cross-submission continuation, driver range validation (`opengpu_depth_validator.h`, unit-tested) and the `OPENGPU_CAP_PERSISTENT_DEPTH` advertisement implemented | Broader ARTI cross-submission pass-continuation coverage |
 | Resolve | `MsaaResolveEngine` backend, the `GPU_UCMD_OP_RESOLVE` router path through the shared L2, unified MMIO staging (`UCMD_SAMPLE_MODE`), the validated range rules and command builder, the `DRM_IOCTL_OPENGPU_RESOLVE` UAPI, the scheduler-backed ioctl with source read / destination write reservations and output syncobj, and KMS ordering via the standard implicit-sync path | Broader ARTI resolve coverage |
 
 ## Verification

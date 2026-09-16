@@ -159,6 +159,12 @@
 #define GPU_CAP_MSAA_MAX_MODE_MASK  (0x3u << GPU_CAP_MSAA_MAX_MODE_SHIFT)
 #define GPU_CAP_FRAGMENT_BATCH_SHIFT 8u
 #define GPU_CAP_FRAGMENT_BATCH_MASK  (0xffu << GPU_CAP_FRAGMENT_BATCH_SHIFT)
+/* Persistent depth attachment (bit19): a render submission may bind its own
+ * depth/stencil plane and keep it across submissions, so a render pass can be
+ * split over several submits with an explicit load of the stored depth.  The
+ * hardware depth path reads and writes whichever plane DEPTH_BASE names; this
+ * bit advertises the userspace/driver contract, not a new datapath. */
+#define GPU_CAP_PERSISTENT_DEPTH (1u << 19)
 
 /* JOB_CONTROL: bit0 ENABLE (RW), bit1 RESET (w1p, idle only),
  * bit8 ACTIVE (ro: a job is running), bit9 PENDING (ro: descriptor staged). */
