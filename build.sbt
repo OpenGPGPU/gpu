@@ -2,12 +2,14 @@ name := "gpu-chisel"
 
 version := "0.1.0"
 
-scalaVersion := "2.13.17"
+scalaVersion := "2.13.18"
 
-addCompilerPlugin("org.chipsalliance" % "chisel-plugin" % "7.2.0" cross CrossVersion.full)
+val chiselVersion = "7.15.0"
+
+addCompilerPlugin("org.chipsalliance" % "chisel-plugin" % chiselVersion cross CrossVersion.full)
 
 libraryDependencies ++= Seq(
-  "org.chipsalliance" %% "chisel" % "7.2.0",
+  "org.chipsalliance" %% "chisel" % chiselVersion,
   "org.scalatest" %% "scalatest" % "3.2.19" % "test"
 )
 
