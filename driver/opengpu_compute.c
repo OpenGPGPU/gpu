@@ -1084,6 +1084,69 @@ static void opengpu_sched_free_job(struct drm_sched_job *base)
     kfree(job);
 }
 
+/* One scheduler job dependency: the object the job waits on, the usage it
+ * waits for and the usage its completion fence is published under.  The wait
+ * and signal usages differ deliberately - a blit waits on source writes yet
+ * publishes a source read fence, and waits on destination reads yet publishes
+ * a destination write fence. */
+struct opengpu_sched_dep {
+    struct drm_gem_object *object;
+    enum dma_resv_usage wait_usage;
+    enum dma_resv_usage signal_usage;
+};
+
+/* Initialize, populate, arm and push one scheduler job: register the optional
+ * input sync object and every reservation dependency, take a job reference for
+ * each dependency object, then publish the completion fence to the context,
+ * each dependency reservation and the optional output sync object.  On any
+ * failure after job initialization the scheduler job is torn down in place, so
+ * callers only free their own staging; on success the scheduler owns the job. */
+static int opengpu_sched_job_submit(
+    struct opengpu_file *render_file, struct drm_file *file,
+    struct opengpu_render_context *context, struct opengpu_sched_job *job,
+    u32 in_syncobj, struct drm_syncobj *out_sync,
+    const struct opengpu_sched_dep *deps, u32 dep_count, u64 *fence_seqno)
+{
+    struct dma_fence *fence;
+    u32 i;
+    int ret;
+
+    ret = drm_sched_job_init(&job->base, &context->entity, 1, render_file,
+                             file->client_id);
+    if (ret)
+        return ret;
+    if (in_syncobj)
+        ret = drm_sched_job_add_syncobj_dependency(&job->base, file,
+                                                    in_syncobj, 0);
+    for (i = 0; !ret && i < dep_count; i++)
+        ret = drm_sched_job_add_resv_dependencies(&job->base,
+                                                   deps[i].object->resv,
+                                                   deps[i].wait_usage);
+    if (ret) {
+        drm_sched_job_cleanup(&job->base);
+        return ret;
+    }
+
+    for (i = 0; i < dep_count; i++) {
+        drm_gem_object_get(deps[i].object);
+        job->objects[job->object_count++] = deps[i].object;
+    }
+    drm_sched_job_arm(&job->base);
+    fence = dma_fence_get(&job->base.s_fence->finished);
+    if (fence_seqno)
+        *fence_seqno = fence->seqno;
+    dma_fence_put(context->last_fence);
+    context->last_fence = dma_fence_get(fence);
+    for (i = 0; i < dep_count; i++)
+        dma_resv_add_fence(deps[i].object->resv, fence,
+                           deps[i].signal_usage);
+    if (out_sync)
+        drm_syncobj_replace_fence(out_sync, fence);
+    drm_sched_entity_push_job(&job->base);
+    dma_fence_put(fence);
+    return 0;
+}
+
 static const struct drm_sched_backend_ops opengpu_sched_ops = {
     .run_job = opengpu_sched_run_job,
     .timedout_job = opengpu_sched_timedout_job,
@@ -1112,11 +1175,9 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     struct opengpu_sched_job *sched_job = NULL;
     struct drm_syncobj *out_sync = NULL;
     struct drm_exec exec;
-    struct dma_fence *fence = NULL;
     u64 command_end;
     size_t command_bytes;
     size_t color_required;
-    bool sched_initialized = false;
     u32 i, j;
     u32 sample_mode, max_mode;
     int ret;
@@ -1379,102 +1440,51 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
             args->flags & OPENGPU_SUBMIT_TEST_FENCE_DELAY ? 50 : 0,
     };
 
-    ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
-                             render_file, file->client_id);
-    if (ret)
-        goto out_job;
-    sched_initialized = true;
-    if (args->in_syncobj)
-        ret = drm_sched_job_add_syncobj_dependency(&sched_job->base, file,
-                                                    args->in_syncobj, 0);
-    if (!ret)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   color_object->resv,
-                                                   DMA_RESV_USAGE_READ);
-    if (!ret && depth_object)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   depth_object->resv,
-                                                   DMA_RESV_USAGE_READ);
-    if (!ret && kernarg)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   kernarg->object->resv,
-                                                   DMA_RESV_USAGE_READ);
-    if (!ret && texture)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   texture->object->resv,
-                                                   DMA_RESV_USAGE_WRITE);
-    if (!ret && vertex_buffer)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   vertex_buffer->object->resv,
-                                                   DMA_RESV_USAGE_WRITE);
-    if (!ret && vertex_kernarg)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   vertex_kernarg->object->resv,
-                                                   DMA_RESV_USAGE_READ);
-    if (ret)
-        goto out_job;
+    {
+        struct opengpu_sched_dep deps[6];
+        u32 dep_count = 0;
+        u64 fence_seqno = 0;
 
-    drm_gem_object_get(color_object);
-    sched_job->objects[sched_job->object_count++] = color_object;
-    if (depth_object) {
-        drm_gem_object_get(depth_object);
-        sched_job->objects[sched_job->object_count++] = depth_object;
+        deps[dep_count++] = (struct opengpu_sched_dep) {
+            color_object, DMA_RESV_USAGE_READ, DMA_RESV_USAGE_WRITE,
+        };
+        if (depth_object)
+            deps[dep_count++] = (struct opengpu_sched_dep) {
+                depth_object, DMA_RESV_USAGE_READ, DMA_RESV_USAGE_WRITE,
+            };
+        if (kernarg)
+            deps[dep_count++] = (struct opengpu_sched_dep) {
+                kernarg->object, DMA_RESV_USAGE_READ, DMA_RESV_USAGE_WRITE,
+            };
+        if (texture)
+            deps[dep_count++] = (struct opengpu_sched_dep) {
+                texture->object, DMA_RESV_USAGE_WRITE, DMA_RESV_USAGE_READ,
+            };
+        if (vertex_buffer)
+            deps[dep_count++] = (struct opengpu_sched_dep) {
+                vertex_buffer->object, DMA_RESV_USAGE_WRITE,
+                DMA_RESV_USAGE_READ,
+            };
+        if (vertex_kernarg)
+            deps[dep_count++] = (struct opengpu_sched_dep) {
+                vertex_kernarg->object, DMA_RESV_USAGE_READ,
+                DMA_RESV_USAGE_WRITE,
+            };
+        ret = opengpu_sched_job_submit(render_file, file, context, sched_job,
+                                       args->in_syncobj, out_sync, deps,
+                                       dep_count, &fence_seqno);
+        if (ret)
+            goto out_job;
+        dev_info(gpu->dev,
+                 "context %u queued %u draw(s), fence %llu on GEM handle %u\n",
+                 context->id, args->command_count, fence_seqno,
+                 args->color_handle);
     }
-    if (kernarg) {
-        drm_gem_object_get(kernarg->object);
-        sched_job->objects[sched_job->object_count++] = kernarg->object;
-    }
-    if (texture) {
-        drm_gem_object_get(texture->object);
-        sched_job->objects[sched_job->object_count++] = texture->object;
-    }
-    if (vertex_buffer) {
-        drm_gem_object_get(vertex_buffer->object);
-        sched_job->objects[sched_job->object_count++] =
-            vertex_buffer->object;
-    }
-    if (vertex_kernarg) {
-        drm_gem_object_get(vertex_kernarg->object);
-        sched_job->objects[sched_job->object_count++] =
-            vertex_kernarg->object;
-    }
-
-    drm_sched_job_arm(&sched_job->base);
-    fence = dma_fence_get(&sched_job->base.s_fence->finished);
-    dma_fence_put(context->last_fence);
-    context->last_fence = dma_fence_get(fence);
-    dma_resv_add_fence(color_object->resv, fence, DMA_RESV_USAGE_WRITE);
-    if (depth_object)
-        dma_resv_add_fence(depth_object->resv, fence,
-                           DMA_RESV_USAGE_WRITE);
-    if (kernarg)
-        dma_resv_add_fence(kernarg->object->resv, fence,
-                           DMA_RESV_USAGE_WRITE);
-    if (texture)
-        dma_resv_add_fence(texture->object->resv, fence,
-                           DMA_RESV_USAGE_READ);
-    if (vertex_buffer)
-        dma_resv_add_fence(vertex_buffer->object->resv, fence,
-                           DMA_RESV_USAGE_READ);
-    if (vertex_kernarg)
-        dma_resv_add_fence(vertex_kernarg->object->resv, fence,
-                           DMA_RESV_USAGE_WRITE);
-    if (out_sync)
-        drm_syncobj_replace_fence(out_sync, fence);
-    drm_sched_entity_push_job(&sched_job->base);
     sched_job = NULL;
-    dev_info(gpu->dev,
-             "context %u queued %u draw(s), fence %llu on GEM handle %u\n",
-             context->id, args->command_count, fence->seqno,
-             args->color_handle);
-    dma_fence_put(fence);
-    fence = NULL;
     ret = 0;
     goto out_exec;
 
 out_job:
-    if (sched_initialized)
-        drm_sched_job_cleanup(&sched_job->base);
     if (sched_job) {
         opengpu_buffer_free(gpu, &sched_job->depth);
         opengpu_buffer_free(gpu, &sched_job->vertex_shader);
@@ -1533,12 +1543,10 @@ int opengpu_compute_blit_ioctl(struct drm_device *drm, void *data,
     struct drm_gem_dma_object *source_dma, *destination_dma;
     struct opengpu_sched_job *sched_job = NULL;
     struct drm_syncobj *out_sync = NULL;
-    struct dma_fence *fence = NULL;
     struct drm_exec exec;
     struct opengpu_command_events events;
     u64 source_end, destination_end;
     u64 source_address, destination_address;
-    bool sched_initialized = false;
     int ret;
 
     if (!(gpu->hw.capabilities & GPU_CAP_BLIT_ENGINE))
@@ -1623,48 +1631,24 @@ int opengpu_compute_blit_ioctl(struct drm_device *drm, void *data,
     sched_job->dma_destination = destination_address;
     sched_job->dma_bytes = args->bytes;
     sched_job->events = events;
-    ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
-                             render_file, file->client_id);
-    if (ret)
-        goto out_job;
-    sched_initialized = true;
-    if (args->in_syncobj)
-        ret = drm_sched_job_add_syncobj_dependency(&sched_job->base, file,
-                                                    args->in_syncobj, 0);
-    if (!ret)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   source_object->resv,
-                                                   DMA_RESV_USAGE_WRITE);
-    if (!ret)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   destination_object->resv,
-                                                   DMA_RESV_USAGE_READ);
-    if (ret)
-        goto out_job;
+    {
+        const struct opengpu_sched_dep deps[] = {
+            { source_object, DMA_RESV_USAGE_WRITE, DMA_RESV_USAGE_READ },
+            { destination_object, DMA_RESV_USAGE_READ,
+              DMA_RESV_USAGE_WRITE },
+        };
 
-    drm_gem_object_get(source_object);
-    sched_job->objects[sched_job->object_count++] = source_object;
-    drm_gem_object_get(destination_object);
-    sched_job->objects[sched_job->object_count++] = destination_object;
-    drm_sched_job_arm(&sched_job->base);
-    fence = dma_fence_get(&sched_job->base.s_fence->finished);
-    dma_fence_put(context->last_fence);
-    context->last_fence = dma_fence_get(fence);
-    dma_resv_add_fence(source_object->resv, fence, DMA_RESV_USAGE_READ);
-    dma_resv_add_fence(destination_object->resv, fence,
-                       DMA_RESV_USAGE_WRITE);
-    if (out_sync)
-        drm_syncobj_replace_fence(out_sync, fence);
-    drm_sched_entity_push_job(&sched_job->base);
+        ret = opengpu_sched_job_submit(render_file, file, context, sched_job,
+                                       args->in_syncobj, out_sync, deps,
+                                       ARRAY_SIZE(deps), NULL);
+    }
+    if (ret)
+        goto out_job;
     sched_job = NULL;
-    dma_fence_put(fence);
-    fence = NULL;
     ret = 0;
     goto out_exec;
 
 out_job:
-    if (sched_initialized)
-        drm_sched_job_cleanup(&sched_job->base);
     kfree(sched_job);
 out_exec:
     drm_exec_fini(&exec);
@@ -1690,11 +1674,9 @@ int opengpu_compute_fill_ioctl(struct drm_device *drm, void *data,
     struct drm_gem_dma_object *destination_dma;
     struct opengpu_sched_job *sched_job = NULL;
     struct drm_syncobj *out_sync = NULL;
-    struct dma_fence *fence = NULL;
     struct drm_exec exec;
     struct opengpu_command_events events;
     u64 destination_end, destination_address;
-    bool sched_initialized = false;
     int ret;
 
     if (!(gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE))
@@ -1764,40 +1746,23 @@ int opengpu_compute_fill_ioctl(struct drm_device *drm, void *data,
     sched_job->dma_bytes = args->bytes;
     sched_job->fill_pattern = args->pattern;
     sched_job->events = events;
-    ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
-                             render_file, file->client_id);
-    if (ret)
-        goto out_job;
-    sched_initialized = true;
-    if (args->in_syncobj)
-        ret = drm_sched_job_add_syncobj_dependency(&sched_job->base, file,
-                                                    args->in_syncobj, 0);
-    if (!ret)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   destination_object->resv,
-                                                   DMA_RESV_USAGE_READ);
-    if (ret)
-        goto out_job;
+    {
+        const struct opengpu_sched_dep deps[] = {
+            { destination_object, DMA_RESV_USAGE_READ,
+              DMA_RESV_USAGE_WRITE },
+        };
 
-    drm_gem_object_get(destination_object);
-    sched_job->objects[sched_job->object_count++] = destination_object;
-    drm_sched_job_arm(&sched_job->base);
-    fence = dma_fence_get(&sched_job->base.s_fence->finished);
-    dma_fence_put(context->last_fence);
-    context->last_fence = dma_fence_get(fence);
-    dma_resv_add_fence(destination_object->resv, fence,
-                       DMA_RESV_USAGE_WRITE);
-    if (out_sync)
-        drm_syncobj_replace_fence(out_sync, fence);
-    drm_sched_entity_push_job(&sched_job->base);
+        ret = opengpu_sched_job_submit(render_file, file, context, sched_job,
+                                       args->in_syncobj, out_sync, deps,
+                                       ARRAY_SIZE(deps), NULL);
+    }
+    if (ret)
+        goto out_job;
     sched_job = NULL;
-    dma_fence_put(fence);
     ret = 0;
     goto out_exec;
 
 out_job:
-    if (sched_initialized)
-        drm_sched_job_cleanup(&sched_job->base);
     kfree(sched_job);
 out_exec:
     drm_exec_fini(&exec);
@@ -1833,12 +1798,10 @@ int opengpu_compute_strided_blit_ioctl(struct drm_device *drm, void *data,
     struct drm_gem_dma_object *source_dma, *destination_dma;
     struct opengpu_sched_job *sched_job = NULL;
     struct drm_syncobj *out_sync = NULL;
-    struct dma_fence *fence = NULL;
     struct drm_exec exec;
     struct opengpu_command_events events;
     u64 source_end, destination_end;
     u64 source_address, destination_address;
-    bool sched_initialized = false;
     int ret;
 
     if (!(gpu->hw.capabilities & GPU_CAP_STRIDED_ENGINE))
@@ -1942,47 +1905,24 @@ int opengpu_compute_strided_blit_ioctl(struct drm_device *drm, void *data,
     sched_job->dma_source_stride = args->source_stride;
     sched_job->dma_destination_stride = args->destination_stride;
     sched_job->events = events;
-    ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
-                             render_file, file->client_id);
-    if (ret)
-        goto out_job;
-    sched_initialized = true;
-    if (args->in_syncobj)
-        ret = drm_sched_job_add_syncobj_dependency(&sched_job->base, file,
-                                                    args->in_syncobj, 0);
-    if (!ret)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   source_object->resv,
-                                                   DMA_RESV_USAGE_WRITE);
-    if (!ret)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   destination_object->resv,
-                                                   DMA_RESV_USAGE_READ);
-    if (ret)
-        goto out_job;
+    {
+        const struct opengpu_sched_dep deps[] = {
+            { source_object, DMA_RESV_USAGE_WRITE, DMA_RESV_USAGE_READ },
+            { destination_object, DMA_RESV_USAGE_READ,
+              DMA_RESV_USAGE_WRITE },
+        };
 
-    drm_gem_object_get(source_object);
-    sched_job->objects[sched_job->object_count++] = source_object;
-    drm_gem_object_get(destination_object);
-    sched_job->objects[sched_job->object_count++] = destination_object;
-    drm_sched_job_arm(&sched_job->base);
-    fence = dma_fence_get(&sched_job->base.s_fence->finished);
-    dma_fence_put(context->last_fence);
-    context->last_fence = dma_fence_get(fence);
-    dma_resv_add_fence(source_object->resv, fence, DMA_RESV_USAGE_READ);
-    dma_resv_add_fence(destination_object->resv, fence,
-                       DMA_RESV_USAGE_WRITE);
-    if (out_sync)
-        drm_syncobj_replace_fence(out_sync, fence);
-    drm_sched_entity_push_job(&sched_job->base);
+        ret = opengpu_sched_job_submit(render_file, file, context, sched_job,
+                                       args->in_syncobj, out_sync, deps,
+                                       ARRAY_SIZE(deps), NULL);
+    }
+    if (ret)
+        goto out_job;
     sched_job = NULL;
-    dma_fence_put(fence);
     ret = 0;
     goto out_exec;
 
 out_job:
-    if (sched_initialized)
-        drm_sched_job_cleanup(&sched_job->base);
     kfree(sched_job);
 out_exec:
     drm_exec_fini(&exec);
@@ -2009,14 +1949,12 @@ int opengpu_compute_resolve_ioctl(struct drm_device *drm, void *data,
     struct drm_gem_dma_object *source_dma, *destination_dma;
     struct opengpu_sched_job *sched_job = NULL;
     struct drm_syncobj *out_sync = NULL;
-    struct dma_fence *fence = NULL;
     struct drm_exec exec;
     struct opengpu_command_events events;
     struct opengpu_resolve_desc desc;
     struct opengpu_resolve_layout layout;
     u64 source_address, destination_address, source_end, destination_end;
     u32 max_sample_mode;
-    bool sched_initialized = false;
     int ret;
 
     if (!(gpu->hw.capabilities & GPU_CAP_MSAA))
@@ -2116,47 +2054,24 @@ int opengpu_compute_resolve_ioctl(struct drm_device *drm, void *data,
     sched_job->dma_destination_stride = args->destination_stride;
     sched_job->dma_sample_mode = args->sample_mode;
     sched_job->events = events;
-    ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
-                             render_file, file->client_id);
-    if (ret)
-        goto out_job;
-    sched_initialized = true;
-    if (args->in_syncobj)
-        ret = drm_sched_job_add_syncobj_dependency(&sched_job->base, file,
-                                                    args->in_syncobj, 0);
-    if (!ret)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   source_object->resv,
-                                                   DMA_RESV_USAGE_WRITE);
-    if (!ret)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   destination_object->resv,
-                                                   DMA_RESV_USAGE_READ);
-    if (ret)
-        goto out_job;
+    {
+        const struct opengpu_sched_dep deps[] = {
+            { source_object, DMA_RESV_USAGE_WRITE, DMA_RESV_USAGE_READ },
+            { destination_object, DMA_RESV_USAGE_READ,
+              DMA_RESV_USAGE_WRITE },
+        };
 
-    drm_gem_object_get(source_object);
-    sched_job->objects[sched_job->object_count++] = source_object;
-    drm_gem_object_get(destination_object);
-    sched_job->objects[sched_job->object_count++] = destination_object;
-    drm_sched_job_arm(&sched_job->base);
-    fence = dma_fence_get(&sched_job->base.s_fence->finished);
-    dma_fence_put(context->last_fence);
-    context->last_fence = dma_fence_get(fence);
-    dma_resv_add_fence(source_object->resv, fence, DMA_RESV_USAGE_READ);
-    dma_resv_add_fence(destination_object->resv, fence,
-                       DMA_RESV_USAGE_WRITE);
-    if (out_sync)
-        drm_syncobj_replace_fence(out_sync, fence);
-    drm_sched_entity_push_job(&sched_job->base);
+        ret = opengpu_sched_job_submit(render_file, file, context, sched_job,
+                                       args->in_syncobj, out_sync, deps,
+                                       ARRAY_SIZE(deps), NULL);
+    }
+    if (ret)
+        goto out_job;
     sched_job = NULL;
-    dma_fence_put(fence);
     ret = 0;
     goto out_exec;
 
 out_job:
-    if (sched_initialized)
-        drm_sched_job_cleanup(&sched_job->base);
     kfree(sched_job);
 out_exec:
     drm_exec_fini(&exec);
@@ -2181,13 +2096,11 @@ int opengpu_compute_launch_ioctl(struct drm_device *drm, void *data,
     struct drm_gem_dma_object *shader_dma;
     struct opengpu_sched_job *sched_job = NULL;
     struct drm_syncobj *out_sync = NULL;
-    struct dma_fence *fence = NULL;
     struct drm_exec exec;
     struct opengpu_command_events events;
     const u32 *program;
     u64 local_xy, local_items, available;
     u32 words;
-    bool sched_initialized = false;
     int ret;
 
     if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
@@ -2285,39 +2198,22 @@ int opengpu_compute_launch_ioctl(struct drm_device *drm, void *data,
     memcpy(sched_job->kernel.local, args->local,
            sizeof(sched_job->kernel.local));
 
-    ret = drm_sched_job_init(&sched_job->base, &context->entity, 1,
-                             render_file, file->client_id);
-    if (ret)
-        goto out_job;
-    sched_initialized = true;
-    if (args->in_syncobj)
-        ret = drm_sched_job_add_syncobj_dependency(&sched_job->base, file,
-                                                    args->in_syncobj, 0);
-    if (!ret)
-        ret = drm_sched_job_add_resv_dependencies(&sched_job->base,
-                                                   kernarg->object->resv,
-                                                   DMA_RESV_USAGE_READ);
-    if (ret)
-        goto out_job;
+    {
+        const struct opengpu_sched_dep deps[] = {
+            { kernarg->object, DMA_RESV_USAGE_READ, DMA_RESV_USAGE_WRITE },
+        };
 
-    drm_gem_object_get(kernarg->object);
-    sched_job->objects[sched_job->object_count++] = kernarg->object;
-    drm_sched_job_arm(&sched_job->base);
-    fence = dma_fence_get(&sched_job->base.s_fence->finished);
-    dma_fence_put(context->last_fence);
-    context->last_fence = dma_fence_get(fence);
-    dma_resv_add_fence(kernarg->object->resv, fence, DMA_RESV_USAGE_WRITE);
-    if (out_sync)
-        drm_syncobj_replace_fence(out_sync, fence);
-    drm_sched_entity_push_job(&sched_job->base);
+        ret = opengpu_sched_job_submit(render_file, file, context, sched_job,
+                                       args->in_syncobj, out_sync, deps,
+                                       ARRAY_SIZE(deps), NULL);
+    }
+    if (ret)
+        goto out_job;
     sched_job = NULL;
-    dma_fence_put(fence);
     ret = 0;
     goto out_exec;
 
 out_job:
-    if (sched_initialized)
-        drm_sched_job_cleanup(&sched_job->base);
     if (sched_job) {
         opengpu_buffer_free(gpu, &sched_job->shader);
         kfree(sched_job);
