@@ -24,6 +24,7 @@
 #define TEST_STENCIL_FUNC_ALWAYS 6u
 #define TEST_STENCIL_FUNC_EQUAL  4u
 #define TEST_STENCIL_OP_REPLACE  2u
+#define TEST_DEPTH_FUNC_LEQUAL    1u
 #define TEST_BLEND_FACTOR_ONE    1u
 #define TEST_BLEND_EQ_REV_SUB    2u
 
@@ -399,7 +400,12 @@ static int create_stencil_command_buffer(
     struct drm_mode_map_dumb map = { 0 };
     struct drm_opengpu_draw *draws;
     const struct drm_opengpu_draw *src = base->map;
-    uint32_t stencil_state = src->state | OPENGPU_DRAW_STATE_STENCIL_TEST;
+    /* All three draws use identical depth.  LESS would reject the second
+     * and third draws after the stamp writes depth, hiding stencil results. */
+    uint32_t stencil_state =
+        (src->state & ~OPENGPU_DRAW_STATE_DEPTH_FUNC_MASK) |
+        (TEST_DEPTH_FUNC_LEQUAL << OPENGPU_DRAW_STATE_DEPTH_FUNC_SHIFT) |
+        OPENGPU_DRAW_STATE_STENCIL_TEST;
     uint32_t masks = OPENGPU_DRAW_STENCIL_RMASK_MASK |
                      OPENGPU_DRAW_STENCIL_WMASK_MASK;
 
