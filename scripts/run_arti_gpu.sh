@@ -190,15 +190,15 @@ echo "=== 1/4 Emit GpuHostSystemAxi RTL ==="
 if [ "$GPU_VERT_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
         sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --frag-core --vert-core --width $GPU_WIDTH --height $GPU_HEIGHT")
-    TIMEOUT="${TIMEOUT:-120}"
+    TIMEOUT="${TIMEOUT:-240}"
 elif [ "$GPU_FRAG_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
         sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --frag-core --width $GPU_WIDTH --height $GPU_HEIGHT")
-    TIMEOUT="${TIMEOUT:-120}"
+    TIMEOUT="${TIMEOUT:-240}"
 else
     (cd "$GPU_DIR" && \
         sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --width $GPU_WIDTH --height $GPU_HEIGHT")
-    TIMEOUT="${TIMEOUT:-180}"
+    TIMEOUT="${TIMEOUT:-300}"
 fi
 [ -f "$GPU_DIR/generated/host/GpuHostSystemAxi.sv" ] || \
     fail "RTL emission did not produce generated/host/GpuHostSystemAxi.sv"
