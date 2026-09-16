@@ -128,7 +128,9 @@ struct drm_opengpu_param {
 #define OPENGPU_CAP_BLIT_ENGINE (1u << 4)
 #define OPENGPU_CAP_STRIDED_ENGINE (1u << 5)
 #define OPENGPU_CAP_UNIFIED_COMMANDS (1u << 6)
-/* MSAA (bit7) is fixed-function only; bits 17:16 carry the max sample mode. */
+/* MSAA (bit7) is the backend selected by GPU_CAP_FRAGMENT_CORE (bit0): both
+ * set is programmable MSAA, bit0 clear is fixed-function MSAA. Bits 17:16
+ * carry the max sample mode. */
 #define OPENGPU_CAP_MSAA (1u << 7)
 #define OPENGPU_CAP_MSAA_MAX_MODE_SHIFT 16u
 #define OPENGPU_CAP_MSAA_MAX_MODE_MASK \

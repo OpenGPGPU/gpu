@@ -5,7 +5,8 @@ import chisel3._
 /** Fragment output-control contract, mirrored by GPU_FRAGMENT_* in gpu_abi.h.
   * Validated sample mode 0 selects ABI 0; modes 1 and 2 select ABI 1. No
   * independent selector is exposed in host registers or submission records.
-  * Programmable MSAA still requires separate capability qualification.
+  * Both backends advertise MSAA (`GPU_CAP_MSAA`); under the fragment core the
+  * same `sampleMode` that selects this ABI is the programmable-MSAA request.
   */
 object FragmentShaderAbi {
   val Legacy = 0

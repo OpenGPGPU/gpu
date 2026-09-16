@@ -920,6 +920,84 @@ class KernelFragStageSpec extends AnyFlatSpec {
     }
   }
 
+  it should "feed a helper lane into a quad derivative without emitting it" in {
+    // A quad may contain helper lanes: uncovered pixels the rasterizer still
+    // shades so `vquad` has a full 2x2 neighbourhood.  `VectorIntegerAlu`'s
+    // quad-dx (`funct6 = 0x0c`) has each left pair contribute
+    // `lhs(left + 1) - lhs(left)` with `left = quadBase` for lanes 0/1 and
+    // `quadBase + 2` for lanes 2/3, so lane 0's derivative is exactly the
+    // helper's `u` minus its own and lane 2's is lane 3's minus its own.  The
+    // helper itself must never be promoted to the output stream.
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
+      val mem = new MemModel
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.abi1.poke(true.B)
+      dut.io.shaderPc.poke(0x1000.U)
+      dut.io.kernargBase.poke(0x8000.U)
+      dut.io.kernargBankStride.poke(0.U)
+
+      // Program: v1 = per-lane u (kernarg+128); v4 = dfdx(u); the colour
+      // output slice (kernarg+192) receives v4 and is therefore the observable
+      // of the derivative.
+      mem.putWord(0x1000L, 0, vsetivli(4))
+      mem.putWord(0x1000L, 1, addi(5, 1, 128))
+      mem.putWord(0x1000L, 2, vle32(5, 1))
+      mem.putWord(0x1000L, 3, vquad(0x0c, 4, 1))
+      mem.putWord(0x1000L, 4, addi(5, 1, 192))
+      mem.putWord(0x1000L, 5, vse32(5, 4))
+      mem.putWord(0x1000L, 6, cease)
+
+      // Lane 1 is the uncovered helper; lanes 0 and 2 anchor the two left
+      // pairs, so their dfdx values are lane 1's and lane 3's u respectively
+      // (each anchor's own u is zero).
+      val u = Seq(0, 0x11223344, 0, 0x55667788)
+      val v = Seq.fill(4)(0)
+      fireQuad(dut, Seq(
+        Frag(3, 4, 0x20, covered = true),
+        Frag(4, 4, 0x20, covered = false),
+        Frag(3, 5, 0x20, covered = true),
+        Frag(4, 5, 0x20, covered = true)
+      ), uvs = u zip v)
+      dut.io.flush.poke(true.B); dut.clock.step()
+      dut.io.flush.poke(false.B)
+
+      val emitted =
+        scala.collection.mutable.ArrayBuffer.empty[(Long, Long, Long, Long, Long)]
+      val done = pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean,
+        guard = 6000)
+      assert(done, "helper-derivative kernel did not complete")
+      // Step every iteration: the emit walk spends cycles on the helper lane
+      // it suppresses, so the collector must let simulated time advance
+      // through the low-valid beats.
+      var guard = 0
+      while (emitted.size < 3 && guard < 200) {
+        val valid = dut.io.out.valid.peek().litToBoolean
+        dut.io.out.ready.poke(valid.B)
+        if (valid) {
+          emitted += ((dut.io.out.bits.x.peek().litValue.toLong,
+            dut.io.out.bits.color.r.peek().litValue.toLong,
+            dut.io.out.bits.color.g.peek().litValue.toLong,
+            dut.io.out.bits.color.b.peek().litValue.toLong,
+            dut.io.out.bits.alpha.peek().litValue.toLong))
+        }
+        dut.clock.step()
+        guard += 1
+      }
+      dut.io.out.ready.poke(false.B)
+      // Only the three covered lanes emit, in batch order; each left pair
+      // shares one dfdx, so lane 3 carries lane 2's value.
+      assert(emitted.size == 3, s"expected 3 covered fragments, got ${emitted.size}")
+      assert(emitted(0) == (3L, 0x11L, 0x22L, 0x33L, 0x44L),
+        s"lane 0 must take the helper's u as its dfdx: got ${emitted(0)}")
+      assert(emitted(1) == (3L, 0x55L, 0x66L, 0x77L, 0x88L),
+        s"lane 2 must take lane 3's u as its dfdx: got ${emitted(1)}")
+      assert(emitted(2) == (4L, 0x55L, 0x66L, 0x77L, 0x88L),
+        s"lane 3 shares lane 2's dfdx: got ${emitted(2)}")
+    }
+  }
+
   it should "accumulate the next draw while the previous batch executes" in {
     // Per-draw overlap: draw 2's fragment is accepted while batch 1 is still
     // in flight (not drained), and both draws complete in submission order
@@ -1086,10 +1164,13 @@ class KernelFragStageSpec extends AnyFlatSpec {
   }
 
   /** Result of one ABI output-control run: whether a fragment emitted, its
-    * effective coverage mask, the selected depth source, and the per-sample
-    * depths presented alongside it. */
+    * effective coverage mask, the selected depth source, the per-sample
+    * depths presented alongside it, and whether the draw retired.  `retired`
+    * is only sampled at the instant the run's predicate fired, so it is
+    * meaningful for discarded draws (where retire is the only observable
+    * event) and not for emitting ones. */
   private case class AbiResult(emitted: Boolean, mask: Int,
-    overrideDepth: Boolean, depths: Seq[Int])
+    overrideDepth: Boolean, depths: Seq[Int], retired: Boolean)
 
   /** Runs a single covered (or helper) fragment through a shader that writes
     * the output-control word from a uniform, with the given ABI selection. */
@@ -1125,13 +1206,15 @@ class KernelFragStageSpec extends AnyFlatSpec {
 
       assert(pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean ||
         dut.io.drawRetire.valid.peek().litToBoolean), "ABI draw must emit or retire")
+      val retired = dut.io.drawRetire.valid.peek().litToBoolean
       if (dut.io.out.valid.peek().litToBoolean) {
         result = AbiResult(true,
           dut.io.out.bits.coverageMask.peek().litValue.toInt,
           dut.io.depthOverride.peek().litToBoolean,
-          depths.indices.map(s => dut.io.outDepths(s).peek().litValue.toInt))
+          depths.indices.map(s => dut.io.outDepths(s).peek().litValue.toInt),
+          retired)
       } else {
-        result = AbiResult(false, 0, false, Seq.empty)
+        result = AbiResult(false, 0, false, Seq.empty, retired)
       }
     }
     result
@@ -1181,5 +1264,40 @@ class KernelFragStageSpec extends AnyFlatSpec {
       covered = false).emitted, "ABI 0 helper must not emit")
     assert(!runAbiCase(abi1 = true, controlWord = 0x1, mask = 0x1,
       covered = false).emitted, "ABI 1 helper must not emit")
+
+    // MSAA-shaped coverage masks: the effective mask is the raster mask
+    // verbatim for both the 2x (0x3) and 4x (0xf) shapes.
+    val abi1TwoX = runAbiCase(abi1 = true, controlWord = 0x1, mask = 0x3,
+      covered = true)
+    assert(abi1TwoX.emitted, "ABI 1 must emit a 2x-covered fragment")
+    assert(abi1TwoX.mask == 0x3,
+      s"ABI 1 2x effective mask should be 0x3, got 0x${abi1TwoX.mask.toHexString}")
+    assert(abi1TwoX.depths == Seq(0x111, 0x222, 0x333, 0x444),
+      s"ABI 1 2x per-sample depths: got ${abi1TwoX.depths}")
+
+    // A shader discard (bit 0 clear) with a real 2x or 4x mask suppresses the
+    // pixel entirely, yet the draw still retires exactly once.
+    for (mask <- Seq(0x3, 0xf)) {
+      val discard = runAbiCase(abi1 = true, controlWord = 0x0, mask = mask,
+        covered = true)
+      assert(!discard.emitted,
+        s"ABI 1 control 0 must discard the 0x${mask.toHexString}-covered fragment")
+      assert(discard.retired,
+        s"a discarded 0x${mask.toHexString}-covered draw must still retire")
+    }
+
+    // Reserved-bit violations discard under a real 2x mask as well.
+    val malformed2x = runAbiCase(abi1 = true, controlWord = 0x80000003,
+      mask = 0x3, covered = true)
+    assert(!malformed2x.emitted,
+      "ABI 1 reserved bits must discard a 2x-covered fragment")
+    assert(malformed2x.retired,
+      "a malformed-control 2x draw must still retire")
+
+    // An uncovered helper stays suppressed with a full 4x mask.
+    val helper4x = runAbiCase(abi1 = true, controlWord = 0x1, mask = 0xf,
+      covered = false)
+    assert(!helper4x.emitted, "ABI 1 helper must not emit under a 4x mask")
+    assert(helper4x.retired, "a helper-only 4x draw must still retire")
   }
 }

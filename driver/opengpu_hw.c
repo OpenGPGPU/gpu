@@ -1489,8 +1489,10 @@ int opengpu_hw_resolve_async(struct opengpu_device *gpu, u32 source,
     if (!out_fence)
         return -EINVAL;
     *out_fence = NULL;
-    /* Resolve averages the samples of a fixed-function MSAA target through the
-     * unified command path; both capabilities must be present. */
+    /* Resolve averages the samples of an MSAA target through the unified
+     * command path; both capabilities must be present.  The target may be
+     * fixed-function or programmable (GPU_CAP_FRAGMENT_CORE), since the
+     * unified path reads the resolved sample layout either way. */
     if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS) ||
         !(gpu->hw.capabilities & GPU_CAP_MSAA))
         return -EOPNOTSUPP;

@@ -3,11 +3,14 @@
 ## Status and Goals
 
 This document defines a 1x, 2x, and 4x MSAA path for the existing graphics
-pipeline. The current RTL implements sample coverage, depth generation,
-sample expansion and per-sample output merging. Linux exposes fixed-function
-MSAA submission and physical-stride validation. Programmable MSAA is not yet
-advertised, and typed resolve remains planned. Sections below distinguish the
-implemented path from the remaining interface and resolve work.
+pipeline. The RTL implements sample coverage, depth generation, sample
+expansion and per-sample output merging; Linux exposes both fixed-function and
+programmable (fragment-core) MSAA submission, physical-stride validation, and a
+typed resolve through the unified command path. Both backends advertise
+`GPU_CAP_MSAA`; the backend is the one selected by `GPU_FRAGMENT_CORE`. Bit 7 is
+a functional claim only - physical timing closure of the programmable fragment
+stage is a separate PPA gate, not asserted here. Sections below distinguish the
+implemented path from the remaining PPA work.
 
 Source references: `Msaa.scala`, `Rasterizer.scala`,
 `FragmentInterpolator.scala`, `KernelFragStage.scala`, `RenderPipeline.scala`,
@@ -64,7 +67,8 @@ sample-mode word against the elaborated maximum, including reserved bits 31:2.
 START reports `STATUS.ERROR` without launch. An invalid queued descriptor
 produces an ordered DONE|ERROR IH record with status 1 without rendering;
 subsequent valid jobs continue after the error record's write acknowledgements.
-Programmable-MSAA capability advertising remains unchanged.
+Programmable-MSAA advertising follows the same validated-mode rule as the
+fixed-function build.
 
 ## Sample Coordinate Convention
 
@@ -140,12 +144,13 @@ MSAA uses the following fields:
 
 | Bits | Meaning |
 |---|---|
-| 7 | MSAA supported |
+| 7 | MSAA supported on this build's render path |
 | 17:16 | Maximum supported `sampleMode`: 0=1x, 1=2x, 2=4x |
 
 Software tests bit 7 before programming MSAA state and rejects a requested mode
-above bits 17:16. Only fixed-function builds (`!fragCore`) advertise these
-fields; fragment-core builds expose neither field.
+above bits 17:16. Bit 7 is backend-parametrised: bit 7 with `FRAGMENT_CORE`
+(bit 0) set is programmable MSAA, bit 7 with bit 0 clear is fixed-function MSAA.
+Both builds advertise the field, and both advertise the same maximum mode.
 
 ### Register-Programmed Submission
 
@@ -272,9 +277,9 @@ profiles in `FragmentShaderAbi.scala` and `GPU_FRAGMENT_ABI_*` in
 There is no independent selector in MMIO, job records or Linux UAPI. An
 independent profile for 1x would require a separately versioned extension;
 it is not a prerequisite for the current mode-coupled ABI. Fixed-function
-rendering has no fragment output-control word. Programmable MSAA remains
-unadvertised pending integration qualification, so Linux's exposed shader
-path continues to use ABI 0.
+rendering has no fragment output-control word. Programmable MSAA is advertised
+on fragment-core builds, so Linux's shader path uses ABI 0 at mode 0 and ABI 1
+for the validated nonzero modes.
 
 `KernelFragStage` snapshots the selector with the first accepted quad of each
 batch. Later draws and live input changes cannot reinterpret an executing
@@ -389,13 +394,16 @@ the unified-command fields (`opengpu_resolve_build_command`). The UAPI is
 `drm_opengpu_resolve` / `DRM_IOCTL_OPENGPU_RESOLVE`, and
 `opengpu_compute_resolve_ioctl` submits it through the DRM scheduler with the
 source read and destination write reservations and an optional output syncobj.
-The guest DRM test exercises the ioctl end to end under ARTI/QEMU, and
-`GpuSystemSpec` / `GpuHostSystemAxiSpec` cover multi-row resolves through the
-shared L2 and the full AXI top. The resolve fence is published to the
-destination BO's reservation as `DMA_RESV_USAGE_WRITE`, so the standard KMS
-implicit-sync path (`prepare_fb` extracts the exclusive fence; the atomic
-commit tail waits for it) already orders scanout of a resolved buffer. The
-remaining work is the programmable-MSAA qualification gate.
+The guest DRM test exercises the ioctl end to end under ARTI/QEMU - including a
+multisample render into a samples-interleaved target, the resolve of that
+target, and scanout of the resolved buffer - and `GpuSystemSpec` /
+`GpuHostSystemAxiSpec` cover multi-row resolves through the shared L2 and the
+full AXI top. The resolve fence is published to the destination BO's
+reservation as `DMA_RESV_USAGE_WRITE`, so the standard KMS implicit-sync path
+(`prepare_fb` extracts the exclusive fence; the atomic commit tail waits for
+it) already orders scanout of a resolved buffer. The remaining work is physical
+timing closure of the programmable fragment stage, which is a PPA gate separate
+from the functional capability advertised by bit 7.
 
 Resolve averages every pixel's physical colour samples into a separate
 single-sample RGBA8888 buffer. Depth resolve is out of scope.
@@ -468,8 +476,9 @@ resolved colour to every sample; an ordinary linear copy is insufficient.
 
 ## Driver Behaviour
 
-Steps 1–5 describe current fixed-function submission. Step 6 is planned.
-For an MSAA render submission, the driver:
+All six steps below are implemented for both backends; the fragment-core build
+additionally requires a shader and kernarg slot. For an MSAA render submission,
+the driver:
 
 1. Verifies the MSAA capability and requested `sampleMode`.
 2. Validates the physical colour stride and allocation.
@@ -508,25 +517,29 @@ memory-port utilisation under 2x and 4x workloads.
 
 | Area | Current state | Remaining work |
 |---|---|---|
-| ABI/state | MSAA register, fixed-function capabilities, validated queue word 9 with ordered error completion and Linux physical-stride checks implemented | Expose programmable MSAA only after its contract is complete |
+| ABI/state | MSAA register, capabilities on both backends, validated queue word 9 with ordered error completion and Linux physical-stride checks implemented | None functional; bit 7 asserts function only, not timing closure |
 | Coverage/depth | Mode-specific LUT, scalar/quad masks, expanded bounds, shared triangle gradients and sample depth implemented | Broaden edge and precision regression coverage |
-| Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented internally | Advertised Linux support and integrated multisample qualification |
+| Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented, advertised through bit 7 on fragment-core builds, and exercised by the guest MSAA round trip | Physical timing closure of the fragment stage (separate PPA gate) |
 | Expansion/OM | Backpressured expander, sample addresses, address-hazard ordering and acknowledged write drain implemented | Broader integrated multisample regressions |
-| Resolve | `MsaaResolveEngine` backend, the `GPU_UCMD_OP_RESOLVE` router path through the shared L2, unified MMIO staging (`UCMD_SAMPLE_MODE`), the validated range rules and command builder, the `DRM_IOCTL_OPENGPU_RESOLVE` UAPI, the scheduler-backed ioctl with source read / destination write reservations and output syncobj, and KMS ordering via the standard implicit-sync path | Programmable-MSAA qualification (separate gate); broader ARTI resolve coverage |
+| Resolve | `MsaaResolveEngine` backend, the `GPU_UCMD_OP_RESOLVE` router path through the shared L2, unified MMIO staging (`UCMD_SAMPLE_MODE`), the validated range rules and command builder, the `DRM_IOCTL_OPENGPU_RESOLVE` UAPI, the scheduler-backed ioctl with source read / destination write reservations and output syncobj, and KMS ordering via the standard implicit-sync path | Broader ARTI resolve coverage |
 
 ## Verification
 
 Existing test sources include `FragmentShaderAbiSpec` (mode-to-profile
-selection and full-width control-word decisions), `MsaaSpec` (sample patterns, expansion and depth
-reference/clamping), `RenderPipelineSpec` (sample depth and 1x core-backed
-expansion), `KernelFragStageSpec` (ABI-1 emit/depth override, malformed-control
-discard/retirement and overlapping batch ABI snapshots), and
-`OutputMergerSpec` (write-acknowledgement drain, blending and stencil) and
-`MsaaResolveSpec` (resolve channel averaging, rounding and padded strides).
-`RenderCoreSpec`, `RenderHostSpec`, `GpuHostAxiSpec` and `GpuHostSystemAxiSpec`
+selection and full-width control-word decisions), `MsaaSpec` (sample patterns,
+2x/4x and 1x expander passes and depth reference/clamping), `RenderPipelineSpec`
+(sample depth at every mode and core-backed expansion at 1x, 2x and 4x),
+`KernelFragStageSpec` (ABI-1 emit/depth override, per-mode discard masks,
+malformed-control discard/retirement, helper-lane suppression and quad
+derivatives, and overlapping batch ABI snapshots), `OutputMergerSpec`
+(write-acknowledgement drain, blending and stencil) and `MsaaResolveSpec`
+(resolve channel averaging, rounding and padded strides). `RenderCoreSpec`
+(per-sample depth and depth override at 1x, 2x and 4x), `RenderHostSpec` and
+`GpuHostAxiSpec` (MSAA advertised on both backends) and `GpuHostSystemAxiSpec`
 (including an AXI-submitted 4x resolve end to end) cover integration and host
-behavior. Test presence is not a claim that all cases below are complete
-or that a full regression has passed.
+behavior. The guest DRM test renders a multisample target, resolves it and
+scans the result out. Test presence is not a claim that all cases below are
+complete or that a full regression has passed.
 
 Run the focused suites from the repository root:
 
@@ -534,8 +547,8 @@ Run the focused suites from the repository root:
 sbt 'testOnly opengpu.graphics.FragmentShaderAbiSpec opengpu.graphics.MsaaSpec opengpu.graphics.MsaaResolveSpec opengpu.graphics.OutputMergerSpec opengpu.graphics.KernelFragStageSpec opengpu.graphics.RenderPipelineSpec opengpu.graphics.RenderCoreSpec opengpu.graphics.RenderHostSpec opengpu.graphics.GpuHostAxiSpec'
 ```
 
-The lists below are the target verification matrix, including pending resolve
-and programmable-MSAA integration cases.
+The lists below are the target verification matrix, including the resolve and
+programmable-MSAA integration cases.
 
 ### Unit Tests
 

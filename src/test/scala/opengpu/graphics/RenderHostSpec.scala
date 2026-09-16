@@ -169,8 +169,8 @@ class RenderHostSpec extends AnyFlatSpec {
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       assert(regRead(dut, RenderHostRegs.ID) == 0x47550001L,
         "device ID register must report device<<16 | version")
-      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x83bL,
-         "fragment-core builds must advertise support, batch capacity and the job queue")
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x208bbL,
+         "fragment-core builds must advertise support, batch capacity, the job queue and programmable MSAA")
 
       // An unmapped address yields ok=false.
       dut.io.reg.req.valid.poke(true.B)
@@ -239,8 +239,8 @@ class RenderHostSpec extends AnyFlatSpec {
       vertCore = true)) { dut =>
       dut.io.externalCompletion.poke(false.B)
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x83fL,
-        "shared vertex/fragment-core builds must advertise both shader stages")
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x208bfL,
+        "shared vertex/fragment-core builds must advertise both shader stages and programmable MSAA")
     }
   }
 
@@ -411,17 +411,26 @@ class RenderHostSpec extends AnyFlatSpec {
     }
   }
 
-  it should "advertise MSAA only on fixed-function builds" in {
+  it should "advertise MSAA on both backends, selecting the backend by bit 0" in {
     val cfg = GpuConfig(lanes = 4, warps = 2)
-    simulate(new RenderHost(gpuConfig = cfg, fragCore = false)) { dut =>
-      dut.io.externalCompletion.poke(false.B)
-      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-      val cap = regRead(dut, RenderHostRegs.CAPABILITIES)
-      assert((cap & (1L << 7)) != 0L,
-        s"fixed-function builds must advertise MSAA, got 0x${cap.toString(16)}")
-      assert(((cap >> 16) & 0x3L) == 2L,
-        s"maximum sample mode must be log2(4) = 2, got 0x${cap.toString(16)}")
-      assert(cap == 0x208baL, s"unexpected capability word 0x${cap.toString(16)}")
+    for ((fragCore, expected) <- Seq(false -> 0x208baL, true -> 0x208bbL)) {
+      simulate(new RenderHost(gpuConfig = cfg, fragCore = fragCore)) { dut =>
+        dut.io.externalCompletion.poke(false.B)
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        val cap = regRead(dut, RenderHostRegs.CAPABILITIES)
+        assert((cap & (1L << 7)) != 0L,
+          s"fragCore=$fragCore must advertise MSAA, got 0x${cap.toString(16)}")
+        assert(((cap >> 16) & 0x3L) == 2L,
+          s"maximum sample mode must be log2(4) = 2, got 0x${cap.toString(16)}")
+        assert(cap == expected,
+          s"fragCore=$fragCore capability word 0x${cap.toString(16)} != 0x${expected.toHexString}")
+        // The render backend is the fragment-core bit's business: bit 7 says
+        // only that a nonzero sampleMode is accepted by whichever path bit 7
+        // pairs with.
+        assert(((cap >> GpuCapabilities.FragmentCore) & 1L) ==
+          (if (fragCore) 1L else 0L),
+          "the backend must be selected by the fragment-core bit, not the MSAA bit")
+      }
     }
   }
 

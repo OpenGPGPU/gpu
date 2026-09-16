@@ -148,8 +148,12 @@
  * commands and memory transactions, resets the command-path state and
  * acknowledges through STATUS.RESET_BUSY and the completion IRQ. */
 #define GPU_CAP_UNIFIED_RESET   (1u << 18)
-/* MSAA (bit7) is advertised only by fixed-function builds; bits 17:16 carry
- * the maximum supported sample mode (log2 of the maximum sample count). */
+/* MSAA (bit7): this build's render path accepts a nonzero sample mode, using
+ * the backend selected by GPU_CAP_FRAGMENT_CORE (bit0) - both set is
+ * programmable (fragment-shader) MSAA, bit0 clear with bit7 set is
+ * fixed-function MSAA.  A functional claim only: physical timing closure of
+ * the programmable stage is a separate gate.  Bits 17:16 carry the maximum
+ * supported sample mode (log2 of the maximum sample count). */
 #define GPU_CAP_MSAA            (1u << 7)
 #define GPU_CAP_MSAA_MAX_MODE_SHIFT 16u
 #define GPU_CAP_MSAA_MAX_MODE_MASK  (0x3u << GPU_CAP_MSAA_MAX_MODE_SHIFT)
@@ -409,8 +413,9 @@ struct gpu_draw_record {
  * shader depth. ABI 1 uses bit 0 to emit and bit 1 to replicate shader depth
  * to covered samples; otherwise raster sample depths are retained. Nonzero
  * reserved bits discard the pixel without a job error. Helpers never emit.
- * These definitions do not advertise programmable-MSAA support: software
- * must still check capabilities before submitting multisample shaders. */
+ * ABI 1 is the programmable-MSAA path and is advertised by GPU_CAP_MSAA on
+ * fragment-core builds; software must still check capabilities before
+ * submitting multisample shaders. */
 #define GPU_FRAGMENT_ABI_LEGACY       0u
 #define GPU_FRAGMENT_ABI_MULTISAMPLE  1u
 #define GPU_FRAGMENT_CONTROL_EMIT           (1u << 0)

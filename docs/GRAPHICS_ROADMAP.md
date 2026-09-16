@@ -108,8 +108,10 @@ track that distinction.
   through the host registers, job record, both draw forms and the Linux UAPI
   with full driver validation (see [STENCIL_BLEND_DESIGN.md](STENCIL_BLEND_DESIGN.md)).
 - Post-shading sample expansion and per-sample framebuffer addressing. MSAA is
-  advertised for fixed-function builds; programmable-path staging and ABI-1
-  depth selection exist internally but are not advertised to Linux.
+  advertised on both backends - fixed-function and programmable - with
+  programmable-path staging and ABI-1 depth selection exposed to Linux behind
+  the fragment-core capability bit. Bit 7 is a functional claim; physical
+  timing closure of the programmable stage remains a separate PPA gate.
 - GPU-internal shared L2 arbitration for command, shader, texture and
   framebuffer traffic.
 - Multi-CU dispatch plus copy, fill and strided DMA share the integrated memory
@@ -182,7 +184,8 @@ Close the current feature set before adding more shader operations.
   mode 0 uses ABI 0; modes 1/2 use ABI 1. ABI 0 preserves any-nonzero emit and
   shader depth. ABI 1 discards reserved-bit violations and selects emit/depth
   override from bits 0/1. Per-batch snapshots and overlapping draws are covered
-  by shader regressions. Programmable-MSAA advertising remains a P1 gate.
+  by shader regressions. Programmable MSAA is advertised through the same
+  mode-coupled contract, so the two paths share one ABI and one capability bit.
 - Keep draw-context retirement distinct from job completion: context state may
   retire after its final sample reaches an OM entry that snapshots the state;
   job DONE/fences must wait for acknowledged memory writes and lower-path drain.
@@ -218,8 +221,10 @@ qualify a capability as implemented end to end.
   the destination BO's write fence through the standard KMS implicit-sync path.
 - Attach source-read and destination-write reservation fences and sync objects;
   KMS must wait for resolved output before scanout.
-- Enable programmable MSAA only after helper-lane, derivative, discard,
-  per-sample depth and shader-depth-override tests cover its advertised modes.
+- Programmable MSAA is enabled: helper-lane, derivative, discard, per-sample
+  depth and shader-depth-override tests cover its advertised modes, and the
+  guest test performs a multisample render, resolve and scanout. Physical timing
+  closure of the programmable stage remains a separate PPA gate.
 - Keep one render submission as one pass with private cleared depth. Persistent
   depth attachments and cross-submission load/store semantics are separate work.
 

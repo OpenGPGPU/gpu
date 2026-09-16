@@ -393,197 +393,278 @@ class RenderPipelineSpec extends AnyFlatSpec {
     val d = (0 until 4).map(s => depthWord(mode2, 2, 5, 5, s))
     assert(d(0) + d(3) == d(1) + d(2), s"sample depths not affine: $d")
     assert(d.sum == 4 * centre, s"sample mean ${d.sum / 4.0} != centre $centre")
+
+    // Mode 1 places its two samples at the (-1,-1) and (+1,+1) quarter-pixel
+    // corners, so the depth ramp evaluates to +/-96 about the same centre.
+    val mode1 = drain(1)
+    val expected1 = Seq(centre - 96, centre + 96)
+    for (s <- 0 until 2) {
+      val got = depthWord(mode1, 1, 5, 5, s)
+      assert(got == expected1(s),
+        s"2x sample $s of pixel (5,5): got $got expected ${expected1(s)}")
+    }
+    val d1 = (0 until 2).map(s => depthWord(mode1, 1, 5, 5, s))
+    assert(d1(0) + d1(1) == 2 * centre, s"2x sample depths not affine: $d1")
   }
 
-  it should "soak the core-backed fragment path at 1x through the sample expander" in {
+  it should "soak the core-backed fragment path at every sample mode through the sample expander" in {
     val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
     val gpu = GpuConfig(lanes = 4, warps = 2)
-    val stride = 16 * 4
     val colorBase = 0x8000
     val depthBase = 0x9000
     val shaderPc = 0x1000
     val kernarg = 0x6000
 
+    // The vertex varyings are deliberately uniform across the triangle.  The
+    // kernel consumes the interpolated depth through the SoA kernarg arrays,
+    // and the KernelFragStage coherence contract (see its class doc) makes
+    // non-uniform per-fragment inputs unsafe here: staging writes reach memory
+    // through the word bridge while the kernel's loads hit the CU's L1, which
+    // nothing invalidates between batches in this harness.  A constant depth
+    // plane keeps that input uniform (and its gradient zero, so every sample's
+    // depth equals the centre), which is the only formulation that stays
+    // deterministic.  The per-sample depth *ramp* over a nonzero gradient
+    // belongs to RenderCoreSpec, whose per-sample depths ride the register
+    // sideband rather than the kernarg arrays.
+    val vertexDepth = 0x10
+
     // Unified word-addressed model shared by the output merger, the compute
     // unit's line port and the word->line bridge.  A single map keys every
     // port off the byte address, so the kernel's instruction fetch, its
     // kernarg reads/writes and the framebuffer write all observe one image.
-    val m = scala.collection.mutable.LongMap[Int]()
-    def word(a: Long): Long = m.getOrElse(a, 0) & 0xffffffffL
-    def wwrite(a: Long, d: Int): Unit = m(a) = d & 0xffffffff
-    def lineRead(a: Long): BigInt =
-      (0 until 16).map(i => BigInt(word(a + i * 4)) << (i * 32)).foldLeft(BigInt(0))(_ | _)
-    def lineWrite(a: Long, wd: BigInt, bm: BigInt): Unit = {
-      for (wi <- 0 until 16) {
-        var wo = word(a + wi * 4); val base = wi * 4
-        for (b <- 0 until 4) {
-          val byte = base + b
-          if (((bm >> byte) & 1) != 0)
-            wo = (wo & ~(0xffL << (b * 8))) | ((((wd >> (byte * 8)) & 0xff).toLong) << (b * 8))
+    //
+    // The render itself is parameterised by sample mode; the multisample
+    // layouts give each pixel `1 << mode` consecutive words (the OM's
+    // `(x << mode) + sample` offset) so the row stride scales with the mode.
+    def soak(sampleMode: Int): scala.collection.mutable.LongMap[Int] = {
+      val wordsPerRow = 16 << sampleMode
+      val stride = wordsPerRow * 4
+      val m = scala.collection.mutable.LongMap[Int]()
+      def word(a: Long): Long = m.getOrElse(a, 0) & 0xffffffffL
+      def wwrite(a: Long, d: Int): Unit = m(a) = d & 0xffffffff
+      def lineRead(a: Long): BigInt =
+        (0 until 16).map(i => BigInt(word(a + i * 4)) << (i * 32)).foldLeft(BigInt(0))(_ | _)
+      def lineWrite(a: Long, wd: BigInt, bm: BigInt): Unit = {
+        for (wi <- 0 until 16) {
+          var wo = word(a + wi * 4); val base = wi * 4
+          for (b <- 0 until 4) {
+            val byte = base + b
+            if (((bm >> byte) & 1) != 0)
+              wo = (wo & ~(0xffL << (b * 8))) | ((((wd >> (byte * 8)) & 0xff).toLong) << (b * 8))
+          }
+          m(a + wi * 4) = wo.toInt & 0xffffffff
         }
-        m(a + wi * 4) = wo.toInt & 0xffffffff
       }
+
+      // Lane-aware pass-through over the SoA kernarg ABI (stride = 32 for
+      // warps=2, lanes=4): x8 = localLinearBase gives the warp's first fragment
+      // index, one vector load/store pair moves all four lanes' colour, and the
+      // input depth is incremented into the output slice.  This drives the full
+      // rasterize -> kernel -> expander -> OM data path.  At sampleMode 0 the
+      // expander must be 1-in/1-out so the OM stream matches the pre-MSAA
+      // direct path bit for bit; in modes 1 and 2 it must fan the one shader
+      // colour out to every covered sample and carry the rasterizer's
+      // per-sample depths (ABI 1 leaves the depth override clear) through.
+      def slli(rd: Int, rs1: Int, sh: Int): Int =
+        (sh << 20) | (rs1 << 15) | (1 << 12) | (rd << 7) | 0x13
+      def add(rd: Int, rs1: Int, rs2: Int): Int = (rs2 << 20) | (rs1 << 15) | (rd << 7) | 0x33
+      def addi(rd: Int, rs1: Int, imm: Int): Int =
+        ((imm & 0xfff) << 20) | (rs1 << 15) | (rd << 7) | 0x13
+      def vsetivli(uimm: Int): Int = (0x3 << 30) | (0x10 << 20) | (uimm << 15) | (0x7 << 12) | 0x57
+      def vle32(rs1: Int, vd: Int): Int = (1 << 25) | (0x6 << 12) | (vd << 7) | (rs1 << 15) | 0x07
+      def vse32(rs1: Int, vs3: Int): Int = (1 << 25) | (0x6 << 12) | (vs3 << 7) | (rs1 << 15) | 0x27
+      def vaddVi(vd: Int, vs2: Int, imm: Int): Int =
+        (1 << 25) | (vs2 << 20) | ((imm & 0x1f) << 15) | (3 << 12) | (vd << 7) | 0x57
+      val cease = 0x30500073
+      val program = Seq(
+        slli(5, 8, 2), add(5, 1, 5), vsetivli(4), addi(6, 5, 96),
+        vle32(6, 2), addi(6, 5, 192), vse32(6, 2),
+        addi(6, 5, 64), vle32(6, 3), vaddVi(3, 3, 1),
+        addi(6, 5, 224), vse32(6, 3), cease)
+      program.zipWithIndex.foreach { case (w, i) => wwrite(shaderPc + i * 4, w) }
+      // The whole multisample depth image is seeded "far" so an uncovered
+      // sample is distinguishable from a rendered one.
+      for (i <- 0 until (16 * wordsPerRow))
+        wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
+
+      simulate(new RenderPipeline(config, gpu, fragCore = true)) { dut =>
+        dut.reset.poke(true.B)
+        dut.clock.step()
+        dut.reset.poke(false.B)
+        dut.io.colorBase.poke(colorBase.U)
+        dut.io.depthBase.poke(depthBase.U)
+        dut.io.stride.poke(stride.U)
+        dut.io.depthTestEnable.poke(true.B)
+        dut.io.depthFunc.poke(0.U)
+        dut.io.depthWriteEnable.poke(true.B)
+        dut.io.cullMode.poke(0.U)
+        dut.io.sampleMode.poke(sampleMode.U)
+        dut.io.texEnable.poke(false.B)
+        dut.io.texBase.poke(0.U)
+        dut.io.texWidth.poke(0.U)
+        dut.io.texHeight.poke(0.U)
+        dut.io.texWrapClamp.poke(false.B)
+        dut.io.texMaxLevel.poke(0.U)
+        dut.io.texMem.req.ready.poke(true.B)
+        dut.io.texMem.resp.valid.poke(false.B)
+        dut.io.mem.req.ready.poke(true.B)
+        dut.io.mem.resp.valid.poke(false.B)
+        dut.io.kernelMemReq.ready.poke(true.B)
+        dut.io.kernelMemResp.valid.poke(false.B)
+        dut.io.kernelMemResp.bits.readData.poke(0.U)
+        dut.io.kernelMemResp.bits.fault.poke(false.B)
+        dut.io.kernelMemResp.bits.transactionId.poke(0.U)
+        dut.io.kernelWordMemReq.ready.poke(true.B)
+        dut.io.kernelWordMemResp.valid.poke(false.B)
+        dut.io.kernelWordMemResp.bits.readData.poke(0.U)
+        dut.io.kernelWordMemResp.bits.fault.poke(false.B)
+        dut.io.kernelWordMemResp.bits.transactionId.poke(0.U)
+        dut.io.kernelL1Invalidate.valid.poke(false.B)
+        dut.io.kernelL1InvalidateDone.ready.poke(true.B)
+        dut.io.kernelGlobalAtomicRequest.ready.poke(true.B)
+        dut.io.kernelGlobalAtomicResponse.valid.poke(false.B)
+
+        val drawBits = dut.io.draw.bits.asInstanceOf[SceneTriangle]
+        drawBits.stateOverride.poke(false.B)
+        drawBits.shaderPc.poke(shaderPc.U)
+        drawBits.shaderKernarg.poke(kernarg.U)
+        drawBits.kernargBankStride.poke(0.U)
+        val vertex = Seq((-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0))
+        for (i <- 0 until 3) {
+          drawBits.clip(i).x.poke(q(vertex(i)._1).S)
+          drawBits.clip(i).y.poke(q(vertex(i)._2).S)
+          drawBits.clip(i).z.poke(0.S)
+          drawBits.clip(i).w.poke(q(1.0).S)
+          drawBits.color(i).r.poke(255.U)
+          drawBits.color(i).g.poke(0.U)
+          drawBits.color(i).b.poke(0.U)
+          drawBits.depth(i).poke(vertexDepth.S)
+        }
+        dut.io.draw.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.draw.valid.poke(false.B)
+
+        // Deferred-response queues: a request that fires is captured with the
+        // data the word model held at capture time; the response is then held
+        // until the DUT's port actually accepts it.  Both kernel line ports and
+        // the output-merger port are serviced in parallel so the multi-
+        // outstanding reads each in flight can all retire.
+        val kuQ = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
+        val wuQ = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
+        val omQ = scala.collection.mutable.Queue.empty[(Boolean, Long, Long)]
+        var guard = 0
+        while (!dut.io.done.peek().litToBoolean && guard < 120000) {
+          dut.io.mem.req.ready.poke(true.B)
+          if (omQ.nonEmpty) {
+            val (write, a, d) = omQ.head
+            dut.io.mem.resp.valid.poke(true.B)
+            dut.io.mem.resp.bits.write.poke(write.B)
+            dut.io.mem.resp.bits.data.poke(d.U)
+            dut.io.mem.resp.bits.addr.poke(a.U)
+          } else dut.io.mem.resp.valid.poke(false.B)
+          if (omQ.nonEmpty && dut.io.mem.resp.ready.peek().litToBoolean) omQ.dequeue()
+          if (dut.io.mem.req.valid.peek().litToBoolean && dut.io.mem.req.ready.peek().litToBoolean) {
+            val a = dut.io.mem.req.bits.addr.peek().litValue.toLong
+            val write = dut.io.mem.req.bits.write.peek().litToBoolean
+            if (write) wwrite(a, dut.io.mem.req.bits.data.peek().litValue.toInt)
+            omQ.enqueue((write, a, word(a)))
+          }
+
+          if (kuQ.nonEmpty) {
+            dut.io.kernelMemResp.valid.poke(true.B)
+            dut.io.kernelMemResp.bits.transactionId.poke(kuQ.head._1.U)
+            dut.io.kernelMemResp.bits.readData.poke(kuQ.head._2.U)
+            dut.io.kernelMemResp.bits.fault.poke(false.B)
+          } else dut.io.kernelMemResp.valid.poke(false.B)
+          if (kuQ.nonEmpty && dut.io.kernelMemResp.ready.peek().litToBoolean) kuQ.dequeue()
+          if (dut.io.kernelMemReq.valid.peek().litToBoolean && dut.io.kernelMemReq.ready.peek().litToBoolean) {
+            val a = dut.io.kernelMemReq.bits.address.peek().litValue.toLong
+            val id = dut.io.kernelMemReq.bits.transactionId.peek().litValue
+            if (dut.io.kernelMemReq.bits.isWrite.peek().litToBoolean) {
+              lineWrite(a, dut.io.kernelMemReq.bits.writeData.peek().litValue,
+                dut.io.kernelMemReq.bits.byteMask.peek().litValue); kuQ.enqueue((id, BigInt(0)))
+            } else kuQ.enqueue((id, lineRead(a)))
+          }
+
+          if (wuQ.nonEmpty) {
+            dut.io.kernelWordMemResp.valid.poke(true.B)
+            dut.io.kernelWordMemResp.bits.transactionId.poke(wuQ.head._1.U)
+            dut.io.kernelWordMemResp.bits.readData.poke(wuQ.head._2.U)
+            dut.io.kernelWordMemResp.bits.fault.poke(false.B)
+          } else dut.io.kernelWordMemResp.valid.poke(false.B)
+          if (wuQ.nonEmpty && dut.io.kernelWordMemResp.ready.peek().litToBoolean) wuQ.dequeue()
+          if (dut.io.kernelWordMemReq.valid.peek().litToBoolean && dut.io.kernelWordMemReq.ready.peek().litToBoolean) {
+            val a = dut.io.kernelWordMemReq.bits.address.peek().litValue.toLong
+            val id = dut.io.kernelWordMemReq.bits.transactionId.peek().litValue
+            if (dut.io.kernelWordMemReq.bits.isWrite.peek().litToBoolean) {
+              lineWrite(a, dut.io.kernelWordMemReq.bits.writeData.peek().litValue,
+                dut.io.kernelWordMemReq.bits.byteMask.peek().litValue); wuQ.enqueue((id, BigInt(0)))
+            } else wuQ.enqueue((id, lineRead(a)))
+          }
+
+          dut.clock.step()
+          guard += 1
+        }
+        assert(guard < 120000, "core-backed soak did not drain")
+      }
+      m
     }
 
-    // Lane-aware pass-through over the SoA kernarg ABI (stride = 32 for
-    // warps=2, lanes=4): x8 = localLinearBase gives the warp's first fragment
-    // index, one vector load/store pair moves all four lanes' colour, and the
-    // input depth is incremented into the output slice.  This drives the full
-    // rasterize -> kernel -> expander -> OM data path at sampleMode 0, where
-    // the expander must be 1-in/1-out so the OM stream matches the pre-MSAA
-    // direct path bit for bit.
-    def slli(rd: Int, rs1: Int, sh: Int): Int =
-      (sh << 20) | (rs1 << 15) | (1 << 12) | (rd << 7) | 0x13
-    def add(rd: Int, rs1: Int, rs2: Int): Int = (rs2 << 20) | (rs1 << 15) | (rd << 7) | 0x33
-    def addi(rd: Int, rs1: Int, imm: Int): Int =
-      ((imm & 0xfff) << 20) | (rs1 << 15) | (rd << 7) | 0x13
-    def vsetivli(uimm: Int): Int = (0x3 << 30) | (0x10 << 20) | (uimm << 15) | (0x7 << 12) | 0x57
-    def vle32(rs1: Int, vd: Int): Int = (1 << 25) | (0x6 << 12) | (vd << 7) | (rs1 << 15) | 0x07
-    def vse32(rs1: Int, vs3: Int): Int = (1 << 25) | (0x6 << 12) | (vs3 << 7) | (rs1 << 15) | 0x27
-    def vaddVi(vd: Int, vs2: Int, imm: Int): Int =
-      (1 << 25) | (vs2 << 20) | ((imm & 0x1f) << 15) | (3 << 12) | (vd << 7) | 0x57
-    val cease = 0x30500073
-    val program = Seq(
-      slli(5, 8, 2), add(5, 1, 5), vsetivli(4), addi(6, 5, 96),
-      vle32(6, 2), addi(6, 5, 192), vse32(6, 2),
-      addi(6, 5, 64), vle32(6, 3), vaddVi(3, 3, 1),
-      addi(6, 5, 224), vse32(6, 3), cease)
-    program.zipWithIndex.foreach { case (w, i) => wwrite(shaderPc + i * 4, w) }
-    for (i <- 0 until (16 * 16)) wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
+    // Byte offset of sample `s` of pixel (x, y) in either buffer: the OM's
+    // `(x << sampleMode) + sampleIndex` sample offset within a row of
+    // `16 << sampleMode` words.
+    def sampleOffset(x: Int, y: Int, s: Int, mode: Int): Long =
+      (y * (16 << mode) + (x << mode) + s) * 4L
+    def colorWord(m: scala.collection.mutable.LongMap[Int], mode: Int,
+      x: Int, y: Int, s: Int): Long =
+      m.getOrElse(colorBase + sampleOffset(x, y, s, mode), 0) & 0xffffffffL
+    def depthWord(m: scala.collection.mutable.LongMap[Int], mode: Int,
+      x: Int, y: Int, s: Int): Int =
+      m.getOrElse(depthBase + sampleOffset(x, y, s, mode), 0)
 
-    simulate(new RenderPipeline(config, gpu, fragCore = true)) { dut =>
-      dut.reset.poke(true.B)
-      dut.clock.step()
-      dut.reset.poke(false.B)
-      dut.io.colorBase.poke(colorBase.U)
-      dut.io.depthBase.poke(depthBase.U)
-      dut.io.stride.poke(stride.U)
-      dut.io.depthTestEnable.poke(true.B)
-      dut.io.depthFunc.poke(0.U)
-      dut.io.depthWriteEnable.poke(true.B)
-      dut.io.cullMode.poke(0.U)
-      dut.io.sampleMode.poke(0.U)
-      dut.io.texEnable.poke(false.B)
-      dut.io.texBase.poke(0.U)
-      dut.io.texWidth.poke(0.U)
-      dut.io.texHeight.poke(0.U)
-      dut.io.texWrapClamp.poke(false.B)
-      dut.io.texMaxLevel.poke(0.U)
-      dut.io.texMem.req.ready.poke(true.B)
-      dut.io.texMem.resp.valid.poke(false.B)
-      dut.io.mem.req.ready.poke(true.B)
-      dut.io.mem.resp.valid.poke(false.B)
-      dut.io.kernelMemReq.ready.poke(true.B)
-      dut.io.kernelMemResp.valid.poke(false.B)
-      dut.io.kernelMemResp.bits.readData.poke(0.U)
-      dut.io.kernelMemResp.bits.fault.poke(false.B)
-      dut.io.kernelMemResp.bits.transactionId.poke(0.U)
-      dut.io.kernelWordMemReq.ready.poke(true.B)
-      dut.io.kernelWordMemResp.valid.poke(false.B)
-      dut.io.kernelWordMemResp.bits.readData.poke(0.U)
-      dut.io.kernelWordMemResp.bits.fault.poke(false.B)
-      dut.io.kernelWordMemResp.bits.transactionId.poke(0.U)
-      dut.io.kernelL1Invalidate.valid.poke(false.B)
-      dut.io.kernelL1InvalidateDone.ready.poke(true.B)
-      dut.io.kernelGlobalAtomicRequest.ready.poke(true.B)
-      dut.io.kernelGlobalAtomicResponse.valid.poke(false.B)
+    // Fully covered interior pixels of the lower-left-half triangle.
+    val covered = Seq((5, 5), (2, 2), (8, 4), (4, 8))
 
-      val drawBits = dut.io.draw.bits.asInstanceOf[SceneTriangle]
-      drawBits.stateOverride.poke(false.B)
-      drawBits.shaderPc.poke(shaderPc.U)
-      drawBits.shaderKernarg.poke(kernarg.U)
-      drawBits.kernargBankStride.poke(0.U)
-      val vertex = Seq((-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0))
-      for (i <- 0 until 3) {
-        drawBits.clip(i).x.poke(q(vertex(i)._1).S)
-        drawBits.clip(i).y.poke(q(vertex(i)._2).S)
-        drawBits.clip(i).z.poke(0.S)
-        drawBits.clip(i).w.poke(q(1.0).S)
-        drawBits.color(i).r.poke(255.U)
-        drawBits.color(i).g.poke(0.U)
-        drawBits.color(i).b.poke(0.U)
-        drawBits.depth(i).poke(0x10.S)
+    // Mode 0 keeps the pre-MSAA contract: the expander is 1-in/1-out, the
+    // kernel shades every covered pixel red, and ABI 0 always takes the
+    // shader-written depth word (the kernarg depth input plus the kernel's
+    // increment), so the result matches the direct fixed-function path bit
+    // for bit.
+    val mode0 = soak(0)
+    for ((x, y) <- covered) {
+      assert(colorWord(mode0, 0, x, y, 0) == 0xff0000ffL,
+        s"sampleMode 0 colour ($x,$y): got 0x${colorWord(mode0, 0, x, y, 0).toHexString}")
+      assert(depthWord(mode0, 0, x, y, 0) == vertexDepth + 1,
+        s"sampleMode 0 depth ($x,$y): got ${depthWord(mode0, 0, x, y, 0)}")
+    }
+
+    // Modes 1 and 2 fan the one shader colour out to every covered sample at
+    // the `(x << mode) + sample` address, and (ABI 1, depth override clear)
+    // carry the rasterizer's per-sample depths.  The depth plane is flat, so
+    // every sample of a pixel takes that pixel's centre depth: the per-sample
+    // fan-out and addressing are what this covers, the quarter-pixel gradient
+    // being exercised by RenderCoreSpec.
+    for (mode <- Seq(1, 2)) {
+      val positions = Msaa.positions(mode)
+      val m = soak(mode)
+      for ((x, y) <- covered; s <- positions.indices) {
+        assert(colorWord(m, mode, x, y, s) == 0xff0000ffL,
+          s"sampleMode $mode colour sample $s of ($x,$y): " +
+            s"got 0x${colorWord(m, mode, x, y, s).toHexString}")
+        assert(depthWord(m, mode, x, y, s) == vertexDepth,
+          s"sampleMode $mode depth sample $s of ($x,$y): " +
+            s"got ${depthWord(m, mode, x, y, s)} expected $vertexDepth")
       }
-      dut.io.draw.valid.poke(true.B)
-      dut.clock.step()
-      dut.io.draw.valid.poke(false.B)
-
-      // Deferred-response queues: a request that fires is captured with the
-      // data the word model held at capture time; the response is then held
-      // until the DUT's port actually accepts it.  Both kernel line ports and
-      // the output-merger port are serviced in parallel so the multi-
-      // outstanding reads each in flight can all retire.
-      val kuQ = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
-      val wuQ = scala.collection.mutable.Queue.empty[(BigInt, BigInt)]
-      val omQ = scala.collection.mutable.Queue.empty[(Boolean, Long, Long)]
-      var guard = 0
-      while (!dut.io.done.peek().litToBoolean && guard < 60000) {
-        dut.io.mem.req.ready.poke(true.B)
-        if (omQ.nonEmpty) {
-          val (write, a, d) = omQ.head
-          dut.io.mem.resp.valid.poke(true.B)
-          dut.io.mem.resp.bits.write.poke(write.B)
-          dut.io.mem.resp.bits.data.poke(d.U)
-          dut.io.mem.resp.bits.addr.poke(a.U)
-        } else dut.io.mem.resp.valid.poke(false.B)
-        if (omQ.nonEmpty && dut.io.mem.resp.ready.peek().litToBoolean) omQ.dequeue()
-        if (dut.io.mem.req.valid.peek().litToBoolean && dut.io.mem.req.ready.peek().litToBoolean) {
-          val a = dut.io.mem.req.bits.addr.peek().litValue.toLong
-          val write = dut.io.mem.req.bits.write.peek().litToBoolean
-          if (write) wwrite(a, dut.io.mem.req.bits.data.peek().litValue.toInt)
-          omQ.enqueue((write, a, word(a)))
-        }
-
-        if (kuQ.nonEmpty) {
-          dut.io.kernelMemResp.valid.poke(true.B)
-          dut.io.kernelMemResp.bits.transactionId.poke(kuQ.head._1.U)
-          dut.io.kernelMemResp.bits.readData.poke(kuQ.head._2.U)
-          dut.io.kernelMemResp.bits.fault.poke(false.B)
-        } else dut.io.kernelMemResp.valid.poke(false.B)
-        if (kuQ.nonEmpty && dut.io.kernelMemResp.ready.peek().litToBoolean) kuQ.dequeue()
-        if (dut.io.kernelMemReq.valid.peek().litToBoolean && dut.io.kernelMemReq.ready.peek().litToBoolean) {
-          val a = dut.io.kernelMemReq.bits.address.peek().litValue.toLong
-          val id = dut.io.kernelMemReq.bits.transactionId.peek().litValue
-          if (dut.io.kernelMemReq.bits.isWrite.peek().litToBoolean) {
-            lineWrite(a, dut.io.kernelMemReq.bits.writeData.peek().litValue,
-              dut.io.kernelMemReq.bits.byteMask.peek().litValue); kuQ.enqueue((id, BigInt(0)))
-          } else kuQ.enqueue((id, lineRead(a)))
-        }
-
-        if (wuQ.nonEmpty) {
-          dut.io.kernelWordMemResp.valid.poke(true.B)
-          dut.io.kernelWordMemResp.bits.transactionId.poke(wuQ.head._1.U)
-          dut.io.kernelWordMemResp.bits.readData.poke(wuQ.head._2.U)
-          dut.io.kernelWordMemResp.bits.fault.poke(false.B)
-        } else dut.io.kernelWordMemResp.valid.poke(false.B)
-        if (wuQ.nonEmpty && dut.io.kernelWordMemResp.ready.peek().litToBoolean) wuQ.dequeue()
-        if (dut.io.kernelWordMemReq.valid.peek().litToBoolean && dut.io.kernelWordMemReq.ready.peek().litToBoolean) {
-          val a = dut.io.kernelWordMemReq.bits.address.peek().litValue.toLong
-          val id = dut.io.kernelWordMemReq.bits.transactionId.peek().litValue
-          if (dut.io.kernelWordMemReq.bits.isWrite.peek().litToBoolean) {
-            lineWrite(a, dut.io.kernelWordMemReq.bits.writeData.peek().litValue,
-              dut.io.kernelWordMemReq.bits.byteMask.peek().litValue); wuQ.enqueue((id, BigInt(0)))
-          } else wuQ.enqueue((id, lineRead(a)))
-        }
-
-        dut.clock.step()
-        guard += 1
+      // A pixel outside the triangle renders no sample at all: every sample
+      // keeps its seeded far depth and the colour buffer stays zero.
+      for (s <- positions.indices) {
+        assert(depthWord(m, mode, 13, 13, s) == 0x00ffffff,
+          s"uncovered sample $s must keep its seeded depth, got " +
+            s"${depthWord(m, mode, 13, 13, s)}")
+        assert(colorWord(m, mode, 13, 13, s) == 0L,
+          s"uncovered sample $s must stay black, got " +
+            s"0x${colorWord(m, mode, 13, 13, s).toHexString}")
       }
-      assert(guard < 60000, "core-backed soak did not drain")
-
-      def rgb(x: Int, y: Int): (Int, Int, Int) = {
-        val c = word(colorBase + (y * 16 + x) * 4).toInt
-        (((c >> 24) & 0xff), ((c >> 16) & 0xff), ((c >> 8) & 0xff))
-      }
-      // The kernel shades every covered pixel red (its input colour is
-      // constant, so batch-to-batch L1 reuse cannot perturb it) and writes the
-      // incremented depth.  Matching the direct fixed-function result proves
-      // the new expander routing is transparent at sampleMode 0.
-      assert(rgb(5, 5) == (255, 0, 0), s"core-shaded (5,5) should be red, got ${rgb(5, 5)}")
-      assert(rgb(2, 2) == (255, 0, 0), s"core-shaded (2,2) should be red, got ${rgb(2, 2)}")
-      assert(word(depthBase + (5 * 16 + 5) * 4).toInt == 0x11,
-        s"shader depth (5,5) should be 0x11, got ${word(depthBase + (5 * 16 + 5) * 4).toInt}")
-      assert(rgb(13, 13) == (0, 0, 0), s"uncovered (13,13) should stay black, got ${rgb(13, 13)}")
     }
   }
 }

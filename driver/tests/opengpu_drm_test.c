@@ -279,6 +279,38 @@ static int create_fb(int fd, uint32_t color, struct dumb_fb *fb)
     return 0;
 }
 
+/* Allocate a raw dumb buffer of width_px x height_px words and fill it with
+ * `color`.  Unlike create_fb this does not register a framebuffer: it backs an
+ * intermediate surface, such as a multisample render target whose row pitch is
+ * wider than the scanned-out width. */
+static int create_dumb_buffer(int fd, uint32_t width_px, uint32_t height_px,
+                              uint32_t color, struct dumb_fb *fb)
+{
+    struct drm_mode_create_dumb create = {
+        .width = width_px,
+        .height = height_px,
+        .bpp = 32,
+    };
+    struct drm_mode_map_dumb map = { 0 };
+    uint32_t i;
+
+    if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0)
+        return -1;
+    fb->handle = create.handle;
+    fb->pitch = create.pitch;
+    fb->size = create.size;
+    map.handle = fb->handle;
+    if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0)
+        return -1;
+    fb->map = mmap(NULL, fb->size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                   fd, map.offset);
+    if (fb->map == MAP_FAILED)
+        return -1;
+    for (i = 0; i < fb->size / sizeof(uint32_t); i++)
+        ((uint32_t *)fb->map)[i] = color;
+    return 0;
+}
+
 static int create_command_buffer(int fd, struct command_buffer *commands)
 {
     struct drm_mode_create_dumb create = {
@@ -570,8 +602,8 @@ static int submit_render_count(int fd, uint32_t context_id,
                                const struct command_buffer *commands,
                                const struct dumb_fb *fb, uint32_t count,
                                uint32_t texture_slot, uint32_t shader_slot,
-                               uint32_t kernarg_slot, uint32_t in_syncobj,
-                               uint32_t out_syncobj)
+                               uint32_t kernarg_slot, uint32_t sample_mode,
+                               uint32_t in_syncobj, uint32_t out_syncobj)
 {
     struct drm_opengpu_submit submit = {
         .context_id = context_id,
@@ -583,6 +615,7 @@ static int submit_render_count(int fd, uint32_t context_id,
         .texture_slot = texture_slot,
         .shader_slot = shader_slot,
         .kernarg_slot = kernarg_slot,
+        .sample_mode = sample_mode,
         .in_syncobj = in_syncobj,
         .out_syncobj = out_syncobj,
     };
@@ -594,11 +627,12 @@ static int submit_render(int fd, uint32_t context_id,
                          const struct command_buffer *commands,
                          const struct dumb_fb *fb, uint32_t texture_slot,
                          uint32_t shader_slot, uint32_t kernarg_slot,
-                         uint32_t in_syncobj, uint32_t out_syncobj)
+                         uint32_t sample_mode, uint32_t in_syncobj,
+                         uint32_t out_syncobj)
 {
     return submit_render_count(fd, context_id, commands, fb, 1, texture_slot,
-                               shader_slot, kernarg_slot, in_syncobj,
-                               out_syncobj);
+                               shader_slot, kernarg_slot, sample_mode,
+                               in_syncobj, out_syncobj);
 }
 
 static int submit_vertex_render(
@@ -606,7 +640,7 @@ static int submit_vertex_render(
     const struct dumb_fb *fb, uint32_t texture_slot,
     uint32_t fragment_shader_slot, uint32_t fragment_kernarg_slot,
     uint32_t vertex_buffer_slot, uint32_t vertex_shader_slot,
-    uint32_t vertex_kernarg_slot, uint32_t in_syncobj,
+    uint32_t vertex_kernarg_slot, uint32_t sample_mode, uint32_t in_syncobj,
     uint32_t out_syncobj)
 {
     struct drm_opengpu_submit submit = {
@@ -620,6 +654,7 @@ static int submit_vertex_render(
         .texture_slot = texture_slot,
         .shader_slot = fragment_shader_slot,
         .kernarg_slot = fragment_kernarg_slot,
+        .sample_mode = sample_mode,
         .in_syncobj = in_syncobj,
         .out_syncobj = out_syncobj,
         .vertex_buffer_slot = vertex_buffer_slot,
@@ -636,17 +671,17 @@ static int submit_selected_render(
     uint32_t texture_slot, uint32_t fragment_shader_slot,
     uint32_t fragment_kernarg_slot, uint32_t vertex_buffer_slot,
     uint32_t vertex_shader_slot, uint32_t vertex_kernarg_slot,
-    uint32_t in_syncobj, uint32_t out_syncobj)
+    uint32_t sample_mode, uint32_t in_syncobj, uint32_t out_syncobj)
 {
     if (vertex_core)
         return submit_vertex_render(
             fd, context_id, commands, fb, texture_slot,
             fragment_shader_slot, fragment_kernarg_slot,
             vertex_buffer_slot, vertex_shader_slot, vertex_kernarg_slot,
-            in_syncobj, out_syncobj);
+            sample_mode, in_syncobj, out_syncobj);
     return submit_render(fd, context_id, commands, fb, texture_slot,
                          fragment_shader_slot, fragment_kernarg_slot,
-                         in_syncobj, out_syncobj);
+                         sample_mode, in_syncobj, out_syncobj);
 }
 
 static int submit_blit(int fd, uint32_t context_id,
@@ -823,7 +858,7 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
 
     commands->map->shader_pc = 4;
     errno = 0;
-    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0, 0);
     commands->map->shader_pc = 0;
     if (ret != -1 || errno != EINVAL)
         goto fail;
@@ -831,7 +866,7 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
     commands->map->state &= ~OPENGPU_DRAW_STATE_MAX_MIP_MASK;
     commands->map->state |= 3u << OPENGPU_DRAW_STATE_MAX_MIP_SHIFT;
     errno = 0;
-    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0, 0);
     commands->map->state &= ~OPENGPU_DRAW_STATE_MAX_MIP_MASK;
     commands->map->state |= 2u << OPENGPU_DRAW_STATE_MAX_MIP_SHIFT;
     if (ret != -1 || errno != EINVAL)
@@ -839,14 +874,14 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
 
     commands->map->reserved[0] = 1;
     errno = 0;
-    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0, 0);
     commands->map->reserved[0] = 0;
     if (ret != -1 || errno != EINVAL)
         goto fail;
 
     commands->map->sampler = 3u << OPENGPU_DRAW_SAMPLER_MIN_LOD_SHIFT;
     errno = 0;
-    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0, 0);
     commands->map->sampler = 0;
     if (ret != -1 || errno != EINVAL)
         goto fail;
@@ -855,7 +890,7 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
     commands->map->blend_config = OPENGPU_DRAW_BLEND_PRESENT |
         (11u << OPENGPU_DRAW_BLEND_SRC_SHIFT);
     errno = 0;
-    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0, 0);
     commands->map->blend_config = 0;
     if (ret != -1 || errno != EINVAL)
         goto fail;
@@ -864,7 +899,7 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
     commands->map->blend_config = OPENGPU_DRAW_BLEND_PRESENT |
         (5u << OPENGPU_DRAW_BLEND_EQ_SHIFT);
     errno = 0;
-    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0, 0);
     commands->map->blend_config = 0;
     if (ret != -1 || errno != EINVAL)
         goto fail;
@@ -872,7 +907,7 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
     /* Stencil words without the stencil-test enable bit. */
     commands->map->stencil_ref = 1u;
     errno = 0;
-    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0);
+    ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0, 0);
     commands->map->stencil_ref = 0;
     if (ret == -1 && errno == EINVAL)
         return 0;
@@ -1057,6 +1092,24 @@ static uint32_t framebuffer_count(const struct dumb_fb *fb, uint32_t pixel)
     return count;
 }
 
+/* Rounded half-up channel average of packed RGBA8888 samples, mirroring the
+ * resolve datapath (MsaaResolveEngine): each 8-bit channel is summed over the
+ * samples and divided by the power-of-two count after adding count/2. */
+static uint32_t resolve_average(const uint32_t *samples, uint32_t count)
+{
+    uint32_t word = 0;
+    uint32_t channel, index;
+
+    for (channel = 0; channel < 4; channel++) {
+        uint32_t sum = 0;
+
+        for (index = 0; index < count; index++)
+            sum += (samples[index] >> (8 * channel)) & 0xffu;
+        word |= (((sum + count / 2) / count) & 0xffu) << (8 * channel);
+    }
+    return word;
+}
+
 static void write_vector_shader(void *mapping)
 {
     uint32_t *program = mapping;
@@ -1211,9 +1264,10 @@ int main(void)
     msaa_capable = !!(capabilities & OPENGPU_CAP_MSAA);
     msaa_max_mode = (capabilities & OPENGPU_CAP_MSAA_MAX_MODE_MASK) >>
                     OPENGPU_CAP_MSAA_MAX_MODE_SHIFT;
-    /* MSAA is fixed-function only; a programmable build must never advertise
-     * it, and a capable build must report a non-zero max sample mode. */
-    if ((msaa_capable && (frag_core || msaa_max_mode < 1)) ||
+    /* MSAA is advertised on both backends - the backend is selected by
+     * OPENGPU_CAP_FRAGMENT_CORE.  A capable build must report a non-zero max
+     * sample mode and an incapable build must report a zero one. */
+    if ((msaa_capable && msaa_max_mode < 1) ||
         (!msaa_capable && msaa_max_mode != 0)) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL MSAA capabilities");
@@ -1374,12 +1428,12 @@ int main(void)
     CHECK(submit_selected_render(
               fd, vert_core, context_id, &commands, &first, texture_slot,
               shader_slot, kernarg_slot, vertex_buffer_slot,
-              vertex_shader_slot, vertex_kernarg_slot, 0, syncobjs[1]),
+              vertex_shader_slot, vertex_kernarg_slot, 0, 0, syncobjs[1]),
           "queue first buffer");
     CHECK(submit_selected_render(
               fd, vert_core, context_id, &commands, &second, texture_slot,
               shader_slot, kernarg_slot, vertex_buffer_slot,
-              vertex_shader_slot, vertex_kernarg_slot,
+              vertex_shader_slot, vertex_kernarg_slot, 0,
               syncobjs[1], syncobjs[2]),
           "queue second buffer");
     output_syncobjs[0] = syncobjs[1];
@@ -1614,6 +1668,84 @@ int main(void)
             }
         }
     }
+    /* MSAA render -> resolve -> scanout through the backend under test.  The
+     * render writes one colour per pixel to that pixel's covered samples of a
+     * multisample target and the resolve averages them back down, so a fully
+     * covered pixel resolves to its render colour while an uncovered one keeps
+     * the initialised zero: that distinction is what separates a real
+     * multisample render from a zeroed buffer.  The resolved buffer is then
+     * scanned out through the KMS flip path. */
+    if (msaa_capable && msaa_max_mode >= 1) {
+        struct dumb_fb msaa_target = { 0 }, resolved = { 0 };
+        uint32_t render_sync = 0, resolve_sync = 0;
+        uint32_t samples = 1u << msaa_max_mode;
+        uint32_t covered_pixels = 0, empty_pixels = 0;
+
+        /* One row of the target holds TEST_WIDTH pixels of `samples`
+         * interleaved words, so its pitch is exactly the width * samples * 4
+         * stride the render and resolve paths require. */
+        CHECK(create_dumb_buffer(fd, TEST_WIDTH * samples, TEST_HEIGHT, 0,
+                                 &msaa_target),
+              "multisample render target");
+        CHECK(create_fb(fd, 0, &resolved), "resolved scanout buffer");
+        CHECK(create_syncobj(fd, &render_sync),
+              "create MSAA render syncobj");
+        CHECK(create_syncobj(fd, &resolve_sync),
+              "create MSAA resolve syncobj");
+
+        CHECK(submit_selected_render(
+                  fd, vert_core, context_id, &commands, &msaa_target,
+                  texture_slot, shader_slot, kernarg_slot, vertex_buffer_slot,
+                  vertex_shader_slot, vertex_kernarg_slot, msaa_max_mode,
+                  0, render_sync),
+              "queue multisample render");
+        CHECK(wait_syncobjs(fd, &render_sync, 1),
+              "wait MSAA render syncobj");
+        CHECK(submit_resolve(fd, context_id, &msaa_target, &resolved, 0, 0,
+                             TEST_WIDTH, TEST_HEIGHT, msaa_target.pitch,
+                             resolved.pitch, msaa_max_mode, 0, resolve_sync, 0),
+              "queue MSAA resolve");
+        CHECK(wait_syncobjs(fd, &resolve_sync, 1),
+              "wait MSAA resolve syncobj");
+
+        for (uint32_t y = 0; y < TEST_HEIGHT; y++) {
+            const uint32_t *src = (const uint32_t *)
+                ((const uint8_t *)msaa_target.map + y * msaa_target.pitch);
+            const uint32_t *dst = (const uint32_t *)
+                ((const uint8_t *)resolved.map + y * resolved.pitch);
+
+            for (uint32_t x = 0; x < TEST_WIDTH; x++) {
+                uint32_t expected =
+                    resolve_average(&src[x * samples], samples);
+
+                if (dst[x] != expected) {
+                    fprintf(stderr,
+                            "MSAA resolve (%u,%u)=0x%08x expected 0x%08x "
+                            "samples=%u\n",
+                            x, y, dst[x], expected, samples);
+                    errno = EIO;
+                    perror("OPENGPU USERSPACE DRM FAIL MSAA resolve result");
+                    return 1;
+                }
+                if (expected == expected_pixel)
+                    covered_pixels++;
+                else if (expected == 0)
+                    empty_pixels++;
+            }
+        }
+        if (!covered_pixels || !empty_pixels) {
+            fprintf(stderr,
+                    "MSAA render covered=%u empty=%u: multisample samples "
+                    "were not written as expected\n",
+                    covered_pixels, empty_pixels);
+            errno = EIO;
+            perror("OPENGPU USERSPACE DRM FAIL MSAA render result");
+            return 1;
+        }
+        CHECK(atomic_page_flip(fd, &ids, resolved.fb_id),
+              "scan out resolved buffer");
+        CHECK(wait_flip_event(fd, &event), "wait MSAA flip event");
+    }
     /* Stencil-gated render: the second draw passes EQUAL 0x5a and blends the
      * covered pixels to black (REV_SUB of identical src/dst), while the third
      * (EQUAL 0x33) is blocked by the stamped byte.  The colour output proves
@@ -1621,7 +1753,7 @@ int main(void)
     CHECK(create_stencil_command_buffer(fd, &commands, &stencil_commands),
           "stencil command buffer");
     CHECK(submit_render_count(fd, context_id, &stencil_commands, &first, 3,
-                              texture_slot, shader_slot, kernarg_slot,
+                              texture_slot, shader_slot, kernarg_slot, 0,
                               0, syncobjs[7]),
           "queue stencil-gated render");
     CHECK(wait_syncobjs(fd, &syncobjs[7], 1), "wait stencil render syncobj");
@@ -1648,7 +1780,7 @@ int main(void)
     if (submit_selected_render(
             fd, vert_core, context_id, &commands, &second, texture_slot,
             shader_slot, kernarg_slot, vertex_buffer_slot,
-            vertex_shader_slot, vertex_kernarg_slot, 0, 0) != -1 ||
+            vertex_shader_slot, vertex_kernarg_slot, 0, 0, 0) != -1 ||
         errno != EINVAL) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL unbound resource accepted");
@@ -1659,7 +1791,7 @@ int main(void)
     if (submit_selected_render(
             fd, vert_core, context_id, &commands, &second, texture_slot,
             shader_slot, kernarg_slot, vertex_buffer_slot,
-            vertex_shader_slot, vertex_kernarg_slot, 0, 0) != -1 ||
+            vertex_shader_slot, vertex_kernarg_slot, 0, 0, 0) != -1 ||
         errno != ENOENT) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL destroyed context accepted");

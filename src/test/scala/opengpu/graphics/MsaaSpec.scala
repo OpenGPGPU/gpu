@@ -85,7 +85,8 @@ class SampleExpanderSpec extends AnyFlatSpec {
     dut.io.in.bits.y.poke(9.U)
     dut.io.in.bits.color.poke("h11223344".U)
     dut.io.in.bits.coverageMask.poke(mask.U)
-    for (i <- 0 until 4) dut.io.in.bits.depths(i).poke((10 + i).U)
+    for (i <- 0 until dut.io.in.bits.depths.length)
+      dut.io.in.bits.depths(i).poke((10 + i).U)
     dut.io.in.valid.poke(true.B)
   }
 
@@ -129,6 +130,58 @@ class SampleExpanderSpec extends AnyFlatSpec {
       dut.io.drained.expect(true.B)
       dut.io.in.ready.expect(true.B) // mask is only latched on the accept edge
       dut.io.in.valid.poke(false.B)
+    }
+  }
+
+  it should "expand every 2x coverage mask in ascending sample order" in {
+    simulate(new SampleExpander(2)) { dut =>
+      resetDut(dut)
+      for ((mask, expected) <- Seq(
+        0x3 -> Seq(0, 1), 0x2 -> Seq(1), 0x1 -> Seq(0), 0x0 -> Seq.empty)) {
+        present(dut, mask)
+        dut.clock.step() // accept
+        dut.io.in.valid.poke(false.B)
+        for (idx <- expected) {
+          dut.io.out.valid.expect(true.B)
+          dut.io.in.ready.expect(false.B)
+          dut.io.out.bits.sampleIndex.expect(idx.U)
+          dut.io.out.bits.depth.expect((10 + idx).U)
+          dut.io.out.bits.x.expect(7.U)
+          dut.io.out.bits.color.expect("h11223344".U)
+          dut.io.out.ready.poke(true.B)
+          dut.clock.step()
+          dut.io.out.ready.poke(false.B)
+        }
+        dut.io.out.valid.expect(false.B)
+        dut.io.drained.expect(true.B)
+        dut.io.in.ready.expect(true.B)
+      }
+    }
+  }
+
+  it should "pass a single-sample pixel straight through at 1x" in {
+    simulate(new SampleExpander(1)) { dut =>
+      resetDut(dut)
+      present(dut, 0x1)
+      dut.clock.step() // accept
+      dut.io.in.valid.poke(false.B)
+
+      dut.io.out.valid.expect(true.B)
+      dut.io.in.ready.expect(false.B)
+      dut.io.drained.expect(false.B)
+      dut.io.out.bits.sampleIndex.expect(0.U)
+      dut.io.out.bits.depth.expect(10.U)
+      dut.io.out.bits.x.expect(7.U)
+      dut.io.out.bits.color.expect("h11223344".U)
+
+      // Held against backpressure, then drained.
+      dut.clock.step()
+      dut.io.out.valid.expect(true.B)
+      dut.io.out.ready.poke(true.B)
+      dut.clock.step()
+      dut.io.out.valid.expect(false.B)
+      dut.io.drained.expect(true.B)
+      dut.io.in.ready.expect(true.B)
     }
   }
 }

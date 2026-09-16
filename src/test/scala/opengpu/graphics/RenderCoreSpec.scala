@@ -909,5 +909,26 @@ class RenderCoreSpec extends AnyFlatSpec {
       assert(got == overrideDepthWord,
         s"override sample $s of pixel (5,5): got $got expected $overrideDepthWord")
     }
+
+    // 2x mode places its two samples at the (-1,-1) and (+1,+1) quarter-pixel
+    // corners, so the same ramp evaluates to +/-96 about the centre and the
+    // per-sample depths remain affine about it.
+    val mode1 = drain(1, depthCopy, Seq.empty)
+    val expected1 = Seq(centre - 96, centre + 96)
+    for (s <- 0 until 2) {
+      val got = depthWord(mode1, 1, 5, 5, s)
+      assert(got == expected1(s),
+        s"2x sample $s of pixel (5,5): got $got expected ${expected1(s)}")
+    }
+    assert(depthWord(mode1, 1, 5, 5, 0) + depthWord(mode1, 1, 5, 5, 1) ==
+      2 * centre, "2x sample depths not affine")
+
+    // Both 2x samples take the shader-written depth word under the override.
+    val over1 = drain(1, overrideProgram, overrideUniforms)
+    for (s <- 0 until 2) {
+      val got = depthWord(over1, 1, 5, 5, s)
+      assert(got == overrideDepthWord,
+        s"override 2x sample $s of pixel (5,5): got $got expected $overrideDepthWord")
+    }
   }
 }

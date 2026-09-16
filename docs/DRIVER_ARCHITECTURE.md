@@ -75,9 +75,11 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
 - General-compute submissions with separate shader/kernarg bindings, immutable
   validated shader snapshots, GEM dependencies and sync-object fences.
 - Generation-tagged compute/DMA events and atomic unified-command fault queries.
-- Fixed-function MSAA submission with capability checks, physical-stride
-  validation and a private depth allocation/clear sized to the sample layout.
-  Resolve is not yet exposed by the driver.
+- MSAA submission on both backends (fixed-function and the fragment core) with
+  capability checks, physical-stride validation and a private depth
+  allocation/clear sized to the sample layout. Typed resolve is exposed through
+  `DRM_IOCTL_OPENGPU_RESOLVE` with validated ranges and scheduler fences, and
+  the guest test renders a multisample target, resolves it and scans it out.
 - Texture sampling, shader depth output, discard, quad derivatives, mipmapping
   and source-over blending in the validated graphics path.
 - D24S8 stencil and GL-style blend factor/equation state: UAPI words 35–37 on
@@ -101,6 +103,5 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
 
 ## Next
 
-- Add a typed MSAA resolve operation with validated buffers and scheduler fences.
 - Grow the admitted shader ISA only with matching RTL, validator and ABI rules.
 - Add runtime power management when required by the SoC integration.

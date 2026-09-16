@@ -162,9 +162,13 @@ the response demultiplexer still expects. A reset that cannot quiesce (a hung
 engine or lower memory) leaves `RESET_BUSY` set; the driver turns that into an
 explicit wedge rather than a silent hang.
 
-`CAPABILITIES[7]` advertises MSAA and is set only on fixed-function builds
-(`!fragCore`); bits 17:16 carry the maximum supported sample mode
-(`log2Ceil(maxSampleCount)`). `MSAA_CONFIG[1:0]` selects 1x/2x/4x for the next
+`CAPABILITIES[7]` advertises MSAA on both backends: the backend is the one
+selected by `CAPABILITIES[0]` (`FRAGMENT_CORE`), so bit 7 with bit 0 set is
+programmable (fragment-shader) MSAA and bit 7 with bit 0 clear is
+fixed-function MSAA. Bits 17:16 carry the maximum supported sample mode
+(`log2Ceil(maxSampleCount)`). Bit 7 is a functional claim only and does not
+assert physical timing closure of the programmable fragment stage.
+`MSAA_CONFIG[1:0]` selects 1x/2x/4x for the next
 START. Both START and queued job word 9 reject mode 3, a mode above the
 elaborated `maxSampleCount`, or nonzero bits 31:2. Rejected START sets
 `STATUS.ERROR` without launching. Queue rejection consumes the descriptor and
@@ -362,8 +366,9 @@ raster sample depths with the shader depth. A reserved-bit violation discards
 the pixel without failing the job; helpers never emit under either profile.
 `GPU_FRAGMENT_CONTROL_*` defines the ABI-1 masks in `driver/gpu_abi.h`.
 The selector is snapshotted per batch, so overlapping draws keep their own
-interpretation. Programmable MSAA remains unadvertised; Linux's exposed
-fragment path therefore continues to use ABI 0.
+interpretation. Programmable MSAA is advertised on fragment-core builds through
+`CAPABILITIES[7]`, so Linux's fragment path uses ABI 0 at mode 0 and ABI 1 for
+the validated nonzero modes.
 
 Two identical banks may be supplied with a validated aligned bank stride so
 raster staging can overlap SIMT execution without aliasing scratch data.

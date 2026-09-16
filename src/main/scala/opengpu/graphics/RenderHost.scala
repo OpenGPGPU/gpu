@@ -429,9 +429,12 @@ class RenderHost(
       (1 << GpuCapabilities.BlitEngine) |
       (1 << GpuCapabilities.StridedEngine) |
       (if (unifiedCommands) (1 << GpuCapabilities.UnifiedCommands) else 0) |
-      (if (fragCore) 0
-       else (1 << GpuCapabilities.Msaa) |
-         (maxSampleMode << GpuCapabilities.MsaaMaxModeShift)) |
+      // MSAA is advertised on both backends; the backend is selected by that
+      // backend's own capability bit (FragmentCore here).  A functional claim
+      // only: physical timing closure of the programmable stage is a separate
+      // PPA gate and is not implied by this bit.
+      (1 << GpuCapabilities.Msaa) |
+      (maxSampleMode << GpuCapabilities.MsaaMaxModeShift) |
       (if (unifiedCommands) (1 << GpuCapabilities.UnifiedReset) else 0) |
       (gpuConfig.warps * gpuConfig.lanes << GpuCapabilities.FragmentBatchShift))
       .U(32.W)

@@ -20,7 +20,12 @@ object GpuCapabilities {
   val StridedEngine = 5
   /** The unified-command MMIO block is wired (bit6). */
   val UnifiedCommands = 6
-  /** Fixed-function MSAA is supported (bit7). */
+  /** A nonzero `sampleMode` is accepted by this build's render path (bit7).
+    * The backend is the fragment-core bit: `bit0 = 1, bit7 = 1` is
+    * programmable (fragment-shader) MSAA, `bit0 = 0, bit7 = 1` is
+    * fixed-function MSAA.  This is a functional claim only; physical timing
+    * closure of the programmable stage is a separate gate.
+    */
   val Msaa = 7
   /** Shift of the fragment batch capacity in bits 15:8. */
   val FragmentBatchShift = 8
