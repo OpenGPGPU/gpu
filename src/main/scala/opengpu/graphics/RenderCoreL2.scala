@@ -254,6 +254,11 @@ class RenderCoreL2(
   }
 
   l2.io.clearPerformanceCounters := io.clearPerformanceCounters
+  // The render-only client drives no host invalidate requests.
+  l2.io.hostInvalidate.valid := false.B
+  l2.io.hostInvalidate.bits :=
+    0.U.asTypeOf(l2.io.hostInvalidate.bits)
+  l2.io.hostInvalidateDone.ready := true.B
   io.performance := l2.io.performance
   io.memoryRequest <> l2.io.memoryRequest
   l2.io.memoryResponse <> io.memoryResponse

@@ -409,12 +409,13 @@ Resolve averages every pixel's physical colour samples into a separate
 single-sample RGBA8888 buffer. Depth resolve is out of scope.
 
 A resolve source normally comes from a render target, so its contents are
-GPU-written and no CPU/GPU maintenance is needed. A CPU-initialized source is
-only coherent on pages the GPU has never cached: the CPU does not write the GPU
-L2, and the driver ABI exposes no L2 invalidate/flush, so a physical page
-recycled from an earlier GPU buffer can shadow the CPU write with a stale L2
-line. The typed-resolve guest check allocates its source before any GPU work for
-this reason.
+GPU-written. The operation also tolerates a CPU-initialized source: before the
+engine reads, the resolve adapter invalidates the source range in the shared L2
+with a host-driven line invalidate that drops any resident line and snoops its
+L1 holders. The CPU does not write the GPU L2, and lower memory is
+authoritative because stores are write-through, so the following read observes
+the CPU write. The same invalidate primitive can extend to other CPU-written
+inputs (textures, vertex buffers) as needed.
 
 ### Trusted Resolve Kernel
 

@@ -27,6 +27,28 @@ class SharedL2CacheSpec extends AnyFlatSpec {
         0.U.asTypeOf(dut.io.atomicRequest(cu).bits))
       dut.io.atomicResponse(cu).ready.poke(true.B)
     }
+    dut.io.hostInvalidate.valid.poke(false.B)
+    dut.io.hostInvalidate.bits.poke(0.U.asTypeOf(dut.io.hostInvalidate.bits))
+    dut.io.hostInvalidateDone.ready.poke(true.B)
+  }
+
+  private def invalidateLine(dut: SharedL2Cache, address: BigInt): Unit = {
+    dut.io.hostInvalidate.bits.lineAddress.poke(address.U)
+    dut.io.hostInvalidate.valid.poke(true.B)
+    var cycles = 0
+    while (!dut.io.hostInvalidate.ready.peek().litToBoolean && cycles < 20) {
+      dut.clock.step(); cycles += 1
+    }
+    dut.clock.step()
+    dut.io.hostInvalidate.valid.poke(false.B)
+    cycles = 0
+    while (!dut.io.hostInvalidateDone.valid.peek().litToBoolean &&
+           cycles < 20) {
+      dut.clock.step(); cycles += 1
+    }
+    dut.io.hostInvalidateDone.valid.expect(true.B)
+    dut.io.hostInvalidateDone.bits.lineAddress.expect(address.U)
+    dut.clock.step()
   }
 
   private def requestLine(
@@ -35,7 +57,8 @@ class SharedL2CacheSpec extends AnyFlatSpec {
     id: Int,
     isWrite: Boolean = false,
     data: BigInt = 0,
-    mask: BigInt = 0
+    mask: BigInt = 0,
+    cacheClient: Boolean = true
   ): Unit = {
     dut.io.request.bits.address.poke(address.U)
     dut.io.request.bits.transactionId.poke(id.U)
@@ -43,7 +66,7 @@ class SharedL2CacheSpec extends AnyFlatSpec {
     dut.io.request.bits.isWrite.poke(isWrite.B)
     dut.io.request.bits.writeData.poke(data.U)
     dut.io.request.bits.byteMask.poke(mask.U)
-    dut.io.request.bits.cacheClient.poke(true.B)
+    dut.io.request.bits.cacheClient.poke(cacheClient.B)
     dut.io.request.bits.cacheResident.poke(isWrite.B)
     var waitCycles = 0
     while (!dut.io.request.ready.peek().litToBoolean && waitCycles < 20) {
@@ -118,6 +141,39 @@ class SharedL2CacheSpec extends AnyFlatSpec {
       dut.io.memoryRequest.valid.expect(false.B)
       dut.io.performance.loadMisses.expect(1.U)
       dut.io.performance.loadHits.expect(1.U)
+    }
+  }
+
+  it should "drop a resident line on a host invalidate so the next read refills" in {
+    simulate(new SharedL2Cache(GpuConfig(lanes = 4), sets = 8, ways = 2)) { dut =>
+      initialize(dut)
+      val resident = BigInt("0123456789abcdef", 16)
+      val updated = BigInt("fedcba9876543210", 16)
+
+      // An external client fills the line; it is resident but has no L1
+      // sharers, so the host invalidate needs no snoop.
+      requestLine(dut, 0x4000, 0, cacheClient = false)
+      completeLower(dut, resident, 0)
+      dut.io.response.bits.readData.expect(resident.U)
+      dut.clock.step()
+      requestLine(dut, 0x4000, 1, cacheClient = false)
+      dut.clock.step()
+      dut.io.response.valid.expect(true.B)
+      dut.io.response.bits.readData.expect(resident.U)
+      dut.io.memoryRequest.valid.expect(false.B)
+      dut.io.performance.loadHits.expect(1.U)
+      dut.clock.step()
+
+      // The host drops the line.
+      invalidateLine(dut, 0x4000)
+
+      // The next read must miss and refill from lower memory, observing the
+      // value a non-coherent agent wrote there.
+      requestLine(dut, 0x4000, 2)
+      completeLower(dut, updated, 2)
+      dut.io.response.valid.expect(true.B)
+      dut.io.response.bits.readData.expect(updated.U)
+      dut.io.performance.loadMisses.expect(2.U)
     }
   }
 

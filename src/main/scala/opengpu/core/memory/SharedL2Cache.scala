@@ -67,6 +67,12 @@ class SharedL2Slice(
       Decoupled(new SharedAtomicResponse(config)))
     val clearPerformanceCounters = Input(Bool())
     val performance = Output(new L2PerformanceCounters)
+    /** Host-driven line invalidate: drop a resident line and snoop its L1
+      * holders.  It carries no data and issues no lower-memory traffic, so the
+      * driver can make CPU-written memory visible to later GPU reads without a
+      * full cache flush. */
+    val hostInvalidate = Flipped(Decoupled(new CacheLineInvalidate(config)))
+    val hostInvalidateDone = Decoupled(new CacheLineInvalidate(config))
     /** No unfinished transaction in this slice: FSM idle, no miss in flight,
       * no store pending or awaiting acknowledgement, no client response
       * awaiting consumption.
@@ -76,7 +82,7 @@ class SharedL2Slice(
 
   private object State extends ChiselEnum {
     val idle, lookup, missAllocate, invalidate, storeAllocate, lower, respond, atomicRead,
-      atomicExtract, atomicExecute, atomicWrite, atomicRespond = Value
+      atomicExtract, atomicExecute, atomicWrite, atomicRespond, hostRespond = Value
   }
   private val state = RegInit(State.idle)
   private val request = Reg(new ComputeMemoryRequest(
@@ -104,6 +110,12 @@ class SharedL2Slice(
   private val atomicTargetWay = Reg(UInt(wayWidth.W))
   private val lowerIssued = RegInit(false.B)
   private val invalidateForMiss = RegInit(false.B)
+  // Host-driven line invalidate.  `hostInvMode` rides the normal lookup
+  // machinery (like `atomicMode`); on a hit it drops the resident line and
+  // snoops its L1 holders, on a miss it completes immediately.
+  private val hostInvMode = RegInit(false.B)
+  private val hostInvAddress = Reg(UInt(config.xLen.W))
+  private val invalidateForHostInv = RegInit(false.B)
   private val missEntry = Reg(UInt(2.W))
   private val missVictimWay = Reg(UInt(wayWidth.W))
   private val missVictimRotated = RegInit(false.B)
@@ -181,9 +193,18 @@ class SharedL2Slice(
     atomicArbiter.io.out.valid
   atomicArbiter.io.out.ready := state === State.idle && !loadMissesActive &&
     !storeTable.io.active && !missResponsePresented
-  private val lookupAddress = Mux(acceptAtomic,
-    atomicArbiter.io.out.bits.address, io.request.bits.address)
-  private val lookupFire = atomicArbiter.io.out.fire || io.request.fire
+  // Host invalidate traffic is low priority: it only enters the lookup path
+  // when no normal request or atomic is waiting.
+  private val acceptHostInv = state === State.idle && !loadMissesActive &&
+    !storeTable.io.active && !missResponsePresented &&
+    !atomicArbiter.io.out.valid && !io.request.valid && io.hostInvalidate.valid
+  io.hostInvalidate.ready := acceptHostInv
+  private val lookupAddress = Mux(acceptHostInv,
+    io.hostInvalidate.bits.lineAddress,
+    Mux(acceptAtomic,
+      atomicArbiter.io.out.bits.address, io.request.bits.address))
+  private val lookupFire = acceptHostInv || atomicArbiter.io.out.fire ||
+    io.request.fire
   private val incomingIndex =
     lookupAddress(offsetWidth + indexWidth - 1, offsetWidth)
   private val requestIndex =
@@ -332,7 +353,8 @@ class SharedL2Slice(
   // the responseWaiters presentation accounting, whose bits are cleared by
   // the regular response path.
   io.drained := state === State.idle && !loadMissesActive &&
-    !storeTable.io.active && !fillWriteValid
+    !storeTable.io.active && !fillWriteValid && !hostInvMode &&
+    !io.hostInvalidate.valid
 
   private val blockingMemoryRequest = Wire(Decoupled(
     new ComputeMemoryRequest(config, lineBytes, maxOutstanding)))
@@ -389,7 +411,7 @@ class SharedL2Slice(
   storeTable.io.allocate.valid := state === State.storeAllocate
   storeTable.io.allocate.bits := request
   loadHitCounter.io.increment := state === State.lookup && !fillCommitBubble &&
-    !atomicMode && cacheable && !request.isWrite && hit
+    !atomicMode && !hostInvMode && cacheable && !request.isWrite && hit
   loadMissCounter.io.increment := missEngine.io.miss.fire
   mshrMergeCounter.io.increment := state === State.missAllocate &&
     missEngine.io.allocation.valid && missEngine.io.allocation.bits.merged
@@ -400,7 +422,7 @@ class SharedL2Slice(
   // reaction to it: a miss captured by the table while the slice is held
   // would never be authorized and would deadlock the entry.
   missEngine.io.miss.valid := state === State.lookup && !fillCommitBubble &&
-    !atomicMode && cacheable && !request.isWrite && !hit
+    !atomicMode && !hostInvMode && cacheable && !request.isWrite && !hit
   missEngine.io.miss.bits.lineAddress := activeLine
   missEngine.io.miss.bits.transactionId := request.transactionId
   missEngine.io.miss.bits.requester := requesterCu
@@ -440,6 +462,7 @@ class SharedL2Slice(
       waiterSharers := Mux(
         io.request.bits.cacheClient, incomingRequesterOH, 0.U)
       atomicMode := false.B
+      hostInvMode := false.B
       state := State.lookup
     }.otherwise {
       responseWaiters := responseWaiters | UIntToOH(
@@ -453,6 +476,7 @@ class SharedL2Slice(
     atomicRequest := atomicArbiter.io.out.bits
     atomicOwner := atomicArbiter.io.chosen
     atomicMode := true.B
+    hostInvMode := false.B
     atomicFault := false.B
     // Reuse the normal lookup address/index machinery without admitting this
     // request to the normal response path.
@@ -467,13 +491,53 @@ class SharedL2Slice(
     request.byteMask := 0.U
     state := State.lookup
   }
+  when(acceptHostInv) {
+    hostInvMode := true.B
+    hostInvAddress := io.hostInvalidate.bits.lineAddress
+    // Reuse the lookup index/tag machinery; this request returns no data and
+    // issues no lower-memory traffic.
+    request.address := io.hostInvalidate.bits.lineAddress
+    request.transactionId := 0.U
+    request.sizeLog2 := offsetWidth.U
+    request.isWrite := false.B
+    request.cacheClient := false.B
+    request.cacheResident := false.B
+    request.writeData := 0.U
+    request.byteMask := 0.U
+    state := State.lookup
+  }
 
   when(state === State.lookup && !fillCommitBubble) {
     lookupHit := hit
     lookupHitWay := hitWay
     lookupHitData := hitData
     lookupVictimWay := victimWay
-    when(atomicMode) {
+    when(hostInvMode) {
+      when(hit) {
+        // Drop the resident line and its L1 copies.  Lower memory is
+        // authoritative: stores are write-through, so the dropped line is
+        // clean and any CPU write to it is already visible in lower memory.
+        for (way <- 0 until ways) {
+          when(hitWay === way.U) {
+            valid(way)(requestIndex) := false.B
+            sharers(way)(requestIndex) := 0.U
+          }
+        }
+        when(hitSharers.orR) {
+          invalidateTargets := hitSharers
+          invalidateSent := 0.U
+          invalidateAcked := 0.U
+          invalidateAddress := hostInvAddress
+          invalidateForReplacement := false.B
+          invalidateForHostInv := true.B
+          state := State.invalidate
+        }.otherwise {
+          state := State.hostRespond
+        }
+      }.otherwise {
+        state := State.hostRespond
+      }
+    }.elsewhen(atomicMode) {
       when(atomicRequest.address(1, 0).orR) {
         atomicFault := true.B
         atomicOldValue := 0.U
@@ -569,31 +633,45 @@ class SharedL2Slice(
     invalidateSent := nextSent
     invalidateAcked := nextAcked
     when((nextAcked & invalidateTargets) === invalidateTargets) {
-      when(invalidateForReplacement) {
-        for (way <- 0 until ways) {
-          when(Mux(atomicMode, atomicTargetWay, lookupVictimWay) === way.U) {
-            sharers(way)(requestIndex) := 0.U
+      when(invalidateForHostInv) {
+        // The resident line was dropped when the invalidate was accepted;
+        // there is nothing left to route.
+        invalidateForHostInv := false.B
+        state := State.hostRespond
+      }.otherwise {
+        when(invalidateForReplacement) {
+          for (way <- 0 until ways) {
+            when(Mux(atomicMode, atomicTargetWay, lookupVictimWay) === way.U) {
+              sharers(way)(requestIndex) := 0.U
+            }
+          }
+        }.otherwise {
+          for (way <- 0 until ways) {
+            when(lookupHitWay === way.U) {
+              sharers(way)(requestIndex) := Mux(
+                request.cacheClient && request.cacheResident, requesterOH, 0.U)
+            }
           }
         }
-      }.otherwise {
-        for (way <- 0 until ways) {
-          when(lookupHitWay === way.U) {
-            sharers(way)(requestIndex) := Mux(
-              request.cacheClient && request.cacheResident, requesterOH, 0.U)
-          }
+        when(invalidateForMiss) {
+          missEngine.io.authorize.valid := true.B
+          missEngine.io.authorize.bits := missEntry
+          invalidateForMiss := false.B
+          state := State.idle
+        }.otherwise {
+          state := Mux(atomicMode,
+            Mux(invalidateForReplacement, State.atomicRead, State.atomicExtract),
+            State.storeAllocate)
         }
-      }
-      when(invalidateForMiss) {
-        missEngine.io.authorize.valid := true.B
-        missEngine.io.authorize.bits := missEntry
-        invalidateForMiss := false.B
-        state := State.idle
-      }.otherwise {
-        state := Mux(atomicMode,
-          Mux(invalidateForReplacement, State.atomicRead, State.atomicExtract),
-          State.storeAllocate)
       }
     }
+  }
+
+  io.hostInvalidateDone.valid := state === State.hostRespond
+  io.hostInvalidateDone.bits.lineAddress := hostInvAddress
+  when(state === State.hostRespond && io.hostInvalidateDone.fire) {
+    hostInvMode := false.B
+    state := State.idle
   }
 
   when(state === State.storeAllocate && storeTable.io.allocate.fire) {
@@ -773,6 +851,8 @@ class SharedL2Cache(
       Decoupled(new SharedAtomicResponse(config)))
     val clearPerformanceCounters = Input(Bool())
     val performance = Output(new L2PerformanceCounters)
+    val hostInvalidate = Flipped(Decoupled(new CacheLineInvalidate(config)))
+    val hostInvalidateDone = Decoupled(new CacheLineInvalidate(config))
     /** No accepted transaction is unfinished: the request queues are empty,
       * the FSM is idle, every load miss has returned, every store has been
       * lowered and acknowledged, and no client response awaits consumption.
@@ -822,7 +902,38 @@ class SharedL2Cache(
   }
   io.response <> responseArbiter.io.out
 
+  // Host line invalidate: route to the owning bank, one at a time, and hold
+  // off new work until the slice drops the line and its L1 holders ack.
+  private val hostInvalidateBusy = RegInit(false.B)
+  private val hostInvalidateOwner = Reg(UInt(bankWidth.W))
+  private val hostInvalidateBank = selectBank(io.hostInvalidate.bits.lineAddress)
+  private val hostInvalidateSliceReady =
+    VecInit(slices.map(_.io.hostInvalidate.ready))(hostInvalidateBank)
+  for (bank <- 0 until banks) {
+    slices(bank).io.hostInvalidate.valid :=
+      io.hostInvalidate.valid && !hostInvalidateBusy &&
+        hostInvalidateBank === bank.U
+    slices(bank).io.hostInvalidate.bits := io.hostInvalidate.bits
+    slices(bank).io.hostInvalidateDone.ready := hostInvalidateBusy &&
+      hostInvalidateOwner === bank.U && io.hostInvalidateDone.ready
+  }
+  io.hostInvalidate.ready := !hostInvalidateBusy && hostInvalidateSliceReady
+  when(io.hostInvalidate.fire) {
+    hostInvalidateBusy := true.B
+    hostInvalidateOwner := hostInvalidateBank
+  }
+  io.hostInvalidateDone.valid := hostInvalidateBusy &&
+    (if (banks == 1) slices.head.io.hostInvalidateDone.valid
+     else VecInit(
+       slices.map(_.io.hostInvalidateDone.valid))(hostInvalidateOwner))
+  io.hostInvalidateDone.bits :=
+    (if (banks == 1) slices.head.io.hostInvalidateDone.bits
+     else VecInit(
+       slices.map(_.io.hostInvalidateDone.bits))(hostInvalidateOwner))
+  when(io.hostInvalidateDone.fire) { hostInvalidateBusy := false.B }
+
   io.drained := slices.map(_.io.drained).reduce(_ && _) &&
+    !hostInvalidateBusy && !io.hostInvalidate.valid &&
     requestQueues.map(q => q.io.enq.ready && !q.io.deq.valid).reduce(_ && _)
 
   for (cu <- 0 until numComputeUnits) {

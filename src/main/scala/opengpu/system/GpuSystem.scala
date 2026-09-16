@@ -261,27 +261,76 @@ class GpuSystem(
   io.unifiedCommandRouterBusy := commandRouter.io.busy
   io.duplicateUnifiedCommandId := commandRouter.io.duplicateCommandId
 
-  // Typed resolve adapter: latch one descriptor, pulse the engine, publish one
-  // completion.  The engine's memory traffic is already wired to `resolvePort`.
+  // Typed resolve adapter: invalidate the source lines, pulse the engine, and
+  // publish one completion.  The pre-invalidate drops any stale L2 line over
+  // the source range so a page recycled from an earlier GPU buffer cannot
+  // shadow a CPU write to the same range; it issues no lower-memory traffic.
   private val resolveActive = RegInit(false.B)
   private val resolveDonePending = RegInit(false.B)
   private val resolveCommandId = Reg(UInt(commandIdWidth.W))
   private val resolveBytes = Reg(UInt(64.W))
+  private val resolveInvLine = RegInit(0.U(16.W))
+  private val resolveInvY = RegInit(0.U(16.W))
+  private val resolveInvBusy = RegInit(false.B)
+  private val resolveInvDone = RegInit(false.B)
+  // The router frees the descriptor once accepted, so latch the fields the
+  // walker and engine still need.
+  private val resolveSrcBase = Reg(UInt(config.xLen.W))
+  private val resolveDstBase = Reg(UInt(config.xLen.W))
+  private val resolveSrcStride = Reg(UInt(32.W))
+  private val resolveDstStride = Reg(UInt(32.W))
+  private val resolveWidth = Reg(UInt(16.W))
+  private val resolveHeight = Reg(UInt(16.W))
+  private val resolveMode = Reg(UInt(2.W))
   private val resolveDesc = commandRouter.io.resolve
-  resolveDesc.ready := !resolveActive && !resolveDonePending
-  resolveEngine.io.start := resolveDesc.fire
-  resolveEngine.io.srcBase := resolveDesc.bits.sourceAddress
-  resolveEngine.io.dstBase := resolveDesc.bits.destinationAddress
-  resolveEngine.io.srcStride := resolveDesc.bits.sourceStride
-  resolveEngine.io.dstStride := resolveDesc.bits.destinationStride
-  resolveEngine.io.imgWidth := resolveDesc.bits.imgWidth
-  resolveEngine.io.imgHeight := resolveDesc.bits.imgHeight
-  resolveEngine.io.sampleMode := resolveDesc.bits.sampleMode
+  private val resolveRowWords = resolveWidth << resolveMode
+  private val resolveRowLines = ((resolveRowWords << 2) + 63.U) >> 6
+  private val resolveInvAddress =
+    resolveSrcBase + resolveInvY * resolveSrcStride + (resolveInvLine << 6)
+  resolveDesc.ready := !resolveActive && !resolveDonePending && !resolveInvBusy
+  l2.io.hostInvalidate.valid := resolveInvBusy && !resolveInvDone
+  l2.io.hostInvalidate.bits.lineAddress := resolveInvAddress
+  l2.io.hostInvalidateDone.ready := true.B
+  resolveEngine.io.start := resolveInvBusy && resolveInvDone
+  resolveEngine.io.srcBase := resolveSrcBase
+  resolveEngine.io.dstBase := resolveDstBase
+  resolveEngine.io.srcStride := resolveSrcStride
+  resolveEngine.io.dstStride := resolveDstStride
+  resolveEngine.io.imgWidth := resolveWidth
+  resolveEngine.io.imgHeight := resolveHeight
+  resolveEngine.io.sampleMode := resolveMode
   when(resolveDesc.fire) {
     resolveActive := true.B
     resolveCommandId := resolveDesc.bits.descriptorId
     resolveBytes :=
       (resolveDesc.bits.imgWidth * resolveDesc.bits.imgHeight * 4.U).pad(64)
+    resolveSrcBase := resolveDesc.bits.sourceAddress
+    resolveDstBase := resolveDesc.bits.destinationAddress
+    resolveSrcStride := resolveDesc.bits.sourceStride
+    resolveDstStride := resolveDesc.bits.destinationStride
+    resolveWidth := resolveDesc.bits.imgWidth
+    resolveHeight := resolveDesc.bits.imgHeight
+    resolveMode := resolveDesc.bits.sampleMode
+    resolveInvLine := 0.U
+    resolveInvY := 0.U
+    resolveInvBusy := true.B
+    resolveInvDone := false.B
+  }
+  when(resolveInvBusy && !resolveInvDone && l2.io.hostInvalidateDone.valid) {
+    when(resolveInvLine === resolveRowLines - 1.U) {
+      resolveInvLine := 0.U
+      when(resolveInvY === resolveHeight - 1.U) {
+        resolveInvDone := true.B
+      }.otherwise {
+        resolveInvY := resolveInvY + 1.U
+      }
+    }.otherwise {
+      resolveInvLine := resolveInvLine + 1.U
+    }
+  }
+  when(resolveEngine.io.start) {
+    resolveInvBusy := false.B
+    resolveInvDone := false.B
   }
   when(resolveEngine.io.done) { resolveActive := false.B }
   commandRouter.io.resolveCompletion.valid := resolveDonePending
