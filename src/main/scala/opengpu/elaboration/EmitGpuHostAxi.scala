@@ -2,7 +2,8 @@ package opengpu.elaboration
 
 import circt.stage.ChiselStage
 import opengpu.config.GpuConfig
-import opengpu.graphics.{GpuHostAxi, GraphicsConfig}
+import opengpu.graphics.GraphicsConfig
+import opengpu.system.GpuHostAxi
 
 /** Emits the M6 host-control interface (`GpuHostAxi`) as SystemVerilog.
   *

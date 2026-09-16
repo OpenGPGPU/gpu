@@ -1,4 +1,4 @@
-package opengpu.graphics
+package opengpu.system
 
 import chisel3._
 import chisel3.util._
@@ -10,6 +10,15 @@ import opengpu.core.memory.{
   ComputeMemoryResponse,
   SharedAtomicRequest,
   SharedAtomicResponse
+}
+import opengpu.graphics.{
+  GpuCommandMmio,
+  GpuCommandMmioRegs,
+  GraphicsConfig,
+  OmMemoryRequest,
+  OmMemoryResponse,
+  RenderHost,
+  RenderHostRegs
 }
 
 /** AXI4 slave control interface for the graphics renderer.

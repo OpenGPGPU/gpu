@@ -1,8 +1,9 @@
-package opengpu.graphics
+package opengpu.system
 
 import chisel3._
 import chisel3.simulator.EphemeralSimulator._
 import opengpu.config.GpuConfig
+import opengpu.graphics.{GpuCommandMmioRegs, GraphicsConfig, RenderHostRegs}
 import org.scalatest.flatspec.AnyFlatSpec
 
 import scala.collection.mutable

@@ -4,11 +4,7 @@ import chisel3._
 import chisel3.util._
 import opengpu.config.GpuConfig
 import opengpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse}
-import opengpu.graphics.{
-  GpuHostAxi,
-  GraphicsConfig,
-  OmWordToLinePort
-}
+import opengpu.graphics.{GraphicsConfig, OmWordToLinePort}
 
 /** AXI-controlled graphics host attached to the GPU-internal shared L2.
   *
