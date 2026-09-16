@@ -12,14 +12,15 @@ has been pruned; only the latest closed result per block is kept.
 
 ## SharedL2Slice
 
-Not closed at 1 GHz. Four post-route attempts on record:
+Not closed at 1 GHz. Five post-route attempts on record:
 
 | Recipe | Core Fmax | Worst setup (all groups) | Worst hold | Area | Power | DRC |
 |---|---:|---:|---:|---:|---:|---:|
 | LVT closure_no_cts, `syn` engine, pendingEntry fanout split (no explicit io_delay) | 1069.09 MHz | -748.10 ps (1322 viol.) | -17.94 ps (4 viol.) | 20329.2 um^2 | 125.07 mW | 455 |
 | LVT closure_no_cts, yosys no-retime, io_delay 20%, margin 50 ps, util 15 / density 0.30 | 986.36 MHz | -378.07 ps (1142 viol.) | -16.20 ps (12 viol.) | 20729.9 um^2 | 129.85 mW | 469 |
 | LVT closure_no_cts, yosys no-retime, same recipe, registered missEngine fill -> SRAM write stage | 1046.57 MHz | -318.44 ps (1151 viol.) | -19.53 ps (33 viol.) | 20824.6 um^2 | 130.93 mW | 474 |
-| same fill-pipeline RTL, adaptive centered SRAM grid (`compute_unit_sram_macro_placement.tcl`) | 1027.75 MHz | -352.21 ps (1149 viol.) | +0.90 ps (0 viol.) | 21129.3 um^2 | 133.52 mW | 1 |
+| same fill-pipeline RTL, adaptive centered grid, 10 um channel (`compute_unit_sram_macro_placement.tcl`) | 1027.75 MHz | -352.21 ps (1149 viol.) | +0.90 ps (0 viol.) | 21129.3 um^2 | 133.52 mW | 1 |
+| same, 12 um channel (`l2_sram_macro_placement_adaptive.tcl`) | 1026.25 MHz | -377.13 ps (1146 viol.) | +1.52 ps (0 viol.) | 21006.8 um^2 | 132.31 mW | 0 |
 
 The `syn`-engine run closes the reg-to-reg core (+64.62 ps core slack) but
 fails the virtual-IO groups wholesale; the yosys rerun fixes most of the IO
@@ -54,23 +55,32 @@ The fourth run tests the placement hypothesis: keeping the RTL identical and
 swapping only the placement for the adaptive centered grid that signs off DRC 0
 on ScalarBackend (`timing/asap7/compute_unit_sram_macro_placement.tcl`, 10 um
 channels, 9x2 grid) drops DRC 474 -> 1 and clears hold completely (+0.90 ps, 0
-violations vs -19.53 ps / 33). The trade is a virtual-IO setup regression
-(-318.44 -> -352.21 ps all groups); the core still closes at +27.0 ps on
-`atomicRequest_address[4] -> data_1.memory_2`. The single survivor is one
-`Cut Short` (V3, `net12581` vs a `data_0.memory` pin).
+violations vs -19.53 ps / 33). The single survivor is one `Cut Short` (V3,
+`net12581` vs a `data_0.memory` pin). The fifth run widens the channel to 12 um
+(`timing/asap7/l2_sram_macro_placement_adaptive.tcl`) and reaches **DRC 0**
+(empty `5_route_drc.rpt`, 0 antennas) with hold still clean (+1.52 ps, 0
+violations).
+
+The placement trade is real: the adaptive grids move the virtual-IO setup group
+the wrong way (-318.44 ps baseline -> -352.21 at 10 um -> -377.13 at 12 um) even
+as they fix DRC and hold. The core clock is unaffected and still closes
+(+27.0 ps at 10 um, +25.6 ps at 12 um on `atomicRequest_address[...] ->
+data_1.memory_2`). So DRC is fully solvable by placement alone; the block's
+remaining limiter is the virtual-IO boundary, not the macro pins.
 
 The residual setup failure is the virtual-IO boundary group
 (`request_writeData`/`response_readData` capture registers), the same class the
 `syn`-engine run could not fix and which the whole-block section below
 classifies as a parent-level hierarchy concern rather than something the block
-can pipeline away. Next levers: tune the adaptive macro channel/target to clear
-the last DRC without the IO regression, and the parent IO boundary.
+can pipeline away. Next lever: the parent IO boundary (the DRC side is now
+settled - placement alone reaches 0).
 
 Artifacts:
 
 - `generated/ppa_runs/025_shared_l2_slice_lvt_closure_no_cts_pendingentry_tc_lvt_1ghz/`
 - `generated/ppa_runs/head_shared_l2_slice_tc_lvt_1ghz_yosys_noretime_closure_u15_d30_margin50/` (fill-pipeline yosys run; overwrote the pre-pipeline yosys baseline)
-- `generated/ppa_runs/probe_l2_adaptive_placement_shared_l2_slice_tc_lvt_1ghz_closure_u15_d30_margin50/` (adaptive-placement DRC probe)
+- `generated/ppa_runs/probe_l2_adaptive_placement_shared_l2_slice_tc_lvt_1ghz_closure_u15_d30_margin50/` (adaptive grid, 10 um channel; DRC 1)
+- `generated/ppa_runs/probe_l2_adaptive12_placement_shared_l2_slice_tc_lvt_1ghz_closure_u15_d30_margin50/` (adaptive grid, 12 um channel; DRC 0)
 
 The ORFS GDS export step fails in the local image because the KLayout merge
 artifact is not produced; DEF/ODB and post-route SPEF STA remain valid.
