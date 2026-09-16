@@ -1288,6 +1288,7 @@ int main(void)
     struct kms_ids ids = { 0 };
     struct dumb_fb first = { 0 }, second = { 0 };
     struct dumb_fb strided_source = { 0 }, strided_destination = { 0 };
+    struct dumb_fb msaa_source = { 0 }, msaa_destination = { 0 };
     struct command_buffer commands = { 0 };
     struct command_buffer stencil_commands = { 0 };
     struct resource_buffer texture = { 0 };
@@ -1381,6 +1382,15 @@ int main(void)
     CHECK(create_fb(fd, 0, &strided_source), "strided source buffer");
     CHECK(create_fb(fd, 0, &strided_destination),
           "strided destination buffer");
+    /* The typed-resolve source is CPU-initialized, so allocate it up front:
+     * the GPU L2 has no host-visible invalidate, and a page recycled from an
+     * earlier GPU buffer would otherwise shadow the CPU write.  The render
+     * path's own MSAA target is GPU-written and needs no such care. */
+    CHECK(create_dumb_buffer(fd, TEST_WIDTH, TEST_HEIGHT, 0, &msaa_source),
+          "MSAA source buffer");
+    CHECK(create_dumb_buffer(fd, TEST_WIDTH, TEST_HEIGHT, 0,
+                             &msaa_destination),
+          "MSAA destination buffer");
     CHECK(create_command_buffer(fd, &commands), "command buffer");
     if (vert_core)
         convert_to_vertex_command(&commands);
@@ -1683,25 +1693,18 @@ int main(void)
      * one physical row here; the multi-row crossing is covered by the RTL
      * integration tests (GpuSystemSpec / GpuHostSystemAxiSpec). */
     if (msaa_capable) {
-        struct dumb_fb resolve_source = { 0 }, resolve_destination = { 0 };
         uint32_t resolve_sync = 0;
         uint32_t width = 4;
         uint32_t height = 1;
         uint32_t samples = 1u << msaa_max_mode;
-        uint32_t src_stride, dst_stride;
+        uint32_t src_stride = msaa_source.pitch;
+        uint32_t dst_stride = msaa_destination.pitch;
 
-        /* Fresh buffers: the source is CPU-initialized and then read by the
-         * GPU, so it must not carry data from an earlier GPU access. */
-        CHECK(create_fb(fd, 0, &resolve_source), "resolve source buffer");
-        CHECK(create_fb(fd, 0, &resolve_destination),
-              "resolve destination buffer");
-        src_stride = resolve_source.pitch;
-        dst_stride = resolve_destination.pitch;
         CHECK(create_syncobj(fd, &resolve_sync), "create resolve syncobj");
 
         errno = 0;
-        if (submit_resolve(fd, context_id, &resolve_source,
-                           &resolve_destination, 0, 0, width, height,
+        if (submit_resolve(fd, context_id, &msaa_source,
+                           &msaa_destination, 0, 0, width, height,
                            src_stride, dst_stride, msaa_max_mode + 1,
                            0, resolve_sync, 0) != -1 || errno != EINVAL) {
             errno = EPROTO;
@@ -1709,8 +1712,8 @@ int main(void)
             return 1;
         }
         errno = 0;
-        if (submit_resolve(fd, context_id, &resolve_source,
-                           &resolve_destination, 0, 0, width, height,
+        if (submit_resolve(fd, context_id, &msaa_source,
+                           &msaa_destination, 0, 0, width, height,
                            src_stride / 2, dst_stride, msaa_max_mode,
                            0, resolve_sync, 0) != -1 || errno != EINVAL) {
             errno = EPROTO;
@@ -1718,9 +1721,9 @@ int main(void)
             return 1;
         }
 
-        memset(resolve_destination.map, 0x5a, resolve_destination.size);
+        memset(msaa_destination.map, 0x5a, msaa_destination.size);
         for (uint32_t y = 0; y < height; y++) {
-            uint32_t *row = (uint32_t *)((uint8_t *)resolve_source.map +
+            uint32_t *row = (uint32_t *)((uint8_t *)msaa_source.map +
                                          y * src_stride);
 
             for (uint32_t x = 0; x < width; x++) {
@@ -1732,22 +1735,22 @@ int main(void)
                 }
             }
         }
-        CHECK(submit_resolve(fd, context_id, &resolve_source,
-                             &resolve_destination, 0, 0, width, height,
+        CHECK(submit_resolve(fd, context_id, &msaa_source,
+                             &msaa_destination, 0, 0, width, height,
                              src_stride, dst_stride, msaa_max_mode,
                              0, resolve_sync, 0),
               "queue ordered MSAA resolve");
         CHECK(wait_syncobjs(fd, &resolve_sync, 1), "wait resolve syncobj");
         for (uint32_t y = 0; y < height; y++) {
-            uint32_t *row = (uint32_t *)((uint8_t *)resolve_destination.map +
+            uint32_t *row = (uint32_t *)((uint8_t *)msaa_destination.map +
                                          y * dst_stride);
 
             for (uint32_t x = 0; x < width; x++) {
                 if (row[x] != 0x80808080u) {
                     fprintf(stderr,
                             "resolve (%u,%u)=0x%08x expected 0x80808080 "
-                            "src_stride=%u dst_stride=%u\n",
-                            x, y, row[x], src_stride, dst_stride);
+                            "src_stride=%u dst_stride=%u samples=%u\n",
+                            x, y, row[x], src_stride, dst_stride, samples);
                     errno = EIO;
                     perror("OPENGPU USERSPACE DRM FAIL resolve result");
                     return 1;

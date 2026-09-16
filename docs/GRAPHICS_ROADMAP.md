@@ -219,6 +219,11 @@ qualify a capability as implemented end to end.
   UAPI and scheduler-backed ioctl (source read / destination write reservations,
   output syncobj) are in place, and scanout of a resolved buffer is ordered by
   the destination BO's write fence through the standard KMS implicit-sync path.
+  A CPU-initialized resolve source is only safe on pages the GPU has never
+  cached: CPU caches and the GPU L2 are not coherent, and the driver ABI has no
+  L2 invalidate/flush, so a page recycled from an earlier GPU buffer shadows a
+  later CPU write. The typed-resolve guest check therefore allocates its source
+  up front; real resolve sources are GPU render targets.
 - Attach source-read and destination-write reservation fences and sync objects;
   KMS must wait for resolved output before scanout.
 - Programmable MSAA is enabled: helper-lane, derivative, discard, per-sample

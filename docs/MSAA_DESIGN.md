@@ -408,6 +408,14 @@ from the functional capability advertised by bit 7.
 Resolve averages every pixel's physical colour samples into a separate
 single-sample RGBA8888 buffer. Depth resolve is out of scope.
 
+A resolve source normally comes from a render target, so its contents are
+GPU-written and no CPU/GPU maintenance is needed. A CPU-initialized source is
+only coherent on pages the GPU has never cached: the CPU does not write the GPU
+L2, and the driver ABI exposes no L2 invalidate/flush, so a physical page
+recycled from an earlier GPU buffer can shadow the CPU write with a stale L2
+line. The typed-resolve guest check allocates its source before any GPU work for
+this reason.
+
 ### Trusted Resolve Kernel
 
 The existing user compute profile cannot dereference arbitrary buffer pointers:
