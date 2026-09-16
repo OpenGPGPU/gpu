@@ -230,10 +230,14 @@ qualify a capability as implemented end to end.
   semantics are implemented: `depth_handle`/`depth_offset` bind a GEM range as
   the depth plane and `OPENGPU_SUBMIT_DEPTH_LOAD` keeps its contents, so a pass
   may be split across submissions that re-bind the attachment. Advertised as
-  `OPENGPU_CAP_PERSISTENT_DEPTH` (bit 19). The guest DRM test now continues a
-  pass across two submissions through the ARTI/QEMU path (bind/clear, then
-  re-bind/load with an EQUAL-depth continuation) and rejects malformed
-  bindings; broader multisample pass-continuation coverage remains.
+  `OPENGPU_CAP_PERSISTENT_DEPTH` (bit 19). `RenderHostSpec` covers a queued
+  two-submission pass at the RTL level, and the guest DRM test runs a
+  two-submission pass through ARTI/QEMU under the Verilator backend: the first
+  submission clears the bound plane and stores depth, the continuation re-binds
+  it with `OPENGPU_SUBMIT_DEPTH_LOAD` and draws farther geometry with GREATER,
+  which passes only against the stored nearer depth, and malformed bindings are
+  rejected. The FlashSim model does not currently make the prior depth write
+  visible to the continuation, so that path is verified on Verilator.
 
 Exit: clear/render/resolve/fence/scanout runs through Linux under ARTI/QEMU;
 1x -> 4x -> 2x -> 1x jobs do not leak state, and delayed writes cannot produce

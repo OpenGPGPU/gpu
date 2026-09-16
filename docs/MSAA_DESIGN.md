@@ -506,11 +506,13 @@ operation is needed - a plain depth write persists - and the standard scheduler
 read/write reservations order it against other clients. The capability is
 advertised as `OPENGPU_CAP_PERSISTENT_DEPTH` (bit 19) and is always set;
 `RenderHostSpec` covers a queued two-submission pass at the RTL level and the
-guest DRM test repeats it through the ARTI/QEMU path, binding the attachment on
-a first (clearing) submission and re-binding it with the load flag so an
-EQUAL-depth continuation pass matches the stored plane. The same test rejects
-`DEPTH_LOAD` without a handle, a colour object bound as the depth plane, a
-misaligned offset and an undersized allocation.
+guest DRM test repeats it through ARTI/QEMU on the Verilator backend, binding
+the attachment on a first (clearing) submission and re-binding it with the load
+flag so a greater-depth continuation matches the stored plane. The same test
+rejects `DEPTH_LOAD` without a handle, a colour object bound as the depth plane,
+a misaligned offset and a binding past the backing allocation. The FlashSim
+model does not currently expose the prior depth write to the continuation, so
+this path is verified on Verilator.
 
 ## Performance
 
@@ -537,7 +539,7 @@ memory-port utilisation under 2x and 4x workloads.
 | Coverage/depth | Mode-specific LUT, scalar/quad masks, expanded bounds, shared triangle gradients and sample depth implemented | Broaden edge and precision regression coverage |
 | Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented, advertised through bit 7 on fragment-core builds, and exercised by the guest MSAA round trip | Physical timing closure of the fragment stage (separate PPA gate) |
 | Expansion/OM | Backpressured expander, sample addresses, address-hazard ordering and acknowledged write drain implemented | Broader integrated multisample regressions |
-| Persistent depth | Caller-owned depth attachment (`drm_opengpu_submit.depth_handle`/`depth_offset`), `OPENGPU_SUBMIT_DEPTH_LOAD` cross-submission continuation, driver range validation (`opengpu_depth_validator.h`, unit-tested) and the `OPENGPU_CAP_PERSISTENT_DEPTH` advertisement implemented; the guest DRM test continues a pass across two submissions and rejects malformed bindings | Broader ARTI multisample pass-continuation coverage |
+| Persistent depth | Caller-owned depth attachment (`drm_opengpu_submit.depth_handle`/`depth_offset`), `OPENGPU_SUBMIT_DEPTH_LOAD` cross-submission continuation, driver range validation (`opengpu_depth_validator.h`, unit-tested) and the `OPENGPU_CAP_PERSISTENT_DEPTH` advertisement implemented; `RenderHostSpec` covers a queued two-submission pass and the guest DRM test repeats it under Verilator | Broader ARTI multisample pass-continuation coverage; FlashSim does not yet expose the prior depth write |
 | Resolve | `MsaaResolveEngine` backend, the `GPU_UCMD_OP_RESOLVE` router path through the shared L2, unified MMIO staging (`UCMD_SAMPLE_MODE`), the validated range rules and command builder, the `DRM_IOCTL_OPENGPU_RESOLVE` UAPI, the scheduler-backed ioctl with source read / destination write reservations and output syncobj, and KMS ordering via the standard implicit-sync path | Broader ARTI resolve coverage |
 
 ## Verification

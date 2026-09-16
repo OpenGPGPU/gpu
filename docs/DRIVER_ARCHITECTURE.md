@@ -83,8 +83,8 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
 - Caller-owned persistent depth/stencil attachments: `depth_handle`/
   `depth_offset` bind a validated GEM range and `OPENGPU_SUBMIT_DEPTH_LOAD`
   continues a render pass across submissions, advertised as
-  `OPENGPU_CAP_PERSISTENT_DEPTH` and exercised by the guest test's
-  two-submission pass.
+  `OPENGPU_CAP_PERSISTENT_DEPTH`. The cross-submission continuation is covered
+  by `RenderHostSpec` and the guest test under the Verilator backend.
 - Texture sampling, shader depth output, discard, quad derivatives, mipmapping
   and source-over blending in the validated graphics path.
 - D24S8 stencil and GL-style blend factor/equation state: UAPI words 35–37 on

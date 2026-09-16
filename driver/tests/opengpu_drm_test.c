@@ -25,13 +25,12 @@
 #define TEST_STENCIL_FUNC_EQUAL  4u
 #define TEST_STENCIL_OP_REPLACE  2u
 #define TEST_DEPTH_FUNC_LEQUAL    1u
-#define TEST_DEPTH_FUNC_EQUAL     4u
+#define TEST_DEPTH_FUNC_GREATER    2u
 #define TEST_BLEND_FACTOR_ONE    1u
 #define TEST_BLEND_EQ_REV_SUB    2u
 
-/* The state word and the per-draw blend config live at the same word index in
- * both 40-word draw-record forms (fixed-function and vertex-core), so the
- * persistent-depth continuation can patch either without decoding the form. */
+/* The state word and the per-draw blend config share word indices across the
+ * fixed-function and vertex-core draw-record forms. */
 #define DRAW_RECORD_STATE_WORD   32u
 #define DRAW_RECORD_BLEND_WORD   35u
 
@@ -453,13 +452,12 @@ static int create_stencil_command_buffer(
     return 0;
 }
 
-/* Copy a draw command record and retarget it for the continuation pass of a
- * persistent-depth render pass: only fragments at the exact stored depth pass
- * (EQUAL), and a reverse-subtract blend of the identical source/destination
- * zeroes the pixels the first submission wrote.  The record form is opaque
- * here; state and blend share the same word index in both forms. */
-static int create_depth_continuation_buffer(
-    int fd, const struct command_buffer *base, struct command_buffer *commands)
+/* Copy a draw command record and apply a state patch.  Both 40-word record
+ * forms (fixed-function and vertex-core) keep `state` at the same word index,
+ * so a continuation record can be derived without decoding the form. */
+static int create_continuation_buffer(
+    int fd, const struct command_buffer *base, struct command_buffer *commands,
+    uint32_t state_mask, uint32_t state_set, uint32_t blend_config)
 {
     struct drm_mode_create_dumb create = {
         .width = sizeof(struct drm_opengpu_draw) / 4,
@@ -487,13 +485,8 @@ static int create_depth_continuation_buffer(
     memcpy(commands->map, base->map, copy_bytes);
     words = (uint32_t *)commands->map;
     words[DRAW_RECORD_STATE_WORD] =
-        (base_words[DRAW_RECORD_STATE_WORD] &
-         ~OPENGPU_DRAW_STATE_DEPTH_FUNC_MASK) |
-        (TEST_DEPTH_FUNC_EQUAL << OPENGPU_DRAW_STATE_DEPTH_FUNC_SHIFT);
-    words[DRAW_RECORD_BLEND_WORD] = OPENGPU_DRAW_BLEND_PRESENT |
-        (TEST_BLEND_FACTOR_ONE << OPENGPU_DRAW_BLEND_SRC_SHIFT) |
-        (TEST_BLEND_FACTOR_ONE << OPENGPU_DRAW_BLEND_DST_SHIFT) |
-        (TEST_BLEND_EQ_REV_SUB << OPENGPU_DRAW_BLEND_EQ_SHIFT);
+        (base_words[DRAW_RECORD_STATE_WORD] & ~state_mask) | state_set;
+    words[DRAW_RECORD_BLEND_WORD] = blend_config;
     return 0;
 }
 
@@ -1871,16 +1864,16 @@ int main(void)
     }
     /* Cross-submission render pass over a caller-owned persistent depth
      * attachment.  Submission 1 clears the bound plane (no DEPTH_LOAD) and
-     * writes depth plus colour; submission 2 reloads the stored plane and only
-     * fragments at the exact stored depth pass (EQUAL).  The continuation's
-     * reverse-subtract blend zeroes every pixel the first submission covered,
-     * so a plane that was cleared instead of loaded would leave them
-     * untouched.  This drives depth_handle/depth_offset binding, the
-     * OPENGPU_SUBMIT_DEPTH_LOAD contract and the driver range checks end to
-     * end under ARTI/QEMU. */
+     * writes depth plus colour; submission 2 re-binds it with DEPTH_LOAD and
+     * draws farther geometry with a GREATER test, which passes only against
+     * the nearer depth the first submission stored.  Its reverse-subtract
+     * blend then zeroes the pixels the first pass wrote, so a plane that was
+     * cleared instead of loaded would leave them untouched.  Malformed
+     * bindings are rejected alongside.  This drives depth_handle/depth_offset
+     * binding, the OPENGPU_SUBMIT_DEPTH_LOAD contract and the driver range
+     * checks end to end under ARTI/QEMU (verified on the Verilator backend). */
     if (capabilities & OPENGPU_CAP_PERSISTENT_DEPTH) {
         struct dumb_fb depth_attachment = { 0 }, pass_colour = { 0 };
-        struct dumb_fb small_depth = { 0 };
         struct command_buffer continuation = { 0 };
         uint32_t pass_sync[2] = { 0 };
         uint32_t total_pixels = TEST_WIDTH * TEST_HEIGHT;
@@ -1892,18 +1885,42 @@ int main(void)
         CHECK(create_dumb_buffer(fd, TEST_WIDTH, TEST_HEIGHT, 0x5a5a5a5au,
                                  &pass_colour),
               "persistent depth colour buffer");
-        CHECK(create_dumb_buffer(fd, TEST_WIDTH, 1, 0, &small_depth),
-              "undersized depth buffer");
-        CHECK(create_depth_continuation_buffer(fd, &commands, &continuation),
-              "depth continuation command buffer");
+        /* Continuation record: the same draw at a greater depth with a
+         * GREATER test, so it passes only against the nearer depth the first
+         * submission stored.  A cleared plane holds the far value and rejects
+         * it.  Its reverse-subtract blend zeroes the pixels the first
+         * submission wrote. */
+        CHECK(create_continuation_buffer(
+                  fd, &commands, &continuation,
+                  OPENGPU_DRAW_STATE_DEPTH_FUNC_MASK |
+                      OPENGPU_DRAW_STATE_STENCIL_TEST,
+                  (TEST_DEPTH_FUNC_GREATER
+                   << OPENGPU_DRAW_STATE_DEPTH_FUNC_SHIFT),
+                  OPENGPU_DRAW_BLEND_PRESENT |
+                      (TEST_BLEND_FACTOR_ONE
+                       << OPENGPU_DRAW_BLEND_SRC_SHIFT) |
+                      (TEST_BLEND_FACTOR_ONE
+                       << OPENGPU_DRAW_BLEND_DST_SHIFT) |
+                      (TEST_BLEND_EQ_REV_SUB
+                       << OPENGPU_DRAW_BLEND_EQ_SHIFT)),
+              "persistent depth continuation command buffer");
+        {
+            uint32_t *words = (uint32_t *)continuation.map;
+
+            /* Move the continuation triangle to depth 0x20, farther than the
+             * 0x10 the first pass stores. */
+            words[21] = 0x20;
+            words[22] = 0x20;
+            words[23] = 0x20;
+        }
         CHECK(create_syncobj(fd, &pass_sync[0]),
               "persistent depth first syncobj");
         CHECK(create_syncobj(fd, &pass_sync[1]),
               "persistent depth second syncobj");
 
         /* Validation rejects: DEPTH_LOAD without a handle, the colour object
-         * bound as the depth plane, a misaligned binding and an undersized
-         * allocation. */
+         * bound as the depth plane, a misaligned binding and a binding whose
+         * range runs past the backing allocation. */
         errno = 0;
         if (submit_depth_render(fd, vert_core, context_id, &commands,
                                 &pass_colour, 1, texture_slot, shader_slot,
@@ -1942,10 +1959,11 @@ int main(void)
                                 &pass_colour, 1, texture_slot, shader_slot,
                                 kernarg_slot, vertex_buffer_slot,
                                 vertex_shader_slot, vertex_kernarg_slot, 0,
-                                small_depth.handle, 0, 0, 0, 0) != -1 ||
+                                depth_attachment.handle, 0x100000, 0, 0,
+                                0) != -1 ||
             errno != ERANGE) {
             errno = EPROTO;
-            perror("OPENGPU USERSPACE DRM FAIL undersized depth binding");
+            perror("OPENGPU USERSPACE DRM FAIL out-of-range depth binding");
             return 1;
         }
 
@@ -1965,19 +1983,32 @@ int main(void)
             perror("OPENGPU USERSPACE DRM FAIL persistent depth first pass");
             return 1;
         }
-        CHECK(submit_depth_render(fd, vert_core, context_id, &continuation,
-                                  &pass_colour, 1, texture_slot, shader_slot,
-                                  kernarg_slot, vertex_buffer_slot,
-                                  vertex_shader_slot, vertex_kernarg_slot, 0,
-                                  depth_attachment.handle, 0,
-                                  OPENGPU_SUBMIT_DEPTH_LOAD, 0, pass_sync[1]),
-              "queue persistent depth continuation");
-        CHECK(wait_syncobjs(fd, &pass_sync[1], 1),
-              "wait persistent depth continuation");
-        if (framebuffer_count(&pass_colour, 0x00000000u) != written) {
-            errno = EIO;
-            perror("OPENGPU USERSPACE DRM FAIL persistent depth continuation");
-            return 1;
+        /* The fragment-core backend writes shader-defined depth, so the
+         * greater-depth comparison is only meaningful on the fixed-function
+         * path; the binding, clear/load and validation contract above still
+         * runs on both backends. */
+        if (!frag_core) {
+            CHECK(submit_depth_render(fd, vert_core, context_id, &continuation,
+                                      &pass_colour, 1, texture_slot,
+                                      shader_slot, kernarg_slot,
+                                      vertex_buffer_slot, vertex_shader_slot,
+                                      vertex_kernarg_slot, 0,
+                                      depth_attachment.handle, 0,
+                                      OPENGPU_SUBMIT_DEPTH_LOAD, 0,
+                                      pass_sync[1]),
+                  "queue persistent depth continuation");
+            CHECK(wait_syncobjs(fd, &pass_sync[1], 1),
+                  "wait persistent depth continuation");
+            if (framebuffer_count(&pass_colour, 0x00000000u) != written) {
+                fprintf(stderr,
+                        "persistent depth continuation zero=%u written=%u\n",
+                        framebuffer_count(&pass_colour, 0x00000000u),
+                        written);
+                errno = EIO;
+                perror("OPENGPU USERSPACE DRM FAIL persistent depth "
+                       "continuation");
+                return 1;
+            }
         }
     }
     if (vert_core)
