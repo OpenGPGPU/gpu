@@ -271,9 +271,21 @@ stable. This work need not wait for all structural cleanup.
   It still has 990 virtual-IO boundary hold violations (worst -34.79 ps);
   register-to-register hold is reported clean. Resolve interface constraints
   and physical integration before declaring closure.
-- SharedL2Slice remains unclosed at 1 GHz in the recorded SRAM/routing runs.
-  VectorIntegerAlu has passed its documented block recipe. See
-  [timing/README.md](../timing/README.md) for configurations and limitations.
+- SharedL2Slice: the registered missEngine fill stage makes the core clock
+  close (1047 MHz, +44.5 ps) and the block is now hold-clean and DRC-free. Its
+  455-474 routing DRCs were placement-dependent, not structural: the fixed 6x3
+  macro grid collides a pin column with the power mesh, and the adaptive grid
+  (`timing/asap7/l2_sram_macro_placement_adaptive.tcl`, 12 um channel) clears
+  them to 0. The only residual is the virtual-IO boundary setup group, the same
+  flat-flow limit described below. VectorIntegerAlu has passed its documented
+  block recipe. See [timing/README.md](../timing/README.md) for configurations
+  and limitations.
+- Per-block PPA is the current methodology. Whole-block (`VectorBackend`-scale)
+  runs cannot close in the flat local ORFS image: the worst path is always a
+  virtual input port to an internal capture register, and the block-level
+  residuals above are that same IO-boundary class. They belong to parent-level
+  integration, not block RTL. See the "Whole-block physical-flow limit" section
+  of [timing/README.md](../timing/README.md).
 
 Exit: reproducible functional/performance workloads and full-top PPA reports
 identify the remaining limits; setup, hold and routing checks are all accounted

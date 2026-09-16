@@ -12,7 +12,9 @@ has been pruned; only the latest closed result per block is kept.
 
 ## SharedL2Slice
 
-Not closed at 1 GHz. Five post-route attempts on record:
+Not closed at 1 GHz. The latest run is core-clean, hold-clean and DRC-free; the
+only residual is the virtual-IO boundary setup group (see the whole-block limit
+below). Five post-route attempts on record:
 
 | Recipe | Core Fmax | Worst setup (all groups) | Worst hold | Area | Power | DRC |
 |---|---:|---:|---:|---:|---:|---:|
