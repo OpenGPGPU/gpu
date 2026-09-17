@@ -411,6 +411,16 @@ Job word 5 bit 17 enables stencil. Linux defines words 10–12 in
 `blend_config`) and publishes them as zero for its own submissions — per-draw
 state rides the command records, and the job-level words act as global
 defaults for records that select no per-draw override. Unused words are zero.
+Texture translation and memory errors drain the active render and complete it
+with `STATUS.ERROR`. Queued renders publish DONE|ERROR and
+`GPU_IH_STATUS_TEXTURE_MEMORY_FAULT` (2) in their IH record before raising the
+completion IRQ; the driver's existing IH handling signals the fence with
+`-EIO`. Legacy START submissions expose DONE|ERROR and the completion IRQ.
+Software clearing STATUS.ERROR during execution does not clear the per-job
+failure. The next accepted render starts with a clean per-job fault latch.
+Failed texture reads supply zero only to allow draining; the framebuffer may
+contain partial results and must not be treated as a successful render.
+
 The four-word IH record contains job id and flags in word 0, ring slot in
 word 1, status in word 2 and reserved zero in word 3.
 

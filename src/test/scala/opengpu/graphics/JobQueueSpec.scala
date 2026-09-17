@@ -55,6 +55,7 @@ class JobQueueSpec extends AnyFlatSpec {
       dut.io.reset.poke(false.B)
       dut.io.launchReady.poke(true.B)
       dut.io.done.poke(false.B)
+      dut.io.doneStatus.poke(JobQueueStatus.Completed.U)
 
       // Mock engine: captures launches; completes a job `latency` cycles later.
       var launched = List.empty[Long] // cmdBase, in launch order
@@ -126,6 +127,7 @@ class JobQueueSpec extends AnyFlatSpec {
       assert(guard < 5000, "queue did not retire both jobs in time")
       // Let the final pointer updates land before inspecting the registers.
       dut.io.done.poke(false.B)
+      dut.io.doneStatus.poke(JobQueueStatus.Completed.U)
       dut.clock.step(); dut.clock.step()
 
       assert(launched.reverse == List(0x4000L, 0x4200L),
@@ -178,6 +180,7 @@ class JobQueueSpec extends AnyFlatSpec {
       dut.io.ihMask.poke(3.U)
       dut.io.reset.poke(false.B)
       dut.io.done.poke(false.B)
+      dut.io.doneStatus.poke(JobQueueStatus.Completed.U)
 
       // With launchReady low the descriptor is fetched (RPTR advances) but no
       // launch happens and the job waits in the pending slot.
@@ -263,6 +266,7 @@ class JobQueueSpec extends AnyFlatSpec {
         while (committed.size < modes.size && cycle < 10000) {
           val done = completeAt == cycle
           dut.io.done.poke(done.B)
+          dut.io.doneStatus.poke(JobQueueStatus.Completed.U)
           dut.io.mem.req.ready.poke((cycle % 4 != 0).B)
           dut.io.mem.resp.valid.poke(false.B)
           response.foreach { case (write, addr, data, readyAt) =>

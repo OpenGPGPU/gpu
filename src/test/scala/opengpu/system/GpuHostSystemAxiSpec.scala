@@ -185,12 +185,13 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
   }
 
   /** Services the 64-bit AXI memory master until `until` holds, accepting any
-    * mix of full-line reads and writes.  `readLine` supplies the 64-byte line
+    * mix of full-line and narrow reads and full-line writes. `readLine` supplies the 64-byte line
     * for a read address; `onWrite` receives every completed write burst as
     * (address, data, byte strobe). */
   private def serviceMemoryMaster(
     dut: GpuHostSystemAxi,
-    readLine: BigInt => BigInt
+    readLine: BigInt => BigInt,
+    readFault: BigInt => Boolean = _ => false
   )(onWrite: (BigInt, BigInt, BigInt) => Unit)(until: => Boolean): Unit = {
     val mask64 = (BigInt(1) << 64) - 1
     var arDone = false
@@ -198,6 +199,8 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
     var arId = BigInt(0)
     var rBeat = 0
     var rLine = BigInt(0)
+    var rBeats = 8
+    var rFault = false
     var awDone = false
     var awAddr = BigInt(0)
     var awId = BigInt(0)
@@ -214,19 +217,21 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
           dut.io.m_axi_arready.peek().litToBoolean) {
         arAddr = dut.io.m_axi_araddr.peek().litValue
         arId = dut.io.m_axi_arid.peek().litValue
-        rLine = readLine(arAddr)
+        rLine = readLine(arAddr) >> ((arAddr.toInt & 56) * 8)
+        rBeats = dut.io.m_axi_arlen.peek().litValue.toInt + 1
+        rFault = readFault(arAddr)
         arDone = true
         rBeat = 0
       }
-      // Read data channel: eight 64-bit beats per line.
+      // Read data channel: narrow PTE reads use one lane-aligned beat.
       if (arDone) {
         dut.io.m_axi_rvalid.poke(true.B)
         dut.io.m_axi_rid.poke(arId.U)
         dut.io.m_axi_rdata.poke(((rLine >> (rBeat * 64)) & mask64).U)
-        dut.io.m_axi_rresp.poke(0.U)
-        dut.io.m_axi_rlast.poke((rBeat == 7).B)
+        dut.io.m_axi_rresp.poke((if (rFault) 2 else 0).U)
+        dut.io.m_axi_rlast.poke((rBeat == rBeats - 1).B)
         if (dut.io.m_axi_rready.peek().litToBoolean) {
-          if (rBeat == 7) { arDone = false; rBeat = 0 } else rBeat += 1
+          if (rBeat == rBeats - 1) { arDone = false; rBeat = 0 } else rBeat += 1
         }
       } else {
         dut.io.m_axi_rvalid.poke(false.B)
@@ -603,6 +608,115 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
         val got = words.getOrElse(dstBase + y * dstStride + x * 4L, BigInt(0))
         assert(got == BigInt(0x80808080L),
           s"dst($x,$y)=0x${got.toString(16)} expected 0x80808080")
+      }
+    }
+  }
+
+  for ((queued, busFault, textureBusFault) <- Seq(
+    (true, false, false), (false, false, false),
+    (true, true, false), (true, false, true))) {
+    it should s"report texture faults to the host and recover (queued=$queued, pageBusFault=$busFault, textureBusFault=$textureBusFault)" in {
+      val gfx = GraphicsConfig(screenWidth = 4, screenHeight = 4, subPixelBits = 8)
+      val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+      simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+        initialize(dut)
+        val words = mutable.LongMap[BigInt]()
+        val reads = mutable.ArrayBuffer[BigInt]()
+        val cmdBase = 0x4000
+        val colorBase = 0x8000
+        val depthBase = 0x9000
+        val ringBase = 0x10000
+        val ihBase = 0x20000
+        val rootBase = 0x30000
+        val textureVa = 0x400000
+        val texturePa = 0x800000
+        val draw = Array.fill(44)(0)
+        Seq((-65536, -65536), (65536, -65536), (-65536, 65536))
+          .zipWithIndex.foreach { case ((x, y), i) =>
+            draw(i * 4) = x; draw(i * 4 + 1) = y
+            draw(i * 4 + 3) = 65536
+            for (c <- 0 until 3) draw(12 + i * 3 + c) = 255
+          }
+        def ww(address: Long, value: Int): Unit =
+          words(address) = BigInt(value.toLong & 0xffffffffL)
+        draw.zipWithIndex.foreach { case (v, i) => ww(cmdBase + 4L * i, v) }
+        // A second descriptor is present before the first fetch fills L2.
+        for (slot <- 0 until 2) {
+          val descriptor = Seq((1 << 16) | (slot + 1), cmdBase, colorBase,
+            depthBase, 16, 0, textureVa, (1 << 16) | 1, 0x101) ++ Seq.fill(7)(0)
+          descriptor.zipWithIndex.foreach { case (v, i) =>
+            ww(ringBase + slot * 64L + i * 4L, v)
+          }
+        }
+        ww(texturePa, 0xff00ffff)
+        if (textureBusFault) ww(rootBase + 4, (0x800 << 10) | 0x43)
+        def readLine(address: BigInt): BigInt = {
+          reads += address
+          val base = address.toLong & ~63L
+          (0 until 16).map(i => words.getOrElse(base + i * 4L, BigInt(0)) << (i * 32))
+            .reduce(_ | _)
+        }
+        def writeLine(address: BigInt, data: BigInt, mask: BigInt): Unit = {
+          val base = address.toLong & ~63L
+          for (b <- 0 until 64 if mask.testBit(b)) {
+            val word = base + (b / 4) * 4L
+            val shift = (b % 4) * 8
+            words(word) = (words.getOrElse(word, BigInt(0)) & ~(BigInt(255) << shift)) |
+              (((data >> (b * 8)) & 255) << shift)
+          }
+        }
+        axiWrite(dut, GpuCommandMmioRegs.VECTOR_SATP, 0x80000000 | (rootBase >> 12))
+        axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
+        axiWrite(dut, RenderHostRegs.IRQ, 1)
+        if (queued) {
+          axiWrite(dut, RenderHostRegs.JOB_RING_BASE, ringBase)
+          axiWrite(dut, RenderHostRegs.JOB_RING_SIZE, 4)
+          axiWrite(dut, RenderHostRegs.IH_BASE, ihBase)
+          axiWrite(dut, RenderHostRegs.IH_SIZE, 4)
+          axiWrite(dut, RenderHostRegs.JOB_WPTR, 1)
+          axiWrite(dut, RenderHostRegs.JOB_CONTROL, 1)
+        } else {
+          axiWrite(dut, RenderHostRegs.CMD_BASE, cmdBase)
+          axiWrite(dut, RenderHostRegs.CMD_COUNT, 1)
+          axiWrite(dut, RenderHostRegs.COLOR_BASE, colorBase)
+          axiWrite(dut, RenderHostRegs.DEPTH_BASE, depthBase)
+          axiWrite(dut, RenderHostRegs.STRIDE, 16)
+          axiWrite(dut, RenderHostRegs.TEX_BASE, textureVa)
+          axiWrite(dut, RenderHostRegs.TEX_WIDTH, 1)
+          axiWrite(dut, RenderHostRegs.TEX_HEIGHT, 1)
+          axiWrite(dut, RenderHostRegs.TEX_CONFIG, 0x101)
+          axiWrite(dut, RenderHostRegs.CONTROL, 1)
+        }
+        serviceMemoryMaster(dut, readLine,
+          address => (busFault && address == rootBase + 4) ||
+            (textureBusFault && address == texturePa))(writeLine) {
+          dut.io.m_irq.peek().litToBoolean
+        }
+        assert(reads.contains(BigInt(rootBase + 4)), "texture must attempt a page walk")
+        assert(!reads.exists(a => a >= textureVa && a < textureVa + 4096),
+          "faulted virtual address must never reach physical memory")
+        assert((axiRead(dut, RenderHostRegs.STATUS) & 7) == 6, "DONE and ERROR, not BUSY")
+        if (queued) {
+          assert(words(ihBase) == BigInt(0x30001), "IH must name failed job 1")
+          assert(words(ihBase + 8) == 2, "IH must report texture memory fault")
+          assert(axiRead(dut, RenderHostRegs.IH_WPTR) == 1)
+        }
+        // Repair the PTE and run again: per-job failure cannot poison success.
+        ww(rootBase + 4, (0x800 << 10) | 0x43)
+        axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
+        axiWrite(dut, RenderHostRegs.IRQ, 3)
+        if (queued) axiWrite(dut, RenderHostRegs.JOB_WPTR, 2)
+        else axiWrite(dut, RenderHostRegs.CONTROL, 1)
+        serviceMemoryMaster(dut, readLine)(writeLine) {
+          dut.io.m_irq.peek().litToBoolean
+        }
+        assert(reads.contains(BigInt(texturePa)), "repaired mapping must access translated PA")
+        assert((axiRead(dut, RenderHostRegs.STATUS) & 7) == 2)
+        if (queued) {
+          assert(words(ihBase + 16) == BigInt(0x10002))
+          assert(words(ihBase + 24) == 0)
+          assert(axiRead(dut, RenderHostRegs.IH_WPTR) == 2)
+        }
       }
     }
   }

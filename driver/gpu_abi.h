@@ -628,6 +628,9 @@ struct gpu_job_record {
 /* Rejected before launch: reserved mode, above-build maximum, or nonzero
  * reserved bits in job word 9. DONE and ERROR are both set in the header. */
 #define GPU_IH_STATUS_INVALID_SAMPLE_MODE 1u
+/* Texture translation or memory access failed. Rendering drains before the
+ * failed completion is published; framebuffer contents may be partial. */
+#define GPU_IH_STATUS_TEXTURE_MEMORY_FAULT 2u
 struct gpu_ih_record {
     u32 header;
     u32 slot;

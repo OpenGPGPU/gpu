@@ -167,7 +167,8 @@ class RenderHost(
   vertCore: Boolean = false,
   deviceId: Int = 0x4755, // 'GU'
   version: Int = 0x0001,
-  unifiedCommands: Boolean = false
+  unifiedCommands: Boolean = false,
+  textureFaultReporting: Boolean = false
 ) extends Module {
   override def desiredName: String = "RenderHost"
 
@@ -183,6 +184,8 @@ class RenderHost(
     val irq = Output(Bool())
     /** Completion event from an integrated compute/command subsystem. */
     val externalCompletion = Input(Bool())
+    /** Pulse when a failed texture response is consumed by the renderer. */
+    val textureFault = if (textureFaultReporting) Some(Input(Bool())) else None
 
     val cbMem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
@@ -357,6 +360,9 @@ class RenderHost(
   private val busy = RegInit(false.B)
   private val done = RegInit(false.B)
   private val error = RegInit(false.B)
+  // Per-job state is separate from STATUS.ERROR, which software can clear.
+  private val textureFaulted = RegInit(false.B)
+  private val textureFaultNow = io.textureFault.getOrElse(false.B) && busy
   private val irqEnable = RegInit(false.B)
   private val irqPending = RegInit(false.B)
   private val sawBusy = RegInit(false.B)
@@ -702,6 +708,7 @@ class RenderHost(
       error := false.B
       sawBusy := false.B
       ownerQueue := false.B
+      textureFaulted := false.B
       activeCmdBase := cmdBaseReg
       activeCmdCount := cmdCountReg
       activeColorBase := colorBaseReg
@@ -733,6 +740,7 @@ class RenderHost(
     error := false.B
     sawBusy := false.B
     ownerQueue := true.B
+    textureFaulted := false.B
   }
 
   // Completion: the engine must be observed non-idle after launch before its
@@ -751,6 +759,15 @@ class RenderHost(
     }
   }
   jq.io.done := jqDonePulse
+  jq.io.doneStatus := Mux(textureFaulted || textureFaultNow,
+    JobQueueStatus.TextureMemoryFault.U, JobQueueStatus.Completed.U)
+  when(textureFaultNow) {
+    textureFaulted := true.B
+    error := true.B
+  }
+  // Preserve failure at completion even if STATUS.ERROR was acknowledged
+  // while the failed draw was still draining.
+  when(busy && sawBusy && core.io.done && textureFaulted) { error := true.B }
   // Queue completions become interrupt-visible only after all IH words have
   // completed and JobQueue has advanced IH_WPTR.  Raising IRQ at core.done
   // races the handler against the still-empty IH ring.

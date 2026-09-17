@@ -365,9 +365,10 @@ Implemented:
 - The fixed-function texture client translates through the same page tables
   (`GraphicsAddressTranslator`); the other graphics clients stay physical.
   Translation faults complete locally with a fault-marked zero response and
-  never access the requested physical address. The graphics word interface
-  currently consumes zero data without reporting that fault to the host;
-  end-to-end graphics fault reporting remains future work.
+  never access the requested physical address. Texture translation and memory
+  faults latch a per-job failure, drain rendering, and report STATUS.ERROR;
+  queued jobs also publish IH status 2 and ERROR before raising the IRQ, so the
+  driver signals the failed fence with -EIO. Framebuffer contents may be partial.
 
 Design notes (from the MMU/ASID review):
 

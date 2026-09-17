@@ -44,6 +44,7 @@ class JobConfig extends Bundle {
 object JobQueueStatus {
   val Completed = 0
   val InvalidSampleMode = 1
+  val TextureMemoryFault = 2
 }
 
 /** Host-memory job submission ring and interrupt-history (IH) ring reader.
@@ -84,7 +85,8 @@ object JobQueueStatus {
   * IH record layout (4 words):
   *   [0] bits 15:0 job id, bit16 DONE, bit17 ERROR
   *   [1] bits 15:0 job-ring slot index (queue position)
-  *   [2] status code (0 = completed, 1 = invalid sample-mode word)
+  *   [2] status code (0 = completed, 1 = invalid sample-mode word,
+  *                    2 = texture translation or memory fault)
   *   [3] reserved
   */
 class JobQueue(maxSampleCount: Int = 4) extends Module {
@@ -117,6 +119,7 @@ class JobQueue(maxSampleCount: Int = 4) extends Module {
     val launchReady = Input(Bool())
     /** Completion pulse for the job this unit launched. */
     val done = Input(Bool())
+    val doneStatus = Input(UInt(32.W))
     /** Pulses only after the completed job's IH record and WPTR are visible. */
     val ihCommitted = Output(Bool())
     /** Error flag for the record being committed; qualified by ihCommitted. */
@@ -198,7 +201,7 @@ class JobQueue(maxSampleCount: Int = 4) extends Module {
     ihValid := true.B
     ihJobId := runJobId
     ihSlot := runSlot
-    ihStatus := JobQueueStatus.Completed.U
+    ihStatus := io.doneStatus
   }
 
   // Host-driven reset pulse (JOB_CONTROL bit1).

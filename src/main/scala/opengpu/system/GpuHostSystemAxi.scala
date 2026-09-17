@@ -137,7 +137,8 @@ class GpuHostSystemAxi(
     val host = Module(new GpuHostAxi(
       graphicsConfig, gpuConfig, fragCore, vertCore,
       deviceId = deviceId, version = version,
-      unifiedCommandMmio = true, commandIdWidth = commandIdWidth))
+      unifiedCommandMmio = true, commandIdWidth = commandIdWidth,
+      textureFaultReporting = true))
     val system = Module(new GpuSystem(
       gpuConfig,
       numComputeUnits = numComputeUnits,
@@ -271,6 +272,10 @@ class GpuHostSystemAxi(
     attachGraphicsResponse(
       texResponseArbiter.io.in(1), responseForTex, texBase)
     texBridge.io.memoryResponse <> texResponseArbiter.io.out
+    // The word port has no fault bit. Preserve the failure alongside the
+    // consumed response so RenderHost can fail the owning job after draining.
+    host.io.textureFault.get := texResponseArbiter.io.out.fire &&
+      texResponseArbiter.io.out.bits.fault
     texTranslator.io.pageWalkResp.valid :=
       graphicsResponse.valid && responseForTlb
     texTranslator.io.pageWalkResp.bits.readData :=

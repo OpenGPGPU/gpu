@@ -50,7 +50,8 @@ class GpuHostAxi(
   version: Int = 0x0001,
   externalCompletionIrq: Boolean = false,
   unifiedCommandMmio: Boolean = false,
-  commandIdWidth: Int = 8
+  commandIdWidth: Int = 8,
+  textureFaultReporting: Boolean = false
 ) extends Module {
   override def desiredName: String = "GpuHostAxi"
 
@@ -113,6 +114,7 @@ class GpuHostAxi(
     val vectorSatp = Output(UInt(32.W))
     val instructionSatp = Output(UInt(32.W))
     val tlbFlush = Output(Bool())
+    val textureFault = if (textureFaultReporting) Some(Input(Bool())) else None
 
     // Renderer shared-memory ports (command buffer + framebuffer words, and the
     // core-backed shader kernel's line/coherence side ports) pass straight
@@ -143,7 +145,9 @@ class GpuHostAxi(
   withClockAndReset(clock, !io.s_axi_aresetn) {
     val host = Module(new RenderHost(
       config, gpuConfig, fragCore, vertCore, deviceId, version,
-      unifiedCommands = unifiedCommandMmio))
+      unifiedCommands = unifiedCommandMmio,
+      textureFaultReporting = textureFaultReporting))
+    host.io.textureFault.foreach(_ := io.textureFault.get)
     val unified = if (unifiedCommandMmio) {
       Some(Module(new GpuCommandMmio(
         gpuConfig, commandIdWidth, gpuConfig.commandQueueDepth)))
