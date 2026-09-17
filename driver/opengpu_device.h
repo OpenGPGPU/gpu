@@ -135,8 +135,6 @@ struct opengpu_compute {
     struct opengpu_buffer depth;
     struct opengpu_buffer shader;
     struct opengpu_buffer kernarg;
-    /** Sv32 identity-map root page table (see opengpu_hw_enable_mmu). */
-    struct opengpu_buffer mmu_root;
     struct drm_gpu_scheduler scheduler;
 };
 
@@ -150,11 +148,34 @@ struct opengpu_display {
     bool enabled;
 };
 
+/* Sv32 per-page cache policy, matching CachePolicy in the RTL and the Sv32
+ * PTE bits [9:8]. */
+#define OPENGPU_MMU_POLICY_CACHED       0u
+#define OPENGPU_MMU_POLICY_WRITE_THROUGH 1u
+#define OPENGPU_MMU_POLICY_UNCACHED     2u
+
+/* Up to this many 4 MiB regions may carry a second-level table (a region is
+ * split only when a page inside it needs a non-default policy). */
+#define OPENGPU_MMU_MAX_TABLES 16u
+
+/** Identity-map GPU MMU: one root table of 4 MiB superpages, split into
+  * second-level tables on demand so individual 4 KiB pages can carry a
+  * non-default cache policy. */
+struct opengpu_mmu {
+    struct mutex lock;
+    struct opengpu_buffer root;
+    struct opengpu_buffer l1[OPENGPU_MMU_MAX_TABLES];
+    u32 l1_region[OPENGPU_MMU_MAX_TABLES];
+    u32 l1_count;
+    bool enabled;
+};
+
 struct opengpu_device {
     struct device *dev;
     struct opengpu_hw hw;
     struct opengpu_compute compute;
     struct opengpu_display display;
+    struct opengpu_mmu mmu;
     u32 width;
     u32 height;
     u32 stride;
@@ -257,6 +278,12 @@ int opengpu_hw_invalidate_async(struct opengpu_device *gpu, u32 address,
                                 const struct opengpu_command_events *events,
                                 struct dma_fence **fence);
 int opengpu_hw_enable_mmu(struct opengpu_device *gpu, dma_addr_t root_table);
+int opengpu_hw_flush_tlbs(struct opengpu_device *gpu);
+
+int opengpu_mmu_init(struct opengpu_device *gpu);
+void opengpu_mmu_fini(struct opengpu_device *gpu);
+int opengpu_mmu_set_range_policy(struct opengpu_device *gpu, dma_addr_t base,
+                                 size_t size, u32 policy);
 int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              const struct opengpu_kernel_launch *launch,
                              const struct opengpu_command_events *events,

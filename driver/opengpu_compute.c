@@ -563,6 +563,17 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
         if (ret)
             goto out_file;
     }
+    /* A kernarg is read by the CU through its MMU; mapping it uncached keeps a
+     * CPU write visible without relying on a flush. */
+    if (args->type == OPENGPU_RESOURCE_KERNARG ||
+        args->type == OPENGPU_RESOURCE_VERTEX_KERNARG ||
+        args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG) {
+        ret = opengpu_mmu_set_range_policy(gpu, binding->dma, binding->size,
+                                           OPENGPU_MMU_POLICY_UNCACHED);
+        if (ret && ret != -EOPNOTSUPP)
+            goto out_file;
+        ret = 0;
+    }
     old = context->bindings[args->slot - 1];
     context->bindings[args->slot - 1] = binding;
     mutex_unlock(&render_file->lock);
@@ -2492,24 +2503,10 @@ int opengpu_compute_init(struct opengpu_device *gpu)
     if (ret)
         goto err_color;
     /* Enable Sv32 translation with an identity map so the CU MMUs are live
-     * without changing any existing physical address.  The satp registers live
-     * in the unified command block, so this requires that capability. */
-    if (gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS) {
-        ret = opengpu_buffer_alloc(gpu, &compute->mmu_root, 4096);
-        if (ret)
-            goto err_depth;
-        {
-            u32 *root = compute->mmu_root.cpu;
-            u32 i;
-
-            /* 4 MiB identity superpages: V|R|W|X|A|D, cached policy. */
-            for (i = 0; i < 1024; i++)
-                root[i] = (i << 20) | 0xcfu;
-        }
-        ret = opengpu_hw_enable_mmu(gpu, compute->mmu_root.dma);
-        if (ret)
-            goto err_mmu;
-    }
+     * without changing any existing physical address. */
+    ret = opengpu_mmu_init(gpu);
+    if (ret)
+        goto err_mmu;
     if (gpu->hw.capabilities & GPU_CAP_FRAGMENT_CORE) {
         ret = opengpu_init_test_shader(gpu);
         if (ret)
@@ -2545,8 +2542,7 @@ err_shader:
     opengpu_buffer_free(gpu, &compute->kernarg);
     opengpu_buffer_free(gpu, &compute->shader);
 err_mmu:
-    opengpu_buffer_free(gpu, &compute->mmu_root);
-err_depth:
+    opengpu_mmu_fini(gpu);
     opengpu_buffer_free(gpu, &compute->depth);
 err_color:
     opengpu_buffer_free(gpu, &compute->color);
@@ -2561,7 +2557,7 @@ void opengpu_compute_fini(struct opengpu_device *gpu)
     drm_sched_fini(&gpu->compute.scheduler);
     opengpu_buffer_free(gpu, &gpu->compute.kernarg);
     opengpu_buffer_free(gpu, &gpu->compute.shader);
-    opengpu_buffer_free(gpu, &gpu->compute.mmu_root);
+    opengpu_mmu_fini(gpu);
     opengpu_buffer_free(gpu, &gpu->compute.depth);
     opengpu_buffer_free(gpu, &gpu->compute.color);
     opengpu_buffer_free(gpu, &gpu->compute.cmd);

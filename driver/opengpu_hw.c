@@ -1573,6 +1573,15 @@ int opengpu_hw_enable_mmu(struct opengpu_device *gpu, dma_addr_t root_table)
     return 0;
 }
 
+/** Invalidate every entry of both translation caches. */
+int opengpu_hw_flush_tlbs(struct opengpu_device *gpu)
+{
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
+        return -EOPNOTSUPP;
+    opengpu_reg_write(gpu, GPU_REG_UCMD_TLB_FLUSH, 1);
+    return 0;
+}
+
 int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              const struct opengpu_kernel_launch *launch,
                              const struct opengpu_command_events *events,
