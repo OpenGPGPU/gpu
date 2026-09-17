@@ -159,10 +159,15 @@ struct opengpu_display {
  * split only when a page inside it needs a non-default policy). */
 #define OPENGPU_MMU_MAX_TABLES 16u
 
+/* Forward declaration: `struct opengpu_mmu` holds a VM registry below. */
+struct opengpu_vm;
+
 /** Identity-map GPU MMU: one root table of 4 MiB superpages, split into
   * second-level tables on demand so individual 4 KiB pages can carry a
   * non-default cache policy.  `asids` hands out Sv32 ASIDs to per-VM root
-  * tables; ASID 0 is the driver's global identity map. */
+  * tables; ASID 0 is the driver's global identity map.  `vm_by_asid`
+  * registers live VMs so a policy update can propagate a newly split L1 link
+  * into every VM root. */
 struct opengpu_mmu {
     struct mutex lock;
     struct opengpu_buffer root;
@@ -170,6 +175,7 @@ struct opengpu_mmu {
     u32 l1_region[OPENGPU_MMU_MAX_TABLES];
     u32 l1_count;
     struct opengpu_asid_pool asids;
+    struct opengpu_vm *vm_by_asid[OPENGPU_ASID_COUNT];
     bool enabled;
 };
 
@@ -328,9 +334,9 @@ int opengpu_mmu_init(struct opengpu_device *gpu);
 void opengpu_mmu_fini(struct opengpu_device *gpu);
 int opengpu_mmu_set_range_policy(struct opengpu_device *gpu, dma_addr_t base,
                                  size_t size, u32 policy);
-/* Per-VM root tables.  Create allocates an ASID and an identity root table and
- * shoots the ASID down in case it was recycled; activate switches both CU
- * `satp` registers to it; destroy evicts its TLB entries and releases it. */
+/* Per-VM root tables.  Create allocates an ASID and clones the global identity
+ * map into a root table; activate switches both CU `satp` registers to it;
+ * destroy evicts its TLB entries and releases it. */
 int opengpu_mmu_vm_create(struct opengpu_device *gpu, struct opengpu_vm *vm);
 int opengpu_mmu_vm_activate(struct opengpu_device *gpu,
                             const struct opengpu_vm *vm);

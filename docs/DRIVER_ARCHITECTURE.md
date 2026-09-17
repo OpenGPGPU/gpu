@@ -109,10 +109,12 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
   tracks no ASID and is cleared by any flush pulse. An ASID allocator
   (`opengpu_asid.h`) and per-VM root tables (`opengpu_mmu_vm_create` /
   `_activate` / `_destroy`) are in place; a VM clones the global identity map
-  and all leaf PTEs carry the Sv32 global (G) bit, so an ASID switch reuses
-  the resident translations. Every hardware submission takes an optional VM
-  and programs `satp` for it inside the submit lock; the scheduler does not
-  pass one yet, so work still runs in the ASID-0 identity space.
+  (a later policy split propagates into every live VM root) and all leaf PTEs
+  carry the Sv32 global (G) bit, so an ASID switch reuses the resident
+  translations. Every hardware submission takes a VM and programs `satp` for
+  it inside the submit lock; each DRM context owns a VM that every job from it
+  carries. A VM root is still a clone of the global map, so the switch is not
+  yet observable.
 - Texture translation/access faults drain the render and report an error
   completion: STATUS.ERROR for legacy submissions, plus IH status 2 and ERROR
   for queued jobs. The existing IH handler signals the owning fence with -EIO.

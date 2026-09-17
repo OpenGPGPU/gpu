@@ -154,9 +154,19 @@ int opengpu_mmu_set_range_policy(struct opengpu_device *gpu, dma_addr_t base,
         table[page] = mmu_leaf_pte(phys, policy);
     }
     dma_wmb();
-    for (i = old_count; i < mmu->l1_count; i++)
-        ((u32 *)mmu->root.cpu)[mmu->l1_region[i]] =
-            mmu_link_pte(mmu->l1[i].dma);
+    for (i = old_count; i < mmu->l1_count; i++) {
+        u32 region = mmu->l1_region[i];
+        u32 link = mmu_link_pte(mmu->l1[i].dma);
+        u32 j;
+
+        ((u32 *)mmu->root.cpu)[region] = link;
+        /* A VM created before this split must see the same L1 table, or it
+         * would keep using the cached identity superpage.  Updates exclude
+         * submissions (submit_lock held, execution drained). */
+        for (j = 1; j < OPENGPU_ASID_COUNT; j++)
+            if (mmu->vm_by_asid[j])
+                ((u32 *)mmu->vm_by_asid[j]->root.cpu)[region] = link;
+    }
     dma_wmb();
     ret = opengpu_hw_flush_tlbs(gpu);
     goto out_mmu;
@@ -230,30 +240,28 @@ int opengpu_mmu_vm_create(struct opengpu_device *gpu, struct opengpu_vm *vm)
     ret = opengpu_buffer_alloc(gpu, &vm->root, MMU_PAGE_SIZE);
     if (ret)
         return ret;
-    /* Share the global identity map so the new VM starts with every existing
-     * binding, including uncached kernargs, and a switch refills nothing. */
-    mmu_copy_root(vm->root.cpu, mmu->root.cpu);
-    dma_wmb();
 
     mutex_lock(&mmu->lock);
+    /* Clone the live root under the lock so a concurrent policy update cannot
+     * tear it, and register the VM so later splits propagate into it. */
+    mmu_copy_root(vm->root.cpu, mmu->root.cpu);
     ret = opengpu_asid_alloc(&mmu->asids, &asid);
+    if (!ret) {
+        vm->asid = asid;
+        mmu->vm_by_asid[asid] = vm;
+    }
     mutex_unlock(&mmu->lock);
     if (ret)
         goto err_free_root;
+    dma_wmb();
 
-    /* An ASID freed by an earlier VM may still have TLB entries. */
-    ret = mmu_shootdown_asid(gpu, asid);
-    if (ret)
-        goto err_free_asid;
-
-    vm->asid = asid;
+    /* A recycled ASID carries no stale entries that matter: every driver leaf
+     * PTE is global, so a previous owner's translations describe the same
+     * shared physical map.  Once a VM maps anything privately, its ASID must
+     * be shot down before it is reused (create or switch). */
     vm->enabled = true;
     return 0;
 
-err_free_asid:
-    mutex_lock(&mmu->lock);
-    opengpu_asid_free(&mmu->asids, asid);
-    mutex_unlock(&mmu->lock);
 err_free_root:
     opengpu_buffer_free(gpu, &vm->root);
     return ret;
@@ -282,6 +290,9 @@ void opengpu_mmu_vm_destroy(struct opengpu_device *gpu, struct opengpu_vm *vm)
     /* Evict this address space before releasing the ASID for reuse. */
     mmu_shootdown_asid(gpu, vm->asid);
     mutex_lock(&mmu->lock);
+    if (vm->asid < OPENGPU_ASID_COUNT &&
+        mmu->vm_by_asid[vm->asid] == vm)
+        mmu->vm_by_asid[vm->asid] = NULL;
     opengpu_asid_free(&mmu->asids, vm->asid);
     mutex_unlock(&mmu->lock);
     opengpu_buffer_free(gpu, &vm->root);

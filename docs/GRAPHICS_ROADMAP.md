@@ -364,15 +364,16 @@ Implemented:
   the global identity map, 511 usable IDs) and a per-VM root table
   (`opengpu_mmu_vm_create` / `_activate` / `_destroy`): create allocates an
   ASID and clones the driver's global identity map, including any split L1
-  links, and shoots the ASID down in case it was recycled; activate points
-  both CU `satp` registers at it after quiescing (no full flush); destroy
-  evicts its TLB entries and returns the ASID. All identity and policy leaf
-  PTEs carry the Sv32 global (G) bit, so a switch reuses the same
-  translations and the TLB keeps them resident. Every hardware submission
-  path takes an optional VM and programs `satp` for it inside the submit lock
-  (before the doorbell), so the switch cannot race another submission. The
-  scheduler does not select a VM per submission yet, so all work still runs
-  in the ASID-0 identity space.
+  links; a later policy split propagates its new L1 link into every live VM
+  root; activate points both CU `satp` registers at it after quiescing (no
+  full flush); destroy evicts its TLB entries and returns the ASID. All
+  identity and policy leaf PTEs carry the Sv32 global (G) bit, so a switch
+  reuses the same translations and the TLB keeps them resident. Every hardware
+  submission path takes an optional VM and programs `satp` for it inside the
+  submit lock (before the doorbell), so the switch cannot race another
+  submission. Each DRM context owns a VM and every job carries its context's
+  VM, so jobs run in their context's address space. Because a VM root is
+  still a clone of the global map, the switch is not yet observable.
 - Sv32 PTE bits [9:8] carry a per-page data cache policy (cached / write-through /
   uncached); the walker, data TLB, texture translator, CU data L1 and shared L2
   honour it. Instruction fetch remains cached; the ITLB does not carry policy.
@@ -412,13 +413,12 @@ Design notes (from the MMU/ASID review):
 
 Remaining work, cheapest first:
 
-- Driver VM manager: per-VM root tables, an ASID allocator, global (G)
-  identity mappings and a per-submission `satp` switch inside the hardware
-  submit lock exist, but the scheduler still passes no VM, so every job runs
-  in the ASID-0 identity space. Bind a VM to each DRM context and pass it from
-  `opengpu_sched_run_job`; because every VM root currently shares the global
-  map, this is a no-op until non-identity per-VM mappings arrive. The scoped
-  `TLB_FLUSH` above is the shootdown primitive.
+- Driver VM manager: an ASID allocator, per-VM root tables, global identity
+  mappings and a per-context VM selected on every submission exist. Every VM
+  root is still a clone of the global map, so a switch is not yet observable.
+  Add per-VM (non-global) mappings and the ASID shootdown a switch then needs
+  to make address spaces actually isolate. The scoped `TLB_FLUSH` is the
+  shootdown primitive.
 - Keep per-VM mappings on large pages; size the TLBs for the working set and
   avoid blocking translation on the texture path. The `GraphicsAddressTranslator`
   is deliberately blocking today; measure before widening it.

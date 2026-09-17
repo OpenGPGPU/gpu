@@ -31,6 +31,9 @@ struct opengpu_render_context {
     struct drm_sched_entity entity;
     struct dma_fence *last_fence;
     struct opengpu_resource_binding *bindings[OPENGPU_MAX_RESOURCE_SLOTS];
+    /* Address space every job from this context runs in.  Disabled on
+     * builds without the MMU control path (Bare), which then use ASID 0. */
+    struct opengpu_vm vm;
 };
 
 struct opengpu_resource_binding {
@@ -58,6 +61,9 @@ struct opengpu_sched_job {
     struct drm_sched_job base;
     struct opengpu_device *gpu;
     enum opengpu_sched_job_type type;
+    /* Address space of the submitting context, or NULL for the global ASID-0
+     * identity map (bring-up self-test). */
+    const struct opengpu_vm *vm;
     dma_addr_t dma_source;
     dma_addr_t dma_destination;
     u32 dma_bytes;
@@ -255,6 +261,9 @@ static void opengpu_context_free(struct opengpu_file *render_file,
 
     drm_sched_entity_destroy(&context->entity);
     opengpu_wait_fence(render_file->gpu, &context->last_fence, false);
+    /* Jobs are drained (entity destroyed, last fence waited), so the ASID can
+     * be evicted and returned. */
+    opengpu_mmu_vm_destroy(render_file->gpu, &context->vm);
     for (i = 0; i < ARRAY_SIZE(context->bindings); i++) {
         if (!context->bindings[i])
             continue;
@@ -375,6 +384,12 @@ int opengpu_compute_context_create_ioctl(struct drm_device *drm, void *data,
     if (ret)
         goto err_context;
 
+    /* Every context owns an address space.  Without the MMU control path
+     * (Bare) the VM stays disabled and jobs use the ASID-0 identity map. */
+    ret = opengpu_mmu_vm_create(gpu, &context->vm);
+    if (ret && ret != -EOPNOTSUPP)
+        goto err_entity;
+
     mutex_lock(&render_file->lock);
     ret = idr_alloc(&render_file->contexts, context, 1, 0, GFP_KERNEL);
     if (ret >= 0) {
@@ -386,6 +401,8 @@ int opengpu_compute_context_create_ioctl(struct drm_device *drm, void *data,
     if (!ret)
         return 0;
 
+    opengpu_mmu_vm_destroy(gpu, &context->vm);
+err_entity:
     drm_sched_entity_destroy(&context->entity);
 err_context:
     kfree(context);
@@ -1062,9 +1079,8 @@ opengpu_sched_job_from_base(struct drm_sched_job *base)
 static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
 {
     struct opengpu_sched_job *job = opengpu_sched_job_from_base(base);
-    /* The context's VM selects the address space a job runs in; until a VM is
-     * bound to a context this is the global ASID-0 identity map. */
-    const struct opengpu_vm *vm = NULL;
+    /* The submitting context's address space; NULL for bring-up self-tests. */
+    const struct opengpu_vm *vm = job->vm;
     struct dma_fence *fence;
     int ret;
 
@@ -1393,6 +1409,7 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         goto out_exec;
     }
     sched_job->gpu = gpu;
+    sched_job->vm = context->vm.enabled ? &context->vm : NULL;
     ret = opengpu_buffer_alloc(gpu, &sched_job->commands, command_bytes);
     if (ret)
         goto out_job;
@@ -1691,6 +1708,7 @@ int opengpu_compute_blit_ioctl(struct drm_device *drm, void *data,
         goto out_exec;
     }
     sched_job->gpu = gpu;
+    sched_job->vm = context->vm.enabled ? &context->vm : NULL;
     sched_job->type = OPENGPU_SCHED_BLIT;
     sched_job->dma_source = source_address;
     sched_job->dma_destination = destination_address;
@@ -1806,6 +1824,7 @@ int opengpu_compute_fill_ioctl(struct drm_device *drm, void *data,
         goto out_exec;
     }
     sched_job->gpu = gpu;
+    sched_job->vm = context->vm.enabled ? &context->vm : NULL;
     sched_job->type = OPENGPU_SCHED_FILL;
     sched_job->dma_destination = destination_address;
     sched_job->dma_bytes = args->bytes;
@@ -1962,6 +1981,7 @@ int opengpu_compute_strided_blit_ioctl(struct drm_device *drm, void *data,
         goto out_exec;
     }
     sched_job->gpu = gpu;
+    sched_job->vm = context->vm.enabled ? &context->vm : NULL;
     sched_job->type = OPENGPU_SCHED_STRIDED_BLIT;
     sched_job->dma_source = source_address;
     sched_job->dma_destination = destination_address;
@@ -2110,6 +2130,7 @@ int opengpu_compute_resolve_ioctl(struct drm_device *drm, void *data,
         goto out_exec;
     }
     sched_job->gpu = gpu;
+    sched_job->vm = context->vm.enabled ? &context->vm : NULL;
     sched_job->type = OPENGPU_SCHED_RESOLVE;
     sched_job->dma_source = source_address;
     sched_job->dma_destination = destination_address;
@@ -2225,6 +2246,7 @@ int opengpu_compute_invalidate_ioctl(struct drm_device *drm, void *data,
         goto out_exec;
     }
     sched_job->gpu = gpu;
+    sched_job->vm = context->vm.enabled ? &context->vm : NULL;
     sched_job->type = OPENGPU_SCHED_INVALIDATE;
     sched_job->dma_source = address;
     sched_job->dma_bytes = args->bytes;
@@ -2342,6 +2364,7 @@ int opengpu_compute_launch_ioctl(struct drm_device *drm, void *data,
         goto out_exec;
     }
     sched_job->gpu = gpu;
+    sched_job->vm = context->vm.enabled ? &context->vm : NULL;
     sched_job->type = OPENGPU_SCHED_COMPUTE;
     ret = opengpu_buffer_alloc(gpu, &sched_job->shader, shader->size);
     if (ret)

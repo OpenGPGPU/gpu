@@ -23,6 +23,7 @@ typedef uint64_t dma_addr_t;
 #define OPENGPU_MMU_POLICY_CACHED 0u
 #define OPENGPU_MMU_POLICY_UNCACHED 2u
 struct opengpu_buffer { void *cpu; dma_addr_t dma; size_t size; };
+struct opengpu_vm;
 struct opengpu_mmu {
     struct mutex lock;
     struct opengpu_buffer root;
@@ -30,6 +31,7 @@ struct opengpu_mmu {
     u32 l1_region[OPENGPU_MMU_MAX_TABLES];
     u32 l1_count;
     struct opengpu_asid_pool asids;
+    struct opengpu_vm *vm_by_asid[OPENGPU_ASID_COUNT];
     bool enabled;
 };
 struct opengpu_vm {
@@ -169,8 +171,10 @@ int main(void)
 
         assert(!opengpu_mmu_vm_create(&gpu, &vm));
         assert(vm.enabled && vm.asid == 1);
+        assert(gpu.mmu.vm_by_asid[vm.asid] == &vm);
         assert(live_allocations == base_live + 1);
-        assert(asid_flushes == base_asid + 1);
+        /* Creation clones the global map; it does not shoot the ASID down. */
+        assert(asid_flushes == base_asid);
         assert((((u32 *)vm.root.cpu)[0] & 0x300) == 0);
         /* The VM shares the global identity map, with the global (G) bit. */
         assert((((u32 *)vm.root.cpu)[512] & 0x20) != 0);
@@ -183,14 +187,40 @@ int main(void)
         /* A second VM takes the next ASID; destroy evicts each ASID once. */
         assert(!opengpu_mmu_vm_create(&gpu, &vm2));
         assert(vm2.enabled && vm2.asid == 2);
-        assert(asid_flushes == base_asid + 2);
+        assert(asid_flushes == base_asid);
         opengpu_mmu_vm_destroy(&gpu, &vm2);
-        assert(asid_flushes == base_asid + 3);
+        assert(asid_flushes == base_asid + 1);
 
         opengpu_mmu_vm_destroy(&gpu, &vm);
         assert(!vm.enabled);
-        assert(asid_flushes == base_asid + 4);
+        assert(!gpu.mmu.vm_by_asid[vm.asid]);
+        assert(asid_flushes == base_asid + 2);
         assert(live_allocations == base_live);
+    }
+
+    /* A policy update after VM creation propagates the new L1 link into every
+     * live VM root, so a VM sees the uncached leaf instead of the cached
+     * identity superpage. */
+    {
+        struct opengpu_vm vm;
+        u32 region = 500;
+        int live_before = live_allocations;
+        unsigned full_before = flushes;
+
+        assert(!opengpu_mmu_vm_create(&gpu, &vm));
+        assert(gpu.mmu.vm_by_asid[vm.asid] == &vm);
+        /* The clone already carries the links split before it existed. */
+        assert((((u32 *)vm.root.cpu)[1023] & 1) != 0);
+        assert(!opengpu_mmu_set_range_policy(
+            &gpu, (dma_addr_t)region * MMU_SUPERPAGE_SIZE, MMU_PAGE_SIZE, 2));
+        assert((((u32 *)vm.root.cpu)[region] & 1) != 0);
+        assert((((u32 *)vm.root.cpu)[region] >> 10) ==
+               (((u32 *)gpu.mmu.root.cpu)[region] >> 10));
+        assert(flushes == full_before + 1);
+        opengpu_mmu_vm_destroy(&gpu, &vm);
+        assert(!gpu.mmu.vm_by_asid[vm.asid]);
+        /* Only the new L1 table stays allocated after the VM is gone. */
+        assert(live_allocations == live_before + 1);
     }
     assert(!gpu.hw.submit_lock.held && !gpu.mmu.lock.held);
     opengpu_mmu_fini(&gpu);
