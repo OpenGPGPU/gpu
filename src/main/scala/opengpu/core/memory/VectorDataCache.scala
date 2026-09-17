@@ -2,7 +2,7 @@ package opengpu.core.memory
 
 import chisel3._
 import chisel3.util._
-import opengpu.config.GpuConfig
+import opengpu.config.{CachePolicy, GpuConfig}
 
 class VectorLowerMemoryRequest(
   config: GpuConfig,
@@ -14,6 +14,8 @@ class VectorLowerMemoryRequest(
   val isWrite = Bool()
   /** Indicates that this request's line is resident in this private cache. */
   val cacheResident = Bool()
+  /** Per-page cache policy resolved by the TLB. */
+  val cachePolicy = UInt(CachePolicy.width.W)
 }
 
 class CacheLineInvalidate(config: GpuConfig) extends Bundle {
@@ -69,6 +71,8 @@ class VectorDataCache(
     RegInit(VecInit(Seq.fill(sets)(0.U(wayWidth.W))))
   private val request = Reg(new VectorCacheLineRequest(config, lineBytes))
   private val output = Reg(new VectorCacheLineResponse(lineBytes))
+  /** An uncached page bypasses this private cache as well as the shared L2. */
+  private val requestCacheable = CachePolicy.isCacheable(request.cachePolicy)
 
   private object State extends ChiselEnum {
     val idle, lookup, lower, respond, invalidateLookup, invalidateRespond = Value
@@ -123,6 +127,7 @@ class VectorDataCache(
   io.lowerRequest.bits.byteMask := request.byteMask
   io.lowerRequest.bits.isWrite := request.isStore
   io.lowerRequest.bits.cacheResident := cacheHit
+  io.lowerRequest.bits.cachePolicy := request.cachePolicy
   io.lowerResponse.ready := state === State.lower
   io.invalidate.ready := state === State.idle
   io.invalidateDone.valid := state === State.invalidateRespond
@@ -154,7 +159,7 @@ class VectorDataCache(
   }
 
   when(state === State.lookup) {
-    when(!request.isStore && cacheHit) {
+    when(!request.isStore && cacheHit && requestCacheable) {
       output.readData := cachedData
       output.fault := false.B
       output.pageFault := false.B
@@ -171,7 +176,7 @@ class VectorDataCache(
     output.readData :=
       Mux(request.isStore, 0.U, io.lowerResponse.bits.readData)
     when(!io.lowerResponse.bits.fault) {
-      when(!request.isStore) {
+      when(!request.isStore && requestCacheable) {
         for (way <- 0 until ways) {
           when(victimWay === way.U) {
             tags(way)(requestIndex) := requestTag
@@ -180,7 +185,7 @@ class VectorDataCache(
           }
         }
         nextVictim(requestIndex) := followingWay(victimWay)
-      }.elsewhen(cacheHit) {
+      }.elsewhen(cacheHit && requestCacheable) {
         for (way <- 0 until ways) {
           when(hitWay === way.U) {
             data(way)(requestIndex) := mergedStoreData

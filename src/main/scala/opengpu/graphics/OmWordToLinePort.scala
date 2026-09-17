@@ -2,7 +2,7 @@ package opengpu.graphics
 
 import chisel3._
 import chisel3.util._
-import opengpu.config.GpuConfig
+import opengpu.config.{CachePolicy, GpuConfig}
 import opengpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse}
 
 /** Adapts the graphics word-level memory port to the core's line-level memory.
@@ -69,6 +69,7 @@ class OmWordToLinePort(
   io.memoryRequest.bits.sizeLog2 := 6.U
   io.memoryRequest.bits.cacheClient := false.B
   io.memoryRequest.bits.cacheResident := false.B
+  io.memoryRequest.bits.cachePolicy := CachePolicy.cached
   io.memoryRequest.bits.transactionId := allocatedId
   io.in.ready := hasFreeTransaction && io.memoryRequest.ready
 

@@ -2,7 +2,7 @@ package opengpu.core.memory
 
 import chisel3._
 import chisel3.util._
-import opengpu.config.GpuConfig
+import opengpu.config.{CachePolicy, GpuConfig}
 
 class VectorCacheLineRequest(
   config: GpuConfig,
@@ -13,6 +13,9 @@ class VectorCacheLineRequest(
   val writeData = UInt((lineBytes * 8).W)
   val byteMask = UInt(lineBytes.W)
   val isStore = Bool()
+  /** Per-page cache policy; the producer sends the default and the TLB
+    * replaces it with the translated page's policy. */
+  val cachePolicy = UInt(CachePolicy.width.W)
 }
 
 class VectorCacheLineResponse(val lineBytes: Int = 64) extends Bundle {
@@ -159,6 +162,7 @@ class VectorMemoryCoalescer(
   io.cacheRequest.bits.writeData := lineDataBytes.asUInt
   io.cacheRequest.bits.byteMask := lineByteMask.asUInt
   io.cacheRequest.bits.isStore := transaction.isStore
+  io.cacheRequest.bits.cachePolicy := CachePolicy.cached
   when(io.cacheRequest.fire) {
     waitingResponse := true.B
   }

@@ -2,7 +2,7 @@ package opengpu.dma
 
 import chisel3._
 import chisel3.util._
-import opengpu.config.GpuConfig
+import opengpu.config.{CachePolicy, GpuConfig}
 import opengpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse}
 
 class FillDescriptor(config: GpuConfig, val descriptorIdWidth: Int) extends Bundle {
@@ -104,6 +104,7 @@ class FillEngine(
   io.memoryRequest.bits.sizeLog2 := offsetWidth.U
   io.memoryRequest.bits.cacheClient := false.B
   io.memoryRequest.bits.cacheResident := false.B
+  io.memoryRequest.bits.cachePolicy := CachePolicy.cached
   io.memoryRequest.bits.transactionId := (transactionIdBase.U +
     requestSlot).asUInt
   when(io.memoryRequest.fire) {

@@ -2,7 +2,7 @@ package opengpu.core.memory
 
 import chisel3._
 import chisel3.util._
-import opengpu.config.GpuConfig
+import opengpu.config.{CachePolicy, GpuConfig}
 
 class ComputeMemoryRequest(
   config: GpuConfig,
@@ -20,6 +20,8 @@ class ComputeMemoryRequest(
   val cacheClient = Bool()
   /** For a store, the requesting private cache currently holds the line. */
   val cacheResident = Bool()
+  /** Per-page cache policy from the GPU MMU. */
+  val cachePolicy = UInt(CachePolicy.width.W)
   val transactionId = UInt(math.max(1, log2Ceil(maxOutstanding)).W)
 }
 
@@ -104,6 +106,7 @@ class ComputeUnitMemoryInterconnect(
   arbiter.io.in(0).bits.sizeLog2 := 6.U
   arbiter.io.in(0).bits.cacheClient := false.B
   arbiter.io.in(0).bits.cacheResident := false.B
+  arbiter.io.in(0).bits.cachePolicy := CachePolicy.cached
   arbiter.io.in(0).bits.transactionId := allocatedId
   io.instructionRequest.ready := arbiter.io.in(0).ready && !sourceBusy(0)
 
@@ -115,6 +118,7 @@ class ComputeUnitMemoryInterconnect(
   arbiter.io.in(1).bits.sizeLog2 := 6.U
   arbiter.io.in(1).bits.cacheClient := true.B
   arbiter.io.in(1).bits.cacheResident := io.dataRequest.bits.cacheResident
+  arbiter.io.in(1).bits.cachePolicy := io.dataRequest.bits.cachePolicy
   arbiter.io.in(1).bits.transactionId := allocatedId
   io.dataRequest.ready := arbiter.io.in(1).ready && !sourceBusy(1)
 
@@ -127,6 +131,7 @@ class ComputeUnitMemoryInterconnect(
     arbiter.io.in(index).bits.sizeLog2 := 2.U
     arbiter.io.in(index).bits.cacheClient := false.B
     arbiter.io.in(index).bits.cacheResident := false.B
+    arbiter.io.in(index).bits.cachePolicy := CachePolicy.uncached
     arbiter.io.in(index).bits.transactionId := allocatedId
     request.ready := arbiter.io.in(index).ready && !sourceBusy(index)
   }

@@ -2,7 +2,7 @@ package opengpu.core.memory
 
 import chisel3._
 import chisel3.util._
-import opengpu.config.GpuConfig
+import opengpu.config.{CachePolicy, GpuConfig}
 
 /** Arbitrates independent CU memory ports onto one physical port. A global
   * transaction ID encodes both CU ownership and the CU-local transaction ID,
@@ -54,6 +54,7 @@ class SharedComputeMemoryInterconnect(
   io.memoryRequest.bits.sizeLog2 := arbiter.io.out.bits.sizeLog2
   io.memoryRequest.bits.cacheClient := arbiter.io.out.bits.cacheClient
   io.memoryRequest.bits.cacheResident := arbiter.io.out.bits.cacheResident
+  io.memoryRequest.bits.cachePolicy := arbiter.io.out.bits.cachePolicy
   io.memoryRequest.bits.transactionId := globalId
   arbiter.io.out.ready := io.memoryRequest.ready
 

@@ -61,6 +61,74 @@ class VectorDataCacheSpec extends AnyFlatSpec {
     }
   }
 
+  it should "bypass the private cache for an uncached-policy load" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    val lineBytes = 16
+    simulate(new VectorDataCache(config, sets = 4, lineBytes)) { dut =>
+      dut.reset.poke(true.B)
+      dut.io.in.valid.poke(false.B)
+      dut.io.out.ready.poke(true.B)
+      dut.io.lowerRequest.ready.poke(true.B)
+      dut.io.lowerResponse.valid.poke(false.B)
+      dut.io.invalidate.valid.poke(false.B)
+      dut.io.invalidateDone.ready.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      val resident = BigInt("ffeeddccbbaa99887766554433221100", 16)
+      val fresh = BigInt("00112233445566778899aabbccddeeff", 16)
+
+      def requestLoad(address: Int, policy: BigInt): Unit = {
+        dut.io.in.valid.poke(true.B)
+        dut.io.in.bits.warpId.poke(1.U)
+        dut.io.in.bits.lineAddress.poke(address.U)
+        dut.io.in.bits.writeData.poke(0.U)
+        dut.io.in.bits.byteMask.poke("hffff".U)
+        dut.io.in.bits.isStore.poke(false.B)
+        dut.io.in.bits.cachePolicy.poke(policy.U)
+        dut.io.in.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+      }
+
+      // Fill 0x40 as a cached line.
+      requestLoad(0x40, 0)
+      dut.clock.step()
+      dut.io.lowerRequest.valid.expect(true.B)
+      dut.io.lowerRequest.bits.cachePolicy.expect(0.U)
+      dut.io.lowerResponse.valid.poke(true.B)
+      dut.io.lowerResponse.bits.readData.poke(resident.U)
+      dut.io.lowerResponse.bits.fault.poke(false.B)
+      dut.clock.step()
+      dut.io.lowerResponse.valid.poke(false.B)
+      dut.io.out.valid.expect(true.B)
+      dut.io.out.bits.readData.expect(resident.U)
+      dut.clock.step()
+
+      // An uncached load of the resident line must go to lower memory.
+      requestLoad(0x40, 2)
+      dut.clock.step()
+      dut.io.lowerRequest.valid.expect(true.B)
+      dut.io.lowerRequest.bits.lineAddress.expect(0x40.U)
+      dut.io.lowerRequest.bits.cachePolicy.expect(2.U)
+      dut.io.lowerResponse.valid.poke(true.B)
+      dut.io.lowerResponse.bits.readData.poke(fresh.U)
+      dut.io.lowerResponse.bits.fault.poke(false.B)
+      dut.clock.step()
+      dut.io.lowerResponse.valid.poke(false.B)
+      dut.io.out.valid.expect(true.B)
+      dut.io.out.bits.readData.expect(fresh.U)
+      dut.clock.step()
+
+      // The uncached load did not disturb the resident line.
+      requestLoad(0x40, 0)
+      dut.clock.step()
+      dut.io.out.valid.expect(true.B)
+      dut.io.out.bits.readData.expect(resident.U)
+      dut.io.lowerRequest.valid.expect(false.B)
+    }
+  }
+
   it should "write through stores and update a hit only after a good ack" in {
     val config = GpuConfig(lanes = 4, warps = 1)
     val lineBytes = 16

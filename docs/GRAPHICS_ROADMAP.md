@@ -118,6 +118,15 @@ track that distinction.
   L1 holders with no lower-memory traffic, because stores are write-through.
   It rides the normal lookup path and is used to make CPU-written memory
   visible to later GPU reads.
+- Per-page GPU cache policy: Sv32 PTEs carry a policy in the reserved bits
+  [9:8] (cached / write-through / uncached). The page-table walker decodes it,
+  the data and instruction TLBs propagate it, and the L1 and L2 bypass both
+  cache levels for `uncached` pages while stores stay write-through. This is
+  the mechanism for mapping CPU-written buffers as uncached (coherent without
+  an explicit invalidate). It is present in the RTL but inert in the integrated
+  top, which still ties `satp` to zero (physical addressing); enabling the GPU
+  MMU and extending translation to the fixed-function graphics path are
+  follow-up work.
 - Multi-CU dispatch plus copy, fill and strided DMA share the integrated memory
   hierarchy, with collision-free transaction-ID ranges for private clients.
 - Internal command-buffer, framebuffer and texture word-to-line bridges remove

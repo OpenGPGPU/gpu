@@ -2,7 +2,7 @@ package opengpu.dma
 
 import chisel3._
 import chisel3.util._
-import opengpu.config.GpuConfig
+import opengpu.config.{CachePolicy, GpuConfig}
 import opengpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse}
 
 class CopyDescriptor(config: GpuConfig, val descriptorIdWidth: Int) extends Bundle {
@@ -148,6 +148,7 @@ class CopyEngine(
   io.memoryRequest.bits.sizeLog2 := offsetWidth.U
   io.memoryRequest.bits.cacheClient := false.B
   io.memoryRequest.bits.cacheResident := false.B
+  io.memoryRequest.bits.cachePolicy := CachePolicy.cached
   io.memoryRequest.bits.transactionId := transactionIdBase.U + Mux(issueWrite,
     writeSlot + lineSlots.U, readSlot)
 

@@ -2,7 +2,7 @@ package opengpu.core.memory
 
 import chisel3._
 import chisel3.util._
-import opengpu.config.GpuConfig
+import opengpu.config.{CachePolicy, GpuConfig}
 import opengpu.core.backend.issue.ScalarIssuedInstruction
 import opengpu.core.backend.writeback.ScalarCommitRequest
 
@@ -73,6 +73,7 @@ class ScalarMemoryUnit(
       0
     )
   io.cacheRequest.bits.isStore := isStore
+  io.cacheRequest.bits.cachePolicy := CachePolicy.cached
   io.cacheResponse.ready := state === State.response
 
   io.commit.valid := state === State.commit

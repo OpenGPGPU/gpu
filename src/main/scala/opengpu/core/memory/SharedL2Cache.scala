@@ -2,7 +2,7 @@ package opengpu.core.memory
 
 import chisel3._
 import chisel3.util._
-import opengpu.config.GpuConfig
+import opengpu.config.{CachePolicy, GpuConfig}
 import opengpu.util.CarrySaveEventCounter
 
 class L2PerformanceCounters extends Bundle {
@@ -230,6 +230,11 @@ class SharedL2Slice(
     request.address(config.xLen - 1, offsetWidth + indexWidth)
   private val cacheable = request.sizeLog2 === offsetWidth.U &&
     request.address(offsetWidth - 1, 0) === 0.U
+  // An uncached page bypasses the L2 on reads: no hit, no allocation.  Lower
+  // memory is authoritative because stores are write-through and a
+  // non-coherent writer (the CPU) writes there too.
+  private val cacheableRead = cacheable &&
+    CachePolicy.isCacheable(request.cachePolicy)
   private val hitByWay = VecInit((0 until ways).map { way =>
     valid(way)(requestIndex) && tagRead(way) === requestTag
   })
@@ -411,7 +416,7 @@ class SharedL2Slice(
   storeTable.io.allocate.valid := state === State.storeAllocate
   storeTable.io.allocate.bits := request
   loadHitCounter.io.increment := state === State.lookup && !fillCommitBubble &&
-    !atomicMode && !hostInvMode && cacheable && !request.isWrite && hit
+    !atomicMode && !hostInvMode && cacheableRead && !request.isWrite && hit
   loadMissCounter.io.increment := missEngine.io.miss.fire
   mshrMergeCounter.io.increment := state === State.missAllocate &&
     missEngine.io.allocation.valid && missEngine.io.allocation.bits.merged
@@ -422,7 +427,7 @@ class SharedL2Slice(
   // reaction to it: a miss captured by the table while the slice is held
   // would never be authorized and would deadlock the entry.
   missEngine.io.miss.valid := state === State.lookup && !fillCommitBubble &&
-    !atomicMode && !hostInvMode && cacheable && !request.isWrite && !hit
+    !atomicMode && !hostInvMode && cacheableRead && !request.isWrite && !hit
   missEngine.io.miss.bits.lineAddress := activeLine
   missEngine.io.miss.bits.transactionId := request.transactionId
   missEngine.io.miss.bits.requester := requesterCu
@@ -567,7 +572,7 @@ class SharedL2Slice(
         atomicTargetWay := victimWay
         state := State.atomicRead
       }
-    }.elsewhen(cacheable && !request.isWrite && hit) {
+    }.elsewhen(cacheableRead && !request.isWrite && hit) {
       response.readData := hitData
       response.fault := false.B
       response.transactionId := request.transactionId
@@ -587,7 +592,7 @@ class SharedL2Slice(
       invalidateAddress := request.address
       invalidateForReplacement := false.B
       state := State.invalidate
-    }.elsewhen(cacheable && !request.isWrite && !hit) {
+    }.elsewhen(cacheableRead && !request.isWrite && !hit) {
       when(missEngine.io.miss.fire) {
         lookupVictimWay := selectedMissWay
         allocatedVictimValid := selectedMissValid
@@ -713,8 +718,8 @@ class SharedL2Slice(
     }.otherwise {
       response := io.memoryResponse.bits
       response.transactionId := request.transactionId
-      when(!io.memoryResponse.bits.fault && cacheable) {
-      when(!request.isWrite) {
+      when(!io.memoryResponse.bits.fault && cacheableRead &&
+          !request.isWrite) {
         for (way <- 0 until ways) {
           when(lookupVictimWay === way.U) {
             tags(way).io.writeEnable := true.B
@@ -728,7 +733,8 @@ class SharedL2Slice(
           }
         }
         nextVictim(requestIndex) := followingWay(lookupVictimWay)
-      }.elsewhen(lookupHit) {
+      }.elsewhen(!io.memoryResponse.bits.fault && cacheable &&
+          request.isWrite && lookupHit) {
         for (way <- 0 until ways) {
           when(lookupHitWay === way.U) {
             data(way).io.writeEnable := true.B
@@ -739,7 +745,6 @@ class SharedL2Slice(
           }
         }
         nextVictim(requestIndex) := followingWay(lookupHitWay)
-      }
       }
       state := State.respond
     }

@@ -2,7 +2,7 @@ package opengpu.core.memory
 
 import chisel3._
 import chisel3.util._
-import opengpu.config.GpuConfig
+import opengpu.config.{CachePolicy, GpuConfig}
 
 class VectorPageWalkRequest(config: GpuConfig) extends Bundle {
   val virtualPageNumber = UInt((config.xLen - 12).W)
@@ -16,6 +16,8 @@ class VectorPageWalkResponse(config: GpuConfig) extends Bundle {
   val writable = Bool()
   val executable = Bool()
   val global = Bool()
+  /** Per-page cache policy decoded from PTE bits [9:8]. */
+  val cachePolicy = UInt(CachePolicy.width.W)
   val fault = Bool()
 }
 
@@ -64,9 +66,11 @@ class VectorTlb(
   private val writable = Reg(Vec(entries, Bool()))
   private val entryAsid = Reg(Vec(entries, UInt(9.W)))
   private val global = Reg(Vec(entries, Bool()))
+  private val entryCachePolicy = Reg(Vec(entries, UInt(CachePolicy.width.W)))
   private val replacement = RegInit(0.U(entryWidth.W))
   private val request = Reg(new VectorCacheLineRequest(config, lineBytes))
   private val translatedAddress = Reg(UInt(config.xLen.W))
+  private val translatedCachePolicy = Reg(UInt(CachePolicy.width.W))
   private val response = Reg(new VectorCacheLineResponse(lineBytes))
 
   private object State extends ChiselEnum {
@@ -84,6 +88,7 @@ class VectorTlb(
   private val hitReadable = Mux1H(hitByEntry, readable)
   private val hitWritable = Mux1H(hitByEntry, writable)
   private val hitPpn = Mux1H(hitByEntry, ppn)
+  private val hitCachePolicy = Mux1H(hitByEntry, entryCachePolicy)
   private val permissionOkay =
     Mux(request.isStore, hitWritable, hitReadable)
 
@@ -98,6 +103,7 @@ class VectorTlb(
   io.physicalRequest.valid := state === State.forward
   io.physicalRequest.bits := request
   io.physicalRequest.bits.lineAddress := translatedAddress
+  io.physicalRequest.bits.cachePolicy := translatedCachePolicy
   io.physicalResponse.ready :=
     state === State.cacheResponse && io.out.ready
   io.pageWalkRequest.valid := state === State.walkRequest
@@ -114,10 +120,12 @@ class VectorTlb(
   when(state === State.lookup) {
     when(!io.translationEnabled) {
       translatedAddress := request.lineAddress
+      translatedCachePolicy := CachePolicy.cached
       state := State.forward
     }.elsewhen(hit) {
       when(permissionOkay) {
         translatedAddress := Cat(hitPpn, request.lineAddress(11, 0))
+        translatedCachePolicy := hitCachePolicy
         state := State.forward
       }.otherwise {
         response.readData := 0.U
@@ -153,6 +161,7 @@ class VectorTlb(
       writable(replacement) := io.pageWalkResponse.bits.writable
       entryAsid(replacement) := io.asid
       global(replacement) := io.pageWalkResponse.bits.global
+      entryCachePolicy(replacement) := io.pageWalkResponse.bits.cachePolicy
       replacement := Mux(
         replacement === (entries - 1).U,
         0.U,
@@ -162,6 +171,7 @@ class VectorTlb(
         io.pageWalkResponse.bits.physicalPageNumber,
         request.lineAddress(11, 0)
       )
+      translatedCachePolicy := io.pageWalkResponse.bits.cachePolicy
       state := State.forward
     }
   }

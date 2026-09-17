@@ -2,7 +2,7 @@ package opengpu.core.memory
 
 import chisel3._
 import chisel3.util._
-import opengpu.config.GpuConfig
+import opengpu.config.{CachePolicy, GpuConfig}
 
 class PageTableMemoryRequest(config: GpuConfig) extends Bundle {
   val address = UInt(config.xLen.W)
@@ -70,6 +70,9 @@ class Sv32PageTableWalker(config: GpuConfig = GpuConfig()) extends Module {
   private val pteLeaf = pteReadable || pteExecutable
   private val invalidEncoding = !pteValid || (!pteReadable && pteWritable)
   private val ptePpn = pte(29, 10)
+  /** Sv32 reserves PTE bits [9:8]; this profile carries the page's cache
+    * policy there (see CachePolicy). */
+  private val pteCachePolicy = pte(9, 8)
   private val misalignedSuperpage = level === 1.U && ptePpn(9, 0) =/= 0.U
   private val permissionFault =
     !pteAccessed || Mux(
@@ -85,6 +88,7 @@ class Sv32PageTableWalker(config: GpuConfig = GpuConfig()) extends Module {
       result.writable := false.B
       result.executable := false.B
       result.global := false.B
+      result.cachePolicy := CachePolicy.cached
       result.fault := true.B
       state := State.respond
     }.elsewhen(pteLeaf) {
@@ -97,6 +101,7 @@ class Sv32PageTableWalker(config: GpuConfig = GpuConfig()) extends Module {
       result.writable := pteWritable && pteAccessed && pteDirty
       result.executable := pteExecutable && pteAccessed
       result.global := pteGlobal
+      result.cachePolicy := pteCachePolicy
       result.fault := misalignedSuperpage || permissionFault
       state := State.respond
     }.elsewhen(level === 1.U) {
@@ -109,6 +114,7 @@ class Sv32PageTableWalker(config: GpuConfig = GpuConfig()) extends Module {
       result.writable := false.B
       result.executable := false.B
       result.global := false.B
+      result.cachePolicy := CachePolicy.cached
       result.fault := true.B
       state := State.respond
     }

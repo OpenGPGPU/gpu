@@ -58,7 +58,8 @@ class SharedL2CacheSpec extends AnyFlatSpec {
     isWrite: Boolean = false,
     data: BigInt = 0,
     mask: BigInt = 0,
-    cacheClient: Boolean = true
+    cacheClient: Boolean = true,
+    cachePolicy: BigInt = 0
   ): Unit = {
     dut.io.request.bits.address.poke(address.U)
     dut.io.request.bits.transactionId.poke(id.U)
@@ -68,6 +69,7 @@ class SharedL2CacheSpec extends AnyFlatSpec {
     dut.io.request.bits.byteMask.poke(mask.U)
     dut.io.request.bits.cacheClient.poke(cacheClient.B)
     dut.io.request.bits.cacheResident.poke(isWrite.B)
+    dut.io.request.bits.cachePolicy.poke(cachePolicy.U)
     var waitCycles = 0
     while (!dut.io.request.ready.peek().litToBoolean && waitCycles < 20) {
       dut.clock.step(); waitCycles += 1
@@ -174,6 +176,40 @@ class SharedL2CacheSpec extends AnyFlatSpec {
       dut.io.response.valid.expect(true.B)
       dut.io.response.bits.readData.expect(updated.U)
       dut.io.performance.loadMisses.expect(2.U)
+    }
+  }
+
+  it should "bypass an uncached-policy read without hitting or allocating" in {
+    simulate(new SharedL2Cache(GpuConfig(lanes = 4), sets = 8, ways = 2)) { dut =>
+      initialize(dut)
+      val cachedLine = BigInt("0123456789abcdef", 16)
+      val freshLine = BigInt("fedcba9876543210", 16)
+
+      // Bring line A in with the default cached policy.
+      requestLine(dut, 0x4000, 0)
+      completeLower(dut, cachedLine, 0)
+      dut.io.response.bits.readData.expect(cachedLine.U)
+      dut.clock.step()
+
+      // An uncached read bypasses the resident line and fetches lower memory.
+      requestLine(dut, 0x4000, 1, cachePolicy = 2)
+      completeLower(dut, freshLine, 1)
+      dut.io.response.valid.expect(true.B)
+      dut.io.response.bits.readData.expect(freshLine.U)
+      dut.io.response.bits.transactionId.expect(1.U)
+      dut.io.performance.loadHits.expect(0.U)
+      dut.clock.step()
+
+      // An uncached read of a non-resident line must not allocate: a following
+      // cached read misses and refills instead of hitting.
+      requestLine(dut, 0x8000, 2, cachePolicy = 2)
+      completeLower(dut, freshLine, 2)
+      dut.clock.step()
+      requestLine(dut, 0x8000, 3)
+      completeLower(dut, cachedLine, 3)
+      dut.io.response.bits.readData.expect(cachedLine.U)
+      dut.io.performance.loadMisses.expect(2.U)
+      dut.io.performance.loadHits.expect(0.U)
     }
   }
 

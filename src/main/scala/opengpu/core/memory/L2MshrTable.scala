@@ -2,7 +2,7 @@ package opengpu.core.memory
 
 import chisel3._
 import chisel3.util._
-import opengpu.config.GpuConfig
+import opengpu.config.{CachePolicy, GpuConfig}
 
 class L2MshrRequest(
   config: GpuConfig,
@@ -304,6 +304,7 @@ class L2MissEngine(
   io.lowerRequest.bits.transactionId := selectedEntry
   io.lowerRequest.bits.cacheClient := false.B
   io.lowerRequest.bits.cacheResident := false.B
+  io.lowerRequest.bits.cachePolicy := CachePolicy.cached
   when(io.lowerRequest.fire) { lowerPending(selectedEntry) := false.B }
 
   private val responseEntry =

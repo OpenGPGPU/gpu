@@ -2,7 +2,7 @@ package opengpu.core.backend.issue
 
 import chisel3._
 import chisel3.util._
-import opengpu.config.GpuConfig
+import opengpu.config.{CachePolicy, GpuConfig}
 import opengpu.core.frontend.decode.FpuDecodeResponse
 import opengpu.core.memory.{
   ScalarMemoryFault,
@@ -96,6 +96,7 @@ class FpuMemoryUnit(
             0
           )
         requestBits.isStore := isStore
+        requestBits.cachePolicy := CachePolicy.cached
       }
       .elsewhen(io.cacheRequest.fire) { state := State.response }
   }
