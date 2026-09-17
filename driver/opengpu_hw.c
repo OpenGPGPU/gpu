@@ -19,6 +19,7 @@
 #include "opengpu_device.h"
 #include "opengpu_drm.h"
 #include "opengpu_resolve_validator.h"
+#include "opengpu_tlb_flush.h"
 
 struct opengpu_fence {
     struct dma_fence base;
@@ -1596,7 +1597,41 @@ int opengpu_hw_flush_tlbs(struct opengpu_device *gpu)
 {
     if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
         return -EOPNOTSUPP;
-    opengpu_reg_write(gpu, GPU_REG_UCMD_TLB_FLUSH, 1);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_TLB_FLUSH, opengpu_tlb_flush_full());
+    return 0;
+}
+
+/** Invalidate only the TLB entries tagged with `asid`.  Global mappings and
+  * entries of other address spaces stay resident, so switching between
+  * address spaces does not pay a full-flush refill.  The fixed-function
+  * texture translator has no ASID and is cleared by the same pulse. */
+int opengpu_hw_flush_tlb_asid(struct opengpu_device *gpu, u32 asid)
+{
+    opengpu_tlb_u32 word;
+    int ret;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
+        return -EOPNOTSUPP;
+    ret = opengpu_tlb_flush_asid(asid, &word);
+    if (ret)
+        return ret;
+    opengpu_reg_write(gpu, GPU_REG_UCMD_TLB_FLUSH, word);
+    return 0;
+}
+
+/** Invalidate only the TLB entries for virtual page number `vpn`.  Useful for
+  * a single mapping change; other entries, including global ones, survive. */
+int opengpu_hw_flush_tlb_vpn(struct opengpu_device *gpu, u32 vpn)
+{
+    opengpu_tlb_u32 word;
+    int ret;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
+        return -EOPNOTSUPP;
+    ret = opengpu_tlb_flush_vpn(vpn, &word);
+    if (ret)
+        return ret;
+    opengpu_reg_write(gpu, GPU_REG_UCMD_TLB_FLUSH, word);
     return 0;
 }
 

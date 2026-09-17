@@ -301,7 +301,7 @@ linux_src_valid "$LINUX_SRC" || \
 HOST_CC="${HOST_CC:-cc}"
 command -v "$HOST_CC" >/dev/null 2>&1 || \
     fail "host C compiler is required for the validator tests"
-for validator in shader resolve depth; do
+for validator in shader resolve depth tlb_flush; do
     VALIDATOR_TEST="$DRIVER_OUTPUT/opengpu_${validator}_validator_test"
     "$HOST_CC" -std=c11 -O2 -Wall -Wextra -Werror -I"$GPU_DIR/driver" \
         -o "$VALIDATOR_TEST" \

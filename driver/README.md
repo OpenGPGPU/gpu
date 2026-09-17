@@ -48,7 +48,7 @@ and run on the host. They are also wired into `scripts/run_arti_gpu.sh`:
 
 ```sh
 cd driver
-for v in shader resolve depth; do
+for v in shader resolve depth tlb_flush; do
     cc -std=c11 -O2 -Wall -Wextra -Werror -I. \
         -o /tmp/opengpu_${v}_validator_test tests/opengpu_${v}_validator_test.c
     /tmp/opengpu_${v}_validator_test

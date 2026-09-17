@@ -4,6 +4,7 @@ import chisel3._
 import chisel3.util._
 import opengpu.command.{GpuCommand, GpuCommandResult}
 import opengpu.config.GpuConfig
+import opengpu.core.memory.VectorTlbFlush
 
 object GpuCommandMmioRegs {
   val COMMAND_ID = 0x0c4
@@ -49,8 +50,21 @@ object GpuCommandMmioRegs {
     * PPN.  Changing either requires a TLB flush. */
   val VECTOR_SATP = 0x14c
   val INSTRUCTION_SATP = 0x150
-  /** Write 1 to bit 0 to invalidate every TLB entry (a full flush). */
+  /** Write-1 TLB control.  Bit 0 invalidates every entry (a full flush).
+    * Bit 1 requests an ASID-scoped flush: entries whose ASID equals bits
+    * [11:3] are dropped while global mappings and other address spaces stay
+    * warm.  Bit 2 requests a VPN-scoped flush: entries whose virtual page
+    * number equals bits [31:12] are dropped.  Bits 1 and 2 may be combined to
+    * drop only the one mapping.  A full flush dominates the scoped bits. */
   val TLB_FLUSH = 0x154
+  /** Write-1 `TLB_FLUSH` fields, mirrored in `driver/gpu_abi.h`. */
+  val TLB_FLUSH_FULL = 1
+  val TLB_FLUSH_ASID = 1 << 1
+  val TLB_FLUSH_ASID_SHIFT = 3
+  val TLB_FLUSH_ASID_MASK = 0x1ff
+  val TLB_FLUSH_VPN = 1 << 2
+  val TLB_FLUSH_VPN_SHIFT = 12
+  val TLB_FLUSH_VPN_MASK = 0xfffff
   val END = 0x158
 }
 
@@ -83,8 +97,9 @@ class GpuCommandMmio(
     /** Current Sv32 page-table base/ASID for the vector and instruction MMUs. */
     val vectorSatp = Output(UInt(32.W))
     val instructionSatp = Output(UInt(32.W))
-    /** One-cycle pulse: invalidate every TLB entry. */
-    val tlbFlush = Output(Bool())
+    /** One-cycle TLB flush programmed through `TLB_FLUSH`.  Both validity
+      * bits clear is a full flush; the scoped fields select the entries. */
+    val tlbFlush = Output(Valid(new VectorTlbFlush(config)))
   })
 
   private def merge(old: UInt, data: UInt, strb: UInt): UInt =
@@ -114,7 +129,9 @@ class GpuCommandMmio(
   private val sampleMode = RegInit(0.U(32.W))
   private val vectorSatp = RegInit(0.U(32.W))
   private val instructionSatp = RegInit(0.U(32.W))
-  private val tlbFlushPending = RegInit(false.B)
+  private val tlbFlushValid = RegInit(false.B)
+  private val tlbFlushRequest =
+    RegInit(0.U.asTypeOf(new VectorTlbFlush(config)))
   private val submitOverflow = RegInit(false.B)
   private val resetActive = RegInit(false.B)
   private val resetRejected = RegInit(false.B)
@@ -190,8 +207,9 @@ class GpuCommandMmio(
 
   io.vectorSatp := vectorSatp
   io.instructionSatp := instructionSatp
-  io.tlbFlush := tlbFlushPending
-  when(tlbFlushPending) { tlbFlushPending := false.B }
+  io.tlbFlush.valid := tlbFlushValid
+  io.tlbFlush.bits := tlbFlushRequest
+  when(tlbFlushValid) { tlbFlushValid := false.B }
 
   when(wFire) {
     switch(io.reg.req.bits.addr) {
@@ -247,7 +265,19 @@ class GpuCommandMmio(
                                  io.reg.req.bits.strb)
       }
       is(GpuCommandMmioRegs.TLB_FLUSH.U) {
-        when(io.reg.req.bits.data(0)) { tlbFlushPending := true.B }
+        val data = io.reg.req.bits.data
+        val full = data(0)
+        val asidValid = data(1) && !full
+        val vpnValid = data(2) && !full
+        when(full || asidValid || vpnValid) {
+          tlbFlushValid := true.B
+          tlbFlushRequest.virtualPageNumberValid := vpnValid
+          tlbFlushRequest.virtualPageNumber :=
+            data(31, GpuCommandMmioRegs.TLB_FLUSH_VPN_SHIFT)
+          tlbFlushRequest.asidValid := asidValid
+          tlbFlushRequest.asid :=
+            data(11, GpuCommandMmioRegs.TLB_FLUSH_ASID_SHIFT)
+        }
       }
       is(GpuCommandMmioRegs.STATUS.U) {
         when(io.reg.req.bits.data(2)) { submitOverflow := false.B }

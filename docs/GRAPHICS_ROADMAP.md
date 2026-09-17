@@ -128,7 +128,7 @@ track that distinction.
   cache levels for `uncached` pages while stores stay write-through. This is
   the mechanism for mapping CPU-written buffers as uncached (coherent without
   an explicit invalidate). The integrated top exposes `VECTOR_SATP` /
-  `INSTRUCTION_SATP` and a full `TLB_FLUSH`, and the driver enables Sv32 at
+  `INSTRUCTION_SATP` and a scoped `TLB_FLUSH`, and the driver enables Sv32 at
   init with a 4 MiB-superpage identity map, so the CU MMUs are live while every
   existing physical-address binding keeps working. The driver splits a 4 MiB
   region into a second-level table when a page needs a non-default policy, and
@@ -350,9 +350,16 @@ grows it into a real GPUVM layer.
 
 Implemented:
 
-- Sv32 `satp` (vector and instruction) and a full `TLB_FLUSH` are host
+- Sv32 `satp` (vector and instruction) and a scoped `TLB_FLUSH` are host
   programmable; the driver enables translation at init with a 4 MiB-superpage
   identity map, so existing physical-address bindings keep working.
+- `TLB_FLUSH` (0x154) carries a scope: bit 0 is the legacy full flush, bit 1
+  drops only entries whose ASID matches bits [11:3], and bit 2 drops only
+  entries whose VPN matches bits [31:12]. Global mappings and other address
+  spaces stay resident, and the CU data/instruction TLBs apply the scope
+  independently. The driver exposes `opengpu_hw_flush_tlb_asid` /
+  `opengpu_hw_flush_tlb_vpn`; the fixed-function texture translator tracks no
+  ASID/VPN, so any flush pulse clears it.
 - Sv32 PTE bits [9:8] carry a per-page data cache policy (cached / write-through /
   uncached); the walker, data TLB, texture translator, CU data L1 and shared L2
   honour it. Instruction fetch remains cached; the ITLB does not carry policy.
@@ -392,10 +399,9 @@ Design notes (from the MMU/ASID review):
 
 Remaining work, cheapest first:
 
-- Extend `TLB_FLUSH` to carry an ASID (and optionally a VA/VPN), so map/unmap
-  shootdown is scoped and other address spaces stay warm.
 - Driver VM manager: an ASID allocator, one root page table per VM, global (G)
-  mappings for shared ranges, and a coarse VM switch in the scheduler.
+  mappings for shared ranges, and a coarse VM switch in the scheduler. The
+  scoped `TLB_FLUSH` above is the shootdown primitive it builds on.
 - Keep per-VM mappings on large pages; size the TLBs for the working set and
   avoid blocking translation on the texture path. The `GraphicsAddressTranslator`
   is deliberately blocking today; measure before widening it.

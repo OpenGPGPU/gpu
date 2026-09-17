@@ -129,10 +129,20 @@ record words 36/37/35 (see [STENCIL_BLEND_DESIGN.md](STENCIL_BLEND_DESIGN.md)).
 | 0x140 | STENCIL_REF_MASKS | RW | reference 7:0, read mask 15:8, write mask 23:16 |
 | 0x144 | BLEND_CONFIG | RW | present bit 0, source factor 7:4, destination factor 11:8, equation 14:12 |
 | 0x148 | UCMD_SAMPLE_MODE | RW | bits 1:0 sample mode staged for a unified `GPU_UCMD_OP_RESOLVE` |
+| 0x14C | UCMD_VECTOR_SATP | RW | Sv32 `satp` for the vector/data MMU: bit 31 enable, ASID `[30:22]`, root PPN `[19:0]` |
+| 0x150 | UCMD_INSTRUCTION_SATP | RW | Sv32 `satp` for the instruction MMU (same layout as VECTOR_SATP) |
+| 0x154 | UCMD_TLB_FLUSH | W1P | bit 0 full flush; bit 1 ASID-scoped flush (ASID `[11:3]`); bit 2 VPN-scoped flush (VPN `[31:12]`); no bit set is a no-op |
 
-The exclusive mapped end is `0x14C`. Unified-command routing covers
-`[0xC4, 0x134)`, `0x138` and `0x148`; the other mapped registers route to
-`RenderHost`. Stencil/blend state is snapshotted at START.
+The exclusive mapped end is `0x158`. Unified-command routing covers
+`[0xC4, 0x134)`, `0x138` and `[0x148, 0x158)`; the other mapped registers route
+to `RenderHost`. Stencil/blend state is snapshotted at START.
+
+Programming either `satp` requires a `UCMD_TLB_FLUSH`. A full flush clears both
+CU translation caches. An ASID-scoped or VPN-scoped flush drops only matching
+entries, so global mappings and other address spaces stay warm; the
+fixed-function texture translator tracks no ASID/VPN and is cleared by any
+pulse. The driver helper functions are `opengpu_hw_flush_tlb_asid` and
+`opengpu_hw_flush_tlb_vpn`.
 
 START snapshots the programmed job state. On queue-capable hardware, the host
 writes a 64-byte descriptor to the job ring and advances `JOB_WPTR`. Jobs

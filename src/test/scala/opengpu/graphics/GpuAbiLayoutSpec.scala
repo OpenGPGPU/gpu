@@ -131,6 +131,18 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
     ).map { case (n, v) => (n, v.toLong) })
   }
 
+  it should "match the scoped TLB-flush field encoding" in {
+    checkAll(Seq(
+      "GPU_TLB_FLUSH_FULL" -> GpuCommandMmioRegs.TLB_FLUSH_FULL,
+      "GPU_TLB_FLUSH_ASID" -> GpuCommandMmioRegs.TLB_FLUSH_ASID,
+      "GPU_TLB_FLUSH_ASID_SHIFT" -> GpuCommandMmioRegs.TLB_FLUSH_ASID_SHIFT,
+      "GPU_TLB_FLUSH_ASID_MASK" -> GpuCommandMmioRegs.TLB_FLUSH_ASID_MASK,
+      "GPU_TLB_FLUSH_VPN" -> GpuCommandMmioRegs.TLB_FLUSH_VPN,
+      "GPU_TLB_FLUSH_VPN_SHIFT" -> GpuCommandMmioRegs.TLB_FLUSH_VPN_SHIFT,
+      "GPU_TLB_FLUSH_VPN_MASK" -> GpuCommandMmioRegs.TLB_FLUSH_VPN_MASK
+    ).map { case (n, v) => (n, v.toLong) })
+  }
+
   it should "match the capability-word bit assignments" in {
     checkAll(Seq(
       "GPU_CAP_FRAGMENT_CORE" -> (1L << GpuCapabilities.FragmentCore),

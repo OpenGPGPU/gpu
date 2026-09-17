@@ -103,6 +103,10 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
   page needs a non-default cache policy (Sv32 PTE bits [9:8]). Compute kernargs
   are mapped uncached. Graphics shader CUs run Bare and still require bind-time
   cache invalidation. Instruction fetch does not implement per-page cache policy.
+  `UCMD_TLB_FLUSH` supports full, ASID-scoped and VPN-scoped shootdown
+  (`opengpu_hw_flush_tlb_asid` / `opengpu_hw_flush_tlb_vpn`), so a mapping
+  update need not empty the whole TLB; the fixed-function texture translator
+  tracks no ASID and is cleared by any flush pulse.
 - Texture translation/access faults drain the render and report an error
   completion: STATUS.ERROR for legacy submissions, plus IH status 2 and ERROR
   for queued jobs. The existing IH handler signals the owning fence with -EIO.

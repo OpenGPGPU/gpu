@@ -279,6 +279,11 @@ int opengpu_hw_invalidate_async(struct opengpu_device *gpu, u32 address,
                                 struct dma_fence **fence);
 int opengpu_hw_enable_mmu(struct opengpu_device *gpu, dma_addr_t root_table);
 int opengpu_hw_flush_tlbs(struct opengpu_device *gpu);
+/* Scoped shootdown: drop only the entries for one ASID or one VPN.  Global
+ * mappings and other address spaces stay warm; the texture translator is
+ * flushed by the same pulse. */
+int opengpu_hw_flush_tlb_asid(struct opengpu_device *gpu, u32 asid);
+int opengpu_hw_flush_tlb_vpn(struct opengpu_device *gpu, u32 vpn);
 /* Caller holds submit_lock until its page-table update and flush finish. */
 int opengpu_hw_wait_idle_locked(struct opengpu_device *gpu);
 

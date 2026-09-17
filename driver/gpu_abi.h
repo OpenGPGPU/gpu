@@ -2,6 +2,17 @@
 #ifndef RISCV_SIMT_GPU_ABI_H
 #define RISCV_SIMT_GPU_ABI_H
 
+/* Kernel and userspace share this header: the driver includes it directly,
+ * while kernel-free userspace validators (for example
+ * opengpu_tlb_flush.h) need the fixed-width aliases below. */
+#ifdef __KERNEL__
+#include <linux/types.h>
+#else
+#include <stdint.h>
+typedef uint32_t u32;
+typedef int32_t s32;
+#endif
+
 /*
  * RISC-V SIMT GPU host ABI.
  *
@@ -125,10 +136,26 @@
 #define GPU_REG_UCMD_SAMPLE_MODE    0x148
 /* Sv32 `satp` (bit 31 enables translation, bits 30:22 ASID, bits 19:0 root
  * page-table PPN) for the vector data and instruction MMUs, and a write-1
- * full TLB flush.  Programming either satp requires a TLB_FLUSH. */
+ * scoped TLB flush.  Programming either satp requires a TLB_FLUSH. */
 #define GPU_REG_UCMD_VECTOR_SATP     0x14c
 #define GPU_REG_UCMD_INSTRUCTION_SATP 0x150
 #define GPU_REG_UCMD_TLB_FLUSH       0x154
+
+/* Fields of the write-1 GPU_REG_UCMD_TLB_FLUSH register.  Bit 0 invalidates
+ * every entry of both CU TLBs.  Bit 1 flushes only entries whose ASID matches
+ * GPU_TLB_FLUSH_ASID, preserving global mappings and other address spaces.
+ * Bit 2 flushes only entries whose virtual page number matches
+ * GPU_TLB_FLUSH_VPN.  Bits 1 and 2 may be combined to drop a single mapping.
+ * A set bit 0 dominates the scoped bits; a write with no field set is a
+ * no-op.  Any flush pulse also clears the fixed-function texture translator,
+ * which tracks no ASID or VPN. */
+#define GPU_TLB_FLUSH_FULL           (1u << 0)
+#define GPU_TLB_FLUSH_ASID           (1u << 1)
+#define GPU_TLB_FLUSH_ASID_SHIFT     3
+#define GPU_TLB_FLUSH_ASID_MASK      0x1ffu
+#define GPU_TLB_FLUSH_VPN            (1u << 2)
+#define GPU_TLB_FLUSH_VPN_SHIFT      12
+#define GPU_TLB_FLUSH_VPN_MASK       0xfffffu
 
 /* MSAA sample-mode register (bits 1:0; 0 = 1x, 1 = 2x, 2 = 4x).  Snapshotted
  * on the legacy START path exactly like the other execution config; the

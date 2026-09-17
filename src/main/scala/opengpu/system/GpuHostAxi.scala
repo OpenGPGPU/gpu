@@ -9,7 +9,8 @@ import opengpu.core.memory.{
   ComputeMemoryRequest,
   ComputeMemoryResponse,
   SharedAtomicRequest,
-  SharedAtomicResponse
+  SharedAtomicResponse,
+  VectorTlbFlush
 }
 import opengpu.graphics.{
   GpuCommandMmio,
@@ -110,10 +111,10 @@ class GpuHostAxi(
       Some(Input(Bool()))
     } else None
     /** Sv32 page-table state for the vector and instruction MMUs, plus a
-      * one-cycle full TLB flush, programmed through the unified bridge. */
+      * one-cycle scoped TLB flush, programmed through the unified bridge. */
     val vectorSatp = Output(UInt(32.W))
     val instructionSatp = Output(UInt(32.W))
-    val tlbFlush = Output(Bool())
+    val tlbFlush = Output(Valid(new VectorTlbFlush(gpuConfig)))
     val textureFault = if (textureFaultReporting) Some(Input(Bool())) else None
 
     // Renderer shared-memory ports (command buffer + framebuffer words, and the
@@ -161,7 +162,8 @@ class GpuHostAxi(
     }
     io.vectorSatp := unified.map(_.io.vectorSatp).getOrElse(0.U)
     io.instructionSatp := unified.map(_.io.instructionSatp).getOrElse(0.U)
-    io.tlbFlush := unified.map(_.io.tlbFlush).getOrElse(false.B)
+    io.tlbFlush := unified.map(_.io.tlbFlush).getOrElse(
+      0.U.asTypeOf(io.tlbFlush))
     host.io.externalCompletion := io.externalCompletion.getOrElse(false.B) ||
       unified.map(_.io.completionEvent).getOrElse(false.B)
     io.m_irq := host.io.irq
@@ -214,10 +216,10 @@ class GpuHostAxi(
     val lastBeat = beat === lenReg
     // RenderHost owns 0x000..0xC4, MSAA_CONFIG at 0x134, and the
     // stencil/blend registers at 0x13C..0x144; the unified block owns
-    // 0xC4..0x130, the RESET register at 0x138 and the resolve SAMPLE_MODE
-    // register at 0x148. The overall map ends at GpuCommandMmioRegs.END
-    // (0x14C) for both build flavours; non-unified builds read the unified
-    // range as reserved zero.
+    // 0xC4..0x130, the RESET register at 0x138 and the SAMPLE_MODE / satp /
+    // TLB_FLUSH registers at 0x148..0x154. The overall map ends at
+    // GpuCommandMmioRegs.END (0x158) for both build flavours; non-unified
+    // builds read the unified range as reserved zero.
     val mappedEnd = GpuCommandMmioRegs.END.U
     val beatOk = (beatAddr & 0x3.U) === 0.U && beatAddr < mappedEnd
 

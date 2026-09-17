@@ -107,6 +107,65 @@ class GpuCommandMmioSpec extends AnyFlatSpec {
     }
   }
 
+  it should "decode full and scoped TLB flush requests" in {
+    simulate(new GpuCommandMmio(GpuConfig(lanes = 4, warps = 2))) { dut =>
+      dut.io.reg.req.valid.poke(false.B)
+      dut.io.reg.resp.ready.poke(true.B)
+      dut.io.command.ready.poke(false.B)
+      dut.io.completion.valid.poke(false.B)
+      dut.io.completion.bits.poke(0.U.asTypeOf(dut.io.completion.bits))
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+
+      // A full flush sets no scope bit.
+      write(dut, GpuCommandMmioRegs.TLB_FLUSH,
+        GpuCommandMmioRegs.TLB_FLUSH_FULL)
+      dut.io.tlbFlush.valid.expect(true.B)
+      dut.io.tlbFlush.bits.asidValid.expect(false.B)
+      dut.io.tlbFlush.bits.virtualPageNumberValid.expect(false.B)
+      dut.clock.step()
+      dut.io.tlbFlush.valid.expect(false.B)
+
+      // ASID-scoped flush carries the 9-bit ASID.
+      val asid = 0x155
+      val asidField = BigInt(GpuCommandMmioRegs.TLB_FLUSH_ASID |
+        (asid << GpuCommandMmioRegs.TLB_FLUSH_ASID_SHIFT))
+      write(dut, GpuCommandMmioRegs.TLB_FLUSH, asidField)
+      dut.io.tlbFlush.valid.expect(true.B)
+      dut.io.tlbFlush.bits.asidValid.expect(true.B)
+      dut.io.tlbFlush.bits.asid.expect(asid.U)
+      dut.io.tlbFlush.bits.virtualPageNumberValid.expect(false.B)
+      dut.clock.step()
+
+      // VPN-scoped flush carries the 20-bit VPN.
+      val vpn = 0xabcde
+      val vpnField = BigInt(GpuCommandMmioRegs.TLB_FLUSH_VPN) |
+        (BigInt(vpn) << GpuCommandMmioRegs.TLB_FLUSH_VPN_SHIFT)
+      write(dut, GpuCommandMmioRegs.TLB_FLUSH, vpnField)
+      dut.io.tlbFlush.valid.expect(true.B)
+      dut.io.tlbFlush.bits.virtualPageNumberValid.expect(true.B)
+      dut.io.tlbFlush.bits.virtualPageNumber.expect(vpn.U)
+      dut.io.tlbFlush.bits.asidValid.expect(false.B)
+      dut.clock.step()
+
+      // The two scopes combine; a set full-flush bit dominates them.
+      write(dut, GpuCommandMmioRegs.TLB_FLUSH, asidField | vpnField)
+      dut.io.tlbFlush.valid.expect(true.B)
+      dut.io.tlbFlush.bits.asidValid.expect(true.B)
+      dut.io.tlbFlush.bits.virtualPageNumberValid.expect(true.B)
+      dut.clock.step()
+      write(dut, GpuCommandMmioRegs.TLB_FLUSH,
+        GpuCommandMmioRegs.TLB_FLUSH_FULL | GpuCommandMmioRegs.TLB_FLUSH_ASID)
+      dut.io.tlbFlush.valid.expect(true.B)
+      dut.io.tlbFlush.bits.asidValid.expect(false.B)
+      dut.io.tlbFlush.bits.virtualPageNumberValid.expect(false.B)
+      dut.clock.step()
+
+      // A write with no field set is a no-op.
+      write(dut, GpuCommandMmioRegs.TLB_FLUSH, 0)
+      dut.io.tlbFlush.valid.expect(false.B)
+    }
+  }
+
   it should "report a sticky overflow when software submits to a full queue" in {
     simulate(new GpuCommandMmio(queueDepth = 1)) { dut =>
       dut.io.reg.req.valid.poke(false.B)

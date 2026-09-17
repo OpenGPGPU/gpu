@@ -217,7 +217,7 @@ class GpuHostSystemAxi(
       gpuConfig, entries = 16, lineBytes = 64,
       maxOutstanding = graphicsHostTransactions))
     texTranslator.io.satp := host.io.vectorSatp
-    texTranslator.io.flush := host.io.tlbFlush
+    texTranslator.io.flush := host.io.tlbFlush.valid
     texTranslator.io.pageWalkTransactionId := 0.U
     texTranslator.io.in <> texBridge.io.memoryRequest
 
@@ -356,17 +356,11 @@ class GpuHostSystemAxi(
     system.io.invalidateInstructionCache := false.B
     system.io.instructionSatp := host.io.instructionSatp
     system.io.vectorSatp := host.io.vectorSatp
-    // `TLB_FLUSH` invalidates every entry of both translation caches.
-    system.io.vectorTlbFlush.valid := host.io.tlbFlush
-    system.io.vectorTlbFlush.bits.virtualPageNumberValid := false.B
-    system.io.vectorTlbFlush.bits.virtualPageNumber := 0.U
-    system.io.vectorTlbFlush.bits.asidValid := false.B
-    system.io.vectorTlbFlush.bits.asid := 0.U
-    system.io.instructionTlbFlush.valid := host.io.tlbFlush
-    system.io.instructionTlbFlush.bits.virtualPageNumberValid := false.B
-    system.io.instructionTlbFlush.bits.virtualPageNumber := 0.U
-    system.io.instructionTlbFlush.bits.asidValid := false.B
-    system.io.instructionTlbFlush.bits.asid := 0.U
+    // `TLB_FLUSH` forwards its scope to both CU MMUs, so an ASID- or
+    // VPN-scoped shootdown leaves other entries warm.  The fixed-function
+    // texture translator tracks no ASID/VPN, so any flush pulse clears it.
+    system.io.vectorTlbFlush := host.io.tlbFlush
+    system.io.instructionTlbFlush := host.io.tlbFlush
 
     for (cu <- 0 until numComputeUnits) {
       system.io.fpu(cu).ready := false.B
