@@ -192,6 +192,12 @@ struct opengpu_vm {
     struct opengpu_buffer root;
     u32 asid;
     bool enabled;
+    /* Private second-level tables for regions this VM maps itself.  Their
+     * leaves are non-global, so a translation is only valid under this VM's
+     * ASID. */
+    struct opengpu_buffer l1[OPENGPU_MMU_MAX_TABLES];
+    u32 l1_region[OPENGPU_MMU_MAX_TABLES];
+    u32 l1_count;
 };
 
 struct opengpu_device {
@@ -340,6 +346,12 @@ int opengpu_mmu_set_range_policy(struct opengpu_device *gpu, dma_addr_t base,
 int opengpu_mmu_vm_create(struct opengpu_device *gpu, struct opengpu_vm *vm);
 int opengpu_mmu_vm_activate(struct opengpu_device *gpu,
                             const struct opengpu_vm *vm);
+/* Map `size` bytes of 4 KiB-aligned VA (`va`) to PA (`pa`) in this VM's private
+ * address space with `policy`.  Mapped leaves are non-global, so only this
+ * VM's ASID resolves them, and a scoped ASID flush drops any prior
+ * translation.  Untouched pages keep the shared global identity mapping. */
+int opengpu_mmu_vm_map(struct opengpu_device *gpu, struct opengpu_vm *vm,
+                       dma_addr_t va, dma_addr_t pa, size_t size, u32 policy);
 void opengpu_mmu_vm_destroy(struct opengpu_device *gpu, struct opengpu_vm *vm);
 int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              const struct opengpu_kernel_launch *launch,

@@ -40,6 +40,13 @@ static u32 mmu_leaf_pte(dma_addr_t phys, u32 policy)
         ((policy & 0x3u) << MMU_PTE_POLICY_SHIFT);
 }
 
+/* A VM-private leaf: the same PTE without the global bit, so only the owning
+ * ASID resolves it. */
+static u32 mmu_leaf_pte_private(dma_addr_t phys, u32 policy)
+{
+    return mmu_leaf_pte(phys, policy) & ~(u32)MMU_PTE_G;
+}
+
 static u32 mmu_link_pte(dma_addr_t table)
 {
     return ((((u32)(table >> 12)) & 0xfffffu) << 10) | MMU_PTE_V;
@@ -105,6 +112,76 @@ static int mmu_l1_for_region(struct opengpu_device *gpu, u32 region,
     return 0;
 }
 
+/* Look up an already-split global region; never allocates. */
+static const struct opengpu_buffer *mmu_l1_find(const struct opengpu_mmu *mmu,
+                                                u32 region)
+{
+    u32 i;
+
+    for (i = 0; i < mmu->l1_count; i++)
+        if (mmu->l1_region[i] == region)
+            return &mmu->l1[i];
+    return NULL;
+}
+
+static struct opengpu_buffer *vm_l1_find(struct opengpu_vm *vm, u32 region)
+{
+    u32 i;
+
+    for (i = 0; i < vm->l1_count; i++)
+        if (vm->l1_region[i] == region)
+            return &vm->l1[i];
+    return NULL;
+}
+
+/* Seed a VM's private L1 table with the region's current effective mapping:
+ * the shared global leaves (preserving a split region's policies) when the
+ * region is split globally, or the cached identity superpage leaves
+ * otherwise.  Untouched leaves therefore stay global. */
+static void vm_l1_init(const struct opengpu_mmu *mmu, u32 region, u32 *table)
+{
+    const struct opengpu_buffer *global = mmu_l1_find(mmu, region);
+    u32 j;
+
+    if (global) {
+        const u32 *source = global->cpu;
+
+        for (j = 0; j < MMU_L1_ENTRIES; j++)
+            table[j] = source[j];
+        return;
+    }
+    for (j = 0; j < MMU_L1_ENTRIES; j++)
+        table[j] = mmu_leaf_pte(
+            (dma_addr_t)region * MMU_SUPERPAGE_SIZE +
+                (dma_addr_t)j * MMU_PAGE_SIZE,
+            OPENGPU_MMU_POLICY_CACHED);
+}
+
+/* Allocate (but do not publish) a VM-private L1 table for `region`. */
+static int vm_l1_for_region(struct opengpu_device *gpu, struct opengpu_vm *vm,
+                            struct opengpu_mmu *mmu, u32 region,
+                            struct opengpu_buffer **out)
+{
+    struct opengpu_buffer *l1 = vm_l1_find(vm, region);
+    int ret;
+
+    if (l1) {
+        *out = l1;
+        return 0;
+    }
+    if (vm->l1_count >= OPENGPU_MMU_MAX_TABLES)
+        return -ENOSPC;
+    l1 = &vm->l1[vm->l1_count];
+    ret = opengpu_buffer_alloc(gpu, l1, MMU_PAGE_SIZE);
+    if (ret)
+        return ret;
+    vm_l1_init(mmu, region, l1->cpu);
+    vm->l1_region[vm->l1_count] = region;
+    vm->l1_count++;
+    *out = l1;
+    return 0;
+}
+
 int opengpu_mmu_set_range_policy(struct opengpu_device *gpu, dma_addr_t base,
                                  size_t size, u32 policy)
 {
@@ -161,11 +238,15 @@ int opengpu_mmu_set_range_policy(struct opengpu_device *gpu, dma_addr_t base,
 
         ((u32 *)mmu->root.cpu)[region] = link;
         /* A VM created before this split must see the same L1 table, or it
-         * would keep using the cached identity superpage.  Updates exclude
-         * submissions (submit_lock held, execution drained). */
-        for (j = 1; j < OPENGPU_ASID_COUNT; j++)
-            if (mmu->vm_by_asid[j])
-                ((u32 *)mmu->vm_by_asid[j]->root.cpu)[region] = link;
+         * would keep using the cached identity superpage.  A VM that maps the
+         * region privately keeps its own table.  Updates exclude submissions
+         * (submit_lock held, execution drained). */
+        for (j = 1; j < OPENGPU_ASID_COUNT; j++) {
+            struct opengpu_vm *vm = mmu->vm_by_asid[j];
+
+            if (vm && !vm_l1_find(vm, region))
+                ((u32 *)vm->root.cpu)[region] = link;
+        }
     }
     dma_wmb();
     ret = opengpu_hw_flush_tlbs(gpu);
@@ -236,6 +317,7 @@ int opengpu_mmu_vm_create(struct opengpu_device *gpu, struct opengpu_vm *vm)
         return -EOPNOTSUPP;
     vm->asid = 0;
     vm->enabled = false;
+    vm->l1_count = 0;
 
     ret = opengpu_buffer_alloc(gpu, &vm->root, MMU_PAGE_SIZE);
     if (ret)
@@ -255,10 +337,9 @@ int opengpu_mmu_vm_create(struct opengpu_device *gpu, struct opengpu_vm *vm)
         goto err_free_root;
     dma_wmb();
 
-    /* A recycled ASID carries no stale entries that matter: every driver leaf
-     * PTE is global, so a previous owner's translations describe the same
-     * shared physical map.  Once a VM maps anything privately, its ASID must
-     * be shot down before it is reused (create or switch). */
+    /* A recycled ASID is clean: vm_destroy shoots the ASID down before it is
+     * returned to the pool (and leaks it on failure), so a new owner never
+     * inherits another VM's private entries. */
     vm->enabled = true;
     return 0;
 
@@ -281,20 +362,97 @@ int opengpu_mmu_vm_activate(struct opengpu_device *gpu,
     return opengpu_hw_activate_vm(gpu, vm);
 }
 
+int opengpu_mmu_vm_map(struct opengpu_device *gpu, struct opengpu_vm *vm,
+                       dma_addr_t va, dma_addr_t pa, size_t size, u32 policy)
+{
+    struct opengpu_mmu *mmu = &gpu->mmu;
+    dma_addr_t p, q;
+    u64 va_end, pa_end;
+    u32 old_count, i;
+    int ret = 0;
+
+    if (!vm || !vm->enabled)
+        return -EINVAL;
+    if (!mmu->enabled)
+        return -EOPNOTSUPP;
+    if (policy > OPENGPU_MMU_POLICY_UNCACHED)
+        return -EINVAL;
+    if (!size || (va & (MMU_PAGE_SIZE - 1)) ||
+        (pa & (MMU_PAGE_SIZE - 1)) || (size & (MMU_PAGE_SIZE - 1)))
+        return -EINVAL;
+    if (check_add_overflow((u64)va, (u64)size, &va_end) ||
+        check_add_overflow((u64)pa, (u64)size, &pa_end) ||
+        va_end > (1ull << 32) || pa_end > (1ull << 32))
+        return -ERANGE;
+
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_wait_idle_locked(gpu);
+    if (ret)
+        goto out_submit;
+    mutex_lock(&mmu->lock);
+    old_count = vm->l1_count;
+
+    /* Reserve every private L1 table before touching a live mapping. */
+    for (p = va; (u64)p < va_end;) {
+        u32 region = (u32)(p / MMU_SUPERPAGE_SIZE);
+        struct opengpu_buffer *l1;
+
+        ret = vm_l1_for_region(gpu, vm, mmu, region, &l1);
+        if (ret)
+            goto rollback;
+        p = ((dma_addr_t)region + 1) * MMU_SUPERPAGE_SIZE;
+    }
+    /* Install the private (non-global) leaves. */
+    for (p = va, q = pa; (u64)p < va_end;
+         p += MMU_PAGE_SIZE, q += MMU_PAGE_SIZE) {
+        u32 region = (u32)(p / MMU_SUPERPAGE_SIZE);
+        u32 page = (u32)((p % MMU_SUPERPAGE_SIZE) / MMU_PAGE_SIZE);
+        struct opengpu_buffer *l1 = vm_l1_find(vm, region);
+
+        ((u32 *)l1->cpu)[page] = mmu_leaf_pte_private(q, policy);
+    }
+    dma_wmb();
+    for (i = old_count; i < vm->l1_count; i++)
+        ((u32 *)vm->root.cpu)[vm->l1_region[i]] =
+            mmu_link_pte(vm->l1[i].dma);
+    dma_wmb();
+    /* Drop any translation this VM already held for the range; other ASIDs'
+     * entries and the global map are untouched. */
+    ret = opengpu_hw_flush_tlb_asid(gpu, vm->asid);
+    goto out_mmu;
+
+rollback:
+    while (vm->l1_count > old_count)
+        opengpu_buffer_free(gpu, &vm->l1[--vm->l1_count]);
+out_mmu:
+    mutex_unlock(&mmu->lock);
+out_submit:
+    mutex_unlock(&gpu->hw.submit_lock);
+    return ret;
+}
+
 void opengpu_mmu_vm_destroy(struct opengpu_device *gpu, struct opengpu_vm *vm)
 {
     struct opengpu_mmu *mmu = &gpu->mmu;
+    u32 i;
+    int ret;
 
     if (!vm || !vm->enabled)
         return;
-    /* Evict this address space before releasing the ASID for reuse. */
-    mmu_shootdown_asid(gpu, vm->asid);
+    /* Evict this address space before releasing the ASID for reuse.  Private
+     * (non-global) entries must not survive into the next owner, so if the
+     * shootdown fails the ASID is leaked rather than handed out dirty. */
+    ret = mmu_shootdown_asid(gpu, vm->asid);
     mutex_lock(&mmu->lock);
     if (vm->asid < OPENGPU_ASID_COUNT &&
         mmu->vm_by_asid[vm->asid] == vm)
         mmu->vm_by_asid[vm->asid] = NULL;
-    opengpu_asid_free(&mmu->asids, vm->asid);
+    if (!ret)
+        opengpu_asid_free(&mmu->asids, vm->asid);
     mutex_unlock(&mmu->lock);
+    for (i = 0; i < vm->l1_count; i++)
+        opengpu_buffer_free(gpu, &vm->l1[i]);
+    vm->l1_count = 0;
     opengpu_buffer_free(gpu, &vm->root);
     vm->enabled = false;
 }

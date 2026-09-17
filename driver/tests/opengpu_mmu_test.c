@@ -38,6 +38,9 @@ struct opengpu_vm {
     struct opengpu_buffer root;
     u32 asid;
     bool enabled;
+    struct opengpu_buffer l1[OPENGPU_MMU_MAX_TABLES];
+    u32 l1_region[OPENGPU_MMU_MAX_TABLES];
+    u32 l1_count;
 };
 struct opengpu_device {
     struct { struct mutex submit_lock; u32 capabilities; } hw;
@@ -220,6 +223,56 @@ int main(void)
         opengpu_mmu_vm_destroy(&gpu, &vm);
         assert(!gpu.mmu.vm_by_asid[vm.asid]);
         /* Only the new L1 table stays allocated after the VM is gone. */
+        assert(live_allocations == live_before + 1);
+    }
+
+    /* Per-VM private mapping: a VA maps to a non-identity PA through a
+     * non-global leaf; untouched leaves keep the global identity mapping. */
+    {
+        struct opengpu_vm vm;
+        dma_addr_t va = 0x20000000;            /* region 128, page 0 */
+        dma_addr_t pa = 0x12345000;
+        u32 region = (u32)(va / MMU_SUPERPAGE_SIZE);
+        u32 *table;
+        int live_before = live_allocations;
+        unsigned asid_before;
+
+        assert(!opengpu_mmu_vm_create(&gpu, &vm));
+        asid_before = asid_flushes;
+        assert(!opengpu_mmu_vm_map(&gpu, &vm, va, pa, MMU_PAGE_SIZE, 2));
+        assert(asid_flushes == asid_before + 1);
+        assert(vm.l1_count == 1);
+        assert((((u32 *)vm.root.cpu)[region] & 1) != 0);
+        assert((((u32 *)vm.root.cpu)[region] >> 10) ==
+               (u32)(vm.l1[0].dma >> 12));
+        table = vm.l1[0].cpu;
+        /* The mapped page points at the requested PA, without the G bit and
+         * with the requested policy. */
+        assert((table[0] >> 10) == 0x12345);
+        assert((table[0] & 0x20) == 0);
+        assert((table[0] & 0x300) == 0x200);
+        /* An untouched sibling is still the cached global identity leaf. */
+        assert((table[1] & 0x20) != 0);
+        assert((table[1] >> 10) == 0x20001);
+        assert((table[1] & 0x300) == 0);
+        /* Validation: alignment, size, policy and the 32-bit window. */
+        assert(opengpu_mmu_vm_map(&gpu, &vm, va + 1, pa, MMU_PAGE_SIZE, 0) ==
+               -EINVAL);
+        assert(opengpu_mmu_vm_map(&gpu, &vm, va, pa, MMU_PAGE_SIZE + 1, 0) ==
+               -EINVAL);
+        assert(opengpu_mmu_vm_map(&gpu, &vm, va, pa, 0, 0) == -EINVAL);
+        assert(opengpu_mmu_vm_map(&gpu, &vm, va, pa, MMU_PAGE_SIZE, 3) ==
+               -EINVAL);
+        assert(opengpu_mmu_vm_map(&gpu, &vm, 0xfffff000, pa, 0x2000, 0) ==
+               -ERANGE);
+        /* A global split of the same region must not clobber the private
+         * table (propagation skips a VM that mapped the region itself). */
+        assert(!opengpu_mmu_set_range_policy(
+            &gpu, (dma_addr_t)region * MMU_SUPERPAGE_SIZE, MMU_PAGE_SIZE, 0));
+        assert((((u32 *)vm.root.cpu)[region] >> 10) ==
+               (u32)(vm.l1[0].dma >> 12));
+        opengpu_mmu_vm_destroy(&gpu, &vm);
+        /* Only the global split table stays allocated. */
         assert(live_allocations == live_before + 1);
     }
     assert(!gpu.hw.submit_lock.held && !gpu.mmu.lock.held);

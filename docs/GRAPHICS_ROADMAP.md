@@ -372,8 +372,13 @@ Implemented:
   submission path takes an optional VM and programs `satp` for it inside the
   submit lock (before the doorbell), so the switch cannot race another
   submission. Each DRM context owns a VM and every job carries its context's
-  VM, so jobs run in their context's address space. Because a VM root is
-  still a clone of the global map, the switch is not yet observable.
+  VM, so jobs run in their context's address space. `opengpu_mmu_vm_map` maps
+  a 4 KiB-aligned VA range to a PA range in a VM's private address space: the
+  mapped leaves clear the global (G) bit, so only that VM's ASID resolves
+  them; untouched pages keep the shared global identity map, and a scoped ASID
+  flush drops any prior translation. Nothing binds resources through a VM's
+  virtual addresses yet, so a VM without private mappings behaves exactly like
+  the global map.
 - Sv32 PTE bits [9:8] carry a per-page data cache policy (cached / write-through /
   uncached); the walker, data TLB, texture translator, CU data L1 and shared L2
   honour it. Instruction fetch remains cached; the ITLB does not carry policy.
@@ -413,12 +418,11 @@ Design notes (from the MMU/ASID review):
 
 Remaining work, cheapest first:
 
-- Driver VM manager: an ASID allocator, per-VM root tables, global identity
-  mappings and a per-context VM selected on every submission exist. Every VM
-  root is still a clone of the global map, so a switch is not yet observable.
-  Add per-VM (non-global) mappings and the ASID shootdown a switch then needs
-  to make address spaces actually isolate. The scoped `TLB_FLUSH` is the
-  shootdown primitive.
+- Driver VM manager: an ASID allocator, per-context VMs, a per-submission
+  `satp` switch and private VA->PA mappings (`opengpu_mmu_vm_map`) exist, but
+  no client binds a resource through a VM virtual address yet. Add a
+  VM-addressed client (for example compute kernargs) so address spaces
+  actually isolate. The scoped `TLB_FLUSH` is the shootdown primitive.
 - Keep per-VM mappings on large pages; size the TLBs for the working set and
   avoid blocking translation on the texture path. The `GraphicsAddressTranslator`
   is deliberately blocking today; measure before widening it.
