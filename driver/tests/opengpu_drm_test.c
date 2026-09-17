@@ -3,6 +3,7 @@
 #include <drm/drm.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_mode.h>
+#include <linux/dma-buf.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1728,6 +1729,47 @@ int main(void)
               "queue L2 line invalidate");
         CHECK(wait_syncobjs(fd, &invalidate_sync, 1),
               "wait invalidate syncobj");
+    }
+    /* dma-buf CPU-access sync: after a CPU write, end_cpu_access drops the
+     * shared-L2 lines for the object so the next GPU read sees the new data. */
+    {
+        struct drm_prime_handle prime = {
+            .handle = first.handle,
+            .flags = O_RDWR | O_CLOEXEC,
+        };
+        struct dma_buf_sync sync = { 0 };
+        void *mapping;
+        int dbuf_fd;
+
+        if (ioctl(fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &prime) < 0 ||
+            prime.fd < 0) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL prime export");
+            return 1;
+        }
+        dbuf_fd = prime.fd;
+        mapping = mmap(NULL, first.size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                       dbuf_fd, 0);
+        if (mapping == MAP_FAILED) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL prime mmap");
+            return 1;
+        }
+        ((uint32_t *)mapping)[0] = 0xdeadbeefu;
+        sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE;
+        if (ioctl(dbuf_fd, DMA_BUF_IOCTL_SYNC, &sync) < 0) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL dma-buf sync start");
+            return 1;
+        }
+        sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
+        if (ioctl(dbuf_fd, DMA_BUF_IOCTL_SYNC, &sync) < 0) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL dma-buf sync end");
+            return 1;
+        }
+        munmap(mapping, first.size);
+        close(dbuf_fd);
     }
     /* Typed MSAA resolve: average the interleaved colour samples of a small
      * region into a single-sample destination.  The driver validates both

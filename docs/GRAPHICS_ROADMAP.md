@@ -150,8 +150,10 @@ track that distinction.
   callers should invalidate a buffer once after a CPU write (per upload) rather
   than per draw. The driver already invalidates a directly-read resource binding
   (texture, vertex buffer, kernarg) at bind time, which is the upload boundary;
-  the ioctl covers re-uploads, and the resolve operation invalidates its own
-  source range implicitly.
+  the ioctl covers re-uploads, the resolve operation invalidates its own source
+  range implicitly, and exported GEM dma-bufs run the same invalidate from
+  `end_cpu_access` so a `DMA_BUF_IOCTL_SYNC` CPU-write window is coherent with a
+  later GPU read.
 - Capability-selected unified-command submission for Linux fill, blit and
   strided-copy jobs, with legacy dedicated-register fallback.
 - ABI-defined unified-command MMIO and capability discovery cover the common

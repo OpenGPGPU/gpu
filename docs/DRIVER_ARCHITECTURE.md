@@ -93,6 +93,10 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
   lines of a directly-read binding (texture, vertex buffer, kernarg) when it is
   bound, which is the upload boundary; shaders are snapshotted instead, and the
   resolve path invalidates its source implicitly.
+- GEM objects export as dma-bufs whose `end_cpu_access` performs the same
+  invalidate, so a `DMA_BUF_IOCTL_SYNC` CPU-write window is coherent with a
+  later GPU read (the standard interface used by importers and cross-device
+  sharing).
 - Texture sampling, shader depth output, discard, quad derivatives, mipmapping
   and source-over blending in the validated graphics path.
 - D24S8 stencil and GL-style blend factor/equation state: UAPI words 35–37 on

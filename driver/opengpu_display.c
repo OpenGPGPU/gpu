@@ -2,6 +2,7 @@
 /* DRM/KMS display client over the host-visible scanout control interface. */
 #include <linux/module.h>
 #include <linux/overflow.h>
+#include <linux/dma-buf.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
@@ -19,12 +20,15 @@
 #include <drm/drm_modes.h>
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/drm_prime.h>
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_vblank.h>
 #include <drm/drm_vblank_helper.h>
 
 #include "opengpu_device.h"
 #include "opengpu_drm.h"
+
+MODULE_IMPORT_NS("DMA_BUF");
 
 struct opengpu_drm {
     struct drm_device drm;
@@ -259,6 +263,157 @@ static const struct drm_ioctl_desc opengpu_drm_ioctls[] = {
                       DRM_RENDER_ALLOW),
 };
 
+/* Drop the shared-L2 lines covering a GEM object.  Called from the dma-buf
+ * end_cpu_access hook after the caller wrote to a CPU mapping: the CPU does
+ * not write the GPU L2, so a page it cached earlier could otherwise shadow
+ * the new contents. */
+static int opengpu_gem_invalidate(struct drm_gem_object *obj)
+{
+    struct opengpu_device *gpu = dev_get_drvdata(obj->dev->dev);
+    struct drm_gem_dma_object *dma_obj = to_drm_gem_dma_obj(obj);
+    struct dma_fence *fence = NULL;
+    u64 start, end;
+    u32 bytes;
+    long timeout;
+    int ret;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
+        return 0;
+    start = (u64)dma_obj->dma_addr & ~(u64)63;
+    if (check_add_overflow((u64)dma_obj->dma_addr, (u64)obj->size, &end) ||
+        start > U32_MAX)
+        return -ERANGE;
+    end = (end + 63ull) & ~(u64)63;
+    if (end > (1ull << 32) || end - start > U32_MAX)
+        return -ERANGE;
+    bytes = (u32)(end - start);
+    if (!bytes)
+        return 0;
+    ret = opengpu_hw_invalidate_async(gpu, (u32)start, bytes, NULL, &fence);
+    if (ret)
+        return ret;
+    /* Emulated hardware only advances while the guest touches registers, so
+     * wait in slices and tick the device between them. */
+    timeout = msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS + 100);
+    while (!dma_fence_is_signaled(fence)) {
+        long waited = dma_fence_wait_timeout(fence, false,
+                                             min(timeout,
+                                                 msecs_to_jiffies(4)));
+        if (waited < 0) {
+            dma_fence_put(fence);
+            return waited;
+        }
+        timeout -= waited ? waited : msecs_to_jiffies(4);
+        if (timeout <= 0) {
+            dma_fence_put(fence);
+            return -ETIMEDOUT;
+        }
+        opengpu_hw_progress_tick(gpu);
+        if (signal_pending(current)) {
+            dma_fence_put(fence);
+            return -ERESTARTSYS;
+        }
+    }
+    dma_fence_put(fence);
+    return 0;
+}
+
+static int opengpu_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
+                                            enum dma_data_direction direction)
+{
+    (void)dmabuf;
+    (void)direction;
+    return 0;
+}
+
+static int opengpu_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
+                                          enum dma_data_direction direction)
+{
+    /* A pure CPU read does not invalidate the GPU's copy. */
+    if (direction == DMA_FROM_DEVICE)
+        return 0;
+    return opengpu_gem_invalidate(dmabuf->priv);
+}
+
+static const struct dma_buf_ops opengpu_dmabuf_ops = {
+    .attach = drm_gem_map_attach,
+    .detach = drm_gem_map_detach,
+    .map_dma_buf = drm_gem_map_dma_buf,
+    .unmap_dma_buf = drm_gem_unmap_dma_buf,
+    .release = drm_gem_dmabuf_release,
+    .mmap = drm_gem_dmabuf_mmap,
+    .vmap = drm_gem_dmabuf_vmap,
+    .vunmap = drm_gem_dmabuf_vunmap,
+    .begin_cpu_access = opengpu_dma_buf_begin_cpu_access,
+    .end_cpu_access = opengpu_dma_buf_end_cpu_access,
+};
+
+static struct dma_buf *opengpu_gem_prime_export(struct drm_gem_object *obj,
+                                                int flags)
+{
+    DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
+
+    exp_info.ops = &opengpu_dmabuf_ops;
+    exp_info.size = obj->size;
+    exp_info.flags = flags;
+    exp_info.priv = obj;
+    return dma_buf_export(&exp_info);
+}
+
+/* The GEM DMA helpers keep their object-function wrappers private, so mirror
+ * them here and add the dma-buf export that carries the CPU-access hooks. */
+static void opengpu_gem_free(struct drm_gem_object *obj)
+{
+    drm_gem_dma_free(to_drm_gem_dma_obj(obj));
+}
+
+static void opengpu_gem_print_info(struct drm_printer *p, unsigned int indent,
+                                   const struct drm_gem_object *obj)
+{
+    drm_gem_dma_print_info(to_drm_gem_dma_obj(
+        (struct drm_gem_object *)obj), p, indent);
+}
+
+static struct sg_table *opengpu_gem_get_sg_table(struct drm_gem_object *obj)
+{
+    return drm_gem_dma_get_sg_table(to_drm_gem_dma_obj(obj));
+}
+
+static int opengpu_gem_vmap(struct drm_gem_object *obj, struct iosys_map *map)
+{
+    return drm_gem_dma_vmap(to_drm_gem_dma_obj(obj), map);
+}
+
+static int opengpu_gem_mmap(struct drm_gem_object *obj,
+                            struct vm_area_struct *vma)
+{
+    return drm_gem_dma_mmap(to_drm_gem_dma_obj(obj), vma);
+}
+
+static const struct drm_gem_object_funcs opengpu_gem_funcs = {
+    .free = opengpu_gem_free,
+    .print_info = opengpu_gem_print_info,
+    .get_sg_table = opengpu_gem_get_sg_table,
+    .vmap = opengpu_gem_vmap,
+    .mmap = opengpu_gem_mmap,
+    .vm_ops = &drm_gem_dma_vm_ops,
+    .export = opengpu_gem_prime_export,
+};
+
+static struct drm_gem_object *opengpu_gem_create_object(struct drm_device *drm,
+                                                        size_t size)
+{
+    struct drm_gem_dma_object *dma_obj;
+
+    (void)drm;
+    (void)size;
+    dma_obj = kzalloc(sizeof(*dma_obj), GFP_KERNEL);
+    if (!dma_obj)
+        return ERR_PTR(-ENOMEM);
+    dma_obj->base.funcs = &opengpu_gem_funcs;
+    return &dma_obj->base;
+}
+
 static const struct drm_driver opengpu_drm_driver = {
     .driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC |
                        DRIVER_RENDER | DRIVER_SYNCOBJ,
@@ -271,6 +426,7 @@ static const struct drm_driver opengpu_drm_driver = {
     .postclose = opengpu_compute_drm_postclose,
     .ioctls = opengpu_drm_ioctls,
     .num_ioctls = ARRAY_SIZE(opengpu_drm_ioctls),
+    .gem_create_object = opengpu_gem_create_object,
     DRM_GEM_DMA_DRIVER_OPS,
 };
 
