@@ -89,7 +89,10 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
   validated 64-byte-aligned GEM ranges, so a caller can make CPU-written memory
   visible to a later GPU read without a full cache flush. Invalidate once per
   CPU write (per upload), not per draw: each line costs an L2 lookup and the
-  operation is only worthwhile when the buffer changed.
+  operation is only worthwhile when the buffer changed. The driver drops the
+  lines of a directly-read binding (texture, vertex buffer, kernarg) when it is
+  bound, which is the upload boundary; shaders are snapshotted instead, and the
+  resolve path invalidates its source implicitly.
 - Texture sampling, shader depth output, discard, quad derivatives, mipmapping
   and source-over blending in the validated graphics path.
 - D24S8 stencil and GL-style blend factor/equation state: UAPI words 35–37 on

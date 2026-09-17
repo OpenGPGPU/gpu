@@ -415,10 +415,41 @@ static bool opengpu_is_power_of_two(u32 value)
     return value && !(value & (value - 1));
 }
 
+/* Drop the shared-L2 lines covering a resource binding.  The binding is the
+ * driver's upload boundary (the caller has finished writing the buffer before
+ * it binds it), so one invalidate per bind is enough; the context is quiesced
+ * first so no job is in flight and the commands order cleanly. */
+static int opengpu_binding_invalidate(
+    struct opengpu_device *gpu,
+    const struct opengpu_resource_binding *binding)
+{
+    struct dma_fence *fence = NULL;
+    u64 start, end;
+    u32 bytes;
+    int ret;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS) || !binding->size)
+        return 0;
+    start = (u64)binding->dma & ~(u64)63;
+    if (check_add_overflow(start, (u64)binding->size, &end))
+        return -ERANGE;
+    end = (end + 63ull) & ~(u64)63;
+    if (start > U32_MAX || end > (1ull << 32) || end - start > U32_MAX)
+        return -ERANGE;
+    bytes = (u32)(end - start);
+    if (!bytes)
+        return 0;
+    ret = opengpu_hw_invalidate_async(gpu, (u32)start, bytes, NULL, &fence);
+    if (ret)
+        return ret;
+    return opengpu_wait_fence(gpu, &fence, true);
+}
+
 int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
                                         struct drm_file *file)
 {
     struct drm_opengpu_resource *args = data;
+    struct opengpu_device *gpu = dev_get_drvdata(drm->dev);
     struct opengpu_file *render_file = file->driver_priv;
     struct opengpu_render_context *context;
     struct opengpu_resource_binding *binding, *old;
@@ -523,6 +554,15 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
     ret = opengpu_context_quiesce(render_file, context);
     if (ret)
         goto out_file;
+    /* Shaders are snapshotted by the driver; only directly-read resources need
+     * their L2 lines dropped after a CPU write. */
+    if (args->type != OPENGPU_RESOURCE_SHADER &&
+        args->type != OPENGPU_RESOURCE_VERTEX_SHADER &&
+        args->type != OPENGPU_RESOURCE_COMPUTE_SHADER) {
+        ret = opengpu_binding_invalidate(gpu, binding);
+        if (ret)
+            goto out_file;
+    }
     old = context->bindings[args->slot - 1];
     context->bindings[args->slot - 1] = binding;
     mutex_unlock(&render_file->lock);
