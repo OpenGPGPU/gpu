@@ -265,8 +265,12 @@ class GpuHostSystemAxi(
       cbBridge.io.memoryResponse, responseForCb, cbBase)
     attachGraphicsResponse(
       fbBridge.io.memoryResponse, responseForFb, fbBase)
+    val texResponseArbiter = Module(new RRArbiter(
+      new ComputeMemoryResponse(64, graphicsHostTransactions), 2))
+    texResponseArbiter.io.in(0) <> texTranslator.io.faultResponse
     attachGraphicsResponse(
-      texBridge.io.memoryResponse, responseForTex, texBase)
+      texResponseArbiter.io.in(1), responseForTex, texBase)
+    texBridge.io.memoryResponse <> texResponseArbiter.io.out
     texTranslator.io.pageWalkResp.valid :=
       graphicsResponse.valid && responseForTlb
     texTranslator.io.pageWalkResp.bits.readData :=
@@ -278,7 +282,7 @@ class GpuHostSystemAxi(
       responseForKernelWord -> host.io.kernelWordMemResp.ready,
       responseForCb -> cbBridge.io.memoryResponse.ready,
       responseForFb -> fbBridge.io.memoryResponse.ready,
-      responseForTex -> texBridge.io.memoryResponse.ready,
+      responseForTex -> texResponseArbiter.io.in(1).ready,
       responseForTlb -> texTranslator.io.pageWalkResp.ready))
     when(graphicsResponse.valid) {
       assert(responseForKernelWord || responseForCb || responseForFb ||

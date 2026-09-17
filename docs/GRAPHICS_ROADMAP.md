@@ -353,14 +353,21 @@ Implemented:
 - Sv32 `satp` (vector and instruction) and a full `TLB_FLUSH` are host
   programmable; the driver enables translation at init with a 4 MiB-superpage
   identity map, so existing physical-address bindings keep working.
-- Sv32 PTE bits [9:8] carry a per-page cache policy (cached / write-through /
-  uncached); the walker, both TLBs, the CU L1 and the shared L2 honour it, and
-  `uncached` bypasses both cache levels.
+- Sv32 PTE bits [9:8] carry a per-page data cache policy (cached / write-through /
+  uncached); the walker, data TLB, texture translator, CU data L1 and shared L2
+  honour it. Instruction fetch remains cached; the ITLB does not carry policy.
 - `opengpu_mmu` splits a 4 MiB region into a second-level table on demand and
-  maps a range with the chosen policy; CU-read kernargs default to uncached and
-  a binding may request it with `OPENGPU_RESOURCE_UNCACHED`.
+  maps a range with the chosen policy; compute kernargs default to uncached and
+  texture bindings may request it with `OPENGPU_RESOURCE_UNCACHED`. Updates
+  exclude submissions and drain execution before publishing tables and flushing.
+- Graphics shader CUs currently run Bare. Their directly-read bindings retain
+  cache invalidation at bind time, including bindings requesting uncached access.
 - The fixed-function texture client translates through the same page tables
   (`GraphicsAddressTranslator`); the other graphics clients stay physical.
+  Translation faults complete locally with a fault-marked zero response and
+  never access the requested physical address. The graphics word interface
+  currently consumes zero data without reporting that fault to the host;
+  end-to-end graphics fault reporting remains future work.
 
 Design notes (from the MMU/ASID review):
 

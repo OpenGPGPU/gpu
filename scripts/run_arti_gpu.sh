@@ -308,6 +308,11 @@ for validator in shader resolve depth; do
         "$GPU_DIR/driver/tests/opengpu_${validator}_validator_test.c"
     "$VALIDATOR_TEST"
 done
+MMU_TEST="$DRIVER_OUTPUT/opengpu_mmu_test"
+"$HOST_CC" -std=c11 -O2 -Wall -Wextra -Werror \
+    -I"$GPU_DIR/driver/tests/mmu_stubs" \
+    -o "$MMU_TEST" "$GPU_DIR/driver/tests/opengpu_mmu_test.c"
+"$MMU_TEST"
 if [ ! -f "$LINUX_HEADERS/include/drm/drm.h" ]; then
     HEADER_TOOLS_PATH="/opt/homebrew/bin:$PATH"
     if [ -x /opt/homebrew/opt/gnu-sed/libexec/gnubin/sed ]; then

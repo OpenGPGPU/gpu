@@ -100,8 +100,9 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
 - An identity-mapped Sv32 GPU MMU (`opengpu_mmu.c`): the driver builds one root
   table of 4 MiB identity superpages and enables translation for the CU data and
   instruction paths; a region is split into a second-level table when a 4 KiB
-  page needs a non-default cache policy (Sv32 PTE bits [9:8]). CU-read kernargs
-  are mapped uncached, so CPU writes stay visible without a flush.
+  page needs a non-default cache policy (Sv32 PTE bits [9:8]). Compute kernargs
+  are mapped uncached. Graphics shader CUs run Bare and still require bind-time
+  cache invalidation. Instruction fetch does not implement per-page cache policy.
 - Texture sampling, shader depth output, discard, quad derivatives, mipmapping
   and source-over blending in the validated graphics path.
 - D24S8 stencil and GL-style blend factor/equation state: UAPI words 35–37 on

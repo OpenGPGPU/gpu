@@ -431,7 +431,7 @@ static int opengpu_binding_invalidate(
     if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS) || !binding->size)
         return 0;
     start = (u64)binding->dma & ~(u64)63;
-    if (check_add_overflow(start, (u64)binding->size, &end))
+    if (check_add_overflow((u64)binding->dma, (u64)binding->size, &end))
         return -ERANGE;
     end = (end + 63ull) & ~(u64)63;
     if (start > U32_MAX || end > (1ull << 32) || end - start > U32_MAX)
@@ -556,19 +556,20 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
     ret = opengpu_context_quiesce(render_file, context);
     if (ret)
         goto out_file;
-    /* A caller may ask for an uncached mapping, and a kernarg defaults to one
-     * because the CU reads it through the MMU; either way no invalidate is
-     * needed.  Otherwise drop the L2 lines of a directly-read resource after
-     * the CPU write.  Shaders are snapshotted by the driver. */
-    if ((args->flags & OPENGPU_RESOURCE_UNCACHED) ||
-        args->type == OPENGPU_RESOURCE_KERNARG ||
-        args->type == OPENGPU_RESOURCE_VERTEX_KERNARG ||
-        args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG) {
+    /* Only compute data and fixed-function textures currently translate.
+     * Graphics shader CUs run Bare, so their bindings still need invalidation
+     * even when users request an uncached mapping. Shaders are snapshotted. */
+    if (args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG ||
+        (args->type == OPENGPU_RESOURCE_TEXTURE &&
+         (args->flags & OPENGPU_RESOURCE_UNCACHED))) {
         ret = opengpu_mmu_set_range_policy(gpu, binding->dma, binding->size,
                                            OPENGPU_MMU_POLICY_UNCACHED);
         if (ret && ret != -EOPNOTSUPP)
             goto out_file;
-        ret = 0;
+        if (ret == -EOPNOTSUPP)
+            ret = opengpu_binding_invalidate(gpu, binding);
+        if (ret)
+            goto out_file;
     } else if (args->type != OPENGPU_RESOURCE_SHADER &&
                args->type != OPENGPU_RESOURCE_VERTEX_SHADER &&
                args->type != OPENGPU_RESOURCE_COMPUTE_SHADER) {

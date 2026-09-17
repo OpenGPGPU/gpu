@@ -9,6 +9,7 @@
  * fetched uncached by the hardware walker, so CPU writes to them are visible.
  */
 #include <linux/mutex.h>
+#include <linux/overflow.h>
 
 #include "opengpu_device.h"
 
@@ -47,7 +48,6 @@ static int mmu_l1_for_region(struct opengpu_device *gpu, u32 region,
                              struct opengpu_buffer **out)
 {
     struct opengpu_mmu *mmu = &gpu->mmu;
-    u32 *root = mmu->root.cpu;
     u32 i;
     int ret;
 
@@ -73,7 +73,7 @@ static int mmu_l1_for_region(struct opengpu_device *gpu, u32 region,
                                  (dma_addr_t)j * MMU_PAGE_SIZE,
                                  OPENGPU_MMU_POLICY_CACHED);
     }
-    root[region] = mmu_link_pte(mmu->l1[i].dma);
+    /* The caller publishes the link only after every allocation succeeds. */
     mmu->l1_region[i] = region;
     mmu->l1_count++;
     *out = &mmu->l1[i];
@@ -84,7 +84,8 @@ int opengpu_mmu_set_range_policy(struct opengpu_device *gpu, dma_addr_t base,
                                  size_t size, u32 policy)
 {
     struct opengpu_mmu *mmu = &gpu->mmu;
-    dma_addr_t start, end, phys;
+    u64 start, end, phys;
+    u32 old_count, i;
     int ret = 0;
 
     if (!mmu->enabled)
@@ -94,27 +95,54 @@ int opengpu_mmu_set_range_policy(struct opengpu_device *gpu, dma_addr_t base,
     if (size == 0)
         return 0;
 
-    start = base & ~(dma_addr_t)(MMU_PAGE_SIZE - 1);
-    end = (base + size + MMU_PAGE_SIZE - 1) &
-        ~(dma_addr_t)(MMU_PAGE_SIZE - 1);
+    if (check_add_overflow((u64)base, (u64)size, &end) ||
+        end > (1ull << 32))
+        return -ERANGE;
+    start = (u64)base & ~(u64)(MMU_PAGE_SIZE - 1);
+    end = (end + MMU_PAGE_SIZE - 1) & ~(u64)(MMU_PAGE_SIZE - 1);
 
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_wait_idle_locked(gpu);
+    if (ret)
+        goto out_submit;
     mutex_lock(&mmu->lock);
+    old_count = mmu->l1_count;
+    /* Reserve all tables before touching any live mapping. */
+    for (phys = start; phys < end;) {
+        struct opengpu_buffer *l1;
+        u32 region = phys / MMU_SUPERPAGE_SIZE;
+
+        ret = mmu_l1_for_region(gpu, region, &l1);
+        if (ret)
+            goto rollback;
+        phys = ((u64)region + 1) * MMU_SUPERPAGE_SIZE;
+    }
     for (phys = start; phys < end; phys += MMU_PAGE_SIZE) {
         struct opengpu_buffer *l1;
         u32 region = (u32)(phys / MMU_SUPERPAGE_SIZE);
         u32 page = (u32)((phys % MMU_SUPERPAGE_SIZE) / MMU_PAGE_SIZE);
         u32 *table;
 
-        ret = mmu_l1_for_region(gpu, region, &l1);
-        if (ret)
-            break;
+        /* All regions were reserved above; this lookup cannot allocate. */
+        mmu_l1_for_region(gpu, region, &l1);
         table = l1->cpu;
         table[page] = mmu_leaf_pte(phys, policy);
     }
-    mutex_unlock(&mmu->lock);
+    dma_wmb();
+    for (i = old_count; i < mmu->l1_count; i++)
+        ((u32 *)mmu->root.cpu)[mmu->l1_region[i]] =
+            mmu_link_pte(mmu->l1[i].dma);
+    dma_wmb();
+    ret = opengpu_hw_flush_tlbs(gpu);
+    goto out_mmu;
 
-    if (!ret)
-        opengpu_hw_flush_tlbs(gpu);
+rollback:
+    while (mmu->l1_count > old_count)
+        opengpu_buffer_free(gpu, &mmu->l1[--mmu->l1_count]);
+out_mmu:
+    mutex_unlock(&mmu->lock);
+out_submit:
+    mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }
 
@@ -136,6 +164,7 @@ int opengpu_mmu_init(struct opengpu_device *gpu)
     for (i = 0; i < MMU_ROOT_ENTRIES; i++)
         root[i] = mmu_leaf_pte((dma_addr_t)i * MMU_SUPERPAGE_SIZE,
                                OPENGPU_MMU_POLICY_CACHED);
+    dma_wmb();
     ret = opengpu_hw_enable_mmu(gpu, mmu->root.dma);
     if (ret) {
         opengpu_buffer_free(gpu, &mmu->root);

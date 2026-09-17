@@ -6,7 +6,7 @@ import opengpu.config.{CachePolicy, GpuConfig}
 
 /** A graphics-client translation stage: a small TLB plus the shared Sv32 walker.
   *
-  * The fixed-function graphics path (command buffer, framebuffer, texture)
+  * The attached graphics client (currently texture sampling)
   * issues cache-line requests at virtual addresses; this block translates them
   * through the same page tables as the CU MMUs and attaches the page's cache
   * policy, so a driver can map a texture or vertex buffer uncached.  Page-table
@@ -30,6 +30,9 @@ class GraphicsAddressTranslator(
       new ComputeMemoryRequest(config, lineBytes, maxOutstanding)))
     val out = Decoupled(
       new ComputeMemoryRequest(config, lineBytes, maxOutstanding))
+    /** Translation failures complete locally; never issue a physical access. */
+    val faultResponse = Decoupled(
+      new ComputeMemoryResponse(lineBytes, maxOutstanding))
     /** Narrow uncached PTE read; the caller returns the word on `pageWalkResp`
       * and must reserve the transaction IDs used here. */
     val pageWalk = Decoupled(
@@ -45,7 +48,7 @@ class GraphicsAddressTranslator(
   })
 
   private object State extends ChiselEnum {
-    val idle, lookup, walkRequest, walkResponse, respond = Value
+    val idle, lookup, walkRequest, walkResponse, respond, fault = Value
   }
 
   private val walker = Module(new Sv32PageTableWalker(config))
@@ -53,6 +56,8 @@ class GraphicsAddressTranslator(
   private val vpn = Reg(Vec(entries, UInt(vpnWidth.W)))
   private val ppn = Reg(Vec(entries, UInt(vpnWidth.W)))
   private val policy = Reg(Vec(entries, UInt(CachePolicy.width.W)))
+  private val readable = Reg(Vec(entries, Bool()))
+  private val writable = Reg(Vec(entries, Bool()))
   private val replacement = RegInit(0.U(entryWidth.W))
   private val state = RegInit(State.idle)
   private val request = Reg(new ComputeMemoryRequest(config, lineBytes,
@@ -67,6 +72,8 @@ class GraphicsAddressTranslator(
   private val hit = hitByEntry.asUInt.orR
   private val hitPpn = Mux1H(hitByEntry, ppn)
   private val hitPolicy = Mux1H(hitByEntry, policy)
+  private val hitPermission = Mux(request.isWrite,
+    Mux1H(hitByEntry, writable), Mux1H(hitByEntry, readable))
   private val translationEnabled = io.satp(31)
 
   walker.io.rootPpn := io.satp(19, 0)
@@ -94,6 +101,10 @@ class GraphicsAddressTranslator(
   io.in.ready := state === State.idle
   io.out.valid := state === State.respond
   io.out.bits := translated
+  io.faultResponse.valid := state === State.fault
+  io.faultResponse.bits := 0.U.asTypeOf(io.faultResponse.bits)
+  io.faultResponse.bits.fault := true.B
+  io.faultResponse.bits.transactionId := request.transactionId
 
   when(io.in.fire) {
     request := io.in.bits
@@ -109,7 +120,7 @@ class GraphicsAddressTranslator(
       translated := request
       translated.address := Cat(hitPpn, request.address(11, 0))
       translated.cachePolicy := hitPolicy
-      state := State.respond
+      state := Mux(hitPermission, State.respond, State.fault)
     }.otherwise {
       state := State.walkRequest
     }
@@ -121,14 +132,14 @@ class GraphicsAddressTranslator(
 
   when(walker.io.response.fire) {
     when(walker.io.response.bits.fault) {
-      translated := request
-      translated.cachePolicy := CachePolicy.uncached
-      state := State.respond
+      state := State.fault
     }.otherwise {
       valid(replacement) := true.B
       vpn(replacement) := requestVpn
       ppn(replacement) := walker.io.response.bits.physicalPageNumber
       policy(replacement) := walker.io.response.bits.cachePolicy
+      readable(replacement) := walker.io.response.bits.readable
+      writable(replacement) := walker.io.response.bits.writable
       replacement := Mux(replacement === (entries - 1).U, 0.U,
                          replacement + 1.U)
       translated := request
@@ -142,6 +153,7 @@ class GraphicsAddressTranslator(
   when(state === State.respond && io.out.fire) {
     state := State.idle
   }
+  when(io.faultResponse.fire) { state := State.idle }
 
   when(io.flush) {
     assert(state === State.idle, "graphics TLB flush requires an idle port")

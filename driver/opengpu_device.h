@@ -279,6 +279,8 @@ int opengpu_hw_invalidate_async(struct opengpu_device *gpu, u32 address,
                                 struct dma_fence **fence);
 int opengpu_hw_enable_mmu(struct opengpu_device *gpu, dma_addr_t root_table);
 int opengpu_hw_flush_tlbs(struct opengpu_device *gpu);
+/* Caller holds submit_lock until its page-table update and flush finish. */
+int opengpu_hw_wait_idle_locked(struct opengpu_device *gpu);
 
 int opengpu_mmu_init(struct opengpu_device *gpu);
 void opengpu_mmu_fini(struct opengpu_device *gpu);

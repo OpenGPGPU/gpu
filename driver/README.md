@@ -57,3 +57,14 @@ done
 
 See `docs/HOST_INTERFACE.md` for the device ABI and `docs/GRAPHICS_ROADMAP.md`
 for the current feature status.
+
+The MMU host test compiles the production mapping implementation against small
+kernel dependency stubs. It checks allocation failure rollback, table capacity,
+32-bit address bounds, and exclusion of submissions during updates. The ARTI
+harness runs it too; to run it independently from `driver/`:
+
+```sh
+cc -std=c11 -O2 -Wall -Wextra -Werror -Itests/mmu_stubs \
+    tests/opengpu_mmu_test.c -o /tmp/opengpu_mmu_test
+/tmp/opengpu_mmu_test
+```

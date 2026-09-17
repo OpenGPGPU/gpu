@@ -42,6 +42,7 @@ class GraphicsAddressTranslatorSpec extends AnyFlatSpec {
       dut.io.in.valid.poke(false.B)
       dut.io.in.bits.poke(0.U.asTypeOf(dut.io.in.bits))
       dut.io.out.ready.poke(true.B)
+      dut.io.faultResponse.ready.poke(true.B)
       dut.io.pageWalk.ready.poke(true.B)
       dut.io.pageWalkResp.valid.poke(false.B)
       dut.io.satp.poke(0.U)
@@ -65,6 +66,7 @@ class GraphicsAddressTranslatorSpec extends AnyFlatSpec {
       dut.io.in.valid.poke(false.B)
       dut.io.in.bits.poke(0.U.asTypeOf(dut.io.in.bits))
       dut.io.out.ready.poke(true.B)
+      dut.io.faultResponse.ready.poke(true.B)
       dut.io.pageWalk.ready.poke(true.B)
       dut.io.pageWalkResp.valid.poke(false.B)
       // Sv32 enabled, root PPN 0x80.
@@ -74,14 +76,14 @@ class GraphicsAddressTranslatorSpec extends AnyFlatSpec {
       dut.clock.step(); dut.reset.poke(false.B)
 
       request(dut, 0x2000, 1)
-      // Identity superpage PPN 2 (VA 0x2000 >> 12) with policy 2 (uncached).
+      // Identity superpage PPN 0; VPN[0] supplies the 0x2000 offset.
       waitPageWalk(dut)
       dut.io.pageWalk.bits.address.expect(0x80000.U)
       dut.io.pageWalk.bits.cachePolicy.expect(2.U)
       dut.io.pageWalk.bits.sizeLog2.expect(2.U)
       dut.io.pageWalkResp.valid.poke(true.B)
       dut.io.pageWalkResp.bits.readData.poke(
-        ((BigInt(2) << 10) | (BigInt(2) << 8) | 0xcf).U)
+        ((BigInt(2) << 8) | 0xcf).U)
       dut.io.pageWalkResp.bits.fault.poke(false.B)
       waitOut(dut)
       dut.io.pageWalkResp.valid.poke(false.B)
@@ -89,6 +91,91 @@ class GraphicsAddressTranslatorSpec extends AnyFlatSpec {
       dut.io.out.bits.address.expect(0x2000.U)
       dut.io.out.bits.cachePolicy.expect(2.U)
       dut.io.out.bits.transactionId.expect(1.U)
+      dut.io.faultResponse.valid.expect(false.B)
+    }
+  }
+
+  for ((name, pte, busFault) <- Seq(
+    ("invalid PTE", BigInt(0), false),
+    ("misaligned superpage", (BigInt(2) << 10) | 0xcf, false),
+    ("unreadable page", BigInt(0xc9), false),
+    ("page-table bus error", BigInt(0xcf), true))) {
+    it should s"return a fault without physical access for $name" in {
+      simulate(new GraphicsAddressTranslator(
+        GpuConfig(lanes = 2, warps = 1), entries = 4, maxOutstanding = 4)) { dut =>
+        dut.io.in.valid.poke(false.B)
+        dut.io.out.ready.poke(true.B)
+        dut.io.faultResponse.ready.poke(false.B)
+        dut.io.pageWalk.ready.poke(true.B)
+        dut.io.pageWalkResp.valid.poke(false.B)
+        dut.io.satp.poke((BigInt(1) << 31 | 0x80).U)
+        dut.io.flush.poke(false.B)
+        dut.io.pageWalkTransactionId.poke(3.U)
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+
+        request(dut, 0x2000, 2)
+        waitPageWalk(dut)
+        dut.clock.step()
+        dut.io.pageWalkResp.bits.readData.poke(pte.U)
+        dut.io.pageWalkResp.bits.fault.poke(busFault.B)
+        dut.io.pageWalkResp.valid.poke(true.B)
+        dut.io.pageWalkResp.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.pageWalkResp.valid.poke(false.B)
+        dut.clock.step()
+        for (_ <- 0 until 4) {
+          dut.io.out.valid.expect(false.B)
+          dut.io.faultResponse.valid.expect(true.B)
+          dut.io.faultResponse.bits.fault.expect(true.B)
+          dut.io.faultResponse.bits.transactionId.expect(2.U)
+          dut.io.in.ready.expect(false.B)
+          dut.clock.step()
+        }
+        dut.io.faultResponse.ready.poke(true.B)
+        dut.clock.step()
+        dut.io.in.ready.expect(true.B)
+        dut.io.faultResponse.valid.expect(false.B)
+        // Faults must not fill the TLB: retry walks again.
+        request(dut, 0x2000, 1)
+        waitPageWalk(dut)
+      }
+    }
+  }
+
+  it should "translate a nonidentity page and enforce cached write permission" in {
+    simulate(new GraphicsAddressTranslator(
+      GpuConfig(lanes = 2, warps = 1), entries = 4, maxOutstanding = 4)) { dut =>
+      dut.io.in.valid.poke(false.B)
+      dut.io.out.ready.poke(false.B)
+      dut.io.faultResponse.ready.poke(false.B)
+      dut.io.pageWalk.ready.poke(true.B)
+      dut.io.pageWalkResp.valid.poke(false.B)
+      dut.io.satp.poke((BigInt(1) << 31 | 0x80).U)
+      dut.io.flush.poke(false.B)
+      dut.io.pageWalkTransactionId.poke(3.U)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      request(dut, 0x2000, 1)
+      waitPageWalk(dut)
+      dut.clock.step()
+      // Read-only superpage at PA 0x400000, with accessed set.
+      dut.io.pageWalkResp.bits.readData.poke(((BigInt(0x400) << 10) | 0x43).U)
+      dut.io.pageWalkResp.bits.fault.poke(false.B)
+      dut.io.pageWalkResp.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.pageWalkResp.valid.poke(false.B)
+      waitOut(dut)
+      dut.io.out.bits.address.expect(0x402000.U)
+      dut.io.out.ready.poke(true.B); dut.clock.step()
+
+      dut.io.in.bits.isWrite.poke(true.B)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step()
+      dut.io.out.valid.expect(false.B)
+      dut.io.pageWalk.valid.expect(false.B)
+      dut.io.faultResponse.valid.expect(true.B)
+      dut.io.faultResponse.bits.fault.expect(true.B)
     }
   }
 }

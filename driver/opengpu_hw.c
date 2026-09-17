@@ -1355,6 +1355,24 @@ static bool opengpu_hw_execution_busy(struct opengpu_device *gpu)
     return busy;
 }
 
+/* Keep submissions excluded until the caller has published its page tables
+ * and flushed translations. Progress polling also services emulator fences. */
+int opengpu_hw_wait_idle_locked(struct opengpu_device *gpu)
+{
+    unsigned long timeout = jiffies + msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS);
+
+    lockdep_assert_held(&gpu->hw.submit_lock);
+    while (opengpu_hw_execution_busy(gpu)) {
+        if (READ_ONCE(gpu->hw.wedged))
+            return -EIO;
+        if (time_after(jiffies, timeout))
+            return -ETIMEDOUT;
+        opengpu_hw_progress_tick(gpu);
+        cond_resched();
+    }
+    return READ_ONCE(gpu->hw.wedged) ? -EIO : 0;
+}
+
 int opengpu_hw_clear_async(struct opengpu_device *gpu, u32 base, u32 bytes,
                            u32 pattern,
                            const struct opengpu_command_events *events,

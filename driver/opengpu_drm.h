@@ -206,9 +206,10 @@ struct drm_opengpu_resource {
 #define OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT 4u
 #define OPENGPU_RESOURCE_TEXTURE_MAX_MIP_MASK \
     (0xfu << OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT)
-/* Map the bound range uncached in the GPU MMU: the CU and the fixed-function
- * texture path read it past the L1 and L2, so a CPU write is always observed
- * without an invalidate.  Valid for any resource type. */
+/* Request uncached access for translated resources (compute kernarg/texture).
+ * Accepted for all resource types; Bare graphics bindings fall back to
+ * bind-time invalidation, and shaders are snapshotted. CPU writes to those
+ * fallback bindings require rebinding or explicit cache invalidation. */
 #define OPENGPU_RESOURCE_UNCACHED (1u << 16)
 #define OPENGPU_MAX_RESOURCE_SLOTS 16u
 
