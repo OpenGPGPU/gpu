@@ -17,6 +17,7 @@
 typedef uint32_t u32;
 typedef uint64_t u64;
 typedef uint64_t dma_addr_t;
+#include "../opengpu_asid.h"
 #define GPU_CAP_UNIFIED_COMMANDS 1u
 #define OPENGPU_MMU_MAX_TABLES 16u
 #define OPENGPU_MMU_POLICY_CACHED 0u
@@ -28,6 +29,12 @@ struct opengpu_mmu {
     struct opengpu_buffer l1[OPENGPU_MMU_MAX_TABLES];
     u32 l1_region[OPENGPU_MMU_MAX_TABLES];
     u32 l1_count;
+    struct opengpu_asid_pool asids;
+    bool enabled;
+};
+struct opengpu_vm {
+    struct opengpu_buffer root;
+    u32 asid;
     bool enabled;
 };
 struct opengpu_device {
@@ -73,6 +80,26 @@ static int opengpu_hw_flush_tlbs(struct opengpu_device *gpu)
     assert(gpu->hw.submit_lock.held && gpu->mmu.lock.held);
     assert(barriers >= 2);
     flushes++;
+    return 0;
+}
+static unsigned asid_flushes, satp_programs;
+static dma_addr_t last_satp_root;
+static u32 last_satp_asid;
+static int opengpu_hw_flush_tlb_asid(struct opengpu_device *gpu, u32 asid)
+{
+    assert(gpu->hw.submit_lock.held && gpu->mmu.lock.held);
+    assert(barriers >= 2);
+    (void)asid;
+    asid_flushes++;
+    return 0;
+}
+static int opengpu_hw_set_satp(struct opengpu_device *gpu, dma_addr_t root,
+                               u32 asid)
+{
+    assert(gpu->hw.submit_lock.held);
+    last_satp_root = root;
+    last_satp_asid = asid;
+    satp_programs++;
     return 0;
 }
 static int opengpu_hw_enable_mmu(struct opengpu_device *gpu, dma_addr_t root)
@@ -130,6 +157,36 @@ int main(void)
     i = gpu.mmu.l1_count - 1;
     assert(gpu.mmu.l1_region[i] == 1023);
     assert((((u32 *)gpu.mmu.l1[i].cpu)[1023] >> 10) == 0xfffff);
+
+    /* Per-VM root tables: create allocates an ASID and an identity root and
+     * shoots the ASID down; activate reprograms satp without a full flush. */
+    {
+        struct opengpu_vm vm, vm2;
+        int base_live = live_allocations;
+        unsigned base_asid = asid_flushes;
+
+        assert(!opengpu_mmu_vm_create(&gpu, &vm));
+        assert(vm.enabled && vm.asid == 1);
+        assert(live_allocations == base_live + 1);
+        assert(asid_flushes == base_asid + 1);
+        assert((((u32 *)vm.root.cpu)[0] & 0x300) == 0);
+
+        assert(!opengpu_mmu_vm_activate(&gpu, &vm));
+        assert(satp_programs == 1);
+        assert(last_satp_root == vm.root.dma && last_satp_asid == vm.asid);
+
+        /* A second VM takes the next ASID; destroy evicts each ASID once. */
+        assert(!opengpu_mmu_vm_create(&gpu, &vm2));
+        assert(vm2.enabled && vm2.asid == 2);
+        assert(asid_flushes == base_asid + 2);
+        opengpu_mmu_vm_destroy(&gpu, &vm2);
+        assert(asid_flushes == base_asid + 3);
+
+        opengpu_mmu_vm_destroy(&gpu, &vm);
+        assert(!vm.enabled);
+        assert(asid_flushes == base_asid + 4);
+        assert(live_allocations == base_live);
+    }
     assert(!gpu.hw.submit_lock.held && !gpu.mmu.lock.held);
     opengpu_mmu_fini(&gpu);
     assert(!live_allocations);

@@ -360,6 +360,14 @@ Implemented:
   independently. The driver exposes `opengpu_hw_flush_tlb_asid` /
   `opengpu_hw_flush_tlb_vpn`; the fixed-function texture translator tracks no
   ASID/VPN, so any flush pulse clears it.
+- The driver has an Sv32 ASID allocator (`opengpu_asid.h`; ASID 0 reserved for
+  the global identity map, 511 usable IDs) and a per-VM root table
+  (`opengpu_mmu_vm_create` / `_activate` / `_destroy`): create allocates an
+  ASID and an identity root and shoots the ASID down in case it was recycled,
+  activate points both CU `satp` registers at it after quiescing (no full
+  flush), and destroy evicts its TLB entries and returns the ASID. The
+  scheduler does not select a VM per submission yet, so all work still runs
+  in the ASID-0 identity space.
 - Sv32 PTE bits [9:8] carry a per-page data cache policy (cached / write-through /
   uncached); the walker, data TLB, texture translator, CU data L1 and shared L2
   honour it. Instruction fetch remains cached; the ITLB does not carry policy.
@@ -399,9 +407,11 @@ Design notes (from the MMU/ASID review):
 
 Remaining work, cheapest first:
 
-- Driver VM manager: an ASID allocator, one root page table per VM, global (G)
-  mappings for shared ranges, and a coarse VM switch in the scheduler. The
-  scoped `TLB_FLUSH` above is the shootdown primitive it builds on.
+- Driver VM manager: a per-VM root table and ASID allocator exist, but the
+  scheduler still runs every job in the ASID-0 identity space. Wire a VM to
+  each DRM context, select it with a coarse VM switch around submission, and
+  add global (G) mappings for shared ranges so a switch refills nothing. The
+  scoped `TLB_FLUSH` above is the shootdown primitive.
 - Keep per-VM mappings on large pages; size the TLBs for the working set and
   avoid blocking translation on the texture path. The `GraphicsAddressTranslator`
   is deliberately blocking today; measure before widening it.

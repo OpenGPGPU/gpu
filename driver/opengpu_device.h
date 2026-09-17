@@ -16,6 +16,7 @@
 #include <drm/gpu_scheduler.h>
 
 #include "gpu_abi.h"
+#include "opengpu_asid.h"
 
 struct platform_device;
 struct drm_device;
@@ -160,13 +161,30 @@ struct opengpu_display {
 
 /** Identity-map GPU MMU: one root table of 4 MiB superpages, split into
   * second-level tables on demand so individual 4 KiB pages can carry a
-  * non-default cache policy. */
+  * non-default cache policy.  `asids` hands out Sv32 ASIDs to per-VM root
+  * tables; ASID 0 is the driver's global identity map. */
 struct opengpu_mmu {
     struct mutex lock;
     struct opengpu_buffer root;
     struct opengpu_buffer l1[OPENGPU_MMU_MAX_TABLES];
     u32 l1_region[OPENGPU_MMU_MAX_TABLES];
     u32 l1_count;
+    struct opengpu_asid_pool asids;
+    bool enabled;
+};
+
+/** One GPU address space: a root page table reached through `asid`.
+  *
+  * ASID 0 is the driver's global identity map, whose mappings are needed by
+  * every address space.  A VM owns an ASID in 1..511 and its own root table,
+  * so a coarse switch (quiesce, then reprogram satp) needs no full TLB flush:
+  * other ASIDs stay resident.  The scoped TLB flush evicts this VM's entries
+  * when it is destroyed or when its ASID is recycled.  A new root starts as a
+  * full identity map; per-VM cache-policy mappings are added once the
+  * scheduler selects VMs. */
+struct opengpu_vm {
+    struct opengpu_buffer root;
+    u32 asid;
     bool enabled;
 };
 
@@ -278,6 +296,10 @@ int opengpu_hw_invalidate_async(struct opengpu_device *gpu, u32 address,
                                 const struct opengpu_command_events *events,
                                 struct dma_fence **fence);
 int opengpu_hw_enable_mmu(struct opengpu_device *gpu, dma_addr_t root_table);
+/* Program both CU `satp` registers with `root_table` and `asid`, without a
+ * TLB flush.  The caller quiesces execution and shoots down a recycled ASID. */
+int opengpu_hw_set_satp(struct opengpu_device *gpu, dma_addr_t root_table,
+                        u32 asid);
 int opengpu_hw_flush_tlbs(struct opengpu_device *gpu);
 /* Scoped shootdown: drop only the entries for one ASID or one VPN.  Global
  * mappings and other address spaces stay warm; the texture translator is
@@ -291,6 +313,13 @@ int opengpu_mmu_init(struct opengpu_device *gpu);
 void opengpu_mmu_fini(struct opengpu_device *gpu);
 int opengpu_mmu_set_range_policy(struct opengpu_device *gpu, dma_addr_t base,
                                  size_t size, u32 policy);
+/* Per-VM root tables.  Create allocates an ASID and an identity root table and
+ * shoots the ASID down in case it was recycled; activate switches both CU
+ * `satp` registers to it; destroy evicts its TLB entries and releases it. */
+int opengpu_mmu_vm_create(struct opengpu_device *gpu, struct opengpu_vm *vm);
+int opengpu_mmu_vm_activate(struct opengpu_device *gpu,
+                            const struct opengpu_vm *vm);
+void opengpu_mmu_vm_destroy(struct opengpu_device *gpu, struct opengpu_vm *vm);
 int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              const struct opengpu_kernel_launch *launch,
                              const struct opengpu_command_events *events,

@@ -50,6 +50,10 @@ object GpuCommandMmioRegs {
     * PPN.  Changing either requires a TLB flush. */
   val VECTOR_SATP = 0x14c
   val INSTRUCTION_SATP = 0x150
+  /** `satp` fields (bits 30:22 ASID, bit 31 enable), mirrored in gpu_abi.h. */
+  val SATP_ENABLE = 0x80000000L
+  val SATP_ASID_SHIFT = 22
+  val SATP_ASID_MASK = 0x1ff
   /** Write-1 TLB control.  Bit 0 invalidates every entry (a full flush).
     * Bit 1 requests an ASID-scoped flush: entries whose ASID equals bits
     * [11:3] are dropped while global mappings and other address spaces stay

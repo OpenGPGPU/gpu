@@ -301,13 +301,21 @@ linux_src_valid "$LINUX_SRC" || \
 HOST_CC="${HOST_CC:-cc}"
 command -v "$HOST_CC" >/dev/null 2>&1 || \
     fail "host C compiler is required for the validator tests"
-for validator in shader resolve depth tlb_flush; do
+for validator in shader resolve depth; do
     VALIDATOR_TEST="$DRIVER_OUTPUT/opengpu_${validator}_validator_test"
     "$HOST_CC" -std=c11 -O2 -Wall -Wextra -Werror -I"$GPU_DIR/driver" \
         -o "$VALIDATOR_TEST" \
         "$GPU_DIR/driver/tests/opengpu_${validator}_validator_test.c"
     "$VALIDATOR_TEST"
 done
+ASID_TEST="$DRIVER_OUTPUT/opengpu_asid_test"
+"$HOST_CC" -std=c11 -O2 -Wall -Wextra -Werror -I"$GPU_DIR/driver" \
+    -o "$ASID_TEST" "$GPU_DIR/driver/tests/opengpu_asid_test.c"
+"$ASID_TEST"
+TLB_FLUSH_TEST="$DRIVER_OUTPUT/opengpu_tlb_flush_test"
+"$HOST_CC" -std=c11 -O2 -Wall -Wextra -Werror -I"$GPU_DIR/driver" \
+    -o "$TLB_FLUSH_TEST" "$GPU_DIR/driver/tests/opengpu_tlb_flush_test.c"
+"$TLB_FLUSH_TEST"
 MMU_TEST="$DRIVER_OUTPUT/opengpu_mmu_test"
 "$HOST_CC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$GPU_DIR/driver/tests/mmu_stubs" \

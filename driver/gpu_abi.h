@@ -141,6 +141,11 @@ typedef int32_t s32;
 #define GPU_REG_UCMD_INSTRUCTION_SATP 0x150
 #define GPU_REG_UCMD_TLB_FLUSH       0x154
 
+/* GPU_REG_UCMD_{VECTOR,INSTRUCTION}_SATP fields. */
+#define GPU_SATP_ENABLE              (1u << 31)
+#define GPU_SATP_ASID_SHIFT          22
+#define GPU_SATP_ASID_MASK           0x1ffu
+
 /* Fields of the write-1 GPU_REG_UCMD_TLB_FLUSH register.  Bit 0 invalidates
  * every entry of both CU TLBs.  Bit 1 flushes only entries whose ASID matches
  * GPU_TLB_FLUSH_ASID, preserving global mappings and other address spaces.

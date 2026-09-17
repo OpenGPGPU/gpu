@@ -48,11 +48,14 @@ and run on the host. They are also wired into `scripts/run_arti_gpu.sh`:
 
 ```sh
 cd driver
-for v in shader resolve depth tlb_flush; do
+for v in shader resolve depth; do
     cc -std=c11 -O2 -Wall -Wextra -Werror -I. \
         -o /tmp/opengpu_${v}_validator_test tests/opengpu_${v}_validator_test.c
     /tmp/opengpu_${v}_validator_test
 done
+cc -std=c11 -O2 -Wall -Wextra -Werror -I. \
+    tests/opengpu_tlb_flush_test.c -o /tmp/opengpu_tlb_flush_test
+/tmp/opengpu_tlb_flush_test
 ```
 
 See `docs/HOST_INTERFACE.md` for the device ABI and `docs/GRAPHICS_ROADMAP.md`
@@ -60,10 +63,14 @@ for the current feature status.
 
 The MMU host test compiles the production mapping implementation against small
 kernel dependency stubs. It checks allocation failure rollback, table capacity,
-32-bit address bounds, and exclusion of submissions during updates. The ARTI
-harness runs it too; to run it independently from `driver/`:
+32-bit address bounds, exclusion of submissions during updates, and the per-VM
+root-table lifecycle. The ASID allocator has its own kernel-free test. The ARTI
+harness runs both; to run them independently from `driver/`:
 
 ```sh
+cc -std=c11 -O2 -Wall -Wextra -Werror -I. \
+    tests/opengpu_asid_test.c -o /tmp/opengpu_asid_test
+/tmp/opengpu_asid_test
 cc -std=c11 -O2 -Wall -Wextra -Werror -Itests/mmu_stubs \
     tests/opengpu_mmu_test.c -o /tmp/opengpu_mmu_test
 /tmp/opengpu_mmu_test

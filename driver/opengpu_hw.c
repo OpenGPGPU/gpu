@@ -1571,6 +1571,29 @@ int opengpu_hw_resolve_async(struct opengpu_device *gpu, u32 source,
     return ret;
 }
 
+/** Point both CU `satp` registers at `root_table` under `asid`, without a TLB
+  * flush.  Used for a coarse VM switch: the caller quiesces execution first
+  * and shoots down the ASID if it was recycled; other address spaces' TLB
+  * entries stay resident. */
+int opengpu_hw_set_satp(struct opengpu_device *gpu, dma_addr_t root_table,
+                        u32 asid)
+{
+    u32 satp;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
+        return -EOPNOTSUPP;
+    if (upper_32_bits(root_table) || (root_table & 0xfff))
+        return -EINVAL;
+    if (asid > GPU_SATP_ASID_MASK)
+        return -EINVAL;
+    /* satp: bit 31 enables translation, ASID in [30:22], root PPN in [19:0]. */
+    satp = GPU_SATP_ENABLE | (asid << GPU_SATP_ASID_SHIFT) |
+        (lower_32_bits(root_table) >> 12);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_VECTOR_SATP, satp);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_INSTRUCTION_SATP, satp);
+    return 0;
+}
+
 /** Enable Sv32 translation with a driver-built identity map.  `root_table` is
  * the physical address of a 4 KiB root page table whose 1024 entries are
  * 4 MiB identity superpages; a full TLB flush is issued to commit the change.
@@ -1579,16 +1602,12 @@ int opengpu_hw_resolve_async(struct opengpu_device *gpu, u32 source,
  * mark a CPU-written buffer uncached). */
 int opengpu_hw_enable_mmu(struct opengpu_device *gpu, dma_addr_t root_table)
 {
-    u32 ppn;
+    int ret;
 
-    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
-        return -EOPNOTSUPP;
-    if (upper_32_bits(root_table) || (root_table & 0xfff))
-        return -EINVAL;
-    ppn = lower_32_bits(root_table) >> 12;
-    opengpu_reg_write(gpu, GPU_REG_UCMD_VECTOR_SATP, (1u << 31) | ppn);
-    opengpu_reg_write(gpu, GPU_REG_UCMD_INSTRUCTION_SATP, (1u << 31) | ppn);
-    opengpu_reg_write(gpu, GPU_REG_UCMD_TLB_FLUSH, 1);
+    ret = opengpu_hw_set_satp(gpu, root_table, 0);
+    if (ret)
+        return ret;
+    opengpu_reg_write(gpu, GPU_REG_UCMD_TLB_FLUSH, opengpu_tlb_flush_full());
     return 0;
 }
 

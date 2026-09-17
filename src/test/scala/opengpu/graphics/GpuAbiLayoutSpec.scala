@@ -131,16 +131,23 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
     ).map { case (n, v) => (n, v.toLong) })
   }
 
-  it should "match the scoped TLB-flush field encoding" in {
-    checkAll(Seq(
-      "GPU_TLB_FLUSH_FULL" -> GpuCommandMmioRegs.TLB_FLUSH_FULL,
-      "GPU_TLB_FLUSH_ASID" -> GpuCommandMmioRegs.TLB_FLUSH_ASID,
-      "GPU_TLB_FLUSH_ASID_SHIFT" -> GpuCommandMmioRegs.TLB_FLUSH_ASID_SHIFT,
-      "GPU_TLB_FLUSH_ASID_MASK" -> GpuCommandMmioRegs.TLB_FLUSH_ASID_MASK,
-      "GPU_TLB_FLUSH_VPN" -> GpuCommandMmioRegs.TLB_FLUSH_VPN,
-      "GPU_TLB_FLUSH_VPN_SHIFT" -> GpuCommandMmioRegs.TLB_FLUSH_VPN_SHIFT,
-      "GPU_TLB_FLUSH_VPN_MASK" -> GpuCommandMmioRegs.TLB_FLUSH_VPN_MASK
-    ).map { case (n, v) => (n, v.toLong) })
+  it should "match the scoped TLB-flush and satp field encoding" in {
+    checkAll(Seq[(String, Long)](
+      "GPU_TLB_FLUSH_FULL" -> GpuCommandMmioRegs.TLB_FLUSH_FULL.toLong,
+      "GPU_TLB_FLUSH_ASID" -> GpuCommandMmioRegs.TLB_FLUSH_ASID.toLong,
+      "GPU_TLB_FLUSH_ASID_SHIFT" ->
+        GpuCommandMmioRegs.TLB_FLUSH_ASID_SHIFT.toLong,
+      "GPU_TLB_FLUSH_ASID_MASK" ->
+        GpuCommandMmioRegs.TLB_FLUSH_ASID_MASK.toLong,
+      "GPU_TLB_FLUSH_VPN" -> GpuCommandMmioRegs.TLB_FLUSH_VPN.toLong,
+      "GPU_TLB_FLUSH_VPN_SHIFT" ->
+        GpuCommandMmioRegs.TLB_FLUSH_VPN_SHIFT.toLong,
+      "GPU_TLB_FLUSH_VPN_MASK" ->
+        GpuCommandMmioRegs.TLB_FLUSH_VPN_MASK.toLong,
+      "GPU_SATP_ENABLE" -> GpuCommandMmioRegs.SATP_ENABLE.toLong,
+      "GPU_SATP_ASID_SHIFT" -> GpuCommandMmioRegs.SATP_ASID_SHIFT.toLong,
+      "GPU_SATP_ASID_MASK" -> GpuCommandMmioRegs.SATP_ASID_MASK.toLong
+    ))
   }
 
   it should "match the capability-word bit assignments" in {
