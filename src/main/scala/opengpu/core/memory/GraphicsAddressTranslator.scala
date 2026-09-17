@@ -1,0 +1,151 @@
+package opengpu.core.memory
+
+import chisel3._
+import chisel3.util._
+import opengpu.config.{CachePolicy, GpuConfig}
+
+/** A graphics-client translation stage: a small TLB plus the shared Sv32 walker.
+  *
+  * The fixed-function graphics path (command buffer, framebuffer, texture)
+  * issues cache-line requests at virtual addresses; this block translates them
+  * through the same page tables as the CU MMUs and attaches the page's cache
+  * policy, so a driver can map a texture or vertex buffer uncached.  Page-table
+  * words are fetched as narrow uncached reads on `pageWalk`; the caller routes
+  * their responses back on `pageWalkResp` and keeps them clear of client
+  * traffic by using the reserved transaction IDs.
+  */
+class GraphicsAddressTranslator(
+  config: GpuConfig = GpuConfig(),
+  entries: Int = 16,
+  val lineBytes: Int = 64,
+  val maxOutstanding: Int = 8
+) extends Module {
+  require(entries > 0 && isPow2(entries))
+  require(isPow2(lineBytes))
+  private val vpnWidth = config.xLen - 12
+  private val entryWidth = math.max(1, log2Ceil(entries))
+
+  val io = IO(new Bundle {
+    val in = Flipped(Decoupled(
+      new ComputeMemoryRequest(config, lineBytes, maxOutstanding)))
+    val out = Decoupled(
+      new ComputeMemoryRequest(config, lineBytes, maxOutstanding))
+    /** Narrow uncached PTE read; the caller returns the word on `pageWalkResp`
+      * and must reserve the transaction IDs used here. */
+    val pageWalk = Decoupled(
+      new ComputeMemoryRequest(config, lineBytes, maxOutstanding))
+    val pageWalkResp = Flipped(Decoupled(
+      new ComputeMemoryResponse(lineBytes, maxOutstanding)))
+    /** Sv32 satp: bit 31 enables translation, bits 19:0 are the root PPN. */
+    val satp = Input(UInt(32.W))
+    val flush = Input(Bool())
+    /** Addresses presented to `pageWalk`/`pageWalkResp`. */
+    val pageWalkTransactionId = Input(
+      UInt(math.max(1, log2Ceil(maxOutstanding)).W))
+  })
+
+  private object State extends ChiselEnum {
+    val idle, lookup, walkRequest, walkResponse, respond = Value
+  }
+
+  private val walker = Module(new Sv32PageTableWalker(config))
+  private val valid = RegInit(VecInit(Seq.fill(entries)(false.B)))
+  private val vpn = Reg(Vec(entries, UInt(vpnWidth.W)))
+  private val ppn = Reg(Vec(entries, UInt(vpnWidth.W)))
+  private val policy = Reg(Vec(entries, UInt(CachePolicy.width.W)))
+  private val replacement = RegInit(0.U(entryWidth.W))
+  private val state = RegInit(State.idle)
+  private val request = Reg(new ComputeMemoryRequest(config, lineBytes,
+                                                     maxOutstanding))
+  private val translated = Reg(new ComputeMemoryRequest(config, lineBytes,
+                                                        maxOutstanding))
+
+  private val requestVpn = request.address(config.xLen - 1, 12)
+  private val hitByEntry = VecInit((0 until entries).map { entry =>
+    valid(entry) && vpn(entry) === requestVpn
+  })
+  private val hit = hitByEntry.asUInt.orR
+  private val hitPpn = Mux1H(hitByEntry, ppn)
+  private val hitPolicy = Mux1H(hitByEntry, policy)
+  private val translationEnabled = io.satp(31)
+
+  walker.io.rootPpn := io.satp(19, 0)
+  walker.io.request.valid := state === State.walkRequest
+  walker.io.request.bits.virtualPageNumber := requestVpn
+  walker.io.request.bits.isStore := request.isWrite
+  walker.io.request.bits.isInstruction := false.B
+  walker.io.response.ready := state === State.walkResponse
+
+  // The walker's PTE reads are narrow and uncached so a CPU write to the page
+  // table is always observed.
+  io.pageWalk.valid := walker.io.memoryRequest.valid
+  io.pageWalk.bits := 0.U.asTypeOf(io.pageWalk.bits)
+  io.pageWalk.bits.address := walker.io.memoryRequest.bits.address
+  io.pageWalk.bits.sizeLog2 := 2.U
+  io.pageWalk.bits.cachePolicy := CachePolicy.uncached
+  io.pageWalk.bits.isWrite := false.B
+  io.pageWalk.bits.transactionId := io.pageWalkTransactionId
+  walker.io.memoryRequest.ready := io.pageWalk.ready
+  walker.io.memoryResponse.valid := io.pageWalkResp.valid
+  walker.io.memoryResponse.bits.pte := io.pageWalkResp.bits.readData(31, 0)
+  walker.io.memoryResponse.bits.fault := io.pageWalkResp.bits.fault
+  io.pageWalkResp.ready := walker.io.memoryResponse.ready
+
+  io.in.ready := state === State.idle
+  io.out.valid := state === State.respond
+  io.out.bits := translated
+
+  when(io.in.fire) {
+    request := io.in.bits
+    state := State.lookup
+  }
+
+  when(state === State.lookup) {
+    when(!translationEnabled) {
+      translated := request
+      translated.cachePolicy := CachePolicy.cached
+      state := State.respond
+    }.elsewhen(hit) {
+      translated := request
+      translated.address := Cat(hitPpn, request.address(11, 0))
+      translated.cachePolicy := hitPolicy
+      state := State.respond
+    }.otherwise {
+      state := State.walkRequest
+    }
+  }
+
+  when(walker.io.request.fire) {
+    state := State.walkResponse
+  }
+
+  when(walker.io.response.fire) {
+    when(walker.io.response.bits.fault) {
+      translated := request
+      translated.cachePolicy := CachePolicy.uncached
+      state := State.respond
+    }.otherwise {
+      valid(replacement) := true.B
+      vpn(replacement) := requestVpn
+      ppn(replacement) := walker.io.response.bits.physicalPageNumber
+      policy(replacement) := walker.io.response.bits.cachePolicy
+      replacement := Mux(replacement === (entries - 1).U, 0.U,
+                         replacement + 1.U)
+      translated := request
+      translated.address := Cat(walker.io.response.bits.physicalPageNumber,
+                                request.address(11, 0))
+      translated.cachePolicy := walker.io.response.bits.cachePolicy
+      state := State.respond
+    }
+  }
+
+  when(state === State.respond && io.out.fire) {
+    state := State.idle
+  }
+
+  when(io.flush) {
+    assert(state === State.idle, "graphics TLB flush requires an idle port")
+    for (entry <- 0 until entries)
+      valid(entry) := false.B
+  }
+}

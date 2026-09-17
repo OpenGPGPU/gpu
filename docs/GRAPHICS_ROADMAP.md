@@ -129,7 +129,10 @@ track that distinction.
   existing physical-address binding keeps working. The driver splits a 4 MiB
   region into a second-level table when a page needs a non-default policy, and
   maps CU-read kernargs uncached so a CPU write stays visible without a flush.
-  Translating the fixed-function graphics path is follow-up work.
+  The fixed-function texture client also translates through the same page
+  tables (`GraphicsAddressTranslator`), so a texture mapped uncached is read
+  past the L1 and L2; the other graphics clients stay on physical addresses. A
+  driver opt-in to choose a texture's policy is follow-up work.
 - Multi-CU dispatch plus copy, fill and strided DMA share the integrated memory
   hierarchy, with collision-free transaction-ID ranges for private clients.
 - Internal command-buffer, framebuffer and texture word-to-line bridges remove

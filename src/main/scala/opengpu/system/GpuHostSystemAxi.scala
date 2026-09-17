@@ -3,7 +3,7 @@ package opengpu.system
 import chisel3._
 import chisel3.util._
 import opengpu.config.GpuConfig
-import opengpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse}
+import opengpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse, GraphicsAddressTranslator}
 import opengpu.graphics.{GraphicsConfig, OmWordToLinePort}
 
 /** AXI-controlled graphics host attached to the GPU-internal shared L2.
@@ -50,6 +50,12 @@ class GpuHostSystemAxi(
   private val fbBase = cbBase + wordPortTransactions
   private val texBase = fbBase + wordPortTransactions
   private val usedGraphicsTransactions = texBase + wordPortTransactions
+  // The texture path translates through the shared Sv32 page tables; its PTE
+  // reads use a reserved transaction range beyond the client IDs.
+  private val graphicsTlbBase = usedGraphicsTransactions
+  private val graphicsTlbTransactions = wordPortTransactions
+  private val usedGraphicsTransactionsWithTlb =
+    graphicsTlbBase + graphicsTlbTransactions
   private val systemTransactions = GpuSystem.totalMemoryTransactions(
     numComputeUnits, transactionsPerCu, graphicsHostTransactions)
   private val memoryAxiIdWidth = math.max(1, log2Ceil(systemTransactions))
@@ -203,8 +209,19 @@ class GpuHostSystemAxi(
     texBridge.io.in <> host.io.texMem.req
     host.io.texMem.resp <> texBridge.io.out
 
+    // The texture client translates through the shared Sv32 page tables so a
+    // driver can map a texture uncached; the other graphics clients stay on
+    // physical addresses.
+    val texTranslator = Module(new GraphicsAddressTranslator(
+      gpuConfig, entries = 16, lineBytes = 64,
+      maxOutstanding = graphicsHostTransactions))
+    texTranslator.io.satp := host.io.vectorSatp
+    texTranslator.io.flush := host.io.tlbFlush
+    texTranslator.io.pageWalkTransactionId := 0.U
+    texTranslator.io.in <> texBridge.io.memoryRequest
+
     val graphicsRequestArbiter = Module(new RRArbiter(
-      new ComputeMemoryRequest(gpuConfig, 64, graphicsHostTransactions), 4))
+      new ComputeMemoryRequest(gpuConfig, 64, graphicsHostTransactions), 5))
     def attachGraphicsRequest(
       index: Int,
       request: DecoupledIO[ComputeMemoryRequest],
@@ -219,7 +236,8 @@ class GpuHostSystemAxi(
     attachGraphicsRequest(0, host.io.kernelWordMemReq, 0)
     attachGraphicsRequest(1, cbBridge.io.memoryRequest, cbBase)
     attachGraphicsRequest(2, fbBridge.io.memoryRequest, fbBase)
-    attachGraphicsRequest(3, texBridge.io.memoryRequest, texBase)
+    attachGraphicsRequest(3, texTranslator.io.out, texBase)
+    attachGraphicsRequest(4, texTranslator.io.pageWalk, graphicsTlbBase)
     system.io.graphicsHostRequest <> graphicsRequestArbiter.io.out
 
     val graphicsResponse = system.io.graphicsHostResponse
@@ -228,7 +246,9 @@ class GpuHostSystemAxi(
     val responseForCb = responseId >= cbBase.U && responseId < fbBase.U
     val responseForFb = responseId >= fbBase.U && responseId < texBase.U
     val responseForTex = responseId >= texBase.U &&
-      responseId < usedGraphicsTransactions.U
+      responseId < graphicsTlbBase.U
+    val responseForTlb = responseId >= graphicsTlbBase.U &&
+      responseId < usedGraphicsTransactionsWithTlb.U
     def attachGraphicsResponse(
       response: DecoupledIO[ComputeMemoryResponse],
       select: Bool,
@@ -247,15 +267,23 @@ class GpuHostSystemAxi(
       fbBridge.io.memoryResponse, responseForFb, fbBase)
     attachGraphicsResponse(
       texBridge.io.memoryResponse, responseForTex, texBase)
+    texTranslator.io.pageWalkResp.valid :=
+      graphicsResponse.valid && responseForTlb
+    texTranslator.io.pageWalkResp.bits.readData :=
+      graphicsResponse.bits.readData
+    texTranslator.io.pageWalkResp.bits.fault := graphicsResponse.bits.fault
+    texTranslator.io.pageWalkResp.bits.transactionId :=
+      responseId - graphicsTlbBase.U
     graphicsResponse.ready := MuxCase(false.B, Seq(
       responseForKernelWord -> host.io.kernelWordMemResp.ready,
       responseForCb -> cbBridge.io.memoryResponse.ready,
       responseForFb -> fbBridge.io.memoryResponse.ready,
-      responseForTex -> texBridge.io.memoryResponse.ready))
+      responseForTex -> texBridge.io.memoryResponse.ready,
+      responseForTlb -> texTranslator.io.pageWalkResp.ready))
     when(graphicsResponse.valid) {
       assert(responseForKernelWord || responseForCb || responseForFb ||
-        responseForTex,
-        "graphics response must target an attached line or word client")
+        responseForTex || responseForTlb,
+        "graphics response must target an attached line, word or TLB client")
     }
 
     val memoryAxi = Module(new ComputeMemoryAxiMaster(
