@@ -254,11 +254,13 @@ int opengpu_hw_submit(struct opengpu_device *gpu,
                       const struct opengpu_job *job);
 int opengpu_hw_submit_async(struct opengpu_device *gpu,
                             const struct opengpu_job *job,
+                            const struct opengpu_vm *vm,
                             struct dma_fence **fence);
 int opengpu_hw_clear_and_submit_async(struct opengpu_device *gpu,
                                       const struct opengpu_job *job,
                                       u32 clear_base, u32 clear_bytes,
                                       u32 clear_pattern,
+                                      const struct opengpu_vm *vm,
                                       struct dma_fence **fence);
 void opengpu_hw_abort(struct opengpu_device *gpu, int error);
 void opengpu_hw_progress_tick(struct opengpu_device *gpu);
@@ -271,35 +273,48 @@ int opengpu_hw_blit(struct opengpu_device *gpu, u32 source, u32 destination,
 int opengpu_hw_strided_blit(struct opengpu_device *gpu, u32 source,
                             u32 destination, u32 width, u32 height,
                             u32 source_stride, u32 destination_stride);
+/* The optional `vm` selects the address space a submission runs in.  NULL (or
+ * a disabled VM) means the driver's global ASID-0 identity map.  The switch is
+ * programmed inside the hardware submit lock, so it cannot race another
+ * submission; all mappings are global, so it needs no TLB flush. */
 int opengpu_hw_clear_async(struct opengpu_device *gpu, u32 base, u32 bytes,
                            u32 pattern,
                            const struct opengpu_command_events *events,
+                           const struct opengpu_vm *vm,
                            struct dma_fence **fence);
 int opengpu_hw_blit_async(struct opengpu_device *gpu, u32 source,
                           u32 destination, u32 bytes,
                           const struct opengpu_command_events *events,
+                          const struct opengpu_vm *vm,
                           struct dma_fence **fence);
 int opengpu_hw_strided_blit_async(struct opengpu_device *gpu, u32 source,
                                   u32 destination, u32 width, u32 height,
                                   u32 source_stride,
                                   u32 destination_stride,
                                   const struct opengpu_command_events *events,
+                                  const struct opengpu_vm *vm,
                                   struct dma_fence **fence);
 int opengpu_hw_resolve_async(struct opengpu_device *gpu, u32 source,
                              u32 destination, u32 width, u32 height,
                              u32 source_stride, u32 destination_stride,
                              u32 sample_mode,
                              const struct opengpu_command_events *events,
+                             const struct opengpu_vm *vm,
                              struct dma_fence **fence);
 int opengpu_hw_invalidate_async(struct opengpu_device *gpu, u32 address,
                                 u32 bytes,
                                 const struct opengpu_command_events *events,
+                                const struct opengpu_vm *vm,
                                 struct dma_fence **fence);
 int opengpu_hw_enable_mmu(struct opengpu_device *gpu, dma_addr_t root_table);
 /* Program both CU `satp` registers with `root_table` and `asid`, without a
  * TLB flush.  The caller quiesces execution and shoots down a recycled ASID. */
 int opengpu_hw_set_satp(struct opengpu_device *gpu, dma_addr_t root_table,
                         u32 asid);
+/* Switch the active address space outside a submission: quiesce, then set
+ * `satp`.  `vm == NULL` restores the global ASID-0 identity map. */
+int opengpu_hw_activate_vm(struct opengpu_device *gpu,
+                           const struct opengpu_vm *vm);
 int opengpu_hw_flush_tlbs(struct opengpu_device *gpu);
 /* Scoped shootdown: drop only the entries for one ASID or one VPN.  Global
  * mappings and other address spaces stay warm; the texture translator is
@@ -323,6 +338,7 @@ void opengpu_mmu_vm_destroy(struct opengpu_device *gpu, struct opengpu_vm *vm);
 int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              const struct opengpu_kernel_launch *launch,
                              const struct opengpu_command_events *events,
+                             const struct opengpu_vm *vm,
                              struct dma_fence **fence);
 int opengpu_hw_display_commit(struct opengpu_device *gpu,
                               const struct opengpu_scanout *scanout);

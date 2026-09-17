@@ -82,7 +82,7 @@ static int opengpu_hw_flush_tlbs(struct opengpu_device *gpu)
     flushes++;
     return 0;
 }
-static unsigned asid_flushes, satp_programs;
+static unsigned asid_flushes, vm_activations;
 static dma_addr_t last_satp_root;
 static u32 last_satp_asid;
 static int opengpu_hw_flush_tlb_asid(struct opengpu_device *gpu, u32 asid)
@@ -93,13 +93,14 @@ static int opengpu_hw_flush_tlb_asid(struct opengpu_device *gpu, u32 asid)
     asid_flushes++;
     return 0;
 }
-static int opengpu_hw_set_satp(struct opengpu_device *gpu, dma_addr_t root,
-                               u32 asid)
+static int opengpu_hw_activate_vm(struct opengpu_device *gpu,
+                                  const struct opengpu_vm *vm)
 {
-    assert(gpu->hw.submit_lock.held);
-    last_satp_root = root;
-    last_satp_asid = asid;
-    satp_programs++;
+    /* The production helper acquires submit_lock itself. */
+    assert(!gpu->hw.submit_lock.held);
+    last_satp_root = vm ? vm->root.dma : 0;
+    last_satp_asid = vm ? vm->asid : 0;
+    vm_activations++;
     return 0;
 }
 static int opengpu_hw_enable_mmu(struct opengpu_device *gpu, dma_addr_t root)
@@ -176,7 +177,7 @@ int main(void)
         assert(!memcmp(vm.root.cpu, gpu.mmu.root.cpu, MMU_PAGE_SIZE));
 
         assert(!opengpu_mmu_vm_activate(&gpu, &vm));
-        assert(satp_programs == 1);
+        assert(vm_activations == 1);
         assert(last_satp_root == vm.root.dma && last_satp_asid == vm.asid);
 
         /* A second VM takes the next ASID; destroy evicts each ASID once. */

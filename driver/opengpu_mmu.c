@@ -262,23 +262,15 @@ err_free_root:
 int opengpu_mmu_vm_activate(struct opengpu_device *gpu,
                             const struct opengpu_vm *vm)
 {
-    int ret;
-
     if (!vm || !vm->enabled)
         return -EINVAL;
     if (!gpu->mmu.enabled)
         return -EOPNOTSUPP;
-
-    /* The fixed-function texture translator follows the vector satp but tags
-     * no entries with an ASID.  All VM roots are identity maps today, so a
-     * switch leaves its cached translations valid; a future non-identity VM
-     * must flush the graphics clients when it is activated. */
-    mutex_lock(&gpu->hw.submit_lock);
-    ret = opengpu_hw_wait_idle_locked(gpu);
-    if (!ret)
-        ret = opengpu_hw_set_satp(gpu, vm->root.dma, vm->asid);
-    mutex_unlock(&gpu->hw.submit_lock);
-    return ret;
+    /* opengpu_hw_activate_vm quiesces, then programs satp; all VM roots share
+     * the global identity map, so no flush is needed.  The fixed-function
+     * texture translator follows the vector satp but tags no entries with an
+     * ASID; a future non-identity VM must flush the graphics clients. */
+    return opengpu_hw_activate_vm(gpu, vm);
 }
 
 void opengpu_mmu_vm_destroy(struct opengpu_device *gpu, struct opengpu_vm *vm)

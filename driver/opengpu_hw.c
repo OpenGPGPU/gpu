@@ -684,6 +684,21 @@ void opengpu_hw_fini(struct opengpu_device *gpu)
     }
 }
 
+/* Program the address space a submission will run in.  Called with submit_lock
+ * held, immediately before the doorbell, so the switch cannot race another
+ * submission.  A NULL or disabled VM selects the global ASID-0 identity map.
+ * All driver mappings are global, so no TLB flush is needed; Bare builds (MMU
+ * never enabled) skip satp entirely. */
+static int opengpu_hw_activate_vm_locked(struct opengpu_device *gpu,
+                                         const struct opengpu_vm *vm)
+{
+    if (!gpu->mmu.enabled)
+        return 0;
+    if (!vm || !vm->enabled)
+        return opengpu_hw_set_satp(gpu, gpu->mmu.root.dma, 0);
+    return opengpu_hw_set_satp(gpu, vm->root.dma, vm->asid);
+}
+
 /* Queue submission: publish a descriptor into the host-memory job ring and
  * ring the doorbell.  Several jobs may be in flight; the device runs them
  * strictly in order and records each completion in the IH ring. */
@@ -814,8 +829,14 @@ out:
 
 static int opengpu_hw_submit_locked(struct opengpu_device *gpu,
                                     const struct opengpu_job *job,
+                                    const struct opengpu_vm *vm,
                                     struct dma_fence **out_fence)
 {
+    int ret;
+
+    ret = opengpu_hw_activate_vm_locked(gpu, vm);
+    if (ret)
+        return ret;
     if (gpu->hw.queue_ready)
         return opengpu_hw_submit_queue_locked(gpu, job, out_fence);
     return opengpu_hw_submit_legacy_locked(gpu, job, out_fence);
@@ -931,6 +952,7 @@ static int opengpu_hw_unified_submit_locked(
     u32 opcode, u32 source, u32 destination,
     u32 bytes, u32 pattern, u32 sample_mode, u32 height,
     u32 source_stride, u32 destination_stride, u64 expected_bytes,
+    const struct opengpu_vm *vm,
     struct dma_fence **out_fence)
 {
     struct opengpu_fence *fence;
@@ -969,6 +991,12 @@ static int opengpu_hw_unified_submit_locked(
     if (status & GPU_UCMD_STATUS_RESET_REJECTED)
         opengpu_reg_write(gpu, GPU_REG_UCMD_STATUS,
                           GPU_UCMD_STATUS_RESET_REJECTED);
+
+    /* Select the submitting address space before any command register is
+     * staged, still under submit_lock. */
+    ret = opengpu_hw_activate_vm_locked(gpu, vm);
+    if (ret)
+        return ret;
 
     fence = kzalloc(sizeof(*fence), GFP_KERNEL);
     if (!fence)
@@ -1041,11 +1069,13 @@ static int opengpu_hw_unified_dma_submit_locked(
     u32 bytes, u32 pattern, u32 height, u32 source_stride,
     u32 destination_stride, u64 expected_bytes,
     const struct opengpu_command_events *events,
+    const struct opengpu_vm *vm,
     struct dma_fence **out_fence)
 {
     return opengpu_hw_unified_submit_locked(
         gpu, NULL, events, opcode, source, destination, bytes, pattern, 0,
-        height, source_stride, destination_stride, expected_bytes, out_fence);
+        height, source_stride, destination_stride, expected_bytes, vm,
+        out_fence);
 }
 
 /* Submit one DMA operation through the integrated common command payload.
@@ -1065,7 +1095,8 @@ static int opengpu_hw_unified_dma_locked(struct opengpu_device *gpu,
 
     ret = opengpu_hw_unified_dma_submit_locked(
         gpu, opcode, source, destination, bytes, pattern, height,
-        source_stride, destination_stride, expected_bytes, NULL, &fence);
+        source_stride, destination_stride, expected_bytes, NULL, NULL,
+        &fence);
     if (ret)
         return ret;
     timeout = dma_fence_wait_timeout(
@@ -1084,6 +1115,7 @@ static int opengpu_hw_unified_dma_locked(struct opengpu_device *gpu,
 
 int opengpu_hw_submit_async(struct opengpu_device *gpu,
                             const struct opengpu_job *job,
+                            const struct opengpu_vm *vm,
                             struct dma_fence **out_fence)
 {
     int ret;
@@ -1092,7 +1124,7 @@ int opengpu_hw_submit_async(struct opengpu_device *gpu,
     if (ret)
         return ret;
     mutex_lock(&gpu->hw.submit_lock);
-    ret = opengpu_hw_submit_locked(gpu, job, out_fence);
+    ret = opengpu_hw_submit_locked(gpu, job, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }
@@ -1104,7 +1136,7 @@ int opengpu_hw_submit(struct opengpu_device *gpu,
     long timeout;
     int ret;
 
-    ret = opengpu_hw_submit_async(gpu, job, &fence);
+    ret = opengpu_hw_submit_async(gpu, job, NULL, &fence);
     if (ret)
         return ret;
 
@@ -1377,6 +1409,7 @@ int opengpu_hw_wait_idle_locked(struct opengpu_device *gpu)
 int opengpu_hw_clear_async(struct opengpu_device *gpu, u32 base, u32 bytes,
                            u32 pattern,
                            const struct opengpu_command_events *events,
+                           const struct opengpu_vm *vm,
                            struct dma_fence **out_fence)
 {
     u64 end = (u64)base + bytes;
@@ -1399,7 +1432,7 @@ int opengpu_hw_clear_async(struct opengpu_device *gpu, u32 base, u32 bytes,
     ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
         opengpu_hw_unified_dma_submit_locked(
             gpu, GPU_UCMD_OP_FILL, 0, base, bytes, pattern, 0, 0, 0,
-            bytes, events, out_fence);
+            bytes, events, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }
@@ -1407,6 +1440,7 @@ int opengpu_hw_clear_async(struct opengpu_device *gpu, u32 base, u32 bytes,
 int opengpu_hw_blit_async(struct opengpu_device *gpu, u32 source,
                           u32 destination, u32 bytes,
                           const struct opengpu_command_events *events,
+                          const struct opengpu_vm *vm,
                           struct dma_fence **out_fence)
 {
     u64 source_end = (u64)source + bytes;
@@ -1435,7 +1469,7 @@ int opengpu_hw_blit_async(struct opengpu_device *gpu, u32 source,
     ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
         opengpu_hw_unified_dma_submit_locked(
             gpu, GPU_UCMD_OP_COPY, source, destination, bytes, 0, 0, 0, 0,
-            bytes, events, out_fence);
+            bytes, events, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }
@@ -1445,6 +1479,7 @@ int opengpu_hw_strided_blit_async(struct opengpu_device *gpu, u32 source,
                                   u32 source_stride,
                                   u32 destination_stride,
                                   const struct opengpu_command_events *events,
+                                  const struct opengpu_vm *vm,
                                   struct dma_fence **out_fence)
 {
     u64 source_span, destination_span, source_end, destination_end;
@@ -1488,7 +1523,7 @@ int opengpu_hw_strided_blit_async(struct opengpu_device *gpu, u32 source,
         opengpu_hw_unified_dma_submit_locked(
             gpu, GPU_UCMD_OP_STRIDED_COPY, source, destination, width, 0,
             height, source_stride, destination_stride,
-            (u64)width * height, events, out_fence);
+            (u64)width * height, events, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }
@@ -1496,6 +1531,7 @@ int opengpu_hw_strided_blit_async(struct opengpu_device *gpu, u32 source,
 int opengpu_hw_invalidate_async(struct opengpu_device *gpu, u32 address,
                                 u32 bytes,
                                 const struct opengpu_command_events *events,
+                                const struct opengpu_vm *vm,
                                 struct dma_fence **out_fence)
 {
     int ret;
@@ -1514,7 +1550,7 @@ int opengpu_hw_invalidate_async(struct opengpu_device *gpu, u32 address,
     ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
         opengpu_hw_unified_submit_locked(
             gpu, NULL, events, GPU_UCMD_OP_INVALIDATE, address, 0, bytes, 0,
-            0, 0, 0, 0, bytes, out_fence);
+            0, 0, 0, 0, bytes, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }
@@ -1524,6 +1560,7 @@ int opengpu_hw_resolve_async(struct opengpu_device *gpu, u32 source,
                              u32 source_stride, u32 destination_stride,
                              u32 sample_mode,
                              const struct opengpu_command_events *events,
+                             const struct opengpu_vm *vm,
                              struct dma_fence **out_fence)
 {
     struct opengpu_resolve_desc desc;
@@ -1566,7 +1603,7 @@ int opengpu_hw_resolve_async(struct opengpu_device *gpu, u32 source,
         opengpu_hw_unified_submit_locked(
             gpu, NULL, events, GPU_UCMD_OP_RESOLVE, source, destination,
             width, 0, sample_mode, height, source_stride,
-            destination_stride, (u64)width * height * 4ull, out_fence);
+            destination_stride, (u64)width * height * 4ull, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }
@@ -1592,6 +1629,23 @@ int opengpu_hw_set_satp(struct opengpu_device *gpu, dma_addr_t root_table,
     opengpu_reg_write(gpu, GPU_REG_UCMD_VECTOR_SATP, satp);
     opengpu_reg_write(gpu, GPU_REG_UCMD_INSTRUCTION_SATP, satp);
     return 0;
+}
+
+/** Switch the active address space outside a submission.  Quiesces execution,
+ * then programs `satp`; `vm == NULL` restores the global ASID-0 identity map.
+ * A per-submission switch happens inside the submit lock instead (see
+ * opengpu_hw_activate_vm_locked). */
+int opengpu_hw_activate_vm(struct opengpu_device *gpu,
+                           const struct opengpu_vm *vm)
+{
+    int ret;
+
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_wait_idle_locked(gpu);
+    if (!ret)
+        ret = opengpu_hw_activate_vm_locked(gpu, vm);
+    mutex_unlock(&gpu->hw.submit_lock);
+    return ret;
 }
 
 /** Enable Sv32 translation with a driver-built identity map.  `root_table` is
@@ -1657,6 +1711,7 @@ int opengpu_hw_flush_tlb_vpn(struct opengpu_device *gpu, u32 vpn)
 int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              const struct opengpu_kernel_launch *launch,
                              const struct opengpu_command_events *events,
+                             const struct opengpu_vm *vm,
                              struct dma_fence **out_fence)
 {
     u64 local_xy, local_items;
@@ -1682,7 +1737,7 @@ int opengpu_hw_compute_async(struct opengpu_device *gpu,
     ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
         opengpu_hw_unified_submit_locked(
             gpu, launch, events, GPU_UCMD_OP_KERNEL, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, out_fence);
+            0, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }
@@ -1696,6 +1751,7 @@ int opengpu_hw_clear_and_submit_async(struct opengpu_device *gpu,
                                       const struct opengpu_job *job,
                                       u32 clear_base, u32 clear_bytes,
                                       u32 clear_pattern,
+                                      const struct opengpu_vm *vm,
                                       struct dma_fence **out_fence)
 {
     int ret;
@@ -1707,7 +1763,7 @@ int opengpu_hw_clear_and_submit_async(struct opengpu_device *gpu,
     ret = opengpu_hw_clear_locked(gpu, clear_base, clear_bytes,
                                   clear_pattern);
     if (!ret)
-        ret = opengpu_hw_submit_locked(gpu, job, out_fence);
+        ret = opengpu_hw_submit_locked(gpu, job, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }

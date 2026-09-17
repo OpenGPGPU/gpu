@@ -439,7 +439,8 @@ static int opengpu_binding_invalidate(
     bytes = (u32)(end - start);
     if (!bytes)
         return 0;
-    ret = opengpu_hw_invalidate_async(gpu, (u32)start, bytes, NULL, &fence);
+    ret = opengpu_hw_invalidate_async(gpu, (u32)start, bytes, NULL, NULL,
+                                      &fence);
     if (ret)
         return ret;
     return opengpu_wait_fence(gpu, &fence, true);
@@ -1061,26 +1062,29 @@ opengpu_sched_job_from_base(struct drm_sched_job *base)
 static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
 {
     struct opengpu_sched_job *job = opengpu_sched_job_from_base(base);
+    /* The context's VM selects the address space a job runs in; until a VM is
+     * bound to a context this is the global ASID-0 identity map. */
+    const struct opengpu_vm *vm = NULL;
     struct dma_fence *fence;
     int ret;
 
     if (job->type == OPENGPU_SCHED_COMPUTE) {
         ret = opengpu_hw_compute_async(job->gpu, &job->kernel,
-                                       &job->events, &fence);
+                                       &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_BLIT) {
         ret = opengpu_hw_blit_async(job->gpu,
                                     lower_32_bits(job->dma_source),
                                     lower_32_bits(job->dma_destination),
-                                    job->dma_bytes, &job->events, &fence);
+                                    job->dma_bytes, &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_FILL) {
         ret = opengpu_hw_clear_async(job->gpu,
                                      lower_32_bits(job->dma_destination),
                                      job->dma_bytes, job->fill_pattern,
-                                     &job->events, &fence);
+                                     &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_STRIDED_BLIT) {
@@ -1088,7 +1092,7 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
             job->gpu, lower_32_bits(job->dma_source),
             lower_32_bits(job->dma_destination), job->dma_bytes,
             job->dma_height, job->dma_source_stride,
-            job->dma_destination_stride, &job->events, &fence);
+            job->dma_destination_stride, &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_RESOLVE) {
@@ -1097,13 +1101,13 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
             lower_32_bits(job->dma_destination), job->dma_bytes,
             job->dma_height, job->dma_source_stride,
             job->dma_destination_stride, job->dma_sample_mode,
-            &job->events, &fence);
+            &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_INVALIDATE) {
         ret = opengpu_hw_invalidate_async(
             job->gpu, lower_32_bits(job->dma_source), job->dma_bytes,
-            &job->events, &fence);
+            &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     /* A loaded persistent depth attachment keeps its stored contents; every
@@ -1112,9 +1116,9 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
         !job->depth_load)
         ret = opengpu_hw_clear_and_submit_async(
             job->gpu, &job->hw, lower_32_bits(job->depth_clear_dma),
-            job->depth_clear_bytes, 0x00ffffffu, &fence);
+            job->depth_clear_bytes, 0x00ffffffu, vm, &fence);
     else
-        ret = opengpu_hw_submit_async(job->gpu, &job->hw, &fence);
+        ret = opengpu_hw_submit_async(job->gpu, &job->hw, vm, &fence);
     if (ret)
         return ERR_PTR(ret);
     return fence;

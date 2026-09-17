@@ -368,9 +368,11 @@ Implemented:
   both CU `satp` registers at it after quiescing (no full flush); destroy
   evicts its TLB entries and returns the ASID. All identity and policy leaf
   PTEs carry the Sv32 global (G) bit, so a switch reuses the same
-  translations and the TLB keeps them resident. The scheduler does not select
-  a VM per submission yet, so all work still runs in the ASID-0 identity
-  space.
+  translations and the TLB keeps them resident. Every hardware submission
+  path takes an optional VM and programs `satp` for it inside the submit lock
+  (before the doorbell), so the switch cannot race another submission. The
+  scheduler does not select a VM per submission yet, so all work still runs
+  in the ASID-0 identity space.
 - Sv32 PTE bits [9:8] carry a per-page data cache policy (cached / write-through /
   uncached); the walker, data TLB, texture translator, CU data L1 and shared L2
   honour it. Instruction fetch remains cached; the ITLB does not carry policy.
@@ -410,10 +412,11 @@ Design notes (from the MMU/ASID review):
 
 Remaining work, cheapest first:
 
-- Driver VM manager: per-VM root tables, an ASID allocator and global (G)
-  identity mappings exist, but the scheduler still runs every job in the ASID-0
-  identity space. Wire a VM to each DRM context and select it with a coarse VM
-  switch around submission; because every VM root currently shares the global
+- Driver VM manager: per-VM root tables, an ASID allocator, global (G)
+  identity mappings and a per-submission `satp` switch inside the hardware
+  submit lock exist, but the scheduler still passes no VM, so every job runs
+  in the ASID-0 identity space. Bind a VM to each DRM context and pass it from
+  `opengpu_sched_run_job`; because every VM root currently shares the global
   map, this is a no-op until non-identity per-VM mappings arrive. The scoped
   `TLB_FLUSH` above is the shootdown primitive.
 - Keep per-VM mappings on large pages; size the TLBs for the working set and
