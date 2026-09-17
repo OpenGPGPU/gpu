@@ -87,7 +87,9 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
   by `RenderHostSpec` and the guest test under the Verilator backend.
 - Ordered shared-L2 line-invalidate jobs (`DRM_IOCTL_OPENGPU_INVALIDATE`) over
   validated 64-byte-aligned GEM ranges, so a caller can make CPU-written memory
-  visible to a later GPU read without a full cache flush.
+  visible to a later GPU read without a full cache flush. Invalidate once per
+  CPU write (per upload), not per draw: each line costs an L2 lookup and the
+  operation is only worthwhile when the buffer changed.
 - Texture sampling, shader depth output, discard, quad derivatives, mipmapping
   and source-over blending in the validated graphics path.
 - D24S8 stencil and GL-style blend factor/equation state: UAPI words 35–37 on

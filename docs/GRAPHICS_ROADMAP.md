@@ -146,7 +146,10 @@ track that distinction.
 - Ordered DRM shared-L2 line-invalidate jobs (`DRM_IOCTL_OPENGPU_INVALIDATE`)
   over validated 64-byte-aligned GEM ranges, using the unified `INVALIDATE`
   command, so a driver can make CPU-written memory visible to a later GPU read.
-  The resolve operation invalidates its own source range implicitly.
+  The operation costs one L2 lookup per line and issues no memory traffic, so
+  callers should invalidate a buffer once after a CPU write (per upload) rather
+  than per draw. The resolve operation invalidates its own source range
+  implicitly.
 - Capability-selected unified-command submission for Linux fill, blit and
   strided-copy jobs, with legacy dedicated-register fallback.
 - ABI-defined unified-command MMIO and capability discovery cover the common
