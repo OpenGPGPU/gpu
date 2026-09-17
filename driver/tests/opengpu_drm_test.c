@@ -593,7 +593,8 @@ static int bind_texture(int fd, uint32_t context_id, uint32_t slot,
         .width = 4,
         .height = 4,
         .flags = OPENGPU_RESOURCE_TEXTURE_CLAMP |
-            (2u << OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT),
+            (2u << OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT) |
+            OPENGPU_RESOURCE_UNCACHED,
     };
 
     return ioctl(fd, DRM_IOCTL_OPENGPU_RESOURCE_BIND, &resource);

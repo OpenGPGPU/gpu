@@ -490,7 +490,8 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
         if (!args->width || !args->height ||
             args->width > 0x3fff || args->height > 0x3fff ||
             (args->flags & ~(OPENGPU_RESOURCE_TEXTURE_CLAMP |
-                             OPENGPU_RESOURCE_TEXTURE_MAX_MIP_MASK)) ||
+                             OPENGPU_RESOURCE_TEXTURE_MAX_MIP_MASK |
+                             OPENGPU_RESOURCE_UNCACHED)) ||
             mip_level >= 32 - __builtin_clz(max(args->width, args->height)) ||
             (!(args->flags & OPENGPU_RESOURCE_TEXTURE_CLAMP) &&
              (!opengpu_is_power_of_two(args->width) ||
@@ -513,7 +514,8 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
         }
         if (texture_bytes > args->size)
             return -EINVAL;
-    } else if (args->width || args->height || args->flags) {
+    } else if (args->width || args->height ||
+               (args->flags & ~OPENGPU_RESOURCE_UNCACHED)) {
         return -EINVAL;
     }
 
@@ -554,18 +556,12 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
     ret = opengpu_context_quiesce(render_file, context);
     if (ret)
         goto out_file;
-    /* Shaders are snapshotted by the driver; only directly-read resources need
-     * their L2 lines dropped after a CPU write. */
-    if (args->type != OPENGPU_RESOURCE_SHADER &&
-        args->type != OPENGPU_RESOURCE_VERTEX_SHADER &&
-        args->type != OPENGPU_RESOURCE_COMPUTE_SHADER) {
-        ret = opengpu_binding_invalidate(gpu, binding);
-        if (ret)
-            goto out_file;
-    }
-    /* A kernarg is read by the CU through its MMU; mapping it uncached keeps a
-     * CPU write visible without relying on a flush. */
-    if (args->type == OPENGPU_RESOURCE_KERNARG ||
+    /* A caller may ask for an uncached mapping, and a kernarg defaults to one
+     * because the CU reads it through the MMU; either way no invalidate is
+     * needed.  Otherwise drop the L2 lines of a directly-read resource after
+     * the CPU write.  Shaders are snapshotted by the driver. */
+    if ((args->flags & OPENGPU_RESOURCE_UNCACHED) ||
+        args->type == OPENGPU_RESOURCE_KERNARG ||
         args->type == OPENGPU_RESOURCE_VERTEX_KERNARG ||
         args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG) {
         ret = opengpu_mmu_set_range_policy(gpu, binding->dma, binding->size,
@@ -573,6 +569,12 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
         if (ret && ret != -EOPNOTSUPP)
             goto out_file;
         ret = 0;
+    } else if (args->type != OPENGPU_RESOURCE_SHADER &&
+               args->type != OPENGPU_RESOURCE_VERTEX_SHADER &&
+               args->type != OPENGPU_RESOURCE_COMPUTE_SHADER) {
+        ret = opengpu_binding_invalidate(gpu, binding);
+        if (ret)
+            goto out_file;
     }
     old = context->bindings[args->slot - 1];
     context->bindings[args->slot - 1] = binding;

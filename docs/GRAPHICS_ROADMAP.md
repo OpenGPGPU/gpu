@@ -132,7 +132,8 @@ track that distinction.
   The fixed-function texture client also translates through the same page
   tables (`GraphicsAddressTranslator`), so a texture mapped uncached is read
   past the L1 and L2; the other graphics clients stay on physical addresses. A
-  driver opt-in to choose a texture's policy is follow-up work.
+  resource binding may set `OPENGPU_RESOURCE_UNCACHED` to map its range
+  uncached (kernargs default to it).
 - Multi-CU dispatch plus copy, fill and strided DMA share the integrated memory
   hierarchy, with collision-free transaction-ID ranges for private clients.
 - Internal command-buffer, framebuffer and texture word-to-line bridges remove
