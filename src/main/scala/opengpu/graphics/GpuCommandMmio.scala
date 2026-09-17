@@ -44,7 +44,14 @@ object GpuCommandMmioRegs {
     * Placed past `RenderHostRegs.END` (0x148), which was previously invalid, so
     * the AXI top routes this one address here as well. */
   val SAMPLE_MODE = 0x148
-  val END = 0x14c
+  /** Sv32 `satp` for the vector data and instruction MMUs.  Bit 31 enables
+    * translation; bits 30:22 are the ASID and bits 19:0 the root page-table
+    * PPN.  Changing either requires a TLB flush. */
+  val VECTOR_SATP = 0x14c
+  val INSTRUCTION_SATP = 0x150
+  /** Write 1 to bit 0 to invalidate every TLB entry (a full flush). */
+  val TLB_FLUSH = 0x154
+  val END = 0x158
 }
 
 /** Register-programmed bridge to the ordered unified GPU command stream. */
@@ -73,6 +80,11 @@ class GpuCommandMmio(
     /** Single-cycle pulse from the system: every in-flight command and memory
       * transaction has drained and the command-path state has been reset. */
     val resetDone = Input(Bool())
+    /** Current Sv32 page-table base/ASID for the vector and instruction MMUs. */
+    val vectorSatp = Output(UInt(32.W))
+    val instructionSatp = Output(UInt(32.W))
+    /** One-cycle pulse: invalidate every TLB entry. */
+    val tlbFlush = Output(Bool())
   })
 
   private def merge(old: UInt, data: UInt, strb: UInt): UInt =
@@ -100,6 +112,9 @@ class GpuCommandMmio(
   private val waitEvent = RegInit(0.U(32.W))
   private val signalEvent = RegInit(0.U(32.W))
   private val sampleMode = RegInit(0.U(32.W))
+  private val vectorSatp = RegInit(0.U(32.W))
+  private val instructionSatp = RegInit(0.U(32.W))
+  private val tlbFlushPending = RegInit(false.B)
   private val submitOverflow = RegInit(false.B)
   private val resetActive = RegInit(false.B)
   private val resetRejected = RegInit(false.B)
@@ -173,6 +188,11 @@ class GpuCommandMmio(
     completionValid := false.B
   }
 
+  io.vectorSatp := vectorSatp
+  io.instructionSatp := instructionSatp
+  io.tlbFlush := tlbFlushPending
+  when(tlbFlushPending) { tlbFlushPending := false.B }
+
   when(wFire) {
     switch(io.reg.req.bits.addr) {
       is(GpuCommandMmioRegs.COMMAND_ID.U) {
@@ -218,6 +238,17 @@ class GpuCommandMmio(
       is(GpuCommandMmioRegs.SAMPLE_MODE.U) {
         sampleMode := io.reg.req.bits.data
       }
+      is(GpuCommandMmioRegs.VECTOR_SATP.U) {
+        vectorSatp := merge(vectorSatp, io.reg.req.bits.data,
+                            io.reg.req.bits.strb)
+      }
+      is(GpuCommandMmioRegs.INSTRUCTION_SATP.U) {
+        instructionSatp := merge(instructionSatp, io.reg.req.bits.data,
+                                 io.reg.req.bits.strb)
+      }
+      is(GpuCommandMmioRegs.TLB_FLUSH.U) {
+        when(io.reg.req.bits.data(0)) { tlbFlushPending := true.B }
+      }
       is(GpuCommandMmioRegs.STATUS.U) {
         when(io.reg.req.bits.data(2)) { submitOverflow := false.B }
         when(io.reg.req.bits.data(4)) { resetRejected := false.B }
@@ -255,6 +286,8 @@ class GpuCommandMmio(
     GpuCommandMmioRegs.WAIT_EVENT.U -> waitEvent,
     GpuCommandMmioRegs.SIGNAL_EVENT.U -> signalEvent,
     GpuCommandMmioRegs.SAMPLE_MODE.U -> sampleMode,
+    GpuCommandMmioRegs.VECTOR_SATP.U -> vectorSatp,
+    GpuCommandMmioRegs.INSTRUCTION_SATP.U -> instructionSatp,
     GpuCommandMmioRegs.STATUS.U -> status,
     GpuCommandMmioRegs.COMPLETION.U -> completionMeta,
     GpuCommandMmioRegs.COMPLETION_BYTES_LO.U -> completion.bytesProcessed(31, 0),

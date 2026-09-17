@@ -123,6 +123,12 @@
  * reads it; bits 1:0 are 0 = 1x, 1 = 2x, 2 = 4x).  Placed past the legacy
  * RenderHost register map, which ended at 0x148. */
 #define GPU_REG_UCMD_SAMPLE_MODE    0x148
+/* Sv32 `satp` (bit 31 enables translation, bits 30:22 ASID, bits 19:0 root
+ * page-table PPN) for the vector data and instruction MMUs, and a write-1
+ * full TLB flush.  Programming either satp requires a TLB_FLUSH. */
+#define GPU_REG_UCMD_VECTOR_SATP     0x14c
+#define GPU_REG_UCMD_INSTRUCTION_SATP 0x150
+#define GPU_REG_UCMD_TLB_FLUSH       0x154
 
 /* MSAA sample-mode register (bits 1:0; 0 = 1x, 1 = 2x, 2 = 4x).  Snapshotted
  * on the legacy START path exactly like the other execution config; the

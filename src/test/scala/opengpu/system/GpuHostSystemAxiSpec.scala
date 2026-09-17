@@ -303,6 +303,24 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
     }
   }
 
+  it should "program the Sv32 page-table base and flush the TLBs over AXI" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      // Sv32 mode (bit 31), ASID 0, root PPN 0x12345.
+      val satp = 0x80012345
+      axiWrite(dut, GpuCommandMmioRegs.VECTOR_SATP, satp)
+      axiWrite(dut, GpuCommandMmioRegs.INSTRUCTION_SATP, satp)
+      axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
+      val expected = BigInt("80012345", 16)
+      assert(axiRead(dut, GpuCommandMmioRegs.VECTOR_SATP) == expected,
+        "vector satp must read back")
+      assert(axiRead(dut, GpuCommandMmioRegs.INSTRUCTION_SATP) == expected,
+        "instruction satp must read back")
+    }
+  }
+
   it should "serve command-buffer words from the shared L2" in {
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
     val gpu = GpuConfig(

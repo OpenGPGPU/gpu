@@ -317,14 +317,19 @@ class GpuHostSystemAxi(
 
     system.io.clearPerformanceCounters := false.B
     system.io.invalidateInstructionCache := false.B
-    system.io.instructionSatp := 0.U
-    system.io.instructionTlbFlush.valid := false.B
-    system.io.instructionTlbFlush.bits :=
-      0.U.asTypeOf(system.io.instructionTlbFlush.bits)
-    system.io.vectorSatp := 0.U
-    system.io.vectorTlbFlush.valid := false.B
-    system.io.vectorTlbFlush.bits :=
-      0.U.asTypeOf(system.io.vectorTlbFlush.bits)
+    system.io.instructionSatp := host.io.instructionSatp
+    system.io.vectorSatp := host.io.vectorSatp
+    // `TLB_FLUSH` invalidates every entry of both translation caches.
+    system.io.vectorTlbFlush.valid := host.io.tlbFlush
+    system.io.vectorTlbFlush.bits.virtualPageNumberValid := false.B
+    system.io.vectorTlbFlush.bits.virtualPageNumber := 0.U
+    system.io.vectorTlbFlush.bits.asidValid := false.B
+    system.io.vectorTlbFlush.bits.asid := 0.U
+    system.io.instructionTlbFlush.valid := host.io.tlbFlush
+    system.io.instructionTlbFlush.bits.virtualPageNumberValid := false.B
+    system.io.instructionTlbFlush.bits.virtualPageNumber := 0.U
+    system.io.instructionTlbFlush.bits.asidValid := false.B
+    system.io.instructionTlbFlush.bits.asid := 0.U
 
     for (cu <- 0 until numComputeUnits) {
       system.io.fpu(cu).ready := false.B

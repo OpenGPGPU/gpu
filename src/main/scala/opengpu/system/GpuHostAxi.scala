@@ -108,6 +108,11 @@ class GpuHostAxi(
     val commandResetDone = if (unifiedCommandMmio) {
       Some(Input(Bool()))
     } else None
+    /** Sv32 page-table state for the vector and instruction MMUs, plus a
+      * one-cycle full TLB flush, programmed through the unified bridge. */
+    val vectorSatp = Output(UInt(32.W))
+    val instructionSatp = Output(UInt(32.W))
+    val tlbFlush = Output(Bool())
 
     // Renderer shared-memory ports (command buffer + framebuffer words, and the
     // core-backed shader kernel's line/coherence side ports) pass straight
@@ -150,6 +155,9 @@ class GpuHostAxi(
       io.commandResetActive.get := bridge.io.resetActive
       bridge.io.resetDone := io.commandResetDone.get
     }
+    io.vectorSatp := unified.map(_.io.vectorSatp).getOrElse(0.U)
+    io.instructionSatp := unified.map(_.io.instructionSatp).getOrElse(0.U)
+    io.tlbFlush := unified.map(_.io.tlbFlush).getOrElse(false.B)
     host.io.externalCompletion := io.externalCompletion.getOrElse(false.B) ||
       unified.map(_.io.completionEvent).getOrElse(false.B)
     io.m_irq := host.io.irq
@@ -221,7 +229,8 @@ class GpuHostAxi(
       (beatAddr >= GpuCommandMmioRegs.COMMAND_ID.U &&
         beatAddr < RenderHostRegs.MSAA_CONFIG.U) ||
         beatAddr === GpuCommandMmioRegs.RESET.U ||
-        beatAddr === GpuCommandMmioRegs.SAMPLE_MODE.U
+        (beatAddr >= GpuCommandMmioRegs.SAMPLE_MODE.U &&
+          beatAddr < GpuCommandMmioRegs.END.U)
     reg.req.valid := busRegValid && !targetUnified
     reg.req.bits.isWrite := writeActive
     reg.req.bits.addr := beatAddr(9, 0)

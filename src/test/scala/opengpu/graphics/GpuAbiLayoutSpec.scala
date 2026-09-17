@@ -124,7 +124,10 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
       "GPU_REG_UCMD_COMPLETION_BYTES_HI" -> GpuCommandMmioRegs.COMPLETION_BYTES_HI,
       "GPU_REG_UCMD_COMPLETION_POP" -> GpuCommandMmioRegs.COMPLETION_POP,
       "GPU_REG_UCMD_RESET" -> GpuCommandMmioRegs.RESET,
-      "GPU_REG_UCMD_SAMPLE_MODE" -> GpuCommandMmioRegs.SAMPLE_MODE
+      "GPU_REG_UCMD_SAMPLE_MODE" -> GpuCommandMmioRegs.SAMPLE_MODE,
+      "GPU_REG_UCMD_VECTOR_SATP" -> GpuCommandMmioRegs.VECTOR_SATP,
+      "GPU_REG_UCMD_INSTRUCTION_SATP" -> GpuCommandMmioRegs.INSTRUCTION_SATP,
+      "GPU_REG_UCMD_TLB_FLUSH" -> GpuCommandMmioRegs.TLB_FLUSH
     ).map { case (n, v) => (n, v.toLong) })
   }
 

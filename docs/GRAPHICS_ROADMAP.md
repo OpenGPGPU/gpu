@@ -123,10 +123,11 @@ track that distinction.
   the data and instruction TLBs propagate it, and the L1 and L2 bypass both
   cache levels for `uncached` pages while stores stay write-through. This is
   the mechanism for mapping CPU-written buffers as uncached (coherent without
-  an explicit invalidate). It is present in the RTL but inert in the integrated
-  top, which still ties `satp` to zero (physical addressing); enabling the GPU
-  MMU and extending translation to the fixed-function graphics path are
-  follow-up work.
+  an explicit invalidate). The integrated top exposes `VECTOR_SATP` /
+  `INSTRUCTION_SATP` and a full `TLB_FLUSH`, so the GPU MMU is host
+  programmable. It stays in Bare mode until a driver builds page tables and
+  programs satp, and the fixed-function graphics path is still physical;
+  driver GPUVM and graphics-path translation are follow-up work.
 - Multi-CU dispatch plus copy, fill and strided DMA share the integrated memory
   hierarchy, with collision-free transaction-ID ranges for private clients.
 - Internal command-buffer, framebuffer and texture word-to-line bridges remove
