@@ -13,6 +13,10 @@ clipping, texture filtering and output merging remain fixed-function blocks.
 - Rendering: immediate mode with 2x2 fragment quads.
 - Memory: command, shader, texture, colour and depth buffers live in shared
   software-managed DRAM. There is no v1 GPU-local VRAM.
+- Address translation: an Sv32 GPU MMU translates CU data/instruction accesses
+  and the fixed-function texture path, with a per-page cache policy and
+  ASID-tagged TLBs. Mappings are driver-built and pinned; there is no
+  page-fault handling. The full plan is milestone P4.
 - Integration: the on-die RV64 Linux CPU and GPU have separate L2 caches and
   access shared DRAM through the SoC fabric. The GPU L2 is shared only by GPU
   clients (graphics, compute and DMA); the CPU does not access it.
@@ -337,6 +341,64 @@ stable. This work need not wait for all structural cleanup.
 Exit: reproducible functional/performance workloads and full-top PPA reports
 identify the remaining limits; setup, hold and routing checks are all accounted
 for. A block Fmax above 1 GHz alone is not full-top timing closure.
+
+### P4: Virtual memory and multiple address spaces
+
+The GPU MMU is enabled and carries per-page cache policy, but it currently runs
+a single identity-mapped address space shared by all clients. This milestone
+grows it into a real GPUVM layer.
+
+Implemented:
+
+- Sv32 `satp` (vector and instruction) and a full `TLB_FLUSH` are host
+  programmable; the driver enables translation at init with a 4 MiB-superpage
+  identity map, so existing physical-address bindings keep working.
+- Sv32 PTE bits [9:8] carry a per-page cache policy (cached / write-through /
+  uncached); the walker, both TLBs, the CU L1 and the shared L2 honour it, and
+  `uncached` bypasses both cache levels.
+- `opengpu_mmu` splits a 4 MiB region into a second-level table on demand and
+  maps a range with the chosen policy; CU-read kernargs default to uncached and
+  a binding may request it with `OPENGPU_RESOURCE_UNCACHED`.
+- The fixed-function texture client translates through the same page tables
+  (`GraphicsAddressTranslator`); the other graphics clients stay physical.
+
+Design notes (from the MMU/ASID review):
+
+- ASID tags TLB entries so entries from several address spaces coexist and a
+  switch needs no flush. An ASID maps to a GPU address space (one root page
+  table), not to a Linux PID; two processes may share one address space when
+  they are given the same root, in which case sharing the ASID is intended.
+- amdgpu uses a small VMID space (16) because a VMID selects a hardware
+  page-table-base register set (plus GDS/GWS/OA context), and the driver
+  multiplexes many VMs over it with an LRU, flushing that VMID's TLB on reuse.
+  Sv32 gives 9 ASID bits (512), so reuse is rarer, but the same rule holds:
+  flush an ASID before reusing it for a different page table.
+- One CU has one active `satp`, so a driver-managed coarse switch (quiesce,
+  then reprogram satp) is sufficient and needs no per-job `satp`. A hardware
+  per-job `satp` or a VMID-style base-register bank only pays off for
+  fine-grained interleaving of many address spaces.
+- Page walks are two uncached DRAM reads and the TLBs are blocking, so large
+  pages, adequate TLB capacity and (later) non-blocking translation dominate
+  the runtime cost; an ASID-scoped flush preserves other address spaces' TLB
+  entries, a full flush does not.
+
+Remaining work, cheapest first:
+
+- Extend `TLB_FLUSH` to carry an ASID (and optionally a VA/VPN), so map/unmap
+  shootdown is scoped and other address spaces stay warm.
+- Driver VM manager: an ASID allocator, one root page table per VM, global (G)
+  mappings for shared ranges, and a coarse VM switch in the scheduler.
+- Keep per-VM mappings on large pages; size the TLBs for the working set and
+  avoid blocking translation on the texture path. The `GraphicsAddressTranslator`
+  is deliberately blocking today; measure before widening it.
+- Only if many short-lived address spaces must interleave: per-job `satp` or a
+  small VMID-style page-table-base bank beyond the current global `satp`.
+- Translate the remaining graphics clients (command buffer, framebuffer) if a
+  VM-addressed graphics space is required.
+
+Exit: the driver can run several address spaces with correct scoped shootdown
+and no flush on a plain ASID switch; performance baselines quantify the
+walk/TLB cost; the single-identity-map limitation is gone.
 
 ### Later capability expansion
 
