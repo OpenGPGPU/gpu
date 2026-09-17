@@ -124,10 +124,11 @@ track that distinction.
   cache levels for `uncached` pages while stores stay write-through. This is
   the mechanism for mapping CPU-written buffers as uncached (coherent without
   an explicit invalidate). The integrated top exposes `VECTOR_SATP` /
-  `INSTRUCTION_SATP` and a full `TLB_FLUSH`, so the GPU MMU is host
-  programmable. It stays in Bare mode until a driver builds page tables and
-  programs satp, and the fixed-function graphics path is still physical;
-  driver GPUVM and graphics-path translation are follow-up work.
+  `INSTRUCTION_SATP` and a full `TLB_FLUSH`, and the driver enables Sv32 at
+  init with a 4 MiB-superpage identity map, so the CU MMUs are live while every
+  existing physical-address binding keeps working. Overriding individual pages
+  (for example to mark a CPU-written buffer uncached) and translating the
+  fixed-function graphics path are follow-up work.
 - Multi-CU dispatch plus copy, fill and strided DMA share the integrated memory
   hierarchy, with collision-free transaction-ID ranges for private clients.
 - Internal command-buffer, framebuffer and texture word-to-line bridges remove

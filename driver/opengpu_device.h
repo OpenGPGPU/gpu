@@ -135,6 +135,8 @@ struct opengpu_compute {
     struct opengpu_buffer depth;
     struct opengpu_buffer shader;
     struct opengpu_buffer kernarg;
+    /** Sv32 identity-map root page table (see opengpu_hw_enable_mmu). */
+    struct opengpu_buffer mmu_root;
     struct drm_gpu_scheduler scheduler;
 };
 
@@ -254,6 +256,7 @@ int opengpu_hw_invalidate_async(struct opengpu_device *gpu, u32 address,
                                 u32 bytes,
                                 const struct opengpu_command_events *events,
                                 struct dma_fence **fence);
+int opengpu_hw_enable_mmu(struct opengpu_device *gpu, dma_addr_t root_table);
 int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              const struct opengpu_kernel_launch *launch,
                              const struct opengpu_command_events *events,

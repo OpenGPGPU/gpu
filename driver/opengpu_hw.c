@@ -1552,6 +1552,27 @@ int opengpu_hw_resolve_async(struct opengpu_device *gpu, u32 source,
     return ret;
 }
 
+/** Enable Sv32 translation with a driver-built identity map.  `root_table` is
+ * the physical address of a 4 KiB root page table whose 1024 entries are
+ * 4 MiB identity superpages; a full TLB flush is issued to commit the change.
+ * The map is deliberately identity so existing physical-address bindings keep
+ * working; a later mapping layer can override individual pages (for example to
+ * mark a CPU-written buffer uncached). */
+int opengpu_hw_enable_mmu(struct opengpu_device *gpu, dma_addr_t root_table)
+{
+    u32 ppn;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
+        return -EOPNOTSUPP;
+    if (upper_32_bits(root_table) || (root_table & 0xfff))
+        return -EINVAL;
+    ppn = lower_32_bits(root_table) >> 12;
+    opengpu_reg_write(gpu, GPU_REG_UCMD_VECTOR_SATP, (1u << 31) | ppn);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_INSTRUCTION_SATP, (1u << 31) | ppn);
+    opengpu_reg_write(gpu, GPU_REG_UCMD_TLB_FLUSH, 1);
+    return 0;
+}
+
 int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              const struct opengpu_kernel_launch *launch,
                              const struct opengpu_command_events *events,
