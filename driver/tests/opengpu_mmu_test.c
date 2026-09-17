@@ -118,6 +118,7 @@ int main(void)
     u32 i;
 
     assert(!opengpu_mmu_init(&gpu));
+    assert((((u32 *)gpu.mmu.root.cpu)[0] & 0x20) != 0); /* global identity */
     memcpy(root_before, gpu.mmu.root.cpu, sizeof(root_before));
     idle_error = -ETIMEDOUT;
     assert(opengpu_mmu_set_range_policy(&gpu, 0, 4096, 2) == -ETIMEDOUT);
@@ -132,8 +133,8 @@ int main(void)
     allocations_until_failure = -1;
     assert(!opengpu_mmu_set_range_policy(&gpu, 0x3ff000, 8192, 2));
     assert(gpu.mmu.l1_count == 2 && flushes == 1);
-    assert((((u32 *)gpu.mmu.l1[0].cpu)[1023] & 0x300) == 0x200);
-    assert((((u32 *)gpu.mmu.l1[1].cpu)[0] & 0x300) == 0x200);
+    assert((((u32 *)gpu.mmu.l1[0].cpu)[1023] & 0x320) == 0x220);
+    assert((((u32 *)gpu.mmu.l1[1].cpu)[0] & 0x320) == 0x220);
     assert((((u32 *)gpu.mmu.l1[0].cpu)[1022] & 0x300) == 0);
 
     /* Existing PTEs must also survive allocation failure in a later region. */
@@ -170,6 +171,9 @@ int main(void)
         assert(live_allocations == base_live + 1);
         assert(asid_flushes == base_asid + 1);
         assert((((u32 *)vm.root.cpu)[0] & 0x300) == 0);
+        /* The VM shares the global identity map, with the global (G) bit. */
+        assert((((u32 *)vm.root.cpu)[512] & 0x20) != 0);
+        assert(!memcmp(vm.root.cpu, gpu.mmu.root.cpu, MMU_PAGE_SIZE));
 
         assert(!opengpu_mmu_vm_activate(&gpu, &vm));
         assert(satp_programs == 1);

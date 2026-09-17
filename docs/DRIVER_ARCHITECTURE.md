@@ -108,8 +108,10 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
   update need not empty the whole TLB; the fixed-function texture translator
   tracks no ASID and is cleared by any flush pulse. An ASID allocator
   (`opengpu_asid.h`) and per-VM root tables (`opengpu_mmu_vm_create` /
-  `_activate` / `_destroy`) are in place; the scheduler does not select a VM
-  per submission yet, so work still runs in the ASID-0 identity space.
+  `_activate` / `_destroy`) are in place; a VM clones the global identity map
+  and all leaf PTEs carry the Sv32 global (G) bit, so an ASID switch reuses
+  the resident translations. The scheduler does not select a VM per submission
+  yet, so work still runs in the ASID-0 identity space.
 - Texture translation/access faults drain the render and report an error
   completion: STATUS.ERROR for legacy submissions, plus IH status 2 and ERROR
   for queued jobs. The existing IH handler signals the owning fence with -EIO.

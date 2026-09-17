@@ -18,15 +18,18 @@
 #define MMU_L1_ENTRIES      1024u
 #define MMU_ROOT_ENTRIES    1024u
 
-/* Sv32 PTE flag bits. */
+/* Sv32 PTE flag bits.  Mappings are global (G): every VM root is a copy of
+ * the driver's identity map, so a translation stays valid across an ASID
+ * switch and the TLB keeps it resident. */
 #define MMU_PTE_V 0x001u
 #define MMU_PTE_R 0x002u
 #define MMU_PTE_W 0x004u
 #define MMU_PTE_X 0x008u
+#define MMU_PTE_G 0x020u
 #define MMU_PTE_A 0x040u
 #define MMU_PTE_D 0x080u
 #define MMU_PTE_LEAF_FLAGS (MMU_PTE_V | MMU_PTE_R | MMU_PTE_W | MMU_PTE_X | \
-                            MMU_PTE_A | MMU_PTE_D)
+                            MMU_PTE_G | MMU_PTE_A | MMU_PTE_D)
 #define MMU_PTE_POLICY_SHIFT 8u
 
 static u32 mmu_leaf_pte(dma_addr_t phys, u32 policy)
@@ -51,6 +54,17 @@ static void mmu_fill_identity(u32 *root, u32 policy)
 
     for (i = 0; i < MMU_ROOT_ENTRIES; i++)
         root[i] = mmu_leaf_pte((dma_addr_t)i * MMU_SUPERPAGE_SIZE, policy);
+}
+
+/* Clone a root table.  A new VM shares the driver's global identity map,
+ * including any split L1 link entries, so a switch reuses the same
+ * translations; the G bit keeps them resident across ASIDs. */
+static void mmu_copy_root(u32 *destination, const u32 *source)
+{
+    u32 i;
+
+    for (i = 0; i < MMU_ROOT_ENTRIES; i++)
+        destination[i] = source[i];
 }
 
 /* Find the second-level table for a 4 MiB region, splitting the identity
@@ -216,7 +230,9 @@ int opengpu_mmu_vm_create(struct opengpu_device *gpu, struct opengpu_vm *vm)
     ret = opengpu_buffer_alloc(gpu, &vm->root, MMU_PAGE_SIZE);
     if (ret)
         return ret;
-    mmu_fill_identity(vm->root.cpu, OPENGPU_MMU_POLICY_CACHED);
+    /* Share the global identity map so the new VM starts with every existing
+     * binding, including uncached kernargs, and a switch refills nothing. */
+    mmu_copy_root(vm->root.cpu, mmu->root.cpu);
     dma_wmb();
 
     mutex_lock(&mmu->lock);

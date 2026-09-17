@@ -185,4 +185,93 @@ class VectorTlbSpec extends AnyFlatSpec {
       dut.io.pageWalkRequest.valid.expect(true.B)
     }
   }
+
+  it should "keep a global entry resident across an ASID switch and flush" in {
+    val config = GpuConfig(lanes = 2, warps = 1)
+    simulate(new VectorTlb(config, entries = 4)) { dut =>
+      dut.reset.poke(true.B)
+      dut.io.in.valid.poke(false.B)
+      dut.io.translationEnabled.poke(true.B)
+      dut.io.asid.poke(5.U)
+      dut.io.flush.valid.poke(false.B)
+      dut.io.out.ready.poke(true.B)
+      dut.io.physicalRequest.ready.poke(false.B)
+      dut.io.physicalResponse.valid.poke(false.B)
+      dut.io.pageWalkRequest.ready.poke(true.B)
+      dut.io.pageWalkResponse.valid.poke(false.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      def begin(address: BigInt): Unit = {
+        dut.io.in.valid.poke(true.B)
+        dut.io.in.bits.warpId.poke(0.U)
+        dut.io.in.bits.lineAddress.poke(address.U)
+        dut.io.in.bits.writeData.poke(0.U)
+        dut.io.in.bits.byteMask.poke(1.U)
+        dut.io.in.bits.isStore.poke(false.B)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+        dut.clock.step()
+      }
+
+      def completeWalk(ppn: BigInt, global: Boolean): Unit = {
+        dut.clock.step()
+        dut.io.pageWalkResponse.valid.poke(true.B)
+        dut.io.pageWalkResponse.bits.physicalPageNumber.poke(ppn.U)
+        dut.io.pageWalkResponse.bits.readable.poke(true.B)
+        dut.io.pageWalkResponse.bits.writable.poke(true.B)
+        dut.io.pageWalkResponse.bits.global.poke(global.B)
+        dut.io.pageWalkResponse.bits.fault.poke(false.B)
+        dut.clock.step()
+        dut.io.pageWalkResponse.valid.poke(false.B)
+        dut.io.physicalRequest.ready.poke(true.B)
+        dut.clock.step()
+        dut.io.physicalResponse.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.physicalResponse.valid.poke(false.B)
+        dut.io.physicalRequest.ready.poke(false.B)
+      }
+
+      def walk(address: BigInt, ppn: BigInt, global: Boolean): Unit = {
+        begin(address)
+        dut.io.pageWalkRequest.valid.expect(true.B)
+        completeWalk(ppn, global)
+      }
+
+      // One global mapping and one private mapping in ASID 5.
+      walk(0x10000040L, 0x11111, global = true)
+      walk(0x20000040L, 0x22222, global = false)
+
+      // Switch to ASID 7: the global entry is shared, the private one is not.
+      dut.io.asid.poke(7.U)
+      begin(0x10000080L)
+      dut.io.pageWalkRequest.valid.expect(false.B)
+      dut.io.physicalRequest.valid.expect(true.B)
+      dut.io.physicalRequest.bits.lineAddress.expect("h11111080".U)
+      dut.io.physicalRequest.ready.poke(true.B)
+      dut.clock.step()
+      dut.io.physicalResponse.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.physicalResponse.valid.poke(false.B)
+      dut.io.physicalRequest.ready.poke(false.B)
+
+      begin(0x20000080L)
+      dut.io.pageWalkRequest.valid.expect(true.B)
+      completeWalk(0x33333, global = false)
+
+      // An ASID-scoped flush of ASID 7 drops its private entry but keeps the
+      // global mapping resident.
+      dut.io.flush.valid.poke(true.B)
+      dut.io.flush.bits.virtualPageNumberValid.poke(false.B)
+      dut.io.flush.bits.asidValid.poke(true.B)
+      dut.io.flush.bits.asid.poke(7.U)
+      dut.clock.step()
+      dut.io.flush.valid.poke(false.B)
+
+      begin(0x100000c0L)
+      dut.io.pageWalkRequest.valid.expect(false.B)
+      dut.io.physicalRequest.valid.expect(true.B)
+      dut.io.physicalRequest.bits.lineAddress.expect("h111110c0".U)
+    }
+  }
 }
