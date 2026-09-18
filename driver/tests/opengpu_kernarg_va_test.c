@@ -102,6 +102,15 @@ int main(void)
 	assert(opengpu_render_va_plan(0, OPENGPU_RENDER_VA_STRIDE + 1, 1, PAGE,
 				      &plan) == OPENGPU_KERNARG_VA_E_RANGE);
 
+	/* The vertex-buffer window is disjoint from the render window. */
+	assert(opengpu_vertex_va_plan(0x88888000, 0x600, 1, PAGE, &plan) ==
+	       OPENGPU_KERNARG_VA_OK);
+	assert(plan.va_page == OPENGPU_VERTEX_VA_BASE + OPENGPU_VERTEX_VA_STRIDE);
+	assert(plan.pa_page == 0x88888000);
+	assert(plan.span == PAGE);
+	assert(plan.va_page >= OPENGPU_RENDER_VA_BASE +
+	       OPENGPU_RENDER_VA_STRIDE);
+
 	puts("kernarg VA planner tests passed");
 	return 0;
 }

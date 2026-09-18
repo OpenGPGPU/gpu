@@ -575,6 +575,29 @@ static int opengpu_binding_map_render(struct opengpu_device *gpu,
     return 0;
 }
 
+/* Map a vertex buffer binding into the context VM, so the vertex shader reads
+ * it through a virtual address under the context's ASID. */
+static int opengpu_binding_map_vertex(struct opengpu_device *gpu,
+                                      struct opengpu_render_context *context,
+                                      struct opengpu_resource_binding *binding,
+                                      u32 slot)
+{
+    struct opengpu_kernarg_va_plan plan;
+    int ret;
+
+    ret = opengpu_vertex_va_plan(binding->dma, binding->size, slot,
+                                 OPENGPU_MMU_PAGE_SIZE, &plan);
+    if (ret)
+        return ret;
+    ret = opengpu_mmu_vm_map(gpu, &context->vm, (dma_addr_t)plan.va_page,
+                             (dma_addr_t)plan.pa_page, (size_t)plan.span,
+                             OPENGPU_MMU_POLICY_CACHED);
+    if (ret)
+        return ret;
+    binding->va = (dma_addr_t)plan.va;
+    return 0;
+}
+
 /* Global (identity) uncached mapping, the fallback when a private VM mapping
  * is not possible; directly-read bindings are also invalidated here when the
  * MMU cannot take a policy split (no MMU, or table capacity). */
@@ -705,12 +728,10 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
     /* A compute kernarg is mapped privately into the context's VM and reached
      * through a virtual address, so contexts with different physical kernargs
      * are isolated at the same VA.  Fall back to the global uncached mapping
-     * when the private mapping is unavailable.  Other kernarg bindings and
-     * textures requesting OPENGPU_RESOURCE_UNCACHED take the global uncached
-     * path. Fixed-function textures without that flag, plus vertex buffers,
-     * keep bind-time invalidate (graphics shader CUs still run Bare for
-     * those). Shaders are snapshotted; command records are fetched uncached
-     * by the fixed-function CB port. */
+     * when the private mapping is unavailable.  Textures, vertex buffers and
+     * the render descriptor/command snapshot are mapped privately too; other
+     * kernarg bindings and textures requesting OPENGPU_RESOURCE_UNCACHED take
+     * the global uncached path. Shaders are snapshotted. */
     if (args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG &&
         context->vm.enabled) {
         ret = opengpu_binding_map_kernarg(gpu, context, binding, args->slot);
@@ -735,6 +756,14 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
              * at the upload boundary. */
             ret = opengpu_binding_invalidate(gpu, binding);
         }
+        if (ret)
+            goto out_file;
+    } else if (args->type == OPENGPU_RESOURCE_VERTEX_BUFFER &&
+               context->vm.enabled) {
+        /* The vertex shader reads the buffer through the context VM; keep the
+         * bind-time invalidate for the CPU-written upload. */
+        opengpu_binding_map_vertex(gpu, context, binding, args->slot);
+        ret = opengpu_binding_invalidate(gpu, binding);
         if (ret)
             goto out_file;
     } else if (args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG ||
@@ -1166,7 +1195,8 @@ static int opengpu_validate_vertex_commands(
                 record->frag_kernarg_bank_stride, 9, false,
                 texture != NULL))
             return -EINVAL;
-        record->vert_buffer_base += lower_32_bits(vertex_buffer->dma);
+        record->vert_buffer_base += lower_32_bits(vertex_buffer->va ?
+            vertex_buffer->va : vertex_buffer->dma);
         record->vert_shader_pc += lower_32_bits(vertex_shader->dma);
         record->vert_kernarg += lower_32_bits(vertex_kernarg->dma);
         record->frag_shader_pc += lower_32_bits(fragment_shader->dma);
