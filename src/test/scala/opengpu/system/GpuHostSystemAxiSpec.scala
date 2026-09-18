@@ -819,4 +819,162 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
         s"(5,5) must be blended to black through the AXI job ring, got $rgb")
     }
   }
+
+  it should "render through the job ring after a unified kernel command" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      def q(v: Double): Int = (v * (1 << 16)).toInt
+      val programBase = 0x3000
+      val kernargBase = 0x3800
+      val cmdBase = 0x4000
+      val colorBase = 0x8000L
+      val depthBase = 0x9000L
+      val ringBase = 0x10000
+      val ihBase = 0x20000
+      val stride = 64
+      val words = mutable.LongMap[BigInt]()
+      def ww(addr: Int, v: Int): Unit =
+        words(addr.toLong) = BigInt(v & 0xffffffffL)
+
+      // A minimal compute kernel and its input, as in the unified-kernel test.
+      val lw = BigInt("0000a483", 16)
+      val sw = BigInt("0090a223", 16)
+      val cease = BigInt("30500073", 16)
+      val programLine = lw | (sw << 32) | (cease << 64)
+      val input = BigInt("cafe0001", 16)
+
+      def tri(x: Int, y: Int, d: Int) =
+        ((x, y, 0, q(1.0)), (0, 255, 0), d)
+      val big = Seq(
+        tri(q(-1.0), q(-1.0), 0x10),
+        tri(q(1.0), q(-1.0), 0x10),
+        tri(q(-1.0), q(1.0), 0x10))
+      def encode(record: Seq[((Int, Int, Int, Int), (Int, Int, Int), Int)]): Seq[Int] = {
+        val w = Seq.newBuilder[Int]
+        for (i <- 0 until 3) {
+          w += record(i)._1._1; w += record(i)._1._2
+          w += record(i)._1._3; w += record(i)._1._4
+        }
+        for (i <- 0 until 3) {
+          w += record(i)._2._1; w += record(i)._2._2; w += record(i)._2._3
+        }
+        for (i <- 0 until 3) { w += record(i)._3 }
+        w += 0; w += 0
+        for (_ <- 0 until 6) { w += 0 } // uv0..uv2
+        for (_ <- 0 until 8) { w += 0 } // state override + reserved
+        w.result()
+      }
+      val state = 1 | (1 << 1) | (1 << 4) | (1 << 7) | (1 << 17)
+      val masks = (0xff << 8) | (0xff << 16)
+      def record(blend: Int, stencilCfg: Int, ref: Int): Array[Int] = {
+        val w = encode(big).toArray
+        w(32) = state
+        w(35) = blend
+        w(36) = stencilCfg
+        w(37) = ref
+        w
+      }
+      val draw0 = record(0, 6 | (2 << 9), 0x5a | masks)
+      val blendPass = 1 | (1 << 4) | (1 << 8) | (2 << 12)
+      val draw1 = record(blendPass, 4, 0x5a | masks)
+      val draw2 = record(0, 4, 0x33 | masks)
+      (draw0 ++ draw1 ++ draw2).zipWithIndex.foreach {
+        case (v, i) => ww(cmdBase + i * 4, v)
+      }
+      for (i <- 0 until (16 * 16)) ww((depthBase + i * 4).toInt, 0x00ffffff)
+      val descriptor = Seq((1 & 0xffff) | ((3 & 0xffff) << 16),
+        cmdBase, colorBase.toInt, depthBase.toInt, stride, 0, 0, 0, 0, 0) ++
+        Seq.fill(6)(0)
+      descriptor.zipWithIndex.foreach {
+        case (v, i) => ww(ringBase + i * 4, v)
+      }
+
+      def readLine(addr: BigInt): BigInt = {
+        val base = addr.toLong & ~63L
+        (0 until 16)
+          .map(i => words.getOrElse(base + i * 4L, BigInt(0)) << (32 * i))
+          .reduce(_ | _)
+      }
+      def writeLine(addr: BigInt, data: BigInt, strb: BigInt): Unit = {
+        val base = addr.toLong & ~63L
+        for (i <- 0 until 16) {
+          var v = words.getOrElse(base + i * 4L, BigInt(0))
+          for (b <- 0 until 4) {
+            val byte = i * 4 + b
+            if (((strb >> byte) & 1) != 0)
+              v = (v & ~(BigInt(0xff) << (b * 8))) |
+                (((data >> (byte * 8)) & 0xff) << (b * 8))
+          }
+          words(base + i * 4L) = v
+        }
+      }
+
+      // 1) Unified kernel command.
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 11)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE,
+        GpuCommandOpcode.kernel.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.KERNEL_PC, programBase)
+      axiWrite(dut, GpuCommandMmioRegs.KERNARG, kernargBase)
+      Seq(GpuCommandMmioRegs.GRID_X, GpuCommandMmioRegs.GRID_Y,
+        GpuCommandMmioRegs.GRID_Z, GpuCommandMmioRegs.LOCAL_X,
+        GpuCommandMmioRegs.LOCAL_Y, GpuCommandMmioRegs.LOCAL_Z).foreach {
+          address => axiWrite(dut, address, 1)
+        }
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      val instructionRead = acceptMemoryRead(dut, programLine)
+      assert(instructionRead._1 == programBase)
+      val kernargRead = acceptMemoryRead(dut, input)
+      assert(kernargRead._1 == kernargBase)
+      val kernargWrite = acceptMemoryWrite(dut)
+      assert(kernargWrite.address == kernargBase)
+      var cycles = 0
+      var status = axiRead(dut, GpuCommandMmioRegs.STATUS)
+      while ((status & 0x2L) == 0L && cycles < 80) {
+        status = axiRead(dut, GpuCommandMmioRegs.STATUS)
+        cycles += 1
+      }
+      assert((status & 0x2L) != 0L, "kernel completion did not reach MMIO")
+      axiWrite(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
+
+      // 2) A second unified kernel on fresh pages, as the guest test does.
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 12)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE,
+        GpuCommandOpcode.kernel.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.KERNEL_PC, 0x5000)
+      axiWrite(dut, GpuCommandMmioRegs.KERNARG, 0x5800)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      val instructionRead2 = acceptMemoryRead(dut, programLine)
+      assert(instructionRead2._1 == 0x5000)
+      val kernargRead2 = acceptMemoryRead(dut, input)
+      assert(kernargRead2._1 == 0x5800)
+      val kernargWrite2 = acceptMemoryWrite(dut)
+      assert(kernargWrite2.address == 0x5800)
+      cycles = 0
+      status = axiRead(dut, GpuCommandMmioRegs.STATUS)
+      while ((status & 0x2L) == 0L && cycles < 80) {
+        status = axiRead(dut, GpuCommandMmioRegs.STATUS)
+        cycles += 1
+      }
+      assert((status & 0x2L) != 0L, "second kernel completion did not reach MMIO")
+      axiWrite(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
+
+      // 3) Fixed-function render through the job ring.
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+      axiWrite(dut, RenderHostRegs.JOB_RING_BASE, ringBase)
+      axiWrite(dut, RenderHostRegs.JOB_RING_SIZE, 4)
+      axiWrite(dut, RenderHostRegs.JOB_WPTR, 1)
+      axiWrite(dut, RenderHostRegs.IH_BASE, ihBase)
+      axiWrite(dut, RenderHostRegs.IH_SIZE, 4)
+      axiWrite(dut, RenderHostRegs.JOB_CONTROL, 1)
+      serviceMemoryMaster(dut, readLine)(writeLine) {
+        dut.io.m_irq.peek().litToBoolean
+      }
+      val c = words.getOrElse(colorBase + (5 * 16 + 5) * 4L, BigInt(0)).toInt
+      val rgb = (((c >> 24) & 0xff), ((c >> 16) & 0xff), ((c >> 8) & 0xff))
+      assert(rgb == (0, 0, 0),
+        s"render after kernel lost its coverage, got $rgb")
+    }
+  }
 }
