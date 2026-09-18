@@ -598,6 +598,29 @@ static int opengpu_binding_map_vertex(struct opengpu_device *gpu,
     return 0;
 }
 
+/* Map the colour or depth plane into the context VM, so the output merger
+ * reads and writes the render target through the context's ASID. */
+static int opengpu_binding_map_framebuffer(struct opengpu_device *gpu,
+                                           struct opengpu_render_context *context,
+                                           dma_addr_t dma, size_t size,
+                                           u32 slot, dma_addr_t *out_va)
+{
+    struct opengpu_kernarg_va_plan plan;
+    int ret;
+
+    ret = opengpu_framebuffer_va_plan(dma, size, slot,
+                                      OPENGPU_MMU_PAGE_SIZE, &plan);
+    if (ret)
+        return ret;
+    ret = opengpu_mmu_vm_map(gpu, &context->vm, (dma_addr_t)plan.va_page,
+                             (dma_addr_t)plan.pa_page, (size_t)plan.span,
+                             OPENGPU_MMU_POLICY_CACHED);
+    if (ret)
+        return ret;
+    *out_va = (dma_addr_t)plan.va;
+    return 0;
+}
+
 /* Global (identity) uncached mapping, the fallback when a private VM mapping
  * is not possible; directly-read bindings are also invalidated here when the
  * MMU cannot take a policy split (no MMU, or table capacity). */
@@ -1343,6 +1366,23 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
             snapshots[snapshot_count++] = &job->shader;
         if (job->vertex_shader.cpu)
             snapshots[snapshot_count++] = &job->vertex_shader;
+
+        /* Reach the colour and depth planes through the context VM too, so the
+         * output merger translates render-target traffic under this ASID.  The
+         * windows are remapped per job; the previous job has drained. */
+        if (vm && job->context) {
+            size_t fb_bytes = (size_t)job->hw.stride * job->gpu->height;
+            dma_addr_t color_va = 0, depth_va = 0;
+
+            if (job->hw.color && fb_bytes &&
+                opengpu_binding_map_framebuffer(job->gpu, job->context,
+                    job->hw.color, fb_bytes, 1, &color_va) == 0)
+                job->hw.color = (u32)color_va;
+            if (job->hw.depth && fb_bytes &&
+                opengpu_binding_map_framebuffer(job->gpu, job->context,
+                    job->hw.depth, fb_bytes, 2, &depth_va) == 0)
+                job->hw.depth = (u32)depth_va;
+        }
 
         /* Prefer the unified render command, which fetches the descriptor and
          * command buffer through the context VM.  Fall back to the legacy/job

@@ -111,6 +111,18 @@ int main(void)
 	assert(plan.va_page >= OPENGPU_RENDER_VA_BASE +
 	       OPENGPU_RENDER_VA_STRIDE);
 
+	/* The framebuffer window (colour slot then depth slot) is its own. */
+	assert(opengpu_framebuffer_va_plan(0x99999000, 0x4000, 1, PAGE, &plan) ==
+	       OPENGPU_KERNARG_VA_OK);
+	assert(plan.va_page ==
+	       OPENGPU_FRAMEBUFFER_VA_BASE + OPENGPU_FRAMEBUFFER_VA_STRIDE);
+	assert(plan.pa_page == 0x99999000);
+	assert(plan.va_page >= OPENGPU_VERTEX_VA_BASE +
+	       OPENGPU_VERTEX_VA_STRIDE);
+	assert(opengpu_framebuffer_va_plan(0, OPENGPU_FRAMEBUFFER_VA_STRIDE + 1,
+					  1, PAGE, &plan) ==
+	       OPENGPU_KERNARG_VA_E_RANGE);
+
 	puts("kernarg VA planner tests passed");
 	return 0;
 }

@@ -1298,7 +1298,7 @@ static int wait_syncobjs(int fd, uint32_t *handles, uint32_t count)
         return -1;
     return wait_syncobjs_timeout(fd, handles, count,
                                  (int64_t)now.tv_sec * 1000000000ll +
-                                 now.tv_nsec + 30000000000ll);
+                                 now.tv_nsec + 300000000000ll);
 }
 
 int main(void)

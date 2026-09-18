@@ -496,11 +496,12 @@ Staged work, each independently testable:
   16-word render descriptor, maps it into the context VM at its own window and
   submits `GPU_UCMD_OP_RENDER` with the descriptor VA; the job-ring path stays
   as the fallback. The ARTI/QEMU guest test passes on the unified path.
-- [ ] **S5:** route the remaining graphics fetches through translated clients.
-  The command buffer, the render descriptor and the vertex buffer are mapped
-  into the context VM at their own windows; the framebuffer client still uses
-  physical addresses and is the last client to translate (cached, high-volume:
-  measure the blocking-translation latency before widening it).
+- [x] **S5:** route the remaining graphics fetches through translated clients.
+  The command buffer, the render descriptor, the vertex buffer and the colour
+  and depth planes are mapped into the context VM at their own windows, so
+  every graphics client translates through the shared page tables. The
+  framebuffer translator is a third `GraphicsAddressTranslator` instance and is
+  verified end to end by the guest test's render/scanout result check.
 - [ ] **S6:** retire the job ring, the legacy `START` snapshot and the admin
   word port; update `GpuAbiLayoutSpec`, capability discovery and the negative
   UAPI tests.

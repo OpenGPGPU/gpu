@@ -39,6 +39,8 @@ typedef uint32_t opengpu_kernarg_u32;
 #define OPENGPU_RENDER_VA_STRIDE  (4ull * 1024ull * 1024ull)
 #define OPENGPU_VERTEX_VA_BASE    0xb8000000ull
 #define OPENGPU_VERTEX_VA_STRIDE  (4ull * 1024ull * 1024ull)
+#define OPENGPU_FRAMEBUFFER_VA_BASE 0xbc000000ull
+#define OPENGPU_FRAMEBUFFER_VA_STRIDE (4ull * 1024ull * 1024ull)
 
 enum opengpu_kernarg_va_status {
 	OPENGPU_KERNARG_VA_OK = 0,
@@ -130,6 +132,17 @@ static inline int opengpu_vertex_va_plan(opengpu_kernarg_u64 dma,
 	return opengpu_resource_va_plan(dma, size, slot, page_size,
 					OPENGPU_VERTEX_VA_BASE,
 					OPENGPU_VERTEX_VA_STRIDE, out);
+}
+
+static inline int opengpu_framebuffer_va_plan(opengpu_kernarg_u64 dma,
+					      opengpu_kernarg_u64 size,
+					      opengpu_kernarg_u32 slot,
+					      opengpu_kernarg_u32 page_size,
+					      struct opengpu_kernarg_va_plan *out)
+{
+	return opengpu_resource_va_plan(dma, size, slot, page_size,
+					OPENGPU_FRAMEBUFFER_VA_BASE,
+					OPENGPU_FRAMEBUFFER_VA_STRIDE, out);
 }
 
 #endif /* OPENGPU_KERNARG_VA_H */
