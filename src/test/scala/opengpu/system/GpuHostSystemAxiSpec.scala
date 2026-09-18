@@ -326,7 +326,7 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
     }
   }
 
-  it should "serve command-buffer words from the shared L2" in {
+  it should "fetch command-buffer words through the uncached path" in {
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
     val gpu = GpuConfig(
       lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
@@ -340,14 +340,18 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
       axiWrite(dut, RenderHostRegs.DEPTH_BASE, 0x9000)
       axiWrite(dut, RenderHostRegs.STRIDE, 64)
       axiWrite(dut, RenderHostRegs.CONTROL, 1)
-      val first = acceptMemoryRead(dut, 0)
-      assert(first._1 == commandBase)
 
-      // Sixteen zero command words occupy the first cache line. Consuming the
-      // returned line must let the command parser advance to the next line.
-      val second = acceptMemoryRead(dut, 0, respond = false)
-      assert(second._1 == commandBase + 64,
-        "command parser did not consume the first shared-L2 cache line")
+      // The command port bypasses L2 so a CPU-written snapshot stays coherent,
+      // so each of the sixteen words in the first line is a fresh memory read
+      // of that line; the parser advances only after the line is consumed.
+      for (_ <- 0 until 16) {
+        val read = acceptMemoryRead(dut, 0)
+        assert(read._1 == commandBase,
+          "an uncached command word must re-read its line")
+      }
+      val next = acceptMemoryRead(dut, 0, respond = false)
+      assert(next._1 == commandBase + 64,
+        "command parser did not advance past the first line")
     }
   }
 
