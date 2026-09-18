@@ -1118,15 +1118,8 @@ int opengpu_hw_submit_async(struct opengpu_device *gpu,
                             const struct opengpu_vm *vm,
                             struct dma_fence **out_fence)
 {
-    int ret;
-
-    ret = opengpu_hw_validate_job(job, out_fence);
-    if (ret)
-        return ret;
-    mutex_lock(&gpu->hw.submit_lock);
-    ret = opengpu_hw_submit_locked(gpu, job, vm, out_fence);
-    mutex_unlock(&gpu->hw.submit_lock);
-    return ret;
+    return opengpu_hw_draw_submit_async(gpu, job, NULL, 0, false, 0, 0, 0, vm,
+                                        out_fence);
 }
 
 int opengpu_hw_submit(struct opengpu_device *gpu,
@@ -1742,17 +1735,82 @@ int opengpu_hw_compute_async(struct opengpu_device *gpu,
     return ret;
 }
 
-/** Clear private job storage and publish the corresponding draw without an
- * intervening submission.  Holding submit_lock across both operations keeps
- * the legacy misc ABI and DRM contexts from inserting a draw between the
- * clear and its owner.  The DRM scheduler's one-credit policy guarantees that
- * the previous scheduled draw has completed before this entry point runs. */
-int opengpu_hw_clear_and_submit_async(struct opengpu_device *gpu,
-                                      const struct opengpu_job *job,
-                                      u32 clear_base, u32 clear_bytes,
-                                      u32 clear_pattern,
-                                      const struct opengpu_vm *vm,
-                                      struct dma_fence **out_fence)
+/* Drop shared-L2 lines covering a CPU-written coherent DMA buffer.  dma_alloc
+ * reuses physical pages whose prior GPU-L2 tags can otherwise shadow the
+ * memcpy the ioctl just performed.  Called with submit_lock held; waits for
+ * the invalidate to retire before the caller doorbells the draw. */
+static int opengpu_hw_invalidate_buffer_locked(
+    struct opengpu_device *gpu, const struct opengpu_buffer *buffer)
+{
+    struct dma_fence *fence;
+    u64 start, end;
+    u32 bytes;
+    long timeout;
+    int ret;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS) || !buffer ||
+        !buffer->cpu || !buffer->size)
+        return 0;
+    start = (u64)buffer->dma & ~(u64)63;
+    if (check_add_overflow((u64)buffer->dma, (u64)buffer->size, &end))
+        return -ERANGE;
+    end = (end + 63ull) & ~(u64)63;
+    if (start > U32_MAX || end > (1ull << 32) || end - start > U32_MAX)
+        return -ERANGE;
+    bytes = (u32)(end - start);
+    if (!bytes)
+        return 0;
+    if (opengpu_hw_execution_busy(gpu))
+        return -EBUSY;
+
+    ret = opengpu_hw_unified_submit_locked(
+        gpu, NULL, NULL, GPU_UCMD_OP_INVALIDATE, (u32)start, 0, bytes, 0, 0,
+        0, 0, 0, bytes, NULL, &fence);
+    if (ret)
+        return ret;
+    timeout = dma_fence_wait_timeout(
+        fence, false, msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS + 100));
+    if (timeout <= 0) {
+        opengpu_hw_abort(gpu, timeout < 0 ? (int)timeout : -ETIMEDOUT);
+        ret = timeout < 0 ? (int)timeout : -ETIMEDOUT;
+    } else {
+        ret = dma_fence_get_status(fence);
+        if (ret > 0)
+            ret = 0;
+    }
+    dma_fence_put(fence);
+    return ret;
+}
+
+static int opengpu_hw_invalidate_snapshots_locked(
+    struct opengpu_device *gpu,
+    const struct opengpu_buffer *const *snapshots, unsigned int count)
+{
+    unsigned int i;
+    int ret;
+
+    for (i = 0; i < count; i++) {
+        ret = opengpu_hw_invalidate_buffer_locked(gpu, snapshots[i]);
+        if (ret)
+            return ret;
+    }
+    return 0;
+}
+
+/** Invalidate CPU-written snapshots, optionally clear private depth storage,
+ * and publish the draw without an intervening submission.  Holding
+ * submit_lock across the sequence keeps the legacy misc ABI and DRM contexts
+ * from inserting work between the precursors and the doorbell.  The DRM
+ * scheduler's one-credit policy guarantees that the previous scheduled job
+ * has completed before this entry point runs. */
+int opengpu_hw_draw_submit_async(struct opengpu_device *gpu,
+                                 const struct opengpu_job *job,
+                                 const struct opengpu_buffer *const *snapshots,
+                                 unsigned int snapshot_count,
+                                 bool clear_depth, u32 clear_base,
+                                 u32 clear_bytes, u32 clear_pattern,
+                                 const struct opengpu_vm *vm,
+                                 struct dma_fence **out_fence)
 {
     int ret;
 
@@ -1760,12 +1818,29 @@ int opengpu_hw_clear_and_submit_async(struct opengpu_device *gpu,
     if (ret)
         return ret;
     mutex_lock(&gpu->hw.submit_lock);
-    ret = opengpu_hw_clear_locked(gpu, clear_base, clear_bytes,
-                                  clear_pattern);
+    ret = opengpu_hw_invalidate_snapshots_locked(gpu, snapshots,
+                                                 snapshot_count);
+    if (!ret && clear_depth)
+        ret = opengpu_hw_clear_locked(gpu, clear_base, clear_bytes,
+                                      clear_pattern);
     if (!ret)
         ret = opengpu_hw_submit_locked(gpu, job, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
+}
+
+/** Clear private job storage and publish the corresponding draw without an
+ * intervening submission. */
+int opengpu_hw_clear_and_submit_async(struct opengpu_device *gpu,
+                                      const struct opengpu_job *job,
+                                      u32 clear_base, u32 clear_bytes,
+                                      u32 clear_pattern,
+                                      const struct opengpu_vm *vm,
+                                      struct dma_fence **out_fence)
+{
+    return opengpu_hw_draw_submit_async(gpu, job, NULL, 0, true, clear_base,
+                                        clear_bytes, clear_pattern, vm,
+                                        out_fence);
 }
 
 int opengpu_hw_display_commit(struct opengpu_device *gpu,

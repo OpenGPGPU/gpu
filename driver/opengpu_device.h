@@ -277,6 +277,16 @@ int opengpu_hw_clear_and_submit_async(struct opengpu_device *gpu,
                                       u32 clear_pattern,
                                       const struct opengpu_vm *vm,
                                       struct dma_fence **fence);
+/* Invalidate CPU-written coherent snapshots, optionally clear depth, then
+ * publish the draw under one submit_lock hold so nothing else interleaves. */
+int opengpu_hw_draw_submit_async(struct opengpu_device *gpu,
+                                 const struct opengpu_job *job,
+                                 const struct opengpu_buffer *const *snapshots,
+                                 unsigned int snapshot_count,
+                                 bool clear_depth, u32 clear_base,
+                                 u32 clear_bytes, u32 clear_pattern,
+                                 const struct opengpu_vm *vm,
+                                 struct dma_fence **fence);
 void opengpu_hw_abort(struct opengpu_device *gpu, int error);
 void opengpu_hw_progress_tick(struct opengpu_device *gpu);
 void opengpu_hw_get_fault(struct opengpu_device *gpu,

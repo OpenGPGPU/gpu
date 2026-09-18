@@ -1177,15 +1177,31 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
             &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
-    /* A loaded persistent depth attachment keeps its stored contents; every
-     * other submission starts from a cleared far plane (D24S8: stencil 0). */
-    if ((job->gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE) &&
-        !job->depth_load)
-        ret = opengpu_hw_clear_and_submit_async(
-            job->gpu, &job->hw, lower_32_bits(job->depth_clear_dma),
-            job->depth_clear_bytes, 0x00ffffffu, vm, &fence);
-    else
-        ret = opengpu_hw_submit_async(job->gpu, &job->hw, vm, &fence);
+    /* CPU-written coherent command snapshots can reuse physical pages whose
+     * prior GPU-L2 tags still hit; drop those lines under submit_lock before
+     * the draw doorbells, mirroring the depth-clear precursor. Shader
+     * snapshots share the same allocator, so invalidate them too when
+     * present. Keep the set minimal: each invalidate is a full unified round
+     * trip on the emulator. */
+    {
+        const struct opengpu_buffer *snapshots[3];
+        unsigned int snapshot_count = 0;
+        bool clear_depth =
+            (job->gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE) &&
+            !job->depth_load;
+
+        if (job->commands.cpu)
+            snapshots[snapshot_count++] = &job->commands;
+        if (job->shader.cpu)
+            snapshots[snapshot_count++] = &job->shader;
+        if (job->vertex_shader.cpu)
+            snapshots[snapshot_count++] = &job->vertex_shader;
+
+        ret = opengpu_hw_draw_submit_async(
+            job->gpu, &job->hw, snapshots, snapshot_count, clear_depth,
+            lower_32_bits(job->depth_clear_dma), job->depth_clear_bytes,
+            0x00ffffffu, vm, &fence);
+    }
     if (ret)
         return ERR_PTR(ret);
     return fence;

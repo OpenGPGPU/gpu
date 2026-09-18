@@ -1535,6 +1535,30 @@ int main(void)
             return 1;
         }
     }
+    /* A second kernel before the first job-ring draw used to leave stale GPU
+     * L2 lines over reused coherent snapshot pages and drop coverage. */
+    CHECK(fill_resource(fd, context_id, &compute_kernarg, 0xcafe0001u,
+                        syncobjs[4], OPENGPU_COMMAND_EVENT(7, 1)),
+          "reinitialize compute kernarg for second kernel");
+    CHECK(submit_compute(
+              fd, context_id, 7, 8, 4, 0, syncobjs[6],
+              OPENGPU_COMMAND_WAIT_EVENT | OPENGPU_COMMAND_SIGNAL_EVENT,
+              OPENGPU_COMMAND_EVENT(7, 1),
+              OPENGPU_COMMAND_EVENT(8, 1)),
+          "queue second general compute before render");
+    CHECK(wait_syncobjs(fd, &syncobjs[6], 1), "wait second compute syncobj");
+    for (uint32_t lane = 0; lane < 4; lane++) {
+        uint32_t expected = lane < 2 ? 6u : lane;
+
+        if (((uint32_t *)compute_kernarg.map)[lane] != expected) {
+            fprintf(stderr,
+                    "second compute kernarg lane=%u output=0x%08x expected=%u\n",
+                    lane, ((uint32_t *)compute_kernarg.map)[lane], expected);
+            errno = EIO;
+            perror("OPENGPU USERSPACE DRM FAIL second reduction compute");
+            return 1;
+        }
+    }
     CHECK(submit_selected_render(
               fd, vert_core, context_id, &commands, &first, texture_slot,
               shader_slot, kernarg_slot, vertex_buffer_slot,
