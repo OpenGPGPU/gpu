@@ -510,6 +510,15 @@ its descriptor, command buffer and vertex data fetched through translated
 shared clients; no dedicated physical graphics word port is required, and the
 guest render test passes on the unified path.
 
+Notes:
+
+- `GPU_CAP_UNIFIED_RENDER` (bit20) advertises that a draw is accepted as
+  `GPU_UCMD_OP_RENDER`; it implies `GPU_CAP_UNIFIED_COMMANDS`. The driver gates
+  the unified render submission on it and keeps the job-ring path as fallback.
+- The emulator measurement shows the blocking descriptor fetch and translation
+  add noticeable latency per draw; perform a real workload measurement before
+  widening the translator or making the unified path the only submission route.
+
 ### Later capability expansion
 
 - Prioritize additional shader/RVV operations from real workload or compiler

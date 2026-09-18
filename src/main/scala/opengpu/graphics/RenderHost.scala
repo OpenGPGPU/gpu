@@ -471,6 +471,7 @@ class RenderHost(
       (maxSampleMode << GpuCapabilities.MsaaMaxModeShift) |
       (if (unifiedCommands) (1 << GpuCapabilities.UnifiedReset) else 0) |
       (1 << GpuCapabilities.PersistentDepth) |
+      (if (unifiedCommands) (1 << GpuCapabilities.UnifiedRender) else 0) |
       (gpuConfig.warps * gpuConfig.lanes << GpuCapabilities.FragmentBatchShift))
       .U(32.W)
   private val jobStatusBits = Cat(

@@ -38,4 +38,8 @@ object GpuCapabilities {
     * depth datapath already reads and writes whichever plane is bound; this
     * bit advertises the userspace/driver contract. */
   val PersistentDepth = 19
+  /** A draw is accepted as a unified render command (`GPU_UCMD_OP_RENDER`):
+    * the descriptor and command buffer are fetched through the context VM
+    * (bit20). Depends on `UnifiedCommands`. */
+  val UnifiedRender = 20
 }

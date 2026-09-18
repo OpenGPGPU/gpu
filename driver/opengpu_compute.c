@@ -1320,7 +1320,7 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
         dma_addr_t descriptor_va = 0;
 
         if (vm && job->context && job->render_desc.dma &&
-            (job->gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS) &&
+            (job->gpu->hw.capabilities & GPU_CAP_UNIFIED_RENDER) &&
             opengpu_binding_map_render(job->gpu, job->context,
                                        job->render_desc.dma,
                                        job->render_desc.size,

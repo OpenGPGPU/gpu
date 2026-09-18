@@ -203,6 +203,11 @@ typedef int32_t s32;
  * hardware depth path reads and writes whichever plane DEPTH_BASE names; this
  * bit advertises the userspace/driver contract, not a new datapath. */
 #define GPU_CAP_PERSISTENT_DEPTH (1u << 19)
+/* Unified render command (bit20): a draw is accepted as GPU_UCMD_OP_RENDER,
+ * whose descriptor and command buffer are fetched through the submitting
+ * context's VM instead of the host-memory job ring.  Implies
+ * GPU_CAP_UNIFIED_COMMANDS. */
+#define GPU_CAP_UNIFIED_RENDER  (1u << 20)
 
 /* JOB_CONTROL: bit0 ENABLE (RW), bit1 RESET (w1p, idle only),
  * bit8 ACTIVE (ro: a job is running), bit9 PENDING (ro: descriptor staged). */
