@@ -14,6 +14,7 @@ object GpuCommandOpcode {
   val stridedCopy = 3.U(width.W)
   val resolve = 4.U(width.W)
   val invalidate = 5.U(width.W)
+  val render = 6.U(width.W)
 }
 
 /** One software queue format. Unused payload fields are ignored by opcode. */

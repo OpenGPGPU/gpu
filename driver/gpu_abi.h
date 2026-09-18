@@ -251,6 +251,13 @@ typedef int32_t s32;
  * make CPU-written memory visible to later GPU reads; the operation completes
  * reporting the aligned extent. */
 #define GPU_UCMD_OP_INVALIDATE   5u
+/* Render: run one graphics submission.  SOURCE carries the virtual address of
+ * a 16-word render descriptor (the gpu_job_record layout); the device fetches
+ * the descriptor and its command buffer through the context VM, so a draw no
+ * longer needs a dedicated physical word port.  The unified completion names
+ * the render command; the descriptor's state fields replace the legacy
+ * snapshotted registers. */
+#define GPU_UCMD_OP_RENDER       6u
 #define GPU_UCMD_FLAG_WAIT_DMA   (1u << 0)
 #define GPU_UCMD_FLAG_WAIT_EVENT (1u << 1)
 #define GPU_UCMD_FLAG_SIGNAL_EVENT (1u << 2)

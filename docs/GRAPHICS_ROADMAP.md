@@ -480,7 +480,7 @@ Staged work, each independently testable:
 
 - [ ] **S1 (done):** make the fixed-function texture client VM-addressed with an
   ASID-tagged translator.
-- [ ] **S2:** separate the command-draw word port from the job-queue/IH admin
+- [x] **S2:** separate the command-draw word port from the job-queue/IH admin
   word port so only the command path needs translation and completion ordering
   is untouched.
 - [ ] **S3:** add `GPU_UCMD_OP_RENDER` and a `GpuCommandOpcode.render`, stage the
@@ -493,7 +493,8 @@ Staged work, each independently testable:
 - [ ] **S5:** route the command-buffer and vertex fetch through the translated
   command client (the `GraphicsAddressTranslator` with a preserved uncached
   policy), so the command buffer is a context VM address and no physical
-  `cbMem` port remains.
+  `cbMem` port remains. The command buffer is done (S2); the vertex fetch and
+  deleting the physical port remain.
 - [ ] **S6:** retire the job ring, the legacy `START` snapshot and the admin
   word port; update `GpuAbiLayoutSpec`, capability discovery and the negative
   UAPI tests.

@@ -190,7 +190,8 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
       "GPU_UCMD_OP_FILL" -> GpuCommandOpcode.fill.litValue.toLong,
       "GPU_UCMD_OP_STRIDED_COPY" -> GpuCommandOpcode.stridedCopy.litValue.toLong,
       "GPU_UCMD_OP_RESOLVE" -> GpuCommandOpcode.resolve.litValue.toLong,
-      "GPU_UCMD_OP_INVALIDATE" -> GpuCommandOpcode.invalidate.litValue.toLong
+      "GPU_UCMD_OP_INVALIDATE" -> GpuCommandOpcode.invalidate.litValue.toLong,
+      "GPU_UCMD_OP_RENDER" -> GpuCommandOpcode.render.litValue.toLong
     ))
   }
 
