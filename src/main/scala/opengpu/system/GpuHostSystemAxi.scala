@@ -197,8 +197,11 @@ class GpuHostSystemAxi(
       host.io.kernelGlobalAtomicRequest
     host.io.kernelGlobalAtomicResponse <>
       system.io.graphicsShaderAtomicResponse
+    // Command-buffer fetches are CPU-written coherent snapshots; bypass L2 so
+    // a prior resident line cannot shadow the memcpy. Framebuffer and texture
+    // stay cached for bandwidth.
     val cbBridge = Module(new OmWordToLinePort(
-      gpuConfig, 64, wordPortTransactions))
+      gpuConfig, 64, wordPortTransactions, uncached = true))
     val fbBridge = Module(new OmWordToLinePort(
       gpuConfig, 64, wordPortTransactions))
     val texBridge = Module(new OmWordToLinePort(
@@ -211,8 +214,9 @@ class GpuHostSystemAxi(
     host.io.texMem.resp <> texBridge.io.out
 
     // The texture client translates through the shared Sv32 page tables so a
-    // driver can map a texture uncached; the other graphics clients stay on
-    // physical addresses.
+    // driver can map a texture uncached. Command-buffer / job-queue admin
+    // traffic shares cbMem and bypasses L2 (uncached); framebuffer stays
+    // cached on physical addresses.
     val texTranslator = Module(new GraphicsAddressTranslator(
       gpuConfig, entries = 16, lineBytes = 64,
       maxOutstanding = graphicsHostTransactions))

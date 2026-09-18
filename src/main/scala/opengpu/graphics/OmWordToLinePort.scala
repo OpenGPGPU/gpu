@@ -25,7 +25,11 @@ import opengpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse}
 class OmWordToLinePort(
   config: GpuConfig = GpuConfig(),
   lineBytes: Int = 64,
-  maxOutstanding: Int = 4
+  maxOutstanding: Int = 4,
+  /** When true, line requests bypass L1/L2 so a CPU write is visible without
+    * an explicit shared-L2 invalidate.  Used for command-buffer and kernarg
+    * staging ports; framebuffer/texture clients keep the default cached path. */
+  uncached: Boolean = false
 ) extends Module {
   require(lineBytes == 64, "current cache hierarchy uses 64-byte lines")
   require(maxOutstanding >= 1)
@@ -69,7 +73,8 @@ class OmWordToLinePort(
   io.memoryRequest.bits.sizeLog2 := 6.U
   io.memoryRequest.bits.cacheClient := false.B
   io.memoryRequest.bits.cacheResident := false.B
-  io.memoryRequest.bits.cachePolicy := CachePolicy.cached
+  io.memoryRequest.bits.cachePolicy := Mux(uncached.B, CachePolicy.uncached,
+    CachePolicy.cached)
   io.memoryRequest.bits.transactionId := allocatedId
   io.in.ready := hasFreeTransaction && io.memoryRequest.ready
 

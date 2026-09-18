@@ -170,7 +170,8 @@ class KernelVertStage(
     val kernelVectorTexWriteback = Decoupled(new VectorCommitRequest(config))
   })
 
-  private val bridge = Module(new OmWordToLinePort(config))
+  // Vertex kernarg staging is CPU-written; bypass L1/L2.
+  private val bridge = Module(new OmWordToLinePort(config, uncached = true))
   private val internalKernel = if (standaloneKernel) Some(Module(new KernelShaderStage(config))) else None
   private val kernelLaunchReady = WireDefault(io.kernelLaunch.ready)
   private val kernelCompletionValid = WireDefault(io.kernelCompletion.valid)

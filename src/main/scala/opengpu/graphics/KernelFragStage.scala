@@ -202,7 +202,8 @@ class KernelFragStage(
   private val wordValid = Wire(Bool())
   private val wordBits = Wire(new OmMemoryRequest)
 
-  private val bridge = Module(new OmWordToLinePort(config))
+  // Kernarg staging is CPU-written; bypass L1/L2. Texture samples stay cached.
+  private val bridge = Module(new OmWordToLinePort(config, uncached = true))
   private val texBridge = Module(new OmWordToLinePort(config))
   private val texUnit = Module(new TexSampleUnit(config, gfxConfig))
 

@@ -495,7 +495,8 @@ static int opengpu_binding_map_kernarg(struct opengpu_device *gpu,
 }
 
 /* Global (identity) uncached mapping, the fallback when a private VM mapping
- * is not possible; directly-read bindings are also invalidated here. */
+ * is not possible; directly-read bindings are also invalidated here when the
+ * MMU cannot take a policy split (no MMU, or table capacity). */
 static int opengpu_binding_map_uncached(
     struct opengpu_device *gpu,
     const struct opengpu_resource_binding *binding)
@@ -504,7 +505,7 @@ static int opengpu_binding_map_uncached(
 
     ret = opengpu_mmu_set_range_policy(gpu, binding->dma, binding->size,
                                        OPENGPU_MMU_POLICY_UNCACHED);
-    if (ret == -EOPNOTSUPP)
+    if (ret == -EOPNOTSUPP || ret == -ENOSPC || ret == -ENOMEM)
         ret = opengpu_binding_invalidate(gpu, binding);
     return ret;
 }
@@ -623,9 +624,12 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
     /* A compute kernarg is mapped privately into the context's VM and reached
      * through a virtual address, so contexts with different physical kernargs
      * are isolated at the same VA.  Fall back to the global uncached mapping
-     * when the private mapping is unavailable.  Fixed-function textures and
-     * other directly-read bindings keep the global path (the VM root shares
-     * those leaves). Shaders are snapshotted. */
+     * when the private mapping is unavailable.  Other kernarg bindings and
+     * textures requesting OPENGPU_RESOURCE_UNCACHED take the global uncached
+     * path. Fixed-function textures without that flag, plus vertex buffers,
+     * keep bind-time invalidate (graphics shader CUs still run Bare for
+     * those). Shaders are snapshotted; command records are fetched uncached
+     * by the fixed-function CB port. */
     if (args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG &&
         context->vm.enabled) {
         ret = opengpu_binding_map_kernarg(gpu, context, binding, args->slot);
@@ -634,6 +638,8 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
         if (ret)
             goto out_file;
     } else if (args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG ||
+               args->type == OPENGPU_RESOURCE_KERNARG ||
+               args->type == OPENGPU_RESOURCE_VERTEX_KERNARG ||
                (args->type == OPENGPU_RESOURCE_TEXTURE &&
                 (args->flags & OPENGPU_RESOURCE_UNCACHED))) {
         ret = opengpu_binding_map_uncached(gpu, binding);
@@ -1177,21 +1183,17 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
             &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
-    /* CPU-written coherent command snapshots can reuse physical pages whose
-     * prior GPU-L2 tags still hit; drop those lines under submit_lock before
-     * the draw doorbells, mirroring the depth-clear precursor. Shader
-     * snapshots share the same allocator, so invalidate them too when
-     * present. Keep the set minimal: each invalidate is a full unified round
-     * trip on the emulator. */
+    /* Command-buffer fetches bypass the shared L2 in RTL, so the CPU-written
+     * command snapshot needs no invalidate here. Shader instruction fetch
+     * still ignores per-page policy and stays cached — drop those lines once
+     * under submit_lock before the draw doorbells. */
     {
-        const struct opengpu_buffer *snapshots[3];
+        const struct opengpu_buffer *snapshots[2];
         unsigned int snapshot_count = 0;
         bool clear_depth =
             (job->gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE) &&
             !job->depth_load;
 
-        if (job->commands.cpu)
-            snapshots[snapshot_count++] = &job->commands;
         if (job->shader.cpu)
             snapshots[snapshot_count++] = &job->shader;
         if (job->vertex_shader.cpu)

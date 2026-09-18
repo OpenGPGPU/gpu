@@ -151,8 +151,11 @@ class RenderCoreL2(
   io.done := core.io.done && l2.io.drained
 
   // Word-level clients (command buffer, framebuffer, texture) behind bridges.
+  // Command-buffer reads bypass the shared L2: the driver memcpy's draw
+  // records into coherent DMA that can reuse physical pages still tagged in
+  // the cache.
   private val cbBridge = Module(new OmWordToLinePort(
-    gpuConfig, lineBytes, perClientOutstanding))
+    gpuConfig, lineBytes, perClientOutstanding, uncached = true))
   private val fbBridge = Module(new OmWordToLinePort(
     gpuConfig, lineBytes, perClientOutstanding))
   private val texBridge = Module(new OmWordToLinePort(
