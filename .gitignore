@@ -4,6 +4,7 @@ project/target/
 *.vcd
 *.vvp
 *.out
+AGENTS.md
 
 # Local IDE and operating-system state.
 .DS_Store
