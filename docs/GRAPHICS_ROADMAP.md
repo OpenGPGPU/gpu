@@ -449,6 +449,60 @@ Exit: the driver can run several address spaces with correct scoped shootdown
 and no flush on a plain ASID switch; performance baselines quantify the
 walk/TLB cost; the single-identity-map limitation is gone.
 
+### P5: Unified render submission and VM-addressed graphics
+
+Rendering is submitted and fetched differently from compute: a draw arrives
+through the legacy `START` registers or the host-memory job ring, and the
+fixed-function front end reads draw records over dedicated **physical** word
+ports (`cbMem` for command data, plus the job-queue/IH admin traffic that was
+arbitrated onto the same port). Compute instead submits a single unified
+command and its clients translate through the shared Sv32 page tables. This
+milestone makes a draw a first-class unified command, so rendering reuses the
+compute launch path and its memory clients instead of a separate physical
+path. A command/data fetch is still required (a draw is not a single small
+launch), but it must run through the same translated shared-L2 client as the
+shaders and texture sampler, not a bespoke physical port.
+
+Target end state:
+
+```text
+driver: stage GPU_UCMD_* → SUBMIT (opcode = RENDER, descriptor VA)
+device: decode RENDER → fetch the render descriptor → run the graphics engine
+        → publish a unified completion, exactly like a kernel launch
+```
+
+Topology note: the unified command bridge and `RenderHost` both live in
+`GpuHostAxi`, while the command router lives in `GpuSystem`, so the command
+path must demux `RENDER` to the graphics engine on the host side rather than
+routing it through `GpuSystem`.
+
+Staged work, each independently testable:
+
+- [ ] **S1 (done):** make the fixed-function texture client VM-addressed with an
+  ASID-tagged translator.
+- [ ] **S2:** separate the command-draw word port from the job-queue/IH admin
+  word port so only the command path needs translation and completion ordering
+  is untouched.
+- [ ] **S3:** add `GPU_UCMD_OP_RENDER` and a `GpuCommandOpcode.render`, stage the
+  existing 16-word render record as the descriptor (descriptor-pointer option),
+  and drive the current `RenderHost` job pipeline from the unified completion
+  path while keeping job-ring submission as a fallback.
+- [ ] **S4:** submit draws through the unified `SUBMIT` path in the driver
+  (`opengpu_hw_unified_submit_locked`) instead of the job ring, keeping the DRM
+  scheduler, reservation fences and syncobjs unchanged.
+- [ ] **S5:** route the command-buffer and vertex fetch through the translated
+  command client (the `GraphicsAddressTranslator` with a preserved uncached
+  policy), so the command buffer is a context VM address and no physical
+  `cbMem` port remains.
+- [ ] **S6:** retire the job ring, the legacy `START` snapshot and the admin
+  word port; update `GpuAbiLayoutSpec`, capability discovery and the negative
+  UAPI tests.
+
+Exit: a draw is submitted and completed through the unified command path with
+its descriptor, command buffer and vertex data fetched through translated
+shared clients; no dedicated physical graphics word port is required, and the
+guest render test passes on the unified path.
+
 ### Later capability expansion
 
 - Prioritize additional shader/RVV operations from real workload or compiler
