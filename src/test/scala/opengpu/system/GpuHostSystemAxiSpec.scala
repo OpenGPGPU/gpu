@@ -653,6 +653,10 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
           }
         }
         ww(texturePa, 0xff00ffff)
+        // The command-draw port translates through the same page tables, so
+        // the low 4 MiB must identity-map uncached exactly as the driver's
+        // global identity map does; the texture VA aliases on top.
+        ww(rootBase, (2 << 8) | 0xcf)
         if (textureBusFault) ww(rootBase + 4, (0x800 << 10) | 0x43)
         def readLine(address: BigInt): BigInt = {
           reads += address

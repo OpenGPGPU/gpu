@@ -191,6 +191,12 @@ class RenderHost(
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
     }
+    /** Job-queue admin word port (descriptor fetches, IH record writes).
+      * Physical and untranslated; kept separate from the command-draw port. */
+    val adminMem = new Bundle {
+      val req = Decoupled(new OmMemoryRequest)
+      val resp = Flipped(Decoupled(new OmMemoryResponse))
+    }
     val fbMem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
@@ -831,42 +837,18 @@ class RenderHost(
     activeMsaaConfig(1, 0), jq.io.cfg.sampleMode)
   core.io.start := launch || (jq.io.launch && jq.io.launchReady)
 
-  // Command-buffer memory port arbitration. The queue's admin agent
-  // (descriptor fetches, IH record writes) and the engine's command stage
-  // share the single word port. At most one request is outstanding, and the
-  // response is routed back to the agent that owns it. The admin agent has
-  // priority; its bursts are short (16-word fetch, 4-word IH record), so the
-  // engine's command stream only ever pauses for a few cycles — and during a
-  // job the fetch overlaps rendering instead of serializing in front of it.
+  // Separate word ports.  The engine's command stage (draw records) and the
+  // job queue's admin agent (descriptor fetches, IH record writes) are distinct
+  // clients with different coherence and translation needs, so they expose
+  // independent ports instead of sharing one arbitrated word port.  The admin
+  // path stays a plain physical channel; only the command path is translated.
   private val admin = jq.io.mem
   private val cbPort = core.io.cbMem
-  private val occupied = RegInit(false.B) // a granted request awaits its response
-  private val adminOwner = RegInit(false.B) // owner of the outstanding request
-  private val adminGrant = !occupied && admin.req.valid
-  private val cbGrant = !occupied && !admin.req.valid && cbPort.req.valid
-  // A grant only becomes a transaction when the shared port's consumer
-  // accepts the beat; until then the requesting agent stays backpressured.
-  private val extFire = io.cbMem.req.valid && io.cbMem.req.ready
-  when(adminGrant && io.cbMem.req.ready) { adminOwner := true.B }
-  when(cbGrant && io.cbMem.req.ready) { adminOwner := false.B }
-  val respFire = io.cbMem.resp.valid && io.cbMem.resp.ready
-  occupied := Mux(respFire, extFire, occupied || extFire)
 
-  io.cbMem.req.valid := (adminGrant && admin.req.valid) ||
-    (cbGrant && cbPort.req.valid)
-  io.cbMem.req.bits := Mux(adminGrant && admin.req.valid,
-    admin.req.bits, cbPort.req.bits)
-  admin.req.ready := adminGrant && io.cbMem.req.ready
-  cbPort.req.ready := cbGrant && io.cbMem.req.ready
-
-  admin.resp.valid := occupied && adminOwner && io.cbMem.resp.valid
-  admin.resp.bits := io.cbMem.resp.bits
-  cbPort.resp.valid := occupied && !adminOwner && io.cbMem.resp.valid
-  cbPort.resp.bits := io.cbMem.resp.bits
-  // Only the owner of the outstanding request can accept its response; the
-  // other agent's ready may be low (e.g. the command stage only raises it
-  // while one of its own reads is in flight).
-  io.cbMem.resp.ready := Mux(adminOwner, admin.resp.ready, cbPort.resp.ready)
+  io.cbMem.req <> cbPort.req
+  cbPort.resp <> io.cbMem.resp
+  io.adminMem.req <> admin.req
+  admin.resp <> io.adminMem.resp
 
   core.io.fbMem.req <> io.fbMem.req
   io.fbMem.resp <> core.io.fbMem.resp

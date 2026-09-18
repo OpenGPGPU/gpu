@@ -33,6 +33,8 @@ typedef uint32_t opengpu_kernarg_u32;
 #define OPENGPU_KERNARG_VA_STRIDE (4ull * 1024ull * 1024ull)
 #define OPENGPU_TEXTURE_VA_BASE   0xa0000000ull
 #define OPENGPU_TEXTURE_VA_STRIDE (4ull * 1024ull * 1024ull)
+#define OPENGPU_COMMAND_VA_BASE   0xb0000000ull
+#define OPENGPU_COMMAND_VA_STRIDE (4ull * 1024ull * 1024ull)
 
 enum opengpu_kernarg_va_status {
 	OPENGPU_KERNARG_VA_OK = 0,
@@ -91,6 +93,17 @@ static inline int opengpu_texture_va_plan(opengpu_kernarg_u64 dma,
 	return opengpu_resource_va_plan(dma, size, slot, page_size,
 					OPENGPU_TEXTURE_VA_BASE,
 					OPENGPU_TEXTURE_VA_STRIDE, out);
+}
+
+static inline int opengpu_command_va_plan(opengpu_kernarg_u64 dma,
+					  opengpu_kernarg_u64 size,
+					  opengpu_kernarg_u32 slot,
+					  opengpu_kernarg_u32 page_size,
+					  struct opengpu_kernarg_va_plan *out)
+{
+	return opengpu_resource_va_plan(dma, size, slot, page_size,
+					OPENGPU_COMMAND_VA_BASE,
+					OPENGPU_COMMAND_VA_STRIDE, out);
 }
 
 #endif /* OPENGPU_KERNARG_VA_H */

@@ -85,6 +85,7 @@ class RenderHostSpec extends AnyFlatSpec {
     drainCycles: Int = 0
   )(until: => Boolean): Unit = {
     val cbQ = scala.collection.mutable.Queue.empty[(Boolean, Long, Long)]
+    val adminQ = scala.collection.mutable.Queue.empty[(Boolean, Long, Long)]
     val fbQ = scala.collection.mutable.Queue.empty[(Boolean, Long, Long)]
     val kwQ = scala.collection.mutable.Queue.empty[(Boolean, Long, BigInt, BigInt)]
     var guard = 0
@@ -111,6 +112,25 @@ class RenderHostSpec extends AnyFlatSpec {
           m.wwrite(a, dut.io.cbMem.req.bits.data.peek().litValue.toInt)
           cbQ.enqueue((true, a, 0L))
         } else cbQ.enqueue((false, a, m.word(a)))
+      }
+
+      // Job-queue admin port (descriptor fetches, IH record writes).
+      dut.io.adminMem.req.ready.poke(true.B)
+      if (adminQ.nonEmpty) {
+        val (isWrite, a, d) = adminQ.head
+        dut.io.adminMem.resp.valid.poke(true.B)
+        dut.io.adminMem.resp.bits.data.poke(d.U)
+        dut.io.adminMem.resp.bits.write.poke(isWrite.B)
+        dut.io.adminMem.resp.bits.addr.poke(a.U)
+        if (dut.io.adminMem.resp.ready.peek().litToBoolean) adminQ.dequeue()
+      } else dut.io.adminMem.resp.valid.poke(false.B)
+      if (dut.io.adminMem.req.valid.peek().litToBoolean &&
+          dut.io.adminMem.req.ready.peek().litToBoolean) {
+        val a = dut.io.adminMem.req.bits.addr.peek().litValue.toLong
+        if (dut.io.adminMem.req.bits.write.peek().litToBoolean) {
+          m.wwrite(a, dut.io.adminMem.req.bits.data.peek().litValue.toInt)
+          adminQ.enqueue((true, a, 0L))
+        } else adminQ.enqueue((false, a, m.word(a)))
       }
 
       // Framebuffer port.
@@ -777,6 +797,8 @@ class RenderHostSpec extends AnyFlatSpec {
         dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
         dut.io.cbMem.req.ready.poke(false.B)
         dut.io.cbMem.resp.valid.poke(false.B)
+        dut.io.adminMem.req.ready.poke(false.B)
+        dut.io.adminMem.resp.valid.poke(false.B)
         dut.io.fbMem.req.ready.poke(false.B)
         dut.io.fbMem.resp.valid.poke(false.B)
         dut.io.kernelMemReq.ready.poke(true.B)
@@ -818,6 +840,7 @@ class RenderHostSpec extends AnyFlatSpec {
         }
         case class Response(write: Boolean, addr: Long, data: Long, due: Int)
         val cb = mutable.Queue.empty[Response]
+        val admin = mutable.Queue.empty[Response]
         val fb = mutable.Queue.empty[Response]
         var cycle = 0
         var stalledFb = 0
@@ -834,13 +857,14 @@ class RenderHostSpec extends AnyFlatSpec {
             assert(!irq && ihWptr == 0, "framebuffer writes must precede completion publication")
             if (fb.head.due > cycle) stalledFb += 1
           }
-          if (cb.exists(r => r.write && r.addr == ihBase + 12)) {
+          if (admin.exists(r => r.write && r.addr == ihBase + 12)) {
             assert(!irq && ihWptr == 0, "final IH acknowledgement gates IRQ and IH_WPTR")
             if ((status & 2) != 0) doneBeforeIh = true
-            if (cb.head.due > cycle) stalledFinalIh += 1
+            if (admin.head.due > cycle) stalledFinalIh += 1
           }
           for ((port, pending, framebuffer) <- Seq(
-            (dut.io.cbMem, cb, false), (dut.io.fbMem, fb, true))) {
+            (dut.io.cbMem, cb, false), (dut.io.adminMem, admin, false),
+            (dut.io.fbMem, fb, true))) {
             port.req.ready.poke((cycle % 5 != 0).B)
             port.resp.valid.poke((pending.nonEmpty && pending.head.due <= cycle).B)
             if (pending.nonEmpty) {
@@ -867,7 +891,8 @@ class RenderHostSpec extends AnyFlatSpec {
             }
           }
           if (irq) {
-            assert(fb.isEmpty && cb.isEmpty, "completion cannot outrun the memory model")
+            assert(fb.isEmpty && cb.isEmpty && admin.isEmpty,
+              "completion cannot outrun the memory model")
             assert((status & 7) == 2, "successful completion must be DONE without BUSY/ERROR")
             complete = true
           }

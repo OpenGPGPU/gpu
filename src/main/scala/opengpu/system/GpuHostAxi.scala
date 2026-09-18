@@ -124,6 +124,11 @@ class GpuHostAxi(
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
     }
+    /** Job-queue admin word port (job descriptors + IH records), physical. */
+    val adminMem = new Bundle {
+      val req = Decoupled(new OmMemoryRequest)
+      val resp = Flipped(Decoupled(new OmMemoryResponse))
+    }
     val fbMem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
@@ -169,6 +174,8 @@ class GpuHostAxi(
     io.m_irq := host.io.irq
     host.io.cbMem.req <> io.cbMem.req
     io.cbMem.resp <> host.io.cbMem.resp
+    host.io.adminMem.req <> io.adminMem.req
+    io.adminMem.resp <> host.io.adminMem.resp
     host.io.fbMem.req <> io.fbMem.req
     io.fbMem.resp <> host.io.fbMem.resp
     io.kernelMemReq <> host.io.kernelMemReq

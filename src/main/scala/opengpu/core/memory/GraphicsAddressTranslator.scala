@@ -23,7 +23,11 @@ class GraphicsAddressTranslator(
   config: GpuConfig = GpuConfig(),
   entries: Int = 16,
   val lineBytes: Int = 64,
-  val maxOutstanding: Int = 8
+  val maxOutstanding: Int = 8,
+  /** When true, keep the client's requested cache policy instead of the
+    * translated page's policy.  The command port sets an uncached policy for
+    * coherence and must not have it replaced by the page tables. */
+  preserveCachePolicy: Boolean = false
 ) extends Module {
   require(entries > 0 && isPow2(entries))
   require(isPow2(lineBytes))
@@ -127,12 +131,15 @@ class GraphicsAddressTranslator(
   when(state === State.lookup) {
     when(!translationEnabled) {
       translated := request
-      translated.cachePolicy := CachePolicy.cached
+      translated.cachePolicy :=
+        (if (preserveCachePolicy) request.cachePolicy
+         else CachePolicy.cached)
       state := State.respond
     }.elsewhen(hit) {
       translated := request
       translated.address := Cat(hitPpn, request.address(11, 0))
-      translated.cachePolicy := hitPolicy
+      translated.cachePolicy :=
+        (if (preserveCachePolicy) request.cachePolicy else hitPolicy)
       state := Mux(hitPermission, State.respond, State.fault)
     }.otherwise {
       state := State.walkRequest
@@ -160,7 +167,9 @@ class GraphicsAddressTranslator(
       translated := request
       translated.address := Cat(walker.io.response.bits.physicalPageNumber,
                                 request.address(11, 0))
-      translated.cachePolicy := walker.io.response.bits.cachePolicy
+      translated.cachePolicy :=
+        (if (preserveCachePolicy) request.cachePolicy
+         else walker.io.response.bits.cachePolicy)
       state := State.respond
     }
   }

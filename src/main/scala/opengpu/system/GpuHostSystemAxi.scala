@@ -42,20 +42,23 @@ class GpuHostSystemAxi(
   require(!vertCore || fragCore,
     "vertex-core graphics requires fragment-core graphics")
 
-  // Eight direct graphics line transactions plus three four-entry word-port
-  // bridges. Round up to a power of two for simple local-ID range checking.
+  // Eight direct graphics line transactions plus four four-entry word-port
+  // bridges (command data, admin, framebuffer, texture). Round up to a power
+  // of two for simple local-ID range checking.
   private val graphicsHostTransactions = 32
   private val wordPortTransactions = 4
   private val cbBase = 8
-  private val fbBase = cbBase + wordPortTransactions
+  private val adminBase = cbBase + wordPortTransactions
+  private val fbBase = adminBase + wordPortTransactions
   private val texBase = fbBase + wordPortTransactions
   private val usedGraphicsTransactions = texBase + wordPortTransactions
-  // The texture path translates through the shared Sv32 page tables; its PTE
-  // reads use a reserved transaction range beyond the client IDs.
+  // The command and texture paths translate through the shared Sv32 page
+  // tables; their PTE reads use reserved transaction ranges beyond the client
+  // IDs. The admin path stays physical and untranslated.
   private val graphicsTlbBase = usedGraphicsTransactions
-  private val graphicsTlbTransactions = wordPortTransactions
+  private val cbTlbBase = graphicsTlbBase + wordPortTransactions
   private val usedGraphicsTransactionsWithTlb =
-    graphicsTlbBase + graphicsTlbTransactions
+    cbTlbBase + wordPortTransactions
   private val systemTransactions = GpuSystem.totalMemoryTransactions(
     numComputeUnits, transactionsPerCu, graphicsHostTransactions)
   private val memoryAxiIdWidth = math.max(1, log2Ceil(systemTransactions))
@@ -197,10 +200,15 @@ class GpuHostSystemAxi(
       host.io.kernelGlobalAtomicRequest
     host.io.kernelGlobalAtomicResponse <>
       system.io.graphicsShaderAtomicResponse
-    // Command-buffer fetches are CPU-written coherent snapshots; bypass L2 so
-    // a prior resident line cannot shadow the memcpy. Framebuffer and texture
-    // stay cached for bandwidth.
+    // Command-draw and admin word ports are separate. Command records bypass
+    // L2 (uncached) and translate through the context's page tables so a
+    // driver can place a context's draw records in its own address space; the
+    // job queue's admin channel (descriptor fetches, IH record writes) stays a
+    // plain untranslated physical path so completion ordering is untouched.
+    // Framebuffer and texture stay cached for bandwidth.
     val cbBridge = Module(new OmWordToLinePort(
+      gpuConfig, 64, wordPortTransactions, uncached = true))
+    val adminBridge = Module(new OmWordToLinePort(
       gpuConfig, 64, wordPortTransactions, uncached = true))
     val fbBridge = Module(new OmWordToLinePort(
       gpuConfig, 64, wordPortTransactions))
@@ -208,15 +216,24 @@ class GpuHostSystemAxi(
       gpuConfig, 64, wordPortTransactions))
     cbBridge.io.in <> host.io.cbMem.req
     host.io.cbMem.resp <> cbBridge.io.out
+    adminBridge.io.in <> host.io.adminMem.req
+    host.io.adminMem.resp <> adminBridge.io.out
     fbBridge.io.in <> host.io.fbMem.req
     host.io.fbMem.resp <> fbBridge.io.out
     texBridge.io.in <> host.io.texMem.req
     host.io.texMem.resp <> texBridge.io.out
 
-    // The texture client translates through the shared Sv32 page tables so a
-    // driver can map a texture uncached. Command-buffer / job-queue admin
-    // traffic shares cbMem and bypasses L2 (uncached); framebuffer stays
-    // cached on physical addresses.
+    // The command client translates through the shared Sv32 page tables and
+    // keeps its uncached policy (the driver maps the snapshot uncached too).
+    val cbTranslator = Module(new GraphicsAddressTranslator(
+      gpuConfig, entries = 16, lineBytes = 64,
+      maxOutstanding = graphicsHostTransactions, preserveCachePolicy = true))
+    cbTranslator.io.satp := host.io.vectorSatp
+    cbTranslator.io.flush := host.io.tlbFlush.valid
+    cbTranslator.io.pageWalkTransactionId := 0.U
+    cbTranslator.io.in <> cbBridge.io.memoryRequest
+
+    // The texture client translates too, adopting the page's cache policy.
     val texTranslator = Module(new GraphicsAddressTranslator(
       gpuConfig, entries = 16, lineBytes = 64,
       maxOutstanding = graphicsHostTransactions))
@@ -226,7 +243,7 @@ class GpuHostSystemAxi(
     texTranslator.io.in <> texBridge.io.memoryRequest
 
     val graphicsRequestArbiter = Module(new RRArbiter(
-      new ComputeMemoryRequest(gpuConfig, 64, graphicsHostTransactions), 5))
+      new ComputeMemoryRequest(gpuConfig, 64, graphicsHostTransactions), 7))
     def attachGraphicsRequest(
       index: Int,
       request: DecoupledIO[ComputeMemoryRequest],
@@ -239,20 +256,25 @@ class GpuHostSystemAxi(
       request.ready := graphicsRequestArbiter.io.in(index).ready
     }
     attachGraphicsRequest(0, host.io.kernelWordMemReq, 0)
-    attachGraphicsRequest(1, cbBridge.io.memoryRequest, cbBase)
-    attachGraphicsRequest(2, fbBridge.io.memoryRequest, fbBase)
-    attachGraphicsRequest(3, texTranslator.io.out, texBase)
-    attachGraphicsRequest(4, texTranslator.io.pageWalk, graphicsTlbBase)
+    attachGraphicsRequest(1, cbTranslator.io.out, cbBase)
+    attachGraphicsRequest(2, adminBridge.io.memoryRequest, adminBase)
+    attachGraphicsRequest(3, fbBridge.io.memoryRequest, fbBase)
+    attachGraphicsRequest(4, texTranslator.io.out, texBase)
+    attachGraphicsRequest(5, texTranslator.io.pageWalk, graphicsTlbBase)
+    attachGraphicsRequest(6, cbTranslator.io.pageWalk, cbTlbBase)
     system.io.graphicsHostRequest <> graphicsRequestArbiter.io.out
 
     val graphicsResponse = system.io.graphicsHostResponse
     val responseId = graphicsResponse.bits.transactionId
     val responseForKernelWord = responseId < cbBase.U
-    val responseForCb = responseId >= cbBase.U && responseId < fbBase.U
+    val responseForCb = responseId >= cbBase.U && responseId < adminBase.U
+    val responseForAdmin = responseId >= adminBase.U && responseId < fbBase.U
     val responseForFb = responseId >= fbBase.U && responseId < texBase.U
     val responseForTex = responseId >= texBase.U &&
       responseId < graphicsTlbBase.U
     val responseForTlb = responseId >= graphicsTlbBase.U &&
+      responseId < cbTlbBase.U
+    val responseForCbTlb = responseId >= cbTlbBase.U &&
       responseId < usedGraphicsTransactionsWithTlb.U
     def attachGraphicsResponse(
       response: DecoupledIO[ComputeMemoryResponse],
@@ -266,8 +288,14 @@ class GpuHostSystemAxi(
     }
     attachGraphicsResponse(
       host.io.kernelWordMemResp, responseForKernelWord, 0)
+    val cbResponseArbiter = Module(new RRArbiter(
+      new ComputeMemoryResponse(64, graphicsHostTransactions), 2))
+    cbResponseArbiter.io.in(0) <> cbTranslator.io.faultResponse
     attachGraphicsResponse(
-      cbBridge.io.memoryResponse, responseForCb, cbBase)
+      cbResponseArbiter.io.in(1), responseForCb, cbBase)
+    cbBridge.io.memoryResponse <> cbResponseArbiter.io.out
+    attachGraphicsResponse(
+      adminBridge.io.memoryResponse, responseForAdmin, adminBase)
     attachGraphicsResponse(
       fbBridge.io.memoryResponse, responseForFb, fbBase)
     val texResponseArbiter = Module(new RRArbiter(
@@ -278,8 +306,9 @@ class GpuHostSystemAxi(
     texBridge.io.memoryResponse <> texResponseArbiter.io.out
     // The word port has no fault bit. Preserve the failure alongside the
     // consumed response so RenderHost can fail the owning job after draining.
-    host.io.textureFault.get := texResponseArbiter.io.out.fire &&
-      texResponseArbiter.io.out.bits.fault
+    host.io.textureFault.get :=
+      (texResponseArbiter.io.out.fire && texResponseArbiter.io.out.bits.fault) ||
+      (cbResponseArbiter.io.out.fire && cbResponseArbiter.io.out.bits.fault)
     texTranslator.io.pageWalkResp.valid :=
       graphicsResponse.valid && responseForTlb
     texTranslator.io.pageWalkResp.bits.readData :=
@@ -287,15 +316,24 @@ class GpuHostSystemAxi(
     texTranslator.io.pageWalkResp.bits.fault := graphicsResponse.bits.fault
     texTranslator.io.pageWalkResp.bits.transactionId :=
       responseId - graphicsTlbBase.U
+    cbTranslator.io.pageWalkResp.valid :=
+      graphicsResponse.valid && responseForCbTlb
+    cbTranslator.io.pageWalkResp.bits.readData :=
+      graphicsResponse.bits.readData
+    cbTranslator.io.pageWalkResp.bits.fault := graphicsResponse.bits.fault
+    cbTranslator.io.pageWalkResp.bits.transactionId :=
+      responseId - cbTlbBase.U
     graphicsResponse.ready := MuxCase(false.B, Seq(
       responseForKernelWord -> host.io.kernelWordMemResp.ready,
-      responseForCb -> cbBridge.io.memoryResponse.ready,
+      responseForCb -> cbResponseArbiter.io.in(1).ready,
+      responseForAdmin -> adminBridge.io.memoryResponse.ready,
       responseForFb -> fbBridge.io.memoryResponse.ready,
       responseForTex -> texResponseArbiter.io.in(1).ready,
-      responseForTlb -> texTranslator.io.pageWalkResp.ready))
+      responseForTlb -> texTranslator.io.pageWalkResp.ready,
+      responseForCbTlb -> cbTranslator.io.pageWalkResp.ready))
     when(graphicsResponse.valid) {
-      assert(responseForKernelWord || responseForCb || responseForFb ||
-        responseForTex || responseForTlb,
+      assert(responseForKernelWord || responseForCb || responseForAdmin ||
+        responseForFb || responseForTex || responseForTlb || responseForCbTlb,
         "graphics response must target an attached line, word or TLB client")
     }
 

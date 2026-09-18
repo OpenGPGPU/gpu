@@ -68,6 +68,9 @@ struct opengpu_sched_job {
     /* Address space of the submitting context, or NULL for the global ASID-0
      * identity map (bring-up self-test). */
     const struct opengpu_vm *vm;
+    /* Owning context, for mappings that must be (re)established at run time
+     * once the previous job has drained (per-job command snapshot). */
+    struct opengpu_render_context *context;
     dma_addr_t dma_source;
     dma_addr_t dma_destination;
     u32 dma_bytes;
@@ -518,6 +521,32 @@ static int opengpu_binding_map_texture(struct opengpu_device *gpu,
     if (ret)
         return ret;
     binding->va = (dma_addr_t)plan.va;
+    return 0;
+}
+
+/* Map a per-job command snapshot into the context's VM at a fixed window and
+ * return the virtual address the command-buffer client must fetch.  The window
+ * is shared by every context, so an ASID switch picks the right physical
+ * snapshot.  Mapped uncached: the command port bypasses L2 for coherence, and
+ * the translator takes the page's policy.  Must run once the previous job has
+ * drained (the VA is remapped per job). */
+static int opengpu_binding_map_command(struct opengpu_device *gpu,
+                                       struct opengpu_render_context *context,
+                                       dma_addr_t dma, size_t size,
+                                       dma_addr_t *out_va)
+{
+    struct opengpu_kernarg_va_plan plan;
+    int ret;
+
+    ret = opengpu_command_va_plan(dma, size, 1, OPENGPU_MMU_PAGE_SIZE, &plan);
+    if (ret)
+        return ret;
+    ret = opengpu_mmu_vm_map(gpu, &context->vm, (dma_addr_t)plan.va_page,
+                             (dma_addr_t)plan.pa_page, (size_t)plan.span,
+                             OPENGPU_MMU_POLICY_UNCACHED);
+    if (ret)
+        return ret;
+    *out_va = (dma_addr_t)plan.va;
     return 0;
 }
 
@@ -1240,6 +1269,21 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
             (job->gpu->hw.capabilities & GPU_CAP_CLEAR_ENGINE) &&
             !job->depth_load;
 
+        /* Reach this job's command snapshot through the context's VM.  The
+         * mapping is overwritten per job, so it must happen here, after the
+         * scheduler's one-credit policy has let the previous job drain; the
+         * command client then resolves it under this context's ASID.  Fall
+         * back to the physical address when the VM is absent or too small. */
+        if (vm && job->context && job->commands.dma) {
+            dma_addr_t command_va = 0;
+
+            if (opengpu_binding_map_command(job->gpu, job->context,
+                                            job->commands.dma,
+                                            job->commands.size,
+                                            &command_va) == 0)
+                job->hw.cmd = (u32)command_va;
+        }
+
         if (job->shader.cpu)
             snapshots[snapshot_count++] = &job->shader;
         if (job->vertex_shader.cpu)
@@ -1311,6 +1355,7 @@ static int opengpu_sched_job_submit(
                              file->client_id);
     if (ret)
         return ret;
+    job->context = context;
     if (in_syncobj)
         ret = drm_sched_job_add_syncobj_dependency(&job->base, file,
                                                     in_syncobj, 0);

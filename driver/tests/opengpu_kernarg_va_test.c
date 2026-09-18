@@ -79,6 +79,18 @@ int main(void)
 	assert(opengpu_texture_va_plan(0, OPENGPU_TEXTURE_VA_STRIDE, 1, PAGE,
 				      &plan) == OPENGPU_KERNARG_VA_OK);
 
+	/* The command planner is its own window too, so a per-job command
+	 * snapshot never aliases a texture or kernarg window. */
+	assert(opengpu_command_va_plan(0x66666000, 0x4000, 1, PAGE, &plan) ==
+	       OPENGPU_KERNARG_VA_OK);
+	assert(plan.va_page == OPENGPU_COMMAND_VA_BASE + OPENGPU_COMMAND_VA_STRIDE);
+	assert(plan.pa_page == 0x66666000);
+	assert(plan.va == plan.va_page);
+	assert(plan.va_page >= OPENGPU_TEXTURE_VA_BASE +
+	       OPENGPU_TEXTURE_VA_STRIDE);
+	assert(opengpu_command_va_plan(0, OPENGPU_COMMAND_VA_STRIDE + 1, 1, PAGE,
+				       &plan) == OPENGPU_KERNARG_VA_E_RANGE);
+
 	puts("kernarg VA planner tests passed");
 	return 0;
 }
