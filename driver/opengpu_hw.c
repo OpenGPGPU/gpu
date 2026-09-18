@@ -862,6 +862,8 @@ static int opengpu_hw_unified_result_error(u32 opcode, u32 status)
             return -EIO;
         }
     }
+    if (opcode == GPU_UCMD_OP_RENDER)
+        return status == GPU_UCMD_RESULT_SUCCESS ? 0 : -EIO;
     switch (status) {
     case GPU_UCMD_RESULT_SUCCESS:
         return 0;
@@ -1826,6 +1828,47 @@ int opengpu_hw_draw_submit_async(struct opengpu_device *gpu,
                                       clear_pattern);
     if (!ret)
         ret = opengpu_hw_submit_locked(gpu, job, vm, out_fence);
+    mutex_unlock(&gpu->hw.submit_lock);
+    return ret;
+}
+
+/* Publish one draw as a unified render command.  The 16-word render descriptor
+ * is filled into driver-owned memory and submitted by virtual address, so the
+ * device fetches the descriptor and the command buffer through the context VM.
+ * Snapshots are invalidated and private depth is cleared under the same
+ * submit_lock hold, exactly as the legacy/job-ring draw path does. */
+int opengpu_hw_render_async(struct opengpu_device *gpu,
+                            const struct opengpu_job *job,
+                            void *descriptor_cpu,
+                            u32 descriptor_va, u32 descriptor_bytes,
+                            const struct opengpu_buffer *const *snapshots,
+                            unsigned int snapshot_count,
+                            bool clear_depth, u32 clear_base, u32 clear_bytes,
+                            u32 clear_pattern,
+                            const struct opengpu_command_events *events,
+                            const struct opengpu_vm *vm,
+                            struct dma_fence **out_fence)
+{
+    int ret;
+
+    ret = opengpu_hw_validate_job(job, out_fence);
+    if (ret)
+        return ret;
+    if (!descriptor_cpu || descriptor_bytes < sizeof(struct gpu_job_record))
+        return -EINVAL;
+    memset(descriptor_cpu, 0, descriptor_bytes);
+    opengpu_job_fill((struct gpu_job_record *)descriptor_cpu, 0, job);
+
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_invalidate_snapshots_locked(gpu, snapshots,
+                                                 snapshot_count);
+    if (!ret && clear_depth)
+        ret = opengpu_hw_clear_locked(gpu, clear_base, clear_bytes,
+                                      clear_pattern);
+    if (!ret)
+        ret = opengpu_hw_unified_submit_locked(
+            gpu, NULL, events, GPU_UCMD_OP_RENDER, descriptor_va, 0,
+            descriptor_bytes, 0, 0, 0, 0, 0, descriptor_bytes, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }

@@ -83,6 +83,9 @@ struct opengpu_sched_job {
     struct opengpu_kernel_launch kernel;
     struct opengpu_job hw;
     struct opengpu_buffer commands;
+    /* 16-word unified render descriptor, filled at run time and submitted by
+     * virtual address so the device fetches it through the context VM. */
+    struct opengpu_buffer render_desc;
     struct opengpu_buffer shader;
     struct opengpu_buffer vertex_shader;
     struct opengpu_buffer depth;
@@ -539,6 +542,28 @@ static int opengpu_binding_map_command(struct opengpu_device *gpu,
     int ret;
 
     ret = opengpu_command_va_plan(dma, size, 1, OPENGPU_MMU_PAGE_SIZE, &plan);
+    if (ret)
+        return ret;
+    ret = opengpu_mmu_vm_map(gpu, &context->vm, (dma_addr_t)plan.va_page,
+                             (dma_addr_t)plan.pa_page, (size_t)plan.span,
+                             OPENGPU_MMU_POLICY_UNCACHED);
+    if (ret)
+        return ret;
+    *out_va = (dma_addr_t)plan.va;
+    return 0;
+}
+
+/* Map the per-job render descriptor into the context VM at its own window,
+ * separate from the command window so the two never alias. */
+static int opengpu_binding_map_render(struct opengpu_device *gpu,
+                                      struct opengpu_render_context *context,
+                                      dma_addr_t dma, size_t size,
+                                      dma_addr_t *out_va)
+{
+    struct opengpu_kernarg_va_plan plan;
+    int ret;
+
+    ret = opengpu_render_va_plan(dma, size, 1, OPENGPU_MMU_PAGE_SIZE, &plan);
     if (ret)
         return ret;
     ret = opengpu_mmu_vm_map(gpu, &context->vm, (dma_addr_t)plan.va_page,
@@ -1289,10 +1314,29 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
         if (job->vertex_shader.cpu)
             snapshots[snapshot_count++] = &job->vertex_shader;
 
-        ret = opengpu_hw_draw_submit_async(
-            job->gpu, &job->hw, snapshots, snapshot_count, clear_depth,
-            lower_32_bits(job->depth_clear_dma), job->depth_clear_bytes,
-            0x00ffffffu, vm, &fence);
+        /* Prefer the unified render command, which fetches the descriptor and
+         * command buffer through the context VM.  Fall back to the legacy/job
+         * ring draw path when the device or allocation cannot support it. */
+        dma_addr_t descriptor_va = 0;
+
+        if (vm && job->context && job->render_desc.dma &&
+            (job->gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS) &&
+            opengpu_binding_map_render(job->gpu, job->context,
+                                       job->render_desc.dma,
+                                       job->render_desc.size,
+                                       &descriptor_va) == 0) {
+            ret = opengpu_hw_render_async(
+                job->gpu, &job->hw, job->render_desc.cpu,
+                (u32)descriptor_va, (u32)job->render_desc.size,
+                snapshots, snapshot_count, clear_depth,
+                lower_32_bits(job->depth_clear_dma), job->depth_clear_bytes,
+                0x00ffffffu, &job->events, vm, &fence);
+        } else {
+            ret = opengpu_hw_draw_submit_async(
+                job->gpu, &job->hw, snapshots, snapshot_count, clear_depth,
+                lower_32_bits(job->depth_clear_dma), job->depth_clear_bytes,
+                0x00ffffffu, vm, &fence);
+        }
     }
     if (ret)
         return ERR_PTR(ret);
@@ -1320,6 +1364,7 @@ static void opengpu_sched_free_job(struct drm_sched_job *base)
     opengpu_buffer_free(job->gpu, &job->depth);
     opengpu_buffer_free(job->gpu, &job->vertex_shader);
     opengpu_buffer_free(job->gpu, &job->shader);
+    opengpu_buffer_free(job->gpu, &job->render_desc);
     opengpu_buffer_free(job->gpu, &job->commands);
     kfree(job);
 }
@@ -1571,6 +1616,9 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
     sched_job->gpu = gpu;
     sched_job->vm = context->vm.enabled ? &context->vm : NULL;
     ret = opengpu_buffer_alloc(gpu, &sched_job->commands, command_bytes);
+    if (ret)
+        goto out_job;
+    ret = opengpu_buffer_alloc(gpu, &sched_job->render_desc, 64);
     if (ret)
         goto out_job;
     if (shader) {

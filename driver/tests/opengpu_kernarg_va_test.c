@@ -91,6 +91,17 @@ int main(void)
 	assert(opengpu_command_va_plan(0, OPENGPU_COMMAND_VA_STRIDE + 1, 1, PAGE,
 				       &plan) == OPENGPU_KERNARG_VA_E_RANGE);
 
+	/* The render-descriptor window is disjoint from the command window. */
+	assert(opengpu_render_va_plan(0x77777000, 64, 1, PAGE, &plan) ==
+	       OPENGPU_KERNARG_VA_OK);
+	assert(plan.va_page == OPENGPU_RENDER_VA_BASE + OPENGPU_RENDER_VA_STRIDE);
+	assert(plan.pa_page == 0x77777000);
+	assert(plan.span == PAGE);
+	assert(plan.va_page >= OPENGPU_COMMAND_VA_BASE +
+	       OPENGPU_COMMAND_VA_STRIDE);
+	assert(opengpu_render_va_plan(0, OPENGPU_RENDER_VA_STRIDE + 1, 1, PAGE,
+				      &plan) == OPENGPU_KERNARG_VA_E_RANGE);
+
 	puts("kernarg VA planner tests passed");
 	return 0;
 }

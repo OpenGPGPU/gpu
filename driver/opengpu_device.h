@@ -287,6 +287,20 @@ int opengpu_hw_draw_submit_async(struct opengpu_device *gpu,
                                  u32 clear_bytes, u32 clear_pattern,
                                  const struct opengpu_vm *vm,
                                  struct dma_fence **fence);
+/* Publish one draw as a unified render command: fill the 16-word render
+ * descriptor at `descriptor_cpu` from `job`, then submit it through the unified
+ * command path by virtual address. */
+int opengpu_hw_render_async(struct opengpu_device *gpu,
+                            const struct opengpu_job *job,
+                            void *descriptor_cpu,
+                            u32 descriptor_va, u32 descriptor_bytes,
+                            const struct opengpu_buffer *const *snapshots,
+                            unsigned int snapshot_count,
+                            bool clear_depth, u32 clear_base, u32 clear_bytes,
+                            u32 clear_pattern,
+                            const struct opengpu_command_events *events,
+                            const struct opengpu_vm *vm,
+                            struct dma_fence **fence);
 void opengpu_hw_abort(struct opengpu_device *gpu, int error);
 void opengpu_hw_progress_tick(struct opengpu_device *gpu);
 void opengpu_hw_get_fault(struct opengpu_device *gpu,

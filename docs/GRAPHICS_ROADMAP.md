@@ -490,14 +490,17 @@ Staged work, each independently testable:
   carries the render descriptor/completion; `RenderHost` fetches the descriptor
   through the translated command port, packs it into its launch snapshot and
   returns a unified completion. The driver still submits via the job ring.
-- [ ] **S4:** submit draws through the unified `SUBMIT` path in the driver
+- [x] **S4:** submit draws through the unified `SUBMIT` path in the driver
   (`opengpu_hw_unified_submit_locked`) instead of the job ring, keeping the DRM
-  scheduler, reservation fences and syncobjs unchanged.
+  scheduler, reservation fences and syncobjs unchanged. The driver fills a
+  16-word render descriptor, maps it into the context VM at its own window and
+  submits `GPU_UCMD_OP_RENDER` with the descriptor VA; the job-ring path stays
+  as the fallback. The ARTI/QEMU guest test passes on the unified path.
 - [ ] **S5:** route the command-buffer and vertex fetch through the translated
   command client (the `GraphicsAddressTranslator` with a preserved uncached
   policy), so the command buffer is a context VM address and no physical
-  `cbMem` port remains. The command buffer is done (S2); the vertex fetch and
-  deleting the physical port remain.
+  `cbMem` port remains. The command buffer and the render descriptor are done;
+  the vertex fetch and deleting the physical port remain.
 - [ ] **S6:** retire the job ring, the legacy `START` snapshot and the admin
   word port; update `GpuAbiLayoutSpec`, capability discovery and the negative
   UAPI tests.
