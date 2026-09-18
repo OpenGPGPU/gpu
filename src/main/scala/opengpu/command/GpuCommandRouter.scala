@@ -83,6 +83,8 @@ class GpuCommandRouter(
       new ResolveDescriptor(config, commandIdWidth))
     val invalidate = Decoupled(
       new InvalidateDescriptor(config, commandIdWidth))
+    val render = Decoupled(
+      new RenderDescriptor(config, commandIdWidth))
     val kernelCompletion = Flipped(Decoupled(
       new KernelCommandResult(commandIdWidth)))
     val copyCompletion = Flipped(Decoupled(new CopyCompletion(commandIdWidth)))
@@ -93,6 +95,8 @@ class GpuCommandRouter(
       new ResolveCompletion(commandIdWidth)))
     val invalidateCompletion = Flipped(Decoupled(
       new InvalidateCompletion(commandIdWidth)))
+    val renderCompletion = Flipped(Decoupled(
+      new RenderCompletion(commandIdWidth)))
     val duplicateCommandId = Output(Bool())
     val busy = Output(Bool())
     /** While high the router stops dispatching queued commands to the
@@ -132,8 +136,9 @@ class GpuCommandRouter(
   val isStrided = head.opcode === GpuCommandOpcode.stridedCopy
   val isResolve = head.opcode === GpuCommandOpcode.resolve
   val isInvalidate = head.opcode === GpuCommandOpcode.invalidate
+  val isRender = head.opcode === GpuCommandOpcode.render
   val opcodeValid = isKernel || isCopy || isFill || isStrided || isResolve ||
-    isInvalidate
+    isInvalidate || isRender
   val waitedEventMatches = eventValid(head.waitEventId) &&
     eventGeneration(head.waitEventId) === head.waitEventGeneration
   val dependencyKnown = !head.waitForEvent || waitedEventMatches
@@ -183,9 +188,14 @@ class GpuCommandRouter(
   io.invalidate.bits.descriptorId := head.commandId
   io.invalidate.bits.address := head.sourceAddress
   io.invalidate.bits.bytes := head.bytes
+  io.render.valid := commands.io.deq.valid && dependencyKnown &&
+    !dependencyFailed && isRender && !io.blockDispatch
+  io.render.bits.descriptorId := head.commandId
+  io.render.bits.descriptorAddress := head.sourceAddress
+  io.render.bits.bytes := head.bytes
 
   val completionEvents = Module(new RRArbiter(
-    new GpuCommandResult(commandIdWidth), 7))
+    new GpuCommandResult(commandIdWidth), 8))
   def mapCompletion(index: Int, valid: Bool, commandId: UInt,
                             status: UInt, success: Bool,
                             bytes: UInt): Unit = {
@@ -226,19 +236,26 @@ class GpuCommandRouter(
     io.invalidateCompletion.bits.success,
     io.invalidateCompletion.bits.bytesInvalidated)
   io.invalidateCompletion.ready := completionEvents.io.in(5).ready
-  mapCompletion(6, commands.io.deq.valid && dependencyKnown &&
+  mapCompletion(6, io.renderCompletion.valid,
+    io.renderCompletion.bits.descriptorId,
+    io.renderCompletion.bits.status,
+    io.renderCompletion.bits.success,
+    io.renderCompletion.bits.bytesProcessed)
+  io.renderCompletion.ready := completionEvents.io.in(6).ready
+  mapCompletion(7, commands.io.deq.valid && dependencyKnown &&
     (!opcodeValid || dependencyFailed) && !io.blockDispatch, head.commandId,
     Mux(dependencyFailed, GpuCommandResultStatus.eventDependencyFailed,
       GpuCommandResultStatus.invalidOpcode), false.B, 0.U)
 
   commands.io.deq.ready := !io.blockDispatch && dependencyKnown && MuxCase(
-    completionEvents.io.in(6).ready, Seq(
+    completionEvents.io.in(7).ready, Seq(
     isKernel -> io.kernel.ready,
     isCopy -> io.copy.ready,
     isFill -> io.fill.ready,
     isStrided -> io.stridedCopy.ready,
     isResolve -> io.resolve.ready,
-    isInvalidate -> io.invalidate.ready))
+    isInvalidate -> io.invalidate.ready,
+    isRender -> io.render.ready))
   completions.io.enq <> completionEvents.io.out
   io.completion <> completions.io.deq
 
