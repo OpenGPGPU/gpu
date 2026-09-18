@@ -1101,4 +1101,64 @@ class RenderHostSpec extends AnyFlatSpec {
     }
   }
 
+  it should "run a unified render command through the command port" in {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    val cfg = GpuConfig(lanes = 4, warps = 2)
+    val m = new MemModel
+    val descriptorBase = 0x1000
+    val cmdBase = 0x2000
+    val colorBase = 0x8000
+    val depthBase = 0x9000
+    val stride = 16 * 4
+
+    val verts = Seq((q(-1.0), q(-1.0)), (q(1.0), q(-1.0)), (q(-1.0), q(1.0)))
+    val record = {
+      val w = Seq.newBuilder[Int]
+      for ((x, y) <- verts) { w += x; w += y; w += 0; w += q(1.0) }
+      for (_ <- verts) { w += 255; w += 0; w += 0 }
+      for (_ <- verts) { w += 0x10 }
+      w += 0; w += 0
+      for (_ <- 0 until 6) { w += 0 }
+      for (_ <- 0 until 8) { w += 0 }
+      w.result()
+    }
+    // Word 5: depth-test enable (bit0), LESS (bits 6:4 = 0), depth write (bit7).
+    val descriptor = Seq((1 << 16) | 3, cmdBase, colorBase, depthBase,
+      stride, 0x81, 0, 0, 0, 0) ++ Seq.fill(6)(0)
+    record.zipWithIndex.foreach { case (w, i) => m.wwrite(cmdBase + i * 4, w) }
+    descriptor.zipWithIndex.foreach {
+      case (w, i) => m.wwrite(descriptorBase + i * 4, w)
+    }
+    for (i <- 0 until 16 * 16) m.wwrite(colorBase + i * 4, 0x12345678)
+    for (i <- 0 until 16 * 16) m.wwrite(depthBase + i * 4, 0x00ffffff)
+
+    simulate(new RenderHost(config, cfg, fragCore = false)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
+      dut.io.renderCompletion.ready.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+
+      dut.io.renderCommand.bits.descriptorId.poke(3.U)
+      dut.io.renderCommand.bits.descriptorAddress.poke(descriptorBase.U)
+      dut.io.renderCommand.bits.bytes.poke(160.U)
+      dut.io.renderCommand.valid.poke(true.B)
+
+      serviceMem(dut, m, 400000, drainCycles = 4) {
+        dut.io.renderCompletion.valid.peek().litToBoolean
+      }
+      dut.io.renderCommand.valid.poke(false.B)
+
+      dut.io.renderCompletion.valid.expect(true.B)
+      dut.io.renderCompletion.bits.descriptorId.expect(3.U)
+      dut.io.renderCompletion.bits.success.expect(true.B)
+      def rgb(x: Int, y: Int): (Int, Int, Int) = {
+        val c = m.word(colorBase + (y * 16 + x) * 4).toInt
+        (((c >> 24) & 0xff), ((c >> 16) & 0xff), ((c >> 8) & 0xff))
+      }
+      assert(rgb(5, 5) == (255, 0, 0),
+        s"unified draw interior (5,5) should be red, got ${rgb(5, 5)}")
+      assert(m.word(colorBase) == 0x12345678L,
+        "an uncovered pixel must keep its caller-initialized sentinel")
+    }
+  }
+
 }

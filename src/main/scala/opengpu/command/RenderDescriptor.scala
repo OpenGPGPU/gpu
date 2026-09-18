@@ -20,6 +20,8 @@ class RenderDescriptor(config: GpuConfig, val commandIdWidth: Int)
 object RenderStatus {
   val width = 4
   val success = 0.U(width.W)
+  /** A texture or memory fault failed the draw (drained before completion). */
+  val memoryFault = 1.U(width.W)
 }
 
 class RenderCompletion(val commandIdWidth: Int) extends Bundle {

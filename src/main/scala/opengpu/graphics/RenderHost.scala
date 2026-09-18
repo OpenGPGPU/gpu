@@ -3,6 +3,7 @@ package opengpu.graphics
 import chisel3._
 import chisel3.util._
 import opengpu.config.GpuConfig
+import opengpu.command.{RenderCompletion, RenderDescriptor, RenderStatus}
 import opengpu.dma.{CopyEngine, FillEngine, StridedCopyEngine}
 import opengpu.core.memory.{
   CacheLineInvalidate,
@@ -168,7 +169,8 @@ class RenderHost(
   deviceId: Int = 0x4755, // 'GU'
   version: Int = 0x0001,
   unifiedCommands: Boolean = false,
-  textureFaultReporting: Boolean = false
+  textureFaultReporting: Boolean = false,
+  commandIdWidth: Int = 8
 ) extends Module {
   override def desiredName: String = "RenderHost"
 
@@ -214,6 +216,12 @@ class RenderHost(
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
     }
+    /** Unified render command: the VM address of a 16-word render descriptor.
+      * The engine fetches it through the translated command port and returns a
+      * unified completion. */
+    val renderCommand = Flipped(Decoupled(
+      new RenderDescriptor(gpuConfig, commandIdWidth)))
+    val renderCompletion = Decoupled(new RenderCompletion(commandIdWidth))
   })
 
   private val core = Module(new RenderCore(config, gpuConfig, fragCore, vertCore))
@@ -374,8 +382,22 @@ class RenderHost(
   private val sawBusy = RegInit(false.B)
   /** True while the running job was launched by the hardware job queue. */
   private val ownerQueue = RegInit(false.B)
+  /** True while the running job was launched by a unified render command. */
+  private val ownerUnified = RegInit(false.B)
   /** One-cycle pulse telling the queue its launched job has completed. */
   private val jqDonePulse = RegInit(false.B)
+
+  // Unified render command: fetch the 16-word render descriptor through the
+  // translated command port, then launch from a packed register snapshot.
+  private val renderFetching = RegInit(false.B)
+  private val descOutstanding = RegInit(false.B)
+  private val renderWord = RegInit(0.U(4.W))
+  private val renderWords = Reg(Vec(16, UInt(32.W)))
+  private val renderId = RegInit(0.U(commandIdWidth.W))
+  private val renderBytes = RegInit(0.U(64.W))
+  private val renderDonePending = RegInit(false.B)
+  private val renderLaunch = RegInit(false.B)
+  private val renderAddr = RegInit(0.U(gpuConfig.xLen.W))
 
   private val id = ((deviceId & 0xffff) << 16 | (version & 0xffff)).U
 
@@ -714,6 +736,7 @@ class RenderHost(
       error := false.B
       sawBusy := false.B
       ownerQueue := false.B
+      ownerUnified := false.B
       textureFaulted := false.B
       activeCmdBase := cmdBaseReg
       activeCmdCount := cmdCountReg
@@ -746,7 +769,63 @@ class RenderHost(
     error := false.B
     sawBusy := false.B
     ownerQueue := true.B
+    ownerUnified := false.B
     textureFaulted := false.B
+  }
+
+  // Unified render command: fetch the 16-word descriptor over the translated
+  // command port, then launch from a packed register snapshot.
+  renderLaunch := false.B
+  io.renderCommand.ready := !renderFetching && !busy && !renderDonePending
+  when(io.renderCommand.fire) {
+    renderFetching := true.B
+    descOutstanding := false.B
+    renderWord := 0.U
+    renderId := io.renderCommand.bits.descriptorId
+    renderAddr := io.renderCommand.bits.descriptorAddress
+    renderBytes := io.renderCommand.bits.bytes
+  }
+  when(renderFetching && io.cbMem.req.fire) { descOutstanding := true.B }
+  when(renderFetching && io.cbMem.resp.fire) {
+    descOutstanding := false.B
+    renderWords(renderWord) := io.cbMem.resp.bits.data
+    when(renderWord === 15.U) {
+      renderFetching := false.B
+      renderLaunch := true.B
+    }.otherwise {
+      renderWord := renderWord + 1.U
+    }
+  }
+  when(renderLaunch && !busy) {
+    busy := true.B
+    done := false.B
+    error := false.B
+    sawBusy := false.B
+    ownerQueue := false.B
+    ownerUnified := true.B
+    textureFaulted := false.B
+    // Pack the gpu_job_record words into the legacy snapshot layout the core
+    // mux already consumes, so no third configuration source is needed.
+    activeCmdBase := renderWords(1)
+    activeCmdCount := Cat(0.U(16.W), renderWords(0)(31, 16))
+    activeColorBase := renderWords(2)
+    activeDepthBase := renderWords(3)
+    activeStride := renderWords(4)
+    activeDepthTestEnable := Cat(0.U(31.W), renderWords(5)(0))
+    activeDepthFunc := Cat(0.U(29.W), renderWords(5)(6, 4))
+    activeDepthWriteEnable := Cat(0.U(31.W), renderWords(5)(7))
+    activeCullMode := Cat(0.U(30.W), renderWords(5)(9, 8))
+    activeTexBase := renderWords(6)
+    activeTexWidth := Cat(0.U(18.W), renderWords(7)(13, 0))
+    activeTexHeight := Cat(0.U(18.W), renderWords(7)(29, 16))
+    activeTexConfig := renderWords(8)
+    activeMsaaConfig := Cat(0.U(30.W), renderWords(9)(1, 0))
+    activeStencilConfig := Cat(0.U(16.W), renderWords(10)(11, 9),
+      renderWords(10)(8, 6), renderWords(10)(5, 3),
+      renderWords(10)(2, 0), 0.U(3.W), renderWords(5)(17))
+    activeStencilRefMasks := Cat(0.U(8.W), renderWords(11)(23, 16),
+      renderWords(11)(15, 8), renderWords(11)(7, 0))
+    activeBlendConfig := renderWords(12)
   }
 
   // Completion: the engine must be observed non-idle after launch before its
@@ -760,6 +839,8 @@ class RenderHost(
     done := true.B
     when(ownerQueue) {
       jqDonePulse := true.B
+    }.elsewhen(ownerUnified) {
+      renderDonePending := true.B
     }.otherwise {
       irqPending := true.B
     }
@@ -784,6 +865,16 @@ class RenderHost(
   // Integrated compute/DMA completions share the same sticky, AXI-visible
   // pending bit and W1C acknowledgement as graphics completions.
   when(io.externalCompletion) { irqPending := true.B }
+
+  // Unified render completions return to the command router rather than the
+  // graphics IRQ; the bridge publishes them through the unified result slot.
+  io.renderCompletion.valid := renderDonePending
+  io.renderCompletion.bits.descriptorId := renderId
+  io.renderCompletion.bits.status :=
+    Mux(textureFaulted, RenderStatus.memoryFault, RenderStatus.success)
+  io.renderCompletion.bits.success := !textureFaulted
+  io.renderCompletion.bits.bytesProcessed := renderBytes
+  when(io.renderCompletion.fire) { renderDonePending := false.B }
 
   // Tie the engine to the latched configuration: legacy register snapshots
   // when the host programmed START, the queue's descriptor snapshot when a
@@ -835,7 +926,8 @@ class RenderHost(
     activeTexConfig(5, 2), jq.io.cfg.texMaxLevel)
   core.io.sampleMode := muxActive(
     activeMsaaConfig(1, 0), jq.io.cfg.sampleMode)
-  core.io.start := launch || (jq.io.launch && jq.io.launchReady)
+  core.io.start := launch || (jq.io.launch && jq.io.launchReady) ||
+    (renderLaunch && !busy)
 
   // Separate word ports.  The engine's command stage (draw records) and the
   // job queue's admin agent (descriptor fetches, IH record writes) are distinct
@@ -845,8 +937,19 @@ class RenderHost(
   private val admin = jq.io.mem
   private val cbPort = core.io.cbMem
 
-  io.cbMem.req <> cbPort.req
-  cbPort.resp <> io.cbMem.resp
+  // The descriptor fetch owns the command word port while it runs (the core is
+  // idle until launch), then hands it back to the command stage.
+  private val descReqValid = renderFetching && !descOutstanding
+  io.cbMem.req.valid := Mux(renderFetching, descReqValid, cbPort.req.valid)
+  io.cbMem.req.bits.addr :=
+    Mux(renderFetching, renderAddr + (renderWord << 2), cbPort.req.bits.addr)
+  io.cbMem.req.bits.write :=
+    Mux(renderFetching, false.B, cbPort.req.bits.write)
+  io.cbMem.req.bits.data := Mux(renderFetching, 0.U, cbPort.req.bits.data)
+  cbPort.req.ready := !renderFetching && io.cbMem.req.ready
+  cbPort.resp.valid := !renderFetching && io.cbMem.resp.valid
+  cbPort.resp.bits := io.cbMem.resp.bits
+  io.cbMem.resp.ready := Mux(renderFetching, true.B, cbPort.resp.ready)
   io.adminMem.req <> admin.req
   admin.resp <> io.adminMem.resp
 

@@ -188,12 +188,10 @@ class GpuHostSystemAxi(
 
     system.io.gpuCommand <> host.io.gpuCommand.get
     host.io.gpuCompletion.get <> system.io.gpuCompletion
-    // Unified render dispatch reaches the graphics engine in a later stage;
-    // hold it off until RenderHost exposes the command interface.
-    system.io.render.ready := false.B
-    system.io.renderCompletion.valid := false.B
-    system.io.renderCompletion.bits :=
-      0.U.asTypeOf(system.io.renderCompletion.bits)
+    // Unified render dispatch reaches the graphics engine on the host side,
+    // which fetches the descriptor through the translated command port.
+    host.io.renderCommand <> system.io.render
+    system.io.renderCompletion <> host.io.renderCompletion
     system.io.commandResetActive := host.io.commandResetActive.get
     host.io.commandResetDone.get := system.io.commandResetDone
 

@@ -483,10 +483,13 @@ Staged work, each independently testable:
 - [x] **S2:** separate the command-draw word port from the job-queue/IH admin
   word port so only the command path needs translation and completion ordering
   is untouched.
-- [ ] **S3:** add `GPU_UCMD_OP_RENDER` and a `GpuCommandOpcode.render`, stage the
+- [x] **S3:** add `GPU_UCMD_OP_RENDER` and a `GpuCommandOpcode.render`, stage the
   existing 16-word render record as the descriptor (descriptor-pointer option),
   and drive the current `RenderHost` job pipeline from the unified completion
-  path while keeping job-ring submission as a fallback.
+  path while keeping job-ring submission as a fallback. The command router
+  carries the render descriptor/completion; `RenderHost` fetches the descriptor
+  through the translated command port, packs it into its launch snapshot and
+  returns a unified completion. The driver still submits via the job ring.
 - [ ] **S4:** submit draws through the unified `SUBMIT` path in the driver
   (`opengpu_hw_unified_submit_locked`) instead of the job ring, keeping the DRM
   scheduler, reservation fences and syncobjs unchanged.

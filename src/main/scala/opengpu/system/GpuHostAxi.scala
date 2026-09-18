@@ -2,7 +2,7 @@ package opengpu.system
 
 import chisel3._
 import chisel3.util._
-import opengpu.command.{GpuCommand, GpuCommandResult}
+import opengpu.command.{GpuCommand, GpuCommandResult, RenderCompletion, RenderDescriptor}
 import opengpu.config.GpuConfig
 import opengpu.core.memory.{
   CacheLineInvalidate,
@@ -146,13 +146,18 @@ class GpuHostAxi(
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
     }
+    /** Unified render command / completion to the graphics engine. */
+    val renderCommand = Flipped(Decoupled(
+      new RenderDescriptor(gpuConfig, commandIdWidth)))
+    val renderCompletion = Decoupled(new RenderCompletion(commandIdWidth))
   })
 
   withClockAndReset(clock, !io.s_axi_aresetn) {
     val host = Module(new RenderHost(
       config, gpuConfig, fragCore, vertCore, deviceId, version,
       unifiedCommands = unifiedCommandMmio,
-      textureFaultReporting = textureFaultReporting))
+      textureFaultReporting = textureFaultReporting,
+      commandIdWidth = commandIdWidth))
     host.io.textureFault.foreach(_ := io.textureFault.get)
     val unified = if (unifiedCommandMmio) {
       Some(Module(new GpuCommandMmio(
@@ -176,6 +181,8 @@ class GpuHostAxi(
     io.cbMem.resp <> host.io.cbMem.resp
     host.io.adminMem.req <> io.adminMem.req
     io.adminMem.resp <> host.io.adminMem.resp
+    host.io.renderCommand <> io.renderCommand
+    io.renderCompletion <> host.io.renderCompletion
     host.io.fbMem.req <> io.fbMem.req
     io.fbMem.resp <> host.io.fbMem.resp
     io.kernelMemReq <> host.io.kernelMemReq
