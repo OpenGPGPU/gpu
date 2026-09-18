@@ -316,6 +316,10 @@ TLB_FLUSH_TEST="$DRIVER_OUTPUT/opengpu_tlb_flush_test"
 "$HOST_CC" -std=c11 -O2 -Wall -Wextra -Werror -I"$GPU_DIR/driver" \
     -o "$TLB_FLUSH_TEST" "$GPU_DIR/driver/tests/opengpu_tlb_flush_test.c"
 "$TLB_FLUSH_TEST"
+KERNARG_VA_TEST="$DRIVER_OUTPUT/opengpu_kernarg_va_test"
+"$HOST_CC" -std=c11 -O2 -Wall -Wextra -Werror -I"$GPU_DIR/driver" \
+    -o "$KERNARG_VA_TEST" "$GPU_DIR/driver/tests/opengpu_kernarg_va_test.c"
+"$KERNARG_VA_TEST"
 MMU_TEST="$DRIVER_OUTPUT/opengpu_mmu_test"
 "$HOST_CC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$GPU_DIR/driver/tests/mmu_stubs" \

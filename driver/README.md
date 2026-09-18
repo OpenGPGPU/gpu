@@ -56,6 +56,9 @@ done
 cc -std=c11 -O2 -Wall -Wextra -Werror -I. \
     tests/opengpu_tlb_flush_test.c -o /tmp/opengpu_tlb_flush_test
 /tmp/opengpu_tlb_flush_test
+cc -std=c11 -O2 -Wall -Wextra -Werror -I. \
+    tests/opengpu_kernarg_va_test.c -o /tmp/opengpu_kernarg_va_test
+/tmp/opengpu_kernarg_va_test
 ```
 
 See `docs/HOST_INTERFACE.md` for the device ABI and `docs/GRAPHICS_ROADMAP.md`

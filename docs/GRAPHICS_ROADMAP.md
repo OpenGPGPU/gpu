@@ -376,9 +376,12 @@ Implemented:
   a 4 KiB-aligned VA range to a PA range in a VM's private address space: the
   mapped leaves clear the global (G) bit, so only that VM's ASID resolves
   them; untouched pages keep the shared global identity map, and a scoped ASID
-  flush drops any prior translation. Nothing binds resources through a VM's
-  virtual addresses yet, so a VM without private mappings behaves exactly like
-  the global map.
+  flush drops any prior translation. Compute kernargs are the first VM-
+  addressed client: `opengpu_kernarg_va.h` picks a per-slot virtual window,
+  `opengpu_mmu_vm_map` maps the binding there uncached, and the launch passes
+  the virtual address, so two contexts can map different physical kernargs at
+  the same VA and are isolated by their ASID. Every other client still passes
+  physical addresses.
 - Sv32 PTE bits [9:8] carry a per-page data cache policy (cached / write-through /
   uncached); the walker, data TLB, texture translator, CU data L1 and shared L2
   honour it. Instruction fetch remains cached; the ITLB does not carry policy.
@@ -419,10 +422,10 @@ Design notes (from the MMU/ASID review):
 Remaining work, cheapest first:
 
 - Driver VM manager: an ASID allocator, per-context VMs, a per-submission
-  `satp` switch and private VA->PA mappings (`opengpu_mmu_vm_map`) exist, but
-  no client binds a resource through a VM virtual address yet. Add a
-  VM-addressed client (for example compute kernargs) so address spaces
-  actually isolate. The scoped `TLB_FLUSH` is the shootdown primitive.
+  `satp` switch, private VA->PA mappings and a VM-addressed compute kernarg
+  exist. Extend VM addressing to the remaining clients (graphics command
+  buffer, framebuffer, textures), keep mappings on large pages and size the
+  TLBs for the working set. The scoped `TLB_FLUSH` is the shootdown primitive.
 - Keep per-VM mappings on large pages; size the TLBs for the working set and
   avoid blocking translation on the texture path. The `GraphicsAddressTranslator`
   is deliberately blocking today; measure before widening it.

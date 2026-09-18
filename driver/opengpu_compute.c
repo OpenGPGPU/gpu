@@ -20,6 +20,7 @@
 #include "opengpu_depth_validator.h"
 #include "opengpu_device.h"
 #include "opengpu_drm.h"
+#include "opengpu_kernarg_va.h"
 #include "opengpu_resolve_validator.h"
 #include "opengpu_shader_validator.h"
 
@@ -45,6 +46,9 @@ struct opengpu_resource_binding {
     u32 width;
     u32 height;
     u32 flags;
+    /* Private virtual address in this context's VM that `dma` is mapped at;
+     * 0 means the binding is only reachable at its physical address. */
+    dma_addr_t va;
 };
 
 enum opengpu_sched_job_type {
@@ -463,6 +467,48 @@ static int opengpu_binding_invalidate(
     return opengpu_wait_fence(gpu, &fence, true);
 }
 
+/* Map a binding's physical range into a context VM's private address space
+ * and cache the resulting virtual address on the binding.  The VA is a fixed
+ * window keyed by binding slot, so two contexts can map different physical
+ * kernargs at the same virtual address and are isolated by their ASID.  Falls
+ * back to a global uncached mapping when the MMU is absent or the range is
+ * too large for the window. */
+static int opengpu_binding_map_kernarg(struct opengpu_device *gpu,
+                                       struct opengpu_render_context *context,
+                                       struct opengpu_resource_binding *binding,
+                                       u32 slot)
+{
+    struct opengpu_kernarg_va_plan plan;
+    int ret;
+
+    ret = opengpu_kernarg_va_plan(binding->dma, binding->size, slot,
+                                  OPENGPU_MMU_PAGE_SIZE, &plan);
+    if (ret)
+        return ret;
+    ret = opengpu_mmu_vm_map(gpu, &context->vm, (dma_addr_t)plan.va_page,
+                             (dma_addr_t)plan.pa_page, (size_t)plan.span,
+                             OPENGPU_MMU_POLICY_UNCACHED);
+    if (ret)
+        return ret;
+    binding->va = (dma_addr_t)plan.va;
+    return 0;
+}
+
+/* Global (identity) uncached mapping, the fallback when a private VM mapping
+ * is not possible; directly-read bindings are also invalidated here. */
+static int opengpu_binding_map_uncached(
+    struct opengpu_device *gpu,
+    const struct opengpu_resource_binding *binding)
+{
+    int ret;
+
+    ret = opengpu_mmu_set_range_policy(gpu, binding->dma, binding->size,
+                                       OPENGPU_MMU_POLICY_UNCACHED);
+    if (ret == -EOPNOTSUPP)
+        ret = opengpu_binding_invalidate(gpu, binding);
+    return ret;
+}
+
 int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
                                         struct drm_file *file)
 {
@@ -574,18 +620,23 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
     ret = opengpu_context_quiesce(render_file, context);
     if (ret)
         goto out_file;
-    /* Only compute data and fixed-function textures currently translate.
-     * Graphics shader CUs run Bare, so their bindings still need invalidation
-     * even when users request an uncached mapping. Shaders are snapshotted. */
-    if (args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG ||
-        (args->type == OPENGPU_RESOURCE_TEXTURE &&
-         (args->flags & OPENGPU_RESOURCE_UNCACHED))) {
-        ret = opengpu_mmu_set_range_policy(gpu, binding->dma, binding->size,
-                                           OPENGPU_MMU_POLICY_UNCACHED);
-        if (ret && ret != -EOPNOTSUPP)
+    /* A compute kernarg is mapped privately into the context's VM and reached
+     * through a virtual address, so contexts with different physical kernargs
+     * are isolated at the same VA.  Fall back to the global uncached mapping
+     * when the private mapping is unavailable.  Fixed-function textures and
+     * other directly-read bindings keep the global path (the VM root shares
+     * those leaves). Shaders are snapshotted. */
+    if (args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG &&
+        context->vm.enabled) {
+        ret = opengpu_binding_map_kernarg(gpu, context, binding, args->slot);
+        if (ret)
+            ret = opengpu_binding_map_uncached(gpu, binding);
+        if (ret)
             goto out_file;
-        if (ret == -EOPNOTSUPP)
-            ret = opengpu_binding_invalidate(gpu, binding);
+    } else if (args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG ||
+               (args->type == OPENGPU_RESOURCE_TEXTURE &&
+                (args->flags & OPENGPU_RESOURCE_UNCACHED))) {
+        ret = opengpu_binding_map_uncached(gpu, binding);
         if (ret)
             goto out_file;
     } else if (args->type != OPENGPU_RESOURCE_SHADER &&
@@ -2385,7 +2436,11 @@ int opengpu_compute_launch_ioctl(struct drm_device *drm, void *data,
     }
     sched_job->kernel.kernel_pc = sched_job->shader.dma +
                                   args->shader_offset;
-    sched_job->kernel.kernarg = kernarg->dma + args->kernarg_offset;
+    /* A privately-mapped kernarg is reached through the VM virtual address,
+     * which the CU MMU translates under this context's ASID. */
+    sched_job->kernel.kernarg = kernarg->va ?
+        kernarg->va + args->kernarg_offset :
+        kernarg->dma + args->kernarg_offset;
     sched_job->events = events;
     memcpy(sched_job->kernel.grid, args->grid,
            sizeof(sched_job->kernel.grid));

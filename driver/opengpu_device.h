@@ -155,6 +155,9 @@ struct opengpu_display {
 #define OPENGPU_MMU_POLICY_WRITE_THROUGH 1u
 #define OPENGPU_MMU_POLICY_UNCACHED     2u
 
+/* Sv32 page size; must match MMU_PAGE_SIZE in opengpu_mmu.c. */
+#define OPENGPU_MMU_PAGE_SIZE 4096u
+
 /* Up to this many 4 MiB regions may carry a second-level table (a region is
  * split only when a page inside it needs a non-default policy). */
 #define OPENGPU_MMU_MAX_TABLES 16u
