@@ -3,14 +3,17 @@
 #define OPENGPU_KERNARG_VA_H
 
 /*
- * Plan the VM virtual address for a compute kernarg binding.
+ * Plan the VM virtual address for a resource binding.
  *
- * A kernarg is mapped into its context's VM at a fixed virtual window keyed
- * by resource slot, so two contexts can map different physical kernargs at
- * the same VA and stay isolated by their ASID.  The binding's physical base
- * may be unaligned within a page; the plan covers the enclosing pages and
- * records the VA that corresponds to the binding base, so the launch
- * descriptor can add its own kernarg offset.
+ * A binding is mapped into its context's VM at a fixed virtual window keyed by
+ * resource slot, so two contexts can map different physical buffers at the
+ * same VA and stay isolated by their ASID.  The binding's physical base may be
+ * unaligned within a page; the plan covers the enclosing pages and records the
+ * VA that corresponds to the binding base, so the launch/submission descriptor
+ * can add its own offset.
+ *
+ * Compute kernargs and fixed-function textures use distinct windows so their
+ * per-slot mappings cannot collide.
  *
  * Kernel-free so the same arithmetic is exercised by
  * tests/opengpu_kernarg_va_test.c.
@@ -28,6 +31,8 @@ typedef uint32_t opengpu_kernarg_u32;
 
 #define OPENGPU_KERNARG_VA_BASE   0x80000000ull
 #define OPENGPU_KERNARG_VA_STRIDE (4ull * 1024ull * 1024ull)
+#define OPENGPU_TEXTURE_VA_BASE   0xa0000000ull
+#define OPENGPU_TEXTURE_VA_STRIDE (4ull * 1024ull * 1024ull)
 
 enum opengpu_kernarg_va_status {
 	OPENGPU_KERNARG_VA_OK = 0,
@@ -41,11 +46,13 @@ struct opengpu_kernarg_va_plan {
 	opengpu_kernarg_u64 va;		/* VA of the binding base (dma) */
 };
 
-static inline int opengpu_kernarg_va_plan(opengpu_kernarg_u64 dma,
-					  opengpu_kernarg_u64 size,
-					  opengpu_kernarg_u32 slot,
-					  opengpu_kernarg_u32 page_size,
-					  struct opengpu_kernarg_va_plan *out)
+static inline int opengpu_resource_va_plan(opengpu_kernarg_u64 dma,
+					   opengpu_kernarg_u64 size,
+					   opengpu_kernarg_u32 slot,
+					   opengpu_kernarg_u32 page_size,
+					   opengpu_kernarg_u64 base,
+					   opengpu_kernarg_u64 stride,
+					   struct opengpu_kernarg_va_plan *out)
 {
 	opengpu_kernarg_u64 in_page, span, va_page;
 
@@ -54,15 +61,36 @@ static inline int opengpu_kernarg_va_plan(opengpu_kernarg_u64 dma,
 	in_page = dma & (page_size - 1);
 	span = (in_page + size + page_size - 1) &
 		~((opengpu_kernarg_u64)page_size - 1);
-	if (span > OPENGPU_KERNARG_VA_STRIDE)
+	if (span > stride)
 		return OPENGPU_KERNARG_VA_E_RANGE;
-	va_page = OPENGPU_KERNARG_VA_BASE +
-		(opengpu_kernarg_u64)slot * OPENGPU_KERNARG_VA_STRIDE;
+	va_page = base + (opengpu_kernarg_u64)slot * stride;
 	out->va_page = va_page;
 	out->pa_page = dma - in_page;
 	out->span = span;
 	out->va = va_page + in_page;
 	return OPENGPU_KERNARG_VA_OK;
+}
+
+static inline int opengpu_kernarg_va_plan(opengpu_kernarg_u64 dma,
+					  opengpu_kernarg_u64 size,
+					  opengpu_kernarg_u32 slot,
+					  opengpu_kernarg_u32 page_size,
+					  struct opengpu_kernarg_va_plan *out)
+{
+	return opengpu_resource_va_plan(dma, size, slot, page_size,
+					OPENGPU_KERNARG_VA_BASE,
+					OPENGPU_KERNARG_VA_STRIDE, out);
+}
+
+static inline int opengpu_texture_va_plan(opengpu_kernarg_u64 dma,
+					  opengpu_kernarg_u64 size,
+					  opengpu_kernarg_u32 slot,
+					  opengpu_kernarg_u32 page_size,
+					  struct opengpu_kernarg_va_plan *out)
+{
+	return opengpu_resource_va_plan(dma, size, slot, page_size,
+					OPENGPU_TEXTURE_VA_BASE,
+					OPENGPU_TEXTURE_VA_STRIDE, out);
 }
 
 #endif /* OPENGPU_KERNARG_VA_H */

@@ -113,10 +113,12 @@ unwinds the same sequence in reverse, and each layer frees only what it owns.
   carry the Sv32 global (G) bit, so an ASID switch reuses the resident
   translations. Every hardware submission takes a VM and programs `satp` for
   it inside the submit lock; each DRM context owns a VM that every job from it
-  carries. `opengpu_mmu_vm_map` maps a VA range to a PA range with non-global
-  leaves, and compute kernargs are bound through a per-slot VM virtual window
-  (`opengpu_kernarg_va.h`) so contexts are isolated at the same VA; other
-  clients still pass physical addresses.
+  carries.   `opengpu_mmu_vm_map` maps a VA range to a PA range with non-global
+  leaves, and compute kernargs and fixed-function textures are bound through
+  per-slot VM virtual windows (`opengpu_kernarg_va.h`) so contexts are isolated
+  at the same VA; other clients still pass physical addresses. The graphics
+  address translator tags its TLB entries with the filling ASID, so a VM switch
+  needs no graphics flush and a private page only resolves under its own ASID.
 - Texture translation/access faults drain the render and report an error
   completion: STATUS.ERROR for legacy submissions, plus IH status 2 and ERROR
   for queued jobs. The existing IH handler signals the owning fence with -EIO.

@@ -64,6 +64,21 @@ int main(void)
 	assert(opengpu_kernarg_va_plan(0x1000, 64, 1, PAGE, NULL) ==
 	       OPENGPU_KERNARG_VA_E_RANGE);
 
+	/* The texture planner uses its own window, disjoint from the kernarg
+	 * window, and shares the same arithmetic. */
+	assert(opengpu_texture_va_plan(0x55555000, 0x3000, 1, PAGE, &plan) ==
+	       OPENGPU_KERNARG_VA_OK);
+	assert(plan.va_page == OPENGPU_TEXTURE_VA_BASE + OPENGPU_TEXTURE_VA_STRIDE);
+	assert(plan.pa_page == 0x55555000);
+	assert(plan.va == plan.va_page);
+	assert(plan.span == 0x3000);
+	assert(plan.va_page >= OPENGPU_KERNARG_VA_BASE +
+	       OPENGPU_KERNARG_VA_STRIDE);
+	assert(opengpu_texture_va_plan(0, OPENGPU_TEXTURE_VA_STRIDE + 1, 1, PAGE,
+				      &plan) == OPENGPU_KERNARG_VA_E_RANGE);
+	assert(opengpu_texture_va_plan(0, OPENGPU_TEXTURE_VA_STRIDE, 1, PAGE,
+				      &plan) == OPENGPU_KERNARG_VA_OK);
+
 	puts("kernarg VA planner tests passed");
 	return 0;
 }

@@ -494,6 +494,33 @@ static int opengpu_binding_map_kernarg(struct opengpu_device *gpu,
     return 0;
 }
 
+/* Map a texture binding's physical range into a context VM's private address
+ * space, so two contexts can sample different physical textures at the same
+ * virtual window and stay isolated by their ASID.  The fixed-function texture
+ * client already translates through the shared page tables; this only picks
+ * the VA.  Falls back to the global path when the MMU is absent or the range
+ * does not fit the window. */
+static int opengpu_binding_map_texture(struct opengpu_device *gpu,
+                                       struct opengpu_render_context *context,
+                                       struct opengpu_resource_binding *binding,
+                                       u32 slot, u32 policy)
+{
+    struct opengpu_kernarg_va_plan plan;
+    int ret;
+
+    ret = opengpu_texture_va_plan(binding->dma, binding->size, slot,
+                                  OPENGPU_MMU_PAGE_SIZE, &plan);
+    if (ret)
+        return ret;
+    ret = opengpu_mmu_vm_map(gpu, &context->vm, (dma_addr_t)plan.va_page,
+                             (dma_addr_t)plan.pa_page, (size_t)plan.span,
+                             policy);
+    if (ret)
+        return ret;
+    binding->va = (dma_addr_t)plan.va;
+    return 0;
+}
+
 /* Global (identity) uncached mapping, the fallback when a private VM mapping
  * is not possible; directly-read bindings are also invalidated here when the
  * MMU cannot take a policy split (no MMU, or table capacity). */
@@ -635,6 +662,25 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
         ret = opengpu_binding_map_kernarg(gpu, context, binding, args->slot);
         if (ret)
             ret = opengpu_binding_map_uncached(gpu, binding);
+        if (ret)
+            goto out_file;
+    } else if (args->type == OPENGPU_RESOURCE_TEXTURE &&
+               context->vm.enabled) {
+        u32 policy = (args->flags & OPENGPU_RESOURCE_UNCACHED) ?
+            OPENGPU_MMU_POLICY_UNCACHED : OPENGPU_MMU_POLICY_CACHED;
+
+        ret = opengpu_binding_map_texture(gpu, context, binding, args->slot,
+                                          policy);
+        if (ret) {
+            if (args->flags & OPENGPU_RESOURCE_UNCACHED)
+                ret = opengpu_binding_map_uncached(gpu, binding);
+            else
+                ret = opengpu_binding_invalidate(gpu, binding);
+        } else if (!(args->flags & OPENGPU_RESOURCE_UNCACHED)) {
+            /* A cached private texture still needs CPU-written lines dropped
+             * at the upload boundary. */
+            ret = opengpu_binding_invalidate(gpu, binding);
+        }
         if (ret)
             goto out_file;
     } else if (args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG ||
@@ -1578,7 +1624,7 @@ int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
         .stencil_config = 0,
         .stencil_ref_masks = 0,
         .blend_config = 0,
-        .texture = texture ? texture->dma : 0,
+        .texture = texture ? (texture->va ? texture->va : texture->dma) : 0,
         .texture_width = texture ? texture->width : 0,
         .texture_height = texture ? texture->height : 0,
         .texture_config = texture ? GPU_TEX_ENABLE |

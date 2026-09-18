@@ -27,6 +27,14 @@ class GraphicsAddressTranslatorSpec extends AnyFlatSpec {
     dut.io.out.valid.expect(true.B)
   }
 
+  /** Consume the response held on `out` (ready is normally held low so a test
+    * can inspect it before it is retired). */
+  private def consumeOut(dut: GraphicsAddressTranslator): Unit = {
+    dut.io.out.ready.poke(true.B)
+    dut.clock.step()
+    dut.io.out.ready.poke(false.B)
+  }
+
   private def waitPageWalk(dut: GraphicsAddressTranslator): Unit = {
     var cycles = 0
     while (!dut.io.pageWalk.valid.peek().litToBoolean && cycles < 20) {
@@ -176,6 +184,84 @@ class GraphicsAddressTranslatorSpec extends AnyFlatSpec {
       dut.io.pageWalk.valid.expect(false.B)
       dut.io.faultResponse.valid.expect(true.B)
       dut.io.faultResponse.bits.fault.expect(true.B)
+    }
+  }
+
+  /** Drive a cached miss to a fresh leaf at `ppn` (superpage at PA `ppn<<12`).
+    * Leaves the translated response pending on `out` for the caller to check
+    * and retire with `consumeOut`. */
+  private def fillPage(dut: GraphicsAddressTranslator, address: BigInt,
+                       id: Int, ppn: BigInt, global: Boolean): Unit = {
+    request(dut, address, id)
+    waitPageWalk(dut)
+    val leaf = (ppn << 10) | (if (global) BigInt(0xef) else BigInt(0xcf))
+    dut.io.pageWalkResp.bits.readData.poke(leaf.U)
+    dut.io.pageWalkResp.bits.fault.poke(false.B)
+    dut.io.pageWalkResp.valid.poke(true.B)
+    waitOut(dut)
+    dut.io.pageWalkResp.valid.poke(false.B)
+  }
+
+  it should "not reuse a private page across an ASID switch" in {
+    simulate(new GraphicsAddressTranslator(
+      GpuConfig(lanes = 2, warps = 1), entries = 4, maxOutstanding = 4)) { dut =>
+      dut.io.in.valid.poke(false.B)
+      dut.io.in.bits.poke(0.U.asTypeOf(dut.io.in.bits))
+      // Hold `out` until the test inspects it, so a response cannot retire
+      // before its values are checked.
+      dut.io.out.ready.poke(false.B)
+      dut.io.faultResponse.ready.poke(true.B)
+      dut.io.pageWalk.ready.poke(true.B)
+      dut.io.pageWalkResp.valid.poke(false.B)
+      // ASID 0, Sv32 enabled, root PPN 0x80.
+      dut.io.satp.poke((BigInt(1) << 31 | 0x80).U)
+      dut.io.flush.poke(false.B)
+      dut.io.pageWalkTransactionId.poke(3.U)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+
+      fillPage(dut, 0x2000, 1, 0x400, global = false)
+      dut.io.out.bits.address.expect(0x402000.U)
+      consumeOut(dut)
+
+      // Same ASID hits the private entry: no new walk.
+      request(dut, 0x2000, 1)
+      waitOut(dut)
+      dut.io.pageWalk.valid.expect(false.B)
+      dut.io.out.bits.address.expect(0x402000.U)
+      consumeOut(dut)
+
+      // A different ASID must not see ASID 0's private entry.
+      dut.io.satp.poke((BigInt(1) << 31 | (BigInt(1) << 22) | 0x80).U)
+      fillPage(dut, 0x2000, 2, 0x800, global = false)
+      dut.io.out.bits.address.expect(0x802000.U)
+      consumeOut(dut)
+    }
+  }
+
+  it should "reuse a global page across an ASID switch" in {
+    simulate(new GraphicsAddressTranslator(
+      GpuConfig(lanes = 2, warps = 1), entries = 4, maxOutstanding = 4)) { dut =>
+      dut.io.in.valid.poke(false.B)
+      dut.io.in.bits.poke(0.U.asTypeOf(dut.io.in.bits))
+      dut.io.out.ready.poke(false.B)
+      dut.io.faultResponse.ready.poke(true.B)
+      dut.io.pageWalk.ready.poke(true.B)
+      dut.io.pageWalkResp.valid.poke(false.B)
+      dut.io.satp.poke((BigInt(1) << 31 | 0x80).U)
+      dut.io.flush.poke(false.B)
+      dut.io.pageWalkTransactionId.poke(3.U)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+
+      fillPage(dut, 0x6000, 1, 0xc00, global = true)
+      dut.io.out.bits.address.expect(0xc06000.U)
+      consumeOut(dut)
+
+      dut.io.satp.poke((BigInt(1) << 31 | (BigInt(1) << 22) | 0x80).U)
+      request(dut, 0x6000, 2)
+      waitOut(dut)
+      dut.io.pageWalk.valid.expect(false.B)
+      dut.io.out.bits.address.expect(0xc06000.U)
+      consumeOut(dut)
     }
   }
 }

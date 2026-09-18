@@ -356,9 +356,10 @@ int opengpu_mmu_vm_activate(struct opengpu_device *gpu,
     if (!gpu->mmu.enabled)
         return -EOPNOTSUPP;
     /* opengpu_hw_activate_vm quiesces, then programs satp; all VM roots share
-     * the global identity map, so no flush is needed.  The fixed-function
-     * texture translator follows the vector satp but tags no entries with an
-     * ASID; a future non-identity VM must flush the graphics clients. */
+     * the global identity map, so no flush is needed.  The graphics address
+     * translator follows the vector satp and tags its entries with the filling
+     * ASID (global pages hit any address space), so a switch needs no graphics
+     * flush either. */
     return opengpu_hw_activate_vm(gpu, vm);
 }
 

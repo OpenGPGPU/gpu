@@ -6,13 +6,18 @@ import opengpu.config.{CachePolicy, GpuConfig}
 
 /** A graphics-client translation stage: a small TLB plus the shared Sv32 walker.
   *
-  * The attached graphics client (currently texture sampling)
-  * issues cache-line requests at virtual addresses; this block translates them
-  * through the same page tables as the CU MMUs and attaches the page's cache
-  * policy, so a driver can map a texture or vertex buffer uncached.  Page-table
-  * words are fetched as narrow uncached reads on `pageWalk`; the caller routes
-  * their responses back on `pageWalkResp` and keeps them clear of client
-  * traffic by using the reserved transaction IDs.
+  * The attached graphics client (texture sampling, and graphics command or
+  * framebuffer traffic when wired through it) issues cache-line requests at
+  * virtual addresses; this block translates them through the same page tables
+  * as the CU MMUs and attaches the page's cache policy, so a driver can map a
+  * texture or vertex buffer uncached.  Page-table words are fetched as narrow
+  * uncached reads on `pageWalk`; the caller routes their responses back on
+  * `pageWalkResp` and keeps them clear of client traffic by using the reserved
+  * transaction IDs.
+  *
+  * TLB entries are ASID-tagged: a global (G) page hits any address space, and a
+  * private page only hits under the ASID that filled it, so a coarse VM switch
+  * needs no flush here and contexts cannot resolve one another's mappings.
   */
 class GraphicsAddressTranslator(
   config: GpuConfig = GpuConfig(),
@@ -58,6 +63,8 @@ class GraphicsAddressTranslator(
   private val policy = Reg(Vec(entries, UInt(CachePolicy.width.W)))
   private val readable = Reg(Vec(entries, Bool()))
   private val writable = Reg(Vec(entries, Bool()))
+  private val global = Reg(Vec(entries, Bool()))
+  private val asid = Reg(Vec(entries, UInt(9.W)))
   private val replacement = RegInit(0.U(entryWidth.W))
   private val state = RegInit(State.idle)
   private val request = Reg(new ComputeMemoryRequest(config, lineBytes,
@@ -66,8 +73,14 @@ class GraphicsAddressTranslator(
                                                         maxOutstanding))
 
   private val requestVpn = request.address(config.xLen - 1, 12)
+  // Tag each entry with the ASID under which it was filled (Sv32 satp bits
+  // [30:22]).  An entry filled from a global (G) PTE hits any address space;
+  // a private entry only hits its own ASID, so a VM switch needs no graphics
+  // flush and one context can never resolve another's private mapping.
+  private val currentAsid = io.satp(30, 22)
   private val hitByEntry = VecInit((0 until entries).map { entry =>
-    valid(entry) && vpn(entry) === requestVpn
+    valid(entry) && (global(entry) || asid(entry) === currentAsid) &&
+      vpn(entry) === requestVpn
   })
   private val hit = hitByEntry.asUInt.orR
   private val hitPpn = Mux1H(hitByEntry, ppn)
@@ -140,6 +153,8 @@ class GraphicsAddressTranslator(
       policy(replacement) := walker.io.response.bits.cachePolicy
       readable(replacement) := walker.io.response.bits.readable
       writable(replacement) := walker.io.response.bits.writable
+      global(replacement) := walker.io.response.bits.global
+      asid(replacement) := currentAsid
       replacement := Mux(replacement === (entries - 1).U, 0.U,
                          replacement + 1.U)
       translated := request

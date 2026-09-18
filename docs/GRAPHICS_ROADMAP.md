@@ -398,6 +398,14 @@ Implemented:
   faults latch a per-job failure, drain rendering, and report STATUS.ERROR;
   queued jobs also publish IH status 2 and ERROR before raising the IRQ, so the
   driver signals the failed fence with -EIO. Framebuffer contents may be partial.
+- The graphics address translator tags its TLB entries with the filling ASID,
+  so a global page hits any address space and a private page only resolves under
+  its own ASID; a coarse VM switch needs no graphics flush and one context
+  cannot resolve another's private mapping. Fixed-function textures are the
+  second VM-addressed client: a per-slot texture window (planned by the shared
+  `opengpu_kernarg_va.h` arithmetic) maps the texture into the context VM with a
+  non-global leaf and the draw passes the virtual address, falling back to the
+  global path when the range does not fit the window.
 
 Design notes (from the MMU/ASID review):
 
@@ -422,17 +430,20 @@ Design notes (from the MMU/ASID review):
 Remaining work, cheapest first:
 
 - Driver VM manager: an ASID allocator, per-context VMs, a per-submission
-  `satp` switch, private VA->PA mappings and a VM-addressed compute kernarg
-  exist. Extend VM addressing to the remaining clients (graphics command
-  buffer, framebuffer, textures), keep mappings on large pages and size the
-  TLBs for the working set. The scoped `TLB_FLUSH` is the shootdown primitive.
+  `satp` switch, private VA->PA mappings, a VM-addressed compute kernarg and a
+  VM-addressed texture exist. Extend VM addressing to the remaining clients
+  (graphics command buffer, framebuffer), keep mappings on large pages and size
+  the TLBs for the working set. The scoped `TLB_FLUSH` is the shootdown
+  primitive.
 - Keep per-VM mappings on large pages; size the TLBs for the working set and
   avoid blocking translation on the texture path. The `GraphicsAddressTranslator`
   is deliberately blocking today; measure before widening it.
 - Only if many short-lived address spaces must interleave: per-job `satp` or a
   small VMID-style page-table-base bank beyond the current global `satp`.
 - Translate the remaining graphics clients (command buffer, framebuffer) if a
-  VM-addressed graphics space is required.
+  VM-addressed graphics space is required. The graphics address translator is
+  already ASID-tagged, so wiring the command-buffer or framebuffer bridge
+  through a second translator instance needs no flush on a VM switch.
 
 Exit: the driver can run several address spaces with correct scoped shootdown
 and no flush on a plain ASID switch; performance baselines quantify the
