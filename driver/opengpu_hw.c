@@ -499,81 +499,6 @@ static int opengpu_hw_validate_job(const struct opengpu_job *job,
     return 0;
 }
 
-static int opengpu_hw_submit_legacy_locked(struct opengpu_device *gpu,
-                                           const struct opengpu_job *job,
-                                           struct dma_fence **out_fence)
-{
-    struct opengpu_fence *fence;
-    unsigned long flags;
-    int ret = 0;
-
-    fence = kzalloc(sizeof(*fence), GFP_KERNEL);
-    if (!fence)
-        return -ENOMEM;
-
-    dma_fence_init(&fence->base, &opengpu_fence_ops,
-                   &gpu->hw.fence_lock, gpu->hw.fence_context,
-                   ++gpu->hw.fence_seqno);
-
-    spin_lock_irqsave(&gpu->hw.fence_lock, flags);
-    if (gpu->hw.active_fence) {
-        ret = -EBUSY;
-    } else {
-        gpu->hw.active_fence = &fence->base;
-        gpu->hw.active_completion_delay_ms = job->completion_delay_ms;
-        *out_fence = dma_fence_get(&fence->base);
-    }
-    spin_unlock_irqrestore(&gpu->hw.fence_lock, flags);
-    if (ret)
-        goto out;
-
-    opengpu_reg_write(gpu, GPU_REG_CMD_BASE, lower_32_bits(job->cmd));
-    opengpu_reg_write(gpu, GPU_REG_CMD_COUNT, job->cmd_count);
-    opengpu_reg_write(gpu, GPU_REG_COLOR_BASE, lower_32_bits(job->color));
-    opengpu_reg_write(gpu, GPU_REG_DEPTH_BASE, lower_32_bits(job->depth));
-    opengpu_reg_write(gpu, GPU_REG_STRIDE, job->stride);
-    opengpu_reg_write(gpu, GPU_REG_DEPTH_TEST, job->depth_test);
-    opengpu_reg_write(gpu, GPU_REG_DEPTH_FUNC, job->depth_func);
-    opengpu_reg_write(gpu, GPU_REG_DEPTH_WRITE, job->depth_write);
-    opengpu_reg_write(gpu, GPU_REG_CULL_MODE, job->cull_mode);
-    opengpu_reg_write(gpu, GPU_REG_TEX_BASE, lower_32_bits(job->texture));
-    opengpu_reg_write(gpu, GPU_REG_TEX_WIDTH, job->texture_width);
-    opengpu_reg_write(gpu, GPU_REG_TEX_HEIGHT, job->texture_height);
-    opengpu_reg_write(gpu, GPU_REG_TEX_CONFIG, job->texture_config);
-    opengpu_reg_write(gpu, GPU_REG_MSAA_CONFIG, job->sample_mode & 0x3u);
-    /* The register file packs the stencil enable at bit0 with func/ops one
-     * nibble above the draw-record word-36 layout; the ref/masks and blend
-     * words are register-compatible with job words 11/12. */
-    opengpu_reg_write(gpu, GPU_REG_STENCIL_CONFIG,
-                      (job->stencil_test ? 1u : 0u) |
-                      ((job->stencil_config & 0xfffu) << 4));
-    opengpu_reg_write(gpu, GPU_REG_STENCIL_REF_MASKS, job->stencil_ref_masks);
-    opengpu_reg_write(gpu, GPU_REG_BLEND_CONFIG, job->blend_config);
-
-    opengpu_reg_write(gpu, GPU_REG_IRQ, GPU_IRQ_ENABLE);
-    schedule_delayed_work(&gpu->hw.timeout_work,
-                          msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS));
-    opengpu_reg_write(gpu, GPU_REG_CONTROL, GPU_CTRL_START);
-
-out:
-    if (ret)
-        dma_fence_put(&fence->base);
-    return ret;
-}
-
-static int opengpu_hw_submit_locked(struct opengpu_device *gpu,
-                                    const struct opengpu_job *job,
-                                    const struct opengpu_vm *vm,
-                                    struct dma_fence **out_fence)
-{
-    int ret;
-
-    ret = opengpu_hw_activate_vm_locked(gpu, vm);
-    if (ret)
-        return ret;
-    return opengpu_hw_submit_legacy_locked(gpu, job, out_fence);
-}
-
 static int opengpu_hw_unified_result_error(u32 opcode, u32 status)
 {
     if (status == GPU_UCMD_RESULT_EVENT_DEPENDENCY_FAILED)
@@ -1486,38 +1411,6 @@ static int opengpu_hw_invalidate_snapshots_locked(
     return 0;
 }
 
-/** Invalidate CPU-written snapshots, optionally clear private depth storage,
- * and publish the draw without an intervening submission.  Holding
- * submit_lock across the sequence keeps the legacy misc ABI and DRM contexts
- * from inserting work between the precursors and the doorbell.  The DRM
- * scheduler's one-credit policy guarantees that the previous scheduled job
- * has completed before this entry point runs. */
-int opengpu_hw_draw_submit_async(struct opengpu_device *gpu,
-                                 const struct opengpu_job *job,
-                                 const struct opengpu_buffer *const *snapshots,
-                                 unsigned int snapshot_count,
-                                 bool clear_depth, u32 clear_base,
-                                 u32 clear_bytes, u32 clear_pattern,
-                                 const struct opengpu_vm *vm,
-                                 struct dma_fence **out_fence)
-{
-    int ret;
-
-    ret = opengpu_hw_validate_job(job, out_fence);
-    if (ret)
-        return ret;
-    mutex_lock(&gpu->hw.submit_lock);
-    ret = opengpu_hw_invalidate_snapshots_locked(gpu, snapshots,
-                                                 snapshot_count);
-    if (!ret && clear_depth)
-        ret = opengpu_hw_clear_locked(gpu, clear_base, clear_bytes,
-                                      clear_pattern);
-    if (!ret)
-        ret = opengpu_hw_submit_locked(gpu, job, vm, out_fence);
-    mutex_unlock(&gpu->hw.submit_lock);
-    return ret;
-}
-
 /* Publish one draw as a unified render command.  The 16-word render descriptor
  * is filled into driver-owned memory and submitted by virtual address, so the
  * device fetches the descriptor and the command buffer through the context VM.
@@ -1557,20 +1450,6 @@ int opengpu_hw_render_async(struct opengpu_device *gpu,
             descriptor_bytes, 0, 0, 0, 0, 0, descriptor_bytes, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
-}
-
-/** Clear private job storage and publish the corresponding draw without an
- * intervening submission. */
-int opengpu_hw_clear_and_submit_async(struct opengpu_device *gpu,
-                                      const struct opengpu_job *job,
-                                      u32 clear_base, u32 clear_bytes,
-                                      u32 clear_pattern,
-                                      const struct opengpu_vm *vm,
-                                      struct dma_fence **out_fence)
-{
-    return opengpu_hw_draw_submit_async(gpu, job, NULL, 0, true, clear_base,
-                                        clear_bytes, clear_pattern, vm,
-                                        out_fence);
 }
 
 int opengpu_hw_display_commit(struct opengpu_device *gpu,

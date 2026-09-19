@@ -319,25 +319,6 @@ class RenderHost(
   private val scanoutFormatReg = RegInit(0.U(32.W))
   private val scanoutControlReg = RegInit(0.U(32.W))
 
-  // Job queue / IH ring programming (host-written; device exposes RPTR/WPTR).
-  private val activeCmdBase = RegInit(0.U(32.W))
-  private val activeCmdCount = RegInit(0.U(32.W))
-  private val activeColorBase = RegInit(0.U(32.W))
-  private val activeDepthBase = RegInit(0.U(32.W))
-  private val activeStride = RegInit(0.U(32.W))
-  private val activeDepthTestEnable = RegInit(0.U(32.W))
-  private val activeDepthFunc = RegInit(0.U(32.W))
-  private val activeDepthWriteEnable = RegInit(0.U(32.W))
-  private val activeCullMode = RegInit(0.U(32.W))
-  private val activeTexBase = RegInit(0.U(32.W))
-  private val activeTexWidth = RegInit(0.U(32.W))
-  private val activeTexHeight = RegInit(0.U(32.W))
-  private val activeTexConfig = RegInit(0.U(32.W))
-  private val activeMsaaConfig = RegInit(0.U(32.W))
-  private val activeStencilConfig = RegInit(0.U(32.W))
-  private val activeStencilRefMasks = RegInit(0.U(32.W))
-  private val activeBlendConfig = RegInit(0.U(32.W))
-
   private val busy = RegInit(false.B)
   private val done = RegInit(false.B)
   private val error = RegInit(false.B)
@@ -376,8 +357,6 @@ class RenderHost(
   // ---------------------------------------------------------------------------
   private val rAddr = io.reg.req.bits.addr
   private val wFire = io.reg.req.fire && io.reg.req.bits.isWrite
-  private val startWrite =
-    wFire && rAddr === RenderHostRegs.CONTROL.U && io.reg.req.bits.data(0)
 
   private val clearStartWrite =
     wFire && rAddr === RenderHostRegs.CLEAR_START.U && io.reg.req.bits.data(0)
@@ -617,9 +596,8 @@ class RenderHost(
     }
   }
 
-  // START and queued descriptors share the same full-word admission rule.
-  private val msaaModeValid = Msaa.validModeWord(msaaConfigReg, config.maxSampleCount)
-  private val launch = startWrite && !busy && msaaModeValid
+  // Only the unified render command launches the engine; the legacy register
+  // START snapshot was retired.
 
   when(blitStartWrite &&
       (dmaOwner =/= dmaIdle || clearStartWrite || stridedStartWrite)) {
@@ -642,40 +620,6 @@ class RenderHost(
   when(strided.io.completion.fire && !strided.io.completion.bits.success) {
     error := true.B
   }
-
-  when(startWrite) {
-    when(!busy && msaaModeValid) {
-      busy := true.B
-      done := false.B
-      error := false.B
-      sawBusy := false.B
-      ownerUnified := false.B
-      textureFaulted := false.B
-      activeCmdBase := cmdBaseReg
-      activeCmdCount := cmdCountReg
-      activeColorBase := colorBaseReg
-      activeDepthBase := depthBaseReg
-      activeStride := strideReg
-      activeDepthTestEnable := depthTestEnableReg
-      activeDepthFunc := depthFuncReg
-      activeDepthWriteEnable := depthWriteEnableReg
-      activeCullMode := cullModeReg
-      activeTexBase := texBaseReg
-      activeTexWidth := texWidthReg
-      activeTexHeight := texHeightReg
-      activeTexConfig := texConfigReg
-      activeMsaaConfig := msaaConfigReg
-      activeStencilConfig := stencilConfigReg
-      activeStencilRefMasks := stencilRefMasksReg
-      activeBlendConfig := blendConfigReg
-    }
-  }
-  // An invalid programmed sample mode rejects the launch and latches ERROR.
-  // This must follow the snapshot block so it wins over its ERROR clear.
-  when(startWrite && !msaaModeValid) { error := true.B }
-
-  // Queue-initiated launches were retired with the job ring; only the legacy
-  // START and the unified render command launch the engine.
 
   // Unified render command: fetch the 16-word descriptor over the translated
   // command port, then launch from a packed register snapshot.
@@ -773,56 +717,36 @@ class RenderHost(
   io.renderCompletion.bits.bytesProcessed := renderBytes
   when(io.renderCompletion.fire) { renderDonePending := false.B }
 
-  // Tie the engine to the latched configuration: the legacy register snapshot
-  // for a START submission, or the unified render descriptor snapshot.
-  private def muxActive[T <: Data](legacy: T, unified: T): T =
-    Mux(ownerUnified, unified, legacy)
-  core.io.cmdBase := muxActive(activeCmdBase, unifiedCfg.cmdBase)
-  core.io.cmdCount := muxActive(activeCmdCount(15, 0), unifiedCfg.cmdCount)
-  core.io.colorBase := muxActive(activeColorBase, unifiedCfg.colorBase)
-  core.io.depthBase := muxActive(activeDepthBase, unifiedCfg.depthBase)
-  core.io.stride := muxActive(activeStride, unifiedCfg.stride)
-  core.io.depthTestEnable := muxActive(
-    activeDepthTestEnable(0), unifiedCfg.depthTestEnable)
-  core.io.depthFunc := muxActive(activeDepthFunc(2, 0), unifiedCfg.depthFunc)
-  core.io.depthWriteEnable := muxActive(
-    activeDepthWriteEnable(0), unifiedCfg.depthWriteEnable)
-  core.io.blendCfgEnable := muxActive(
-    activeBlendConfig(0), unifiedCfg.blendCfgEnable)
-  core.io.blendSrcFactor := muxActive(
-    activeBlendConfig(7, 4), unifiedCfg.blendSrcFactor)
-  core.io.blendDstFactor := muxActive(
-    activeBlendConfig(11, 8), unifiedCfg.blendDstFactor)
-  core.io.blendEquation := muxActive(
-    activeBlendConfig(14, 12), unifiedCfg.blendEquation)
-  core.io.stencilTestEnable := muxActive(
-    activeStencilConfig(0), unifiedCfg.stencilTestEnable)
-  core.io.stencilFunc := muxActive(
-    activeStencilConfig(6, 4), unifiedCfg.stencilFunc)
-  core.io.stencilRef := muxActive(
-    activeStencilRefMasks(7, 0), unifiedCfg.stencilRef)
-  core.io.stencilReadMask := muxActive(
-    activeStencilRefMasks(15, 8), unifiedCfg.stencilReadMask)
-  core.io.stencilWriteMask := muxActive(
-    activeStencilRefMasks(23, 16), unifiedCfg.stencilWriteMask)
-  core.io.stencilFailOp := muxActive(
-    activeStencilConfig(9, 7), unifiedCfg.stencilFailOp)
-  core.io.stencilZFailOp := muxActive(
-    activeStencilConfig(12, 10), unifiedCfg.stencilZFailOp)
-  core.io.stencilZPassOp := muxActive(
-    activeStencilConfig(15, 13), unifiedCfg.stencilZPassOp)
-  core.io.cullMode := muxActive(activeCullMode(1, 0), unifiedCfg.cullMode)
-  core.io.texEnable := muxActive(activeTexConfig(8), unifiedCfg.texEnable)
-  core.io.texBase := muxActive(activeTexBase, unifiedCfg.texBase)
-  core.io.texWidth := muxActive(activeTexWidth(13, 0), unifiedCfg.texWidth)
-  core.io.texHeight := muxActive(activeTexHeight(13, 0), unifiedCfg.texHeight)
-  core.io.texWrapClamp := muxActive(
-    activeTexConfig(0), unifiedCfg.texWrapClamp)
-  core.io.texMaxLevel := muxActive(
-    activeTexConfig(5, 2), unifiedCfg.texMaxLevel)
-  core.io.sampleMode := muxActive(
-    activeMsaaConfig(1, 0), unifiedCfg.sampleMode)
-  core.io.start := launch || (renderLaunch && !busy)
+  // The unified render descriptor is the single configuration source.
+  core.io.cmdBase := unifiedCfg.cmdBase
+  core.io.cmdCount := unifiedCfg.cmdCount
+  core.io.colorBase := unifiedCfg.colorBase
+  core.io.depthBase := unifiedCfg.depthBase
+  core.io.stride := unifiedCfg.stride
+  core.io.depthTestEnable := unifiedCfg.depthTestEnable
+  core.io.depthFunc := unifiedCfg.depthFunc
+  core.io.depthWriteEnable := unifiedCfg.depthWriteEnable
+  core.io.blendCfgEnable := unifiedCfg.blendCfgEnable
+  core.io.blendSrcFactor := unifiedCfg.blendSrcFactor
+  core.io.blendDstFactor := unifiedCfg.blendDstFactor
+  core.io.blendEquation := unifiedCfg.blendEquation
+  core.io.stencilTestEnable := unifiedCfg.stencilTestEnable
+  core.io.stencilFunc := unifiedCfg.stencilFunc
+  core.io.stencilRef := unifiedCfg.stencilRef
+  core.io.stencilReadMask := unifiedCfg.stencilReadMask
+  core.io.stencilWriteMask := unifiedCfg.stencilWriteMask
+  core.io.stencilFailOp := unifiedCfg.stencilFailOp
+  core.io.stencilZFailOp := unifiedCfg.stencilZFailOp
+  core.io.stencilZPassOp := unifiedCfg.stencilZPassOp
+  core.io.cullMode := unifiedCfg.cullMode
+  core.io.texEnable := unifiedCfg.texEnable
+  core.io.texBase := unifiedCfg.texBase
+  core.io.texWidth := unifiedCfg.texWidth
+  core.io.texHeight := unifiedCfg.texHeight
+  core.io.texWrapClamp := unifiedCfg.texWrapClamp
+  core.io.texMaxLevel := unifiedCfg.texMaxLevel
+  core.io.sampleMode := unifiedCfg.sampleMode
+  core.io.start := renderLaunch && !busy
 
   // Separate word ports.  The engine's command stage (draw records) and the
   // job queue's admin agent (descriptor fetches, IH record writes) are distinct

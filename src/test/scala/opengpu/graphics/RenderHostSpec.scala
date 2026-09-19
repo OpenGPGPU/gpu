@@ -333,84 +333,6 @@ class RenderHostSpec extends AnyFlatSpec {
     }
   }
 
-  it should "drive a draw from the register file and raise done and the interrupt" in {
-    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
-    val cfg = GpuConfig(lanes = 4, warps = 2)
-    val stride = 16 * 4
-    val colorBase = 0x8000
-    val depthBase = 0x9000
-    val cmdBase = 0x4000
-
-    def tri(x: Int, y: Int, d: Int) = ((x, y, 0, q(1.0)), (255, 0, 0), d)
-    val record = Seq(
-      tri(q(-1.0), q(-1.0), 0x10),
-      tri(q(1.0), q(-1.0), 0x10),
-      tri(q(-1.0), q(1.0), 0x10)
-    )
-
-    val m = new MemModel
-    encode(record).zipWithIndex.foreach { case (w, i) => m.wwrite(cmdBase + i * 4, w) }
-    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
-
-    simulate(new RenderHost(config, cfg, fragCore = false)) { dut =>
-      dut.io.externalCompletion.poke(false.B)
-      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-
-      // Program the render via the register file.
-      regWrite(dut, RenderHostRegs.CMD_BASE, cmdBase)
-      regWrite(dut, RenderHostRegs.CMD_COUNT, 1)
-      regWrite(dut, RenderHostRegs.COLOR_BASE, colorBase)
-      regWrite(dut, RenderHostRegs.DEPTH_BASE, depthBase)
-      regWrite(dut, RenderHostRegs.STRIDE, stride)
-      regWrite(dut, RenderHostRegs.DEPTH_TEST_ENABLE, 1)
-      regWrite(dut, RenderHostRegs.DEPTH_FUNC, 0)
-      regWrite(dut, RenderHostRegs.DEPTH_WRITE_ENABLE, 1)
-      regWrite(dut, RenderHostRegs.CULL_MODE, 0)
-      regWrite(dut, RenderHostRegs.IRQ, 1) // enable the completion interrupt
-
-      // Service the renderer's command-buffer / framebuffer word ports.
-      dut.io.cbMem.req.ready.poke(true.B)
-      dut.io.cbMem.resp.valid.poke(false.B)
-      dut.io.fbMem.req.ready.poke(true.B)
-      dut.io.fbMem.resp.valid.poke(false.B)
-      // The core-backed kernel queue is unused on the fixed-function path.
-      dut.io.kernelMemReq.ready.poke(true.B)
-      dut.io.kernelMemResp.valid.poke(false.B)
-      dut.io.kernelWordMemReq.ready.poke(true.B)
-      dut.io.kernelWordMemResp.valid.poke(false.B)
-
-      // Kick the engine.
-      regWrite(dut, RenderHostRegs.CONTROL, 1)
-      serviceMem(dut, m, 60000)(dut.io.irq.peek().litToBoolean)
-
-      // Completion state: BUSY=0, DONE=1; the interrupt fired.
-      assert(dut.io.irq.peek().litToBoolean, "completion interrupt must assert")
-      assert((regRead(dut, RenderHostRegs.STATUS) & 0x3) == 0x2L,
-        "STATUS must report DONE (busy cleared)")
-
-      def rgb(x: Int, y: Int): (Int, Int, Int) = {
-        val c = m.word(colorBase + (y * 16 + x) * 4).toInt
-        (((c >> 24) & 0xff), ((c >> 16) & 0xff), ((c >> 8) & 0xff))
-      }
-      // The register-file-driven draw rendered and depth-tested the triangle.
-      assert(rgb(5, 5) == (255, 0, 0), s"interior (5,5) should be red, got ${rgb(5, 5)}")
-      assert(m.word(depthBase + (5 * 16 + 5) * 4) == 0x10,
-        s"depth (5,5) should be 0x10, got 0x${m.word(depthBase + (5 * 16 + 5) * 4).toHexString}")
-
-      // Clearing DONE by writing 1 to STATUS's DONE bit (W1C).
-      regWrite(dut, RenderHostRegs.STATUS, 0x2) // bit1 = DONE clear
-      assert((regRead(dut, RenderHostRegs.STATUS) & 0x2) == 0L,
-        "writing the DONE bit must clear it")
-
-      // Clear the interrupt by writing IRQ bit1 = 1 (W1C on PENDING).
-      regWrite(dut, RenderHostRegs.IRQ, 0x3) // ENABLE=1, clear PENDING
-      assert(!dut.io.irq.peek().litToBoolean,
-        "clearing IRQ.PENDING must deassert the interrupt")
-      assert((regRead(dut, RenderHostRegs.IRQ) & 0x1) == 0x1,
-        "acknowledging IRQ.PENDING must preserve IRQ.ENABLE")
-    }
-  }
-
   it should "advertise MSAA on both backends, selecting the backend by bit 0" in {
     val cfg = GpuConfig(lanes = 4, warps = 2)
     for ((fragCore, expected) <- Seq(false -> 0xa08b8L, true -> 0xa08b9L)) {
@@ -434,151 +356,69 @@ class RenderHostSpec extends AnyFlatSpec {
     }
   }
 
-  it should "reject an out-of-range MSAA sample mode without launching" in {
-    val cfg = GpuConfig(lanes = 4, warps = 2)
-    simulate(new RenderHost(gpuConfig = cfg, fragCore = false)) { dut =>
-      dut.io.externalCompletion.poke(false.B)
-      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+  for (mode <- Seq(0, 2)) {
+    it should s"run a unified render command (mode=$mode) through the command port" in {
+      val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+      val cfg = GpuConfig(lanes = 4, warps = 2)
+      val m = new MemModel
+      val descriptorBase = 0x1000
+      val cmdBase = 0x2000
+      val colorBase = 0x8000
+      val depthBase = 0x9000
+      val samples = 1 << mode
+      val stride = 16 * samples * 4
 
-      // Mode 2 is valid for the default 4x configuration.
-      regWrite(dut, RenderHostRegs.MSAA_CONFIG, 2)
-      assert(regRead(dut, RenderHostRegs.MSAA_CONFIG) == 2L)
-
-      // Reserved mode and high reserved bits must all reject before launch.
-      for (modeWord <- Seq(3, 4, 0x100)) {
-        regWrite(dut, RenderHostRegs.STATUS, 4) // clear the preceding error
-        regWrite(dut, RenderHostRegs.MSAA_CONFIG, modeWord)
-        regWrite(dut, RenderHostRegs.CONTROL, 1)
-        val status = regRead(dut, RenderHostRegs.STATUS)
-        assert((status & 1) == 0, "invalid sample state must not make the engine BUSY")
-        assert((status & 4) == 4, "invalid sample state must latch STATUS.ERROR")
-        assert(!dut.io.cbMem.req.valid.peek().litToBoolean,
-          "rejected START must not fetch a command")
+      val verts = Seq((q(-1.0), q(-1.0)), (q(1.0), q(-1.0)), (q(-1.0), q(1.0)))
+      val record = {
+        val w = Seq.newBuilder[Int]
+        for ((x, y) <- verts) { w += x; w += y; w += 0; w += q(1.0) }
+        for (_ <- verts) { w += 255; w += 0; w += 0 }
+        for (_ <- verts) { w += 0x10 }
+        w += 0; w += 0
+        for (_ <- 0 until 6) { w += 0 }
+        for (_ <- 0 until 8) { w += 0 }
+        w.result()
       }
-
-    }
-  }
-
-  it should "write four per-sample colour words in fixed-function 4x mode" in {
-    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
-    val cfg = GpuConfig(lanes = 4, warps = 2)
-    // Mode 2 packs four samples per pixel, so the physical row is 4x wide.
-    val stride = 16 * 4 * 4
-    val colorBase = 0x8000
-    val depthBase = 0x9000
-    val cmdBase = 0x4000
-
-    def tri(x: Int, y: Int, d: Int) = ((x, y, 0, q(1.0)), (255, 0, 0), d)
-    val record = Seq(
-      tri(q(-1.0), q(-1.0), 0x10),
-      tri(q(1.0), q(-1.0), 0x10),
-      tri(q(-1.0), q(1.0), 0x10)
-    )
-
-    val m = new MemModel
-    encode(record).zipWithIndex.foreach { case (w, i) => m.wwrite(cmdBase + i * 4, w) }
-    // Sentinel each sample slot of interior pixel (5,5); only a real per-sample
-    // write can turn them all red.
-    val pixel = 5
-    def sampleAddr(s: Int): Long =
-      colorBase + pixel * stride + (pixel * 4 + s) * 4
-    for (s <- 0 until 4) m.wwrite(sampleAddr(s), 0xdeadbeef)
-
-    simulate(new RenderHost(config, cfg, fragCore = false)) { dut =>
-      dut.io.externalCompletion.poke(false.B)
-      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-
-      regWrite(dut, RenderHostRegs.CMD_BASE, cmdBase)
-      regWrite(dut, RenderHostRegs.CMD_COUNT, 1)
-      regWrite(dut, RenderHostRegs.COLOR_BASE, colorBase)
-      regWrite(dut, RenderHostRegs.DEPTH_BASE, depthBase)
-      regWrite(dut, RenderHostRegs.STRIDE, stride)
-      regWrite(dut, RenderHostRegs.DEPTH_TEST_ENABLE, 0)
-      regWrite(dut, RenderHostRegs.DEPTH_WRITE_ENABLE, 0)
-      regWrite(dut, RenderHostRegs.CULL_MODE, 0)
-      regWrite(dut, RenderHostRegs.MSAA_CONFIG, 2)
-      regWrite(dut, RenderHostRegs.IRQ, 1)
-
-      dut.io.cbMem.req.ready.poke(true.B)
-      dut.io.cbMem.resp.valid.poke(false.B)
-      dut.io.fbMem.req.ready.poke(true.B)
-      dut.io.fbMem.resp.valid.poke(false.B)
-      dut.io.kernelMemReq.ready.poke(true.B)
-      dut.io.kernelMemResp.valid.poke(false.B)
-      dut.io.kernelWordMemReq.ready.poke(true.B)
-      dut.io.kernelWordMemResp.valid.poke(false.B)
-
-      regWrite(dut, RenderHostRegs.CONTROL, 1)
-      serviceMem(dut, m, 120000)(dut.io.irq.peek().litToBoolean)
-      assert(dut.io.irq.peek().litToBoolean, "completion interrupt must assert")
-      assert((regRead(dut, RenderHostRegs.STATUS) & 0x3L) == 0x2L,
-        "STATUS must report DONE")
-
-      for (s <- 0 until 4) {
-        assert(m.word(sampleAddr(s)) == 0xff0000ffL,
-          s"sample $s of pixel ($pixel,$pixel) should be red, " +
-            s"got 0x${m.word(sampleAddr(s)).toHexString}")
+      // Word 5: depth-test enable (bit0), LESS (bits 6:4 = 0), depth write (bit7).
+      // Word 9: sample mode.
+      val descriptor = Seq((1 << 16) | 3, cmdBase, colorBase, depthBase,
+        stride, 0x81, 0, 0, 0, mode) ++ Seq.fill(6)(0)
+      record.zipWithIndex.foreach { case (w, i) => m.wwrite(cmdBase + i * 4, w) }
+      descriptor.zipWithIndex.foreach {
+        case (w, i) => m.wwrite(descriptorBase + i * 4, w)
       }
-    }
-  }
+      val words = 16 * 16 * samples
+      for (i <- 0 until words) m.wwrite(colorBase + i * 4, 0x12345678)
+      for (i <- 0 until words) m.wwrite(depthBase + i * 4, 0x00ffffff)
 
-  it should "run a unified render command through the command port" in {
-    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
-    val cfg = GpuConfig(lanes = 4, warps = 2)
-    val m = new MemModel
-    val descriptorBase = 0x1000
-    val cmdBase = 0x2000
-    val colorBase = 0x8000
-    val depthBase = 0x9000
-    val stride = 16 * 4
+      simulate(new RenderHost(config, cfg, fragCore = false)) { dut =>
+        dut.io.externalCompletion.poke(false.B)
+        dut.io.renderCompletion.ready.poke(false.B)
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
 
-    val verts = Seq((q(-1.0), q(-1.0)), (q(1.0), q(-1.0)), (q(-1.0), q(1.0)))
-    val record = {
-      val w = Seq.newBuilder[Int]
-      for ((x, y) <- verts) { w += x; w += y; w += 0; w += q(1.0) }
-      for (_ <- verts) { w += 255; w += 0; w += 0 }
-      for (_ <- verts) { w += 0x10 }
-      w += 0; w += 0
-      for (_ <- 0 until 6) { w += 0 }
-      for (_ <- 0 until 8) { w += 0 }
-      w.result()
-    }
-    // Word 5: depth-test enable (bit0), LESS (bits 6:4 = 0), depth write (bit7).
-    val descriptor = Seq((1 << 16) | 3, cmdBase, colorBase, depthBase,
-      stride, 0x81, 0, 0, 0, 0) ++ Seq.fill(6)(0)
-    record.zipWithIndex.foreach { case (w, i) => m.wwrite(cmdBase + i * 4, w) }
-    descriptor.zipWithIndex.foreach {
-      case (w, i) => m.wwrite(descriptorBase + i * 4, w)
-    }
-    for (i <- 0 until 16 * 16) m.wwrite(colorBase + i * 4, 0x12345678)
-    for (i <- 0 until 16 * 16) m.wwrite(depthBase + i * 4, 0x00ffffff)
+        dut.io.renderCommand.bits.descriptorId.poke(3.U)
+        dut.io.renderCommand.bits.descriptorAddress.poke(descriptorBase.U)
+        dut.io.renderCommand.bits.bytes.poke(160.U)
+        dut.io.renderCommand.valid.poke(true.B)
 
-    simulate(new RenderHost(config, cfg, fragCore = false)) { dut =>
-      dut.io.externalCompletion.poke(false.B)
-      dut.io.renderCompletion.ready.poke(false.B)
-      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        serviceMem(dut, m, 400000, drainCycles = 4) {
+          dut.io.renderCompletion.valid.peek().litToBoolean
+        }
+        dut.io.renderCommand.valid.poke(false.B)
 
-      dut.io.renderCommand.bits.descriptorId.poke(3.U)
-      dut.io.renderCommand.bits.descriptorAddress.poke(descriptorBase.U)
-      dut.io.renderCommand.bits.bytes.poke(160.U)
-      dut.io.renderCommand.valid.poke(true.B)
-
-      serviceMem(dut, m, 400000, drainCycles = 4) {
-        dut.io.renderCompletion.valid.peek().litToBoolean
+        dut.io.renderCompletion.valid.expect(true.B)
+        dut.io.renderCompletion.bits.descriptorId.expect(3.U)
+        dut.io.renderCompletion.bits.success.expect(true.B)
+        // Every covered sample of pixel (5,5) takes the draw colour.
+        for (s <- 0 until samples) {
+          val addr = colorBase + 5 * stride + (5 * samples + s) * 4
+          assert(m.word(addr) == 0xff0000ffL,
+            s"mode=$mode sample $s of (5,5) should be red, " +
+              f"got 0x${m.word(addr)}%08x")
+        }
+        assert(m.word(colorBase) == 0x12345678L,
+          "an uncovered pixel must keep its caller-initialized sentinel")
       }
-      dut.io.renderCommand.valid.poke(false.B)
-
-      dut.io.renderCompletion.valid.expect(true.B)
-      dut.io.renderCompletion.bits.descriptorId.expect(3.U)
-      dut.io.renderCompletion.bits.success.expect(true.B)
-      def rgb(x: Int, y: Int): (Int, Int, Int) = {
-        val c = m.word(colorBase + (y * 16 + x) * 4).toInt
-        (((c >> 24) & 0xff), ((c >> 16) & 0xff), ((c >> 8) & 0xff))
-      }
-      assert(rgb(5, 5) == (255, 0, 0),
-        s"unified draw interior (5,5) should be red, got ${rgb(5, 5)}")
-      assert(m.word(colorBase) == 0x12345678L,
-        "an uncovered pixel must keep its caller-initialized sentinel")
     }
   }
 

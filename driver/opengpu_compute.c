@@ -1413,9 +1413,8 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
                 job->hw.depth = (u32)depth_va;
         }
 
-        /* Prefer the unified render command, which fetches the descriptor and
-         * command buffer through the context VM.  Fall back to the legacy/job
-         * ring draw path when the device or allocation cannot support it. */
+        /* A draw is always a unified render command; the legacy START path was
+         * retired, so an unmappable descriptor is a hard failure. */
         dma_addr_t descriptor_va = 0;
 
         if (vm && job->context && job->render_desc.dma &&
@@ -1431,10 +1430,9 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
                 lower_32_bits(job->depth_clear_dma), job->depth_clear_bytes,
                 0x00ffffffu, &job->events, vm, &fence);
         } else {
-            ret = opengpu_hw_draw_submit_async(
-                job->gpu, &job->hw, snapshots, snapshot_count, clear_depth,
-                lower_32_bits(job->depth_clear_dma), job->depth_clear_bytes,
-                0x00ffffffu, vm, &fence);
+            dev_err(job->gpu->dev,
+                    "render job requires a unified render command and a VM\n");
+            ret = -EIO;
         }
     }
     if (ret)

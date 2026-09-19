@@ -539,18 +539,13 @@ debts. Each item is independent and should preserve behavior and coverage.
   `RenderHost` in `GpuHostAxi`. Put the graphics engine under the same
   dispatcher as the compute engines (or move command distribution to one place)
   so a draw does not cross the seam twice.
-- **C2 - Collapse the two submission paths (partial).** The unified render
-  command and the legacy `START` register snapshot decode into
-  `muxActive(legacy, queued, unified)` with `ownerQueue`/`ownerUnified`;
-  `active*` registers are packed from two different bit layouts, which is a
-  correctness trap. The probe self-test now submits a unified render command,
-  so the driver no longer needs the legacy path for the probe, and the unified
-  descriptor now decodes into its own `JobConfig` bundle instead of packing the
-  legacy `active*` register layout (`muxActive` selects the unified bundle).
-  Remaining: move the last legacy RTL tests to the unified command, drop the
-  render fallback (or keep it only for capability-absent builds), and delete
-  the legacy snapshot / `muxActive` / `ownerQueue`, leaving one configuration
-  source.
+- **C2 - Collapse the two submission paths (done).** The legacy `START`
+  register snapshot is removed: `RenderHost` has one configuration source (the
+  unified render descriptor's `JobConfig`), the engine launches only on a
+  unified render command, and the driver's probe self-test and every draw use
+  the unified path (the inert render fallback is gone). The RTL tests that
+  drove the legacy START path are converted to the unified command or removed,
+  preserving per-sample (4x) and texture-fault coverage.
 - **C3 - Generate the dispatch ID map.** Graphics-host transaction IDs are
   hand-partitioned (`cbBase`/`fbBase`/`texBase`/TLB bases) into a fixed budget
   and bridged by offsets into the system transaction namespace. An elaboration

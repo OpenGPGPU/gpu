@@ -242,22 +242,6 @@ struct opengpu_scanout {
 int opengpu_hw_init(struct opengpu_device *gpu,
                     struct platform_device *pdev);
 void opengpu_hw_fini(struct opengpu_device *gpu);
-int opengpu_hw_clear_and_submit_async(struct opengpu_device *gpu,
-                                      const struct opengpu_job *job,
-                                      u32 clear_base, u32 clear_bytes,
-                                      u32 clear_pattern,
-                                      const struct opengpu_vm *vm,
-                                      struct dma_fence **fence);
-/* Invalidate CPU-written coherent snapshots, optionally clear depth, then
- * publish the draw under one submit_lock hold so nothing else interleaves. */
-int opengpu_hw_draw_submit_async(struct opengpu_device *gpu,
-                                 const struct opengpu_job *job,
-                                 const struct opengpu_buffer *const *snapshots,
-                                 unsigned int snapshot_count,
-                                 bool clear_depth, u32 clear_base,
-                                 u32 clear_bytes, u32 clear_pattern,
-                                 const struct opengpu_vm *vm,
-                                 struct dma_fence **fence);
 /* Publish one draw as a unified render command: fill the 16-word render
  * descriptor at `descriptor_cpu` from `job`, then submit it through the unified
  * command path by virtual address. */

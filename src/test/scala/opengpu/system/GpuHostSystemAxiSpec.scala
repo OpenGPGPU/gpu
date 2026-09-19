@@ -275,7 +275,6 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
     }
     assert(guard < 20000, "AXI memory master service timed out")
   }
-
   it should "route an AXI-programmed clear through the shared L2" in {
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
     val gpu = GpuConfig(
@@ -323,35 +322,6 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
         "vector satp must read back")
       assert(axiRead(dut, GpuCommandMmioRegs.INSTRUCTION_SATP) == expected,
         "instruction satp must read back")
-    }
-  }
-
-  it should "fetch command-buffer words through the uncached path" in {
-    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
-    val gpu = GpuConfig(
-      lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
-    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
-      initialize(dut)
-
-      val commandBase = 0x4000
-      axiWrite(dut, RenderHostRegs.CMD_BASE, commandBase)
-      axiWrite(dut, RenderHostRegs.CMD_COUNT, 1)
-      axiWrite(dut, RenderHostRegs.COLOR_BASE, 0x8000)
-      axiWrite(dut, RenderHostRegs.DEPTH_BASE, 0x9000)
-      axiWrite(dut, RenderHostRegs.STRIDE, 64)
-      axiWrite(dut, RenderHostRegs.CONTROL, 1)
-
-      // The command port bypasses L2 so a CPU-written snapshot stays coherent,
-      // so each of the sixteen words in the first line is a fresh memory read
-      // of that line; the parser advances only after the line is consumed.
-      for (_ <- 0 until 16) {
-        val read = acceptMemoryRead(dut, 0)
-        assert(read._1 == commandBase,
-          "an uncached command word must re-read its line")
-      }
-      val next = acceptMemoryRead(dut, 0, respond = false)
-      assert(next._1 == commandBase + 64,
-        "command parser did not advance past the first line")
     }
   }
 
@@ -665,16 +635,23 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
         axiWrite(dut, GpuCommandMmioRegs.VECTOR_SATP, 0x80000000 | (rootBase >> 12))
         axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
         axiWrite(dut, RenderHostRegs.IRQ, 1)
-        axiWrite(dut, RenderHostRegs.CMD_BASE, cmdBase)
-        axiWrite(dut, RenderHostRegs.CMD_COUNT, 1)
-        axiWrite(dut, RenderHostRegs.COLOR_BASE, colorBase)
-        axiWrite(dut, RenderHostRegs.DEPTH_BASE, depthBase)
-        axiWrite(dut, RenderHostRegs.STRIDE, 16)
-        axiWrite(dut, RenderHostRegs.TEX_BASE, textureVa)
-        axiWrite(dut, RenderHostRegs.TEX_WIDTH, 1)
-        axiWrite(dut, RenderHostRegs.TEX_HEIGHT, 1)
-        axiWrite(dut, RenderHostRegs.TEX_CONFIG, 0x101)
-        axiWrite(dut, RenderHostRegs.CONTROL, 1)
+        // Unified render descriptor: cmd/colour/depth/stride, depth test+write,
+        // and a 1x1 texture at the virtual address the translator resolves.
+        val descriptorBase = 0x50000
+        val descriptor = Seq((1 << 16) | 1, cmdBase, colorBase, depthBase,
+          16, 0x81, textureVa, (1 << 16) | 1, 0x101) ++ Seq.fill(7)(0)
+        descriptor.zipWithIndex.foreach { case (v, i) =>
+          ww(descriptorBase + i * 4L, v)
+        }
+        def submitRender(id: Int): Unit = {
+          axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, id)
+          axiWrite(dut, GpuCommandMmioRegs.OPCODE,
+            GpuCommandOpcode.render.litValue.toInt)
+          axiWrite(dut, GpuCommandMmioRegs.SOURCE, descriptorBase)
+          axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+          axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+        }
+        submitRender(1)
         serviceMemoryMaster(dut, readLine,
           address => (busFault && address == rootBase + 4) ||
             (textureBusFault && address == texturePa))(writeLine) {
@@ -684,11 +661,13 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
         assert(!reads.exists(a => a >= textureVa && a < textureVa + 4096),
           "faulted virtual address must never reach physical memory")
         assert((axiRead(dut, RenderHostRegs.STATUS) & 7) == 6, "DONE and ERROR, not BUSY")
+        // Pop the unified completion before the next submission.
+        axiWrite(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
         // Repair the PTE and run again: per-job failure cannot poison success.
         ww(rootBase + 4, (0x800 << 10) | 0x43)
         axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
         axiWrite(dut, RenderHostRegs.IRQ, 3)
-        axiWrite(dut, RenderHostRegs.CONTROL, 1)
+        submitRender(2)
         serviceMemoryMaster(dut, readLine)(writeLine) {
           dut.io.m_irq.peek().litToBoolean
         }
