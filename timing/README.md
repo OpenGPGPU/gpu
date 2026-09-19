@@ -384,6 +384,47 @@ plateaus and the stage spins indefinitely; the Sep-4 closure attempt
 `head_kernel_frag_stage_tc_slvt_1ghz_closure` died mid-flow with no metrics).
 Use `explore` for this scale.
 
+## ChipAgent clock-port correction (2026-09-19)
+
+ChipAgent defaulted `clock_port` to `clk` while Chisel emits `clock`, so the
+generated SDC created a **virtual** `core_clock` with no port target. Every
+ChipAgent "core Fmax" number above that was produced without this fix is
+invalid, including the SharedL2Slice "not closed" verdict and the
+KernelFragStage 995-1023 MHz figures. ChipAgent now auto-detects the clock
+port from the RTL and errors loudly when it is missing.
+
+Re-measured with real clocks (`clock_port='clock'`, SPEF parasitics):
+
+| Block | Recipe | Core Fmax | Setup | Hold | DRC | Verdict |
+|---|---|---:|---:|---:|---:|---|
+| SharedL2Slice | syn, LVT/TC, u15/d30, adaptive 12um, io_delay 25%, io false-paths | 1086.27 MHz | +79.41 ps (0 viol.) | +23.61 ps (0 viol.) | 0 | **CLOSES** |
+| KernelFragStage (emitquadsel+minusone) | syn, SLVT/TC, u50/d60, io_delay 25% | 837.86 MHz | -235.45 ps (213 viol.) | +15.73 ps (0 viol.) | 0 | IO-limited (see below) |
+
+SharedL2Slice artifact: `generated/chipagent_asap7/shared_l2_slice_clkfix/`.
+
+KernelFragStage internals (flop-to-flop, IO excluded via `set_false_path
+-from/to [all_inputs/outputs]` on the routed ODB): **WNS 0.000, TNS 0.000,
+zero violations** — the block logic closes at 1GHz with margin (best shown
++321 ps, `execSlot -> outValid_*`). All 200+ remaining violations start at
+input ports (157x `io_kernelTexSample_valid`, 32x
+`io_wordMemResp_bits_transactionId`, 11x `io_out_ready`) or are pure
+input-to-output feedthroughs (`io_kernelTexSample_valid ->
+io_kernelVectorTexSample_ready`, -490.96 ps). Same hierarchy verdict as
+SharedL2Slice: the boundary belongs to the parent.
+
+RTL lever landed for the compare cone: `TextureUnit` pre-computes
+`levelWMinusOne`/`levelHMinusOne` instead of eight combinational
+`levelW/H - 1.U` subtracts in `sIdx` (violations 342 -> 213, setup TNS
+-14598 -> -5822 ps; all TextureUnitSpec + KernelFragStageSpec pass).
+Remaining worst internal cone is the `levelW * levelH` 14x14 multiply in the
+`sLevel` walk accumulate; pipelining it changes walk latency and needs a
+product decision. The `syn` engine ignores ORFS `SWAP_ARITH_OPERATORS` /
+`ABC_CLOCK_PERIOD_IN_PS` (verified: identical QoR with and without).
+
+ChipAgent tooling fixed alongside: clock auto-detect + fail-loud SDC, and
+`high_fanout_nets` substring matching (yosys canonicalization mangles net
+names, so exact-name patterns silently no-oped).
+
 ## Whole-block physical-flow limit (current)
 
 Whole-block `VectorBackend` (~404k cells, 48 SRAM macros) cannot close in the
