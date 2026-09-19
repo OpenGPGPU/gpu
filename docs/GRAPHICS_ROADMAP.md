@@ -544,10 +544,13 @@ debts. Each item is independent and should preserve behavior and coverage.
   `muxActive(legacy, queued, unified)` with `ownerQueue`/`ownerUnified`;
   `active*` registers are packed from two different bit layouts, which is a
   correctness trap. The probe self-test now submits a unified render command,
-  so the driver no longer needs the legacy path for the probe. Remaining: move
-  the last legacy RTL tests to the unified command, drop the render fallback
-  (or keep it only for capability-absent builds), and delete the legacy
-  snapshot / `muxActive` / `ownerQueue`, leaving one configuration source.
+  so the driver no longer needs the legacy path for the probe, and the unified
+  descriptor now decodes into its own `JobConfig` bundle instead of packing the
+  legacy `active*` register layout (`muxActive` selects the unified bundle).
+  Remaining: move the last legacy RTL tests to the unified command, drop the
+  render fallback (or keep it only for capability-absent builds), and delete
+  the legacy snapshot / `muxActive` / `ownerQueue`, leaving one configuration
+  source.
 - **C3 - Generate the dispatch ID map.** Graphics-host transaction IDs are
   hand-partitioned (`cbBase`/`fbBase`/`texBase`/TLB bases) into a fixed budget
   and bridged by offsets into the system transaction namespace. An elaboration

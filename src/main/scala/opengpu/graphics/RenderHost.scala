@@ -370,7 +370,8 @@ class RenderHost(
   // The host-memory job ring (JobQueue) was retired: user draws are unified
   // render commands and the fallback/self-test uses the legacy START snapshot.
   // ---------------------------------------------------------------------------
-  private val noCfg = 0.U.asTypeOf(new JobConfig())
+  /** Per-job configuration decoded from a unified render descriptor. */
+  private val unifiedCfg = RegInit(0.U.asTypeOf(new JobConfig()))
 
   // ---------------------------------------------------------------------------
   // Register read (combinational) and write (registered) access.
@@ -708,28 +709,35 @@ class RenderHost(
     sawBusy := false.B
     ownerUnified := true.B
     textureFaulted := false.B
-    // Pack the gpu_job_record words into the legacy snapshot layout the core
-    // mux already consumes, so no third configuration source is needed.
-    activeCmdBase := renderWords(1)
-    activeCmdCount := Cat(0.U(16.W), renderWords(0)(31, 16))
-    activeColorBase := renderWords(2)
-    activeDepthBase := renderWords(3)
-    activeStride := renderWords(4)
-    activeDepthTestEnable := Cat(0.U(31.W), renderWords(5)(0))
-    activeDepthFunc := Cat(0.U(29.W), renderWords(5)(6, 4))
-    activeDepthWriteEnable := Cat(0.U(31.W), renderWords(5)(7))
-    activeCullMode := Cat(0.U(30.W), renderWords(5)(9, 8))
-    activeTexBase := renderWords(6)
-    activeTexWidth := Cat(0.U(18.W), renderWords(7)(13, 0))
-    activeTexHeight := Cat(0.U(18.W), renderWords(7)(29, 16))
-    activeTexConfig := renderWords(8)
-    activeMsaaConfig := Cat(0.U(30.W), renderWords(9)(1, 0))
-    activeStencilConfig := Cat(0.U(16.W), renderWords(10)(11, 9),
-      renderWords(10)(8, 6), renderWords(10)(5, 3),
-      renderWords(10)(2, 0), 0.U(3.W), renderWords(5)(17))
-    activeStencilRefMasks := Cat(0.U(8.W), renderWords(11)(23, 16),
-      renderWords(11)(15, 8), renderWords(11)(7, 0))
-    activeBlendConfig := renderWords(12)
+    // Decode the gpu_job_record words into the unified configuration bundle.
+    unifiedCfg.cmdCount := renderWords(0)(31, 16)
+    unifiedCfg.cmdBase := renderWords(1)
+    unifiedCfg.colorBase := renderWords(2)
+    unifiedCfg.depthBase := renderWords(3)
+    unifiedCfg.stride := renderWords(4)
+    unifiedCfg.depthTestEnable := renderWords(5)(0)
+    unifiedCfg.depthFunc := renderWords(5)(6, 4)
+    unifiedCfg.depthWriteEnable := renderWords(5)(7)
+    unifiedCfg.cullMode := renderWords(5)(9, 8)
+    unifiedCfg.stencilTestEnable := renderWords(5)(17)
+    unifiedCfg.texBase := renderWords(6)
+    unifiedCfg.texWidth := renderWords(7)(13, 0)
+    unifiedCfg.texHeight := renderWords(7)(29, 16)
+    unifiedCfg.texWrapClamp := renderWords(8)(0)
+    unifiedCfg.texMaxLevel := renderWords(8)(5, 2)
+    unifiedCfg.texEnable := renderWords(8)(8)
+    unifiedCfg.sampleMode := renderWords(9)(1, 0)
+    unifiedCfg.stencilFunc := renderWords(10)(2, 0)
+    unifiedCfg.stencilFailOp := renderWords(10)(5, 3)
+    unifiedCfg.stencilZFailOp := renderWords(10)(8, 6)
+    unifiedCfg.stencilZPassOp := renderWords(10)(11, 9)
+    unifiedCfg.stencilRef := renderWords(11)(7, 0)
+    unifiedCfg.stencilReadMask := renderWords(11)(15, 8)
+    unifiedCfg.stencilWriteMask := renderWords(11)(23, 16)
+    unifiedCfg.blendCfgEnable := renderWords(12)(0)
+    unifiedCfg.blendSrcFactor := renderWords(12)(7, 4)
+    unifiedCfg.blendDstFactor := renderWords(12)(11, 8)
+    unifiedCfg.blendEquation := renderWords(12)(14, 12)
   }
 
   // Completion: the engine must be observed non-idle after launch before its
@@ -767,56 +775,55 @@ class RenderHost(
   io.renderCompletion.bits.bytesProcessed := renderBytes
   when(io.renderCompletion.fire) { renderDonePending := false.B }
 
-  // Tie the engine to the latched configuration: legacy register snapshots
-  // when the host programmed START, the queue's descriptor snapshot when a
-  // queued job was accepted.
-  private def muxActive[T <: Data](legacy: T, queued: T): T =
-    Mux(ownerQueue, queued, legacy)
-  core.io.cmdBase := muxActive(activeCmdBase, noCfg.cmdBase)
-  core.io.cmdCount := muxActive(activeCmdCount(15, 0), noCfg.cmdCount)
-  core.io.colorBase := muxActive(activeColorBase, noCfg.colorBase)
-  core.io.depthBase := muxActive(activeDepthBase, noCfg.depthBase)
-  core.io.stride := muxActive(activeStride, noCfg.stride)
+  // Tie the engine to the latched configuration: the legacy register snapshot
+  // for a START submission, or the unified render descriptor snapshot.
+  private def muxActive[T <: Data](legacy: T, unified: T): T =
+    Mux(ownerUnified, unified, legacy)
+  core.io.cmdBase := muxActive(activeCmdBase, unifiedCfg.cmdBase)
+  core.io.cmdCount := muxActive(activeCmdCount(15, 0), unifiedCfg.cmdCount)
+  core.io.colorBase := muxActive(activeColorBase, unifiedCfg.colorBase)
+  core.io.depthBase := muxActive(activeDepthBase, unifiedCfg.depthBase)
+  core.io.stride := muxActive(activeStride, unifiedCfg.stride)
   core.io.depthTestEnable := muxActive(
-    activeDepthTestEnable(0), noCfg.depthTestEnable)
-  core.io.depthFunc := muxActive(activeDepthFunc(2, 0), noCfg.depthFunc)
+    activeDepthTestEnable(0), unifiedCfg.depthTestEnable)
+  core.io.depthFunc := muxActive(activeDepthFunc(2, 0), unifiedCfg.depthFunc)
   core.io.depthWriteEnable := muxActive(
-    activeDepthWriteEnable(0), noCfg.depthWriteEnable)
+    activeDepthWriteEnable(0), unifiedCfg.depthWriteEnable)
   core.io.blendCfgEnable := muxActive(
-    activeBlendConfig(0), noCfg.blendCfgEnable)
+    activeBlendConfig(0), unifiedCfg.blendCfgEnable)
   core.io.blendSrcFactor := muxActive(
-    activeBlendConfig(7, 4), noCfg.blendSrcFactor)
+    activeBlendConfig(7, 4), unifiedCfg.blendSrcFactor)
   core.io.blendDstFactor := muxActive(
-    activeBlendConfig(11, 8), noCfg.blendDstFactor)
+    activeBlendConfig(11, 8), unifiedCfg.blendDstFactor)
   core.io.blendEquation := muxActive(
-    activeBlendConfig(14, 12), noCfg.blendEquation)
+    activeBlendConfig(14, 12), unifiedCfg.blendEquation)
   core.io.stencilTestEnable := muxActive(
-    activeStencilConfig(0), noCfg.stencilTestEnable)
+    activeStencilConfig(0), unifiedCfg.stencilTestEnable)
   core.io.stencilFunc := muxActive(
-    activeStencilConfig(6, 4), noCfg.stencilFunc)
+    activeStencilConfig(6, 4), unifiedCfg.stencilFunc)
   core.io.stencilRef := muxActive(
-    activeStencilRefMasks(7, 0), noCfg.stencilRef)
+    activeStencilRefMasks(7, 0), unifiedCfg.stencilRef)
   core.io.stencilReadMask := muxActive(
-    activeStencilRefMasks(15, 8), noCfg.stencilReadMask)
+    activeStencilRefMasks(15, 8), unifiedCfg.stencilReadMask)
   core.io.stencilWriteMask := muxActive(
-    activeStencilRefMasks(23, 16), noCfg.stencilWriteMask)
+    activeStencilRefMasks(23, 16), unifiedCfg.stencilWriteMask)
   core.io.stencilFailOp := muxActive(
-    activeStencilConfig(9, 7), noCfg.stencilFailOp)
+    activeStencilConfig(9, 7), unifiedCfg.stencilFailOp)
   core.io.stencilZFailOp := muxActive(
-    activeStencilConfig(12, 10), noCfg.stencilZFailOp)
+    activeStencilConfig(12, 10), unifiedCfg.stencilZFailOp)
   core.io.stencilZPassOp := muxActive(
-    activeStencilConfig(15, 13), noCfg.stencilZPassOp)
-  core.io.cullMode := muxActive(activeCullMode(1, 0), noCfg.cullMode)
-  core.io.texEnable := muxActive(activeTexConfig(8), noCfg.texEnable)
-  core.io.texBase := muxActive(activeTexBase, noCfg.texBase)
-  core.io.texWidth := muxActive(activeTexWidth(13, 0), noCfg.texWidth)
-  core.io.texHeight := muxActive(activeTexHeight(13, 0), noCfg.texHeight)
+    activeStencilConfig(15, 13), unifiedCfg.stencilZPassOp)
+  core.io.cullMode := muxActive(activeCullMode(1, 0), unifiedCfg.cullMode)
+  core.io.texEnable := muxActive(activeTexConfig(8), unifiedCfg.texEnable)
+  core.io.texBase := muxActive(activeTexBase, unifiedCfg.texBase)
+  core.io.texWidth := muxActive(activeTexWidth(13, 0), unifiedCfg.texWidth)
+  core.io.texHeight := muxActive(activeTexHeight(13, 0), unifiedCfg.texHeight)
   core.io.texWrapClamp := muxActive(
-    activeTexConfig(0), noCfg.texWrapClamp)
+    activeTexConfig(0), unifiedCfg.texWrapClamp)
   core.io.texMaxLevel := muxActive(
-    activeTexConfig(5, 2), noCfg.texMaxLevel)
+    activeTexConfig(5, 2), unifiedCfg.texMaxLevel)
   core.io.sampleMode := muxActive(
-    activeMsaaConfig(1, 0), noCfg.sampleMode)
+    activeMsaaConfig(1, 0), unifiedCfg.sampleMode)
   core.io.start := launch || (renderLaunch && !busy)
 
   // Separate word ports.  The engine's command stage (draw records) and the
