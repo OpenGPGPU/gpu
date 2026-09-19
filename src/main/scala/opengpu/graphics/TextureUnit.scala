@@ -135,6 +135,8 @@ class TextureUnit(
   private val levelBase = RegInit(0.U(32.W))
   private val levelW = RegInit(1.U(14.W))
   private val levelH = RegInit(1.U(14.W))
+  private val levelWMinusOne = RegInit(0.U(14.W))
+  private val levelHMinusOne = RegInit(0.U(14.W))
   private val levelSteps = RegInit(0.U(4.W))
   private val baseMipLevel = RegInit(0.U(4.W))
   private val lodFracReg = RegInit(0.U(8.W))
@@ -302,6 +304,8 @@ class TextureUnit(
         levelBase := io.texBase
         levelW := io.texWidth
         levelH := io.texHeight
+        levelWMinusOne := io.texWidth - 1.U
+        levelHMinusOne := io.texHeight - 1.U
         val selectedLevel = Mux(io.sample.bits.mipLevel > io.texMaxLevel,
           io.texMaxLevel, io.sample.bits.mipLevel)
         levelSteps := selectedLevel
@@ -325,6 +329,8 @@ class TextureUnit(
         levelBase := levelBase + ((levelW * levelH) << 2)
         levelW := Mux(levelW === 1.U, 1.U, levelW >> 1)
         levelH := Mux(levelH === 1.U, 1.U, levelH >> 1)
+        levelWMinusOne := Mux(levelW === 1.U, 0.U, (levelW >> 1) - 1.U)
+        levelHMinusOne := Mux(levelH === 1.U, 0.U, (levelH >> 1) - 1.U)
         levelSteps := levelSteps - 1.U
       }
     }
@@ -339,15 +345,15 @@ class TextureUnit(
       val idx0rawX = inRangeXReg(21, 8)
       val idx0rawY = inRangeYReg(21, 8)
       val idx0X = Mux(io.wrapMode === TexWrap.clamp,
-        Mux(idx0rawX > levelW - 1.U, levelW - 1.U, idx0rawX), idx0rawX)
+        Mux(idx0rawX > levelWMinusOne, levelWMinusOne, idx0rawX), idx0rawX)
       val idx0Y = Mux(io.wrapMode === TexWrap.clamp,
-        Mux(idx0rawY > levelH - 1.U, levelH - 1.U, idx0rawY), idx0rawY)
+        Mux(idx0rawY > levelHMinusOne, levelHMinusOne, idx0rawY), idx0rawY)
       val idx1X = Mux(io.wrapMode === TexWrap.clamp,
-        Mux(idx0X + 1.U > levelW - 1.U, levelW - 1.U, idx0X + 1.U),
-        (idx0X + 1.U) & (levelW - 1.U))
+        Mux(idx0X + 1.U > levelWMinusOne, levelWMinusOne, idx0X + 1.U),
+        (idx0X + 1.U) & levelWMinusOne)
       val idx1Y = Mux(io.wrapMode === TexWrap.clamp,
-        Mux(idx0Y + 1.U > levelH - 1.U, levelH - 1.U, idx0Y + 1.U),
-        (idx0Y + 1.U) & (levelH - 1.U))
+        Mux(idx0Y + 1.U > levelHMinusOne, levelHMinusOne, idx0Y + 1.U),
+        (idx0Y + 1.U) & levelHMinusOne)
       wReg(0) := (256.U - inRangeXReg(7, 0)) * (256.U - inRangeYReg(7, 0))
       wReg(1) := inRangeXReg(7, 0) * (256.U - inRangeYReg(7, 0))
       wReg(2) := (256.U - inRangeXReg(7, 0)) * inRangeYReg(7, 0)
@@ -396,6 +402,8 @@ class TextureUnit(
         levelBase := io.texBase
         levelW := io.texWidth
         levelH := io.texHeight
+        levelWMinusOne := io.texWidth - 1.U
+        levelHMinusOne := io.texHeight - 1.U
         levelSteps := baseMipLevel + 1.U
         secondLevel := true.B
         state := sLevel
