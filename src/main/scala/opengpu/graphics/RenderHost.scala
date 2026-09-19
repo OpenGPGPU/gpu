@@ -347,8 +347,6 @@ class RenderHost(
   private val irqEnable = RegInit(false.B)
   private val irqPending = RegInit(false.B)
   private val sawBusy = RegInit(false.B)
-  /** The job queue was retired; no submission is queue-owned. */
-  private val ownerQueue = false.B
   /** True while the running job was launched by a unified render command. */
   private val ownerUnified = RegInit(false.B)
 
