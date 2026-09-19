@@ -533,12 +533,12 @@ and graphics shaders, one unified command completion/event path) but carrying
 the seams of two pipelines bolted together. This milestone pays down those
 debts. Each item is independent and should preserve behavior and coverage.
 
-- **C1 - Unify command distribution.** A draw currently round-trips across the
-  host/system module seam: `GpuCommandMmio` produces a command in `GpuHostAxi`,
-  `GpuSystem`'s router dispatches it, and a render command is routed back to
-  `RenderHost` in `GpuHostAxi`. Put the graphics engine under the same
-  dispatcher as the compute engines (or move command distribution to one place)
-  so a draw does not cross the seam twice.
+- **C1 - Unify command distribution (done).** A draw no longer round-trips
+  across the host/system seam: `GpuHostAxi` now demuxes the unified command
+  next to the graphics engine - `GPU_UCMD_OP_RENDER` drives `RenderHost`
+  directly and every other command goes to the system router - and one
+  completion arbiter feeds the shared MMIO slot. The router's now-unused render
+  port is removed.
 - **C2 - Collapse the two submission paths (done).** The legacy `START`
   register snapshot is removed: `RenderHost` has one configuration source (the
   unified render descriptor's `JobConfig`), the engine launches only on a

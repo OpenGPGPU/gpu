@@ -21,10 +21,6 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
     dut.io.stridedCopy.ready.poke(false.B)
     dut.io.resolve.ready.poke(false.B)
     dut.io.invalidate.ready.poke(false.B)
-    dut.io.render.ready.poke(false.B)
-    dut.io.renderCompletion.valid.poke(false.B)
-    dut.io.renderCompletion.bits.poke(
-      0.U.asTypeOf(dut.io.renderCompletion.bits))
     dut.io.kernelCompletion.valid.poke(false.B)
     dut.io.kernelCompletion.bits.poke(
       0.U.asTypeOf(dut.io.kernelCompletion.bits))
@@ -271,36 +267,6 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
       dut.io.completion.bits.commandId.expect(6.U)
       dut.io.completion.bits.opcode.expect(GpuCommandOpcode.resolve)
       dut.io.completion.bits.bytesProcessed.expect(16L * 8 * 4)
-    }
-  }
-
-  it should "route a unified render descriptor and return its completion" in {
-    simulate(new GpuCommandRouter(
-      GpuConfig(lanes = 4), commandIdWidth = 4,
-      commandQueueDepth = 2, completionQueueDepth = 2)) { dut =>
-      initialize(dut)
-      dut.io.command.bits.sourceAddress.poke(0x20000.U)
-      dut.io.command.bits.bytes.poke(64.U)
-      submit(dut, 5, GpuCommandOpcode.render)
-
-      dut.io.render.valid.expect(true.B)
-      dut.io.render.bits.descriptorId.expect(5.U)
-      dut.io.render.bits.descriptorAddress.expect(0x20000.U)
-      dut.io.render.bits.bytes.expect(64.U)
-      dut.io.render.ready.poke(true.B); dut.clock.step()
-
-      dut.io.renderCompletion.bits.descriptorId.poke(5.U)
-      dut.io.renderCompletion.bits.status.poke(RenderStatus.success)
-      dut.io.renderCompletion.bits.success.poke(true.B)
-      dut.io.renderCompletion.bits.bytesProcessed.poke(160L)
-      dut.io.renderCompletion.valid.poke(true.B)
-      dut.clock.step(); dut.io.renderCompletion.valid.poke(false.B)
-
-      dut.io.completion.valid.expect(true.B)
-      dut.io.completion.bits.commandId.expect(5.U)
-      dut.io.completion.bits.opcode.expect(GpuCommandOpcode.render)
-      dut.io.completion.bits.success.expect(true.B)
-      dut.io.completion.bits.bytesProcessed.expect(160L)
     }
   }
 

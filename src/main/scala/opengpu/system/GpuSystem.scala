@@ -3,7 +3,7 @@ package opengpu.system
 import chisel3._
 import chisel3.util._
 import opengpu.config.GpuConfig
-import opengpu.command.{GpuCommand, GpuCommandResult, GpuCommandRouter, RenderCompletion, RenderDescriptor, ResolveStatus}
+import opengpu.command.{GpuCommand, GpuCommandResult, GpuCommandRouter, ResolveStatus}
 import opengpu.core.GpuComputeUnit
 import opengpu.core.backend.FpuFlags
 import opengpu.core.backend.issue.{ScalarIssuedInstruction, VectorIssuedInstruction}
@@ -103,12 +103,6 @@ class GpuSystem(
     val gpuCommand = Flipped(Decoupled(
       new GpuCommand(config, commandIdWidth)))
     val gpuCompletion = Decoupled(new GpuCommandResult(commandIdWidth))
-    /** Unified render command routed to the graphics engine, and its
-      * completion.  The command carries the VM address of a render descriptor
-      * the engine fetches through the translated command client. */
-    val render = Decoupled(new RenderDescriptor(config, commandIdWidth))
-    val renderCompletion = Flipped(Decoupled(
-      new RenderCompletion(commandIdWidth)))
 
     /** Compatibility attachment for the graphics host's shared line port.
       * IDs are local to this client and remapped above all CU/DMA IDs before
@@ -463,13 +457,6 @@ class GpuSystem(
     commandRouter.io.fillCompletion <> fillEngine.io.completion
     stridedCopyEngine.io.descriptor <> commandRouter.io.stridedCopy
     commandRouter.io.stridedCopyCompletion <> stridedCopyEngine.io.completion
-    // Render descriptor out to the graphics engine; completion back in.
-    io.render.valid := commandRouter.io.render.valid
-    io.render.bits := commandRouter.io.render.bits
-    commandRouter.io.render.ready := io.render.ready
-    commandRouter.io.renderCompletion.valid := io.renderCompletion.valid
-    commandRouter.io.renderCompletion.bits := io.renderCompletion.bits
-    io.renderCompletion.ready := commandRouter.io.renderCompletion.ready
 
     io.command.ready := false.B
     io.commandCompletion.valid := false.B
@@ -508,13 +495,6 @@ class GpuSystem(
     commandRouter.io.kernelCompletion.valid := false.B
     commandRouter.io.kernelCompletion.bits :=
       0.U.asTypeOf(commandRouter.io.kernelCompletion.bits)
-    io.render.valid := false.B
-    io.render.bits := 0.U.asTypeOf(io.render.bits)
-    io.renderCompletion.ready := false.B
-    commandRouter.io.render.ready := false.B
-    commandRouter.io.renderCompletion.valid := false.B
-    commandRouter.io.renderCompletion.bits :=
-      0.U.asTypeOf(commandRouter.io.renderCompletion.bits)
     commandRouter.io.copyCompletion.valid := false.B
     commandRouter.io.copyCompletion.bits :=
       0.U.asTypeOf(commandRouter.io.copyCompletion.bits)

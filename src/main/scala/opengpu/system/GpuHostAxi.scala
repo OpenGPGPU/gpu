@@ -2,7 +2,7 @@ package opengpu.system
 
 import chisel3._
 import chisel3.util._
-import opengpu.command.{GpuCommand, GpuCommandResult, RenderCompletion, RenderDescriptor}
+import opengpu.command.{GpuCommand, GpuCommandOpcode, GpuCommandResult, RenderCompletion, RenderDescriptor}
 import opengpu.config.GpuConfig
 import opengpu.core.memory.{
   CacheLineInvalidate,
@@ -141,10 +141,6 @@ class GpuHostAxi(
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
     }
-    /** Unified render command / completion to the graphics engine. */
-    val renderCommand = Flipped(Decoupled(
-      new RenderDescriptor(gpuConfig, commandIdWidth)))
-    val renderCompletion = Decoupled(new RenderCompletion(commandIdWidth))
   })
 
   withClockAndReset(clock, !io.s_axi_aresetn) {
@@ -159,9 +155,47 @@ class GpuHostAxi(
         gpuConfig, commandIdWidth, gpuConfig.commandQueueDepth)))
     } else None
 
+    // Command distribution lives here, next to the graphics engine: a render
+    // command drives RenderHost directly, while every other unified command
+    // goes to the system command router. This keeps a draw from round-tripping
+    // across the host/system seam.
+    host.io.renderCommand.valid := false.B
+    host.io.renderCommand.bits := 0.U.asTypeOf(host.io.renderCommand.bits)
+    host.io.renderCompletion.ready := false.B
     unified.foreach { bridge =>
-      io.gpuCommand.get <> bridge.io.command
-      bridge.io.completion <> io.gpuCompletion.get
+      val isRender =
+        bridge.io.command.bits.opcode === GpuCommandOpcode.render
+      host.io.renderCommand.valid := bridge.io.command.valid && isRender
+      host.io.renderCommand.bits.descriptorId :=
+        bridge.io.command.bits.commandId
+      host.io.renderCommand.bits.descriptorAddress :=
+        bridge.io.command.bits.sourceAddress
+      host.io.renderCommand.bits.bytes := bridge.io.command.bits.bytes
+      io.gpuCommand.get.valid := bridge.io.command.valid && !isRender
+      io.gpuCommand.get.bits := bridge.io.command.bits
+      bridge.io.command.ready := Mux(isRender,
+        host.io.renderCommand.ready, io.gpuCommand.get.ready)
+
+      // One unified completion slot: the local render completion or the
+      // system's command completion.
+      val renderResult =
+        Wire(new GpuCommandResult(commandIdWidth))
+      renderResult.commandId := host.io.renderCompletion.bits.descriptorId
+      renderResult.opcode := GpuCommandOpcode.render
+      renderResult.status := host.io.renderCompletion.bits.status
+      renderResult.success := host.io.renderCompletion.bits.success
+      renderResult.bytesProcessed :=
+        host.io.renderCompletion.bits.bytesProcessed
+      val completionArb = Module(new RRArbiter(
+        new GpuCommandResult(commandIdWidth), 2))
+      completionArb.io.in(0).valid := host.io.renderCompletion.valid
+      completionArb.io.in(0).bits := renderResult
+      host.io.renderCompletion.ready := completionArb.io.in(0).ready
+      completionArb.io.in(1).valid := io.gpuCompletion.get.valid
+      completionArb.io.in(1).bits := io.gpuCompletion.get.bits
+      io.gpuCompletion.get.ready := completionArb.io.in(1).ready
+      bridge.io.completion <> completionArb.io.out
+
       io.commandResetActive.get := bridge.io.resetActive
       bridge.io.resetDone := io.commandResetDone.get
     }
@@ -174,8 +208,6 @@ class GpuHostAxi(
     io.m_irq := host.io.irq
     host.io.cbMem.req <> io.cbMem.req
     io.cbMem.resp <> host.io.cbMem.resp
-    host.io.renderCommand <> io.renderCommand
-    io.renderCompletion <> host.io.renderCompletion
     host.io.fbMem.req <> io.fbMem.req
     io.fbMem.resp <> host.io.fbMem.resp
     io.kernelMemReq <> host.io.kernelMemReq
