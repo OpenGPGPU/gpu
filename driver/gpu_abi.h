@@ -176,7 +176,8 @@ typedef int32_t s32;
 #define GPU_REG_BLEND_CONFIG      0x144
 
 #define GPU_CAP_FRAGMENT_CORE   (1u << 0)
-#define GPU_CAP_JOB_QUEUE       (1u << 1)
+/* Bit1 was the host-memory job ring, retired in favour of the unified render
+ * command; it is reserved and never advertised. */
 #define GPU_CAP_VERTEX_CORE     (1u << 2)
 #define GPU_CAP_CLEAR_ENGINE    (1u << 3)
 #define GPU_CAP_BLIT_ENGINE     (1u << 4)

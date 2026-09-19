@@ -502,12 +502,14 @@ Staged work, each independently testable:
   every graphics client translates through the shared page tables. The
   framebuffer translator is a third `GraphicsAddressTranslator` instance and is
   verified end to end by the guest test's render/scanout result check.
-- [ ] **S6:** retire the job ring, the legacy `START` snapshot and the admin
-  word port; update `GpuAbiLayoutSpec`, capability discovery and the negative
-  UAPI tests. The driver no longer programs or uses the ring: user draws are
-  unified render commands and the self-test/fallback uses the legacy `START`
-  snapshot, so the admin port is idle. Removing the RTL `JobQueue`/`adminMem`,
-  the `JOB_*`/`IH_*` registers and the ring test suites remains.
+- [x] **S6:** retire the job ring, the legacy `START` snapshot and the admin
+  word port. The RTL `JobQueue` and the `adminMem` port are removed (the
+  `JOB_*`/`IH_*` registers remain inert for ABI compatibility); the driver no
+  longer programs or uses the ring; user draws are unified render commands and
+  the self-test/fallback uses the legacy `START` snapshot. Capability discovery
+  no longer advertises the ring, and the ring-specific test suites are removed.
+  The legacy `START` register snapshot is retained for the probe self-test and
+  as the fallback for builds without the unified render command.
 
 Exit: a draw is submitted and completed through the unified command path with
 its descriptor, command buffer and vertex data fetched through translated

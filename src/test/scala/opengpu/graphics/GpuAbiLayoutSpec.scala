@@ -153,7 +153,6 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
   it should "match the capability-word bit assignments" in {
     checkAll(Seq(
       "GPU_CAP_FRAGMENT_CORE" -> (1L << GpuCapabilities.FragmentCore),
-      "GPU_CAP_JOB_QUEUE" -> (1L << GpuCapabilities.JobQueue),
       "GPU_CAP_VERTEX_CORE" -> (1L << GpuCapabilities.VertexCore),
       "GPU_CAP_CLEAR_ENGINE" -> (1L << GpuCapabilities.ClearEngine),
       "GPU_CAP_BLIT_ENGINE" -> (1L << GpuCapabilities.BlitEngine),

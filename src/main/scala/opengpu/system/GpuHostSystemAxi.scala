@@ -42,20 +42,18 @@ class GpuHostSystemAxi(
   require(!vertCore || fragCore,
     "vertex-core graphics requires fragment-core graphics")
 
-  // Eight direct graphics line transactions plus four four-entry word-port
-  // bridges (command data, admin, framebuffer, texture), each of the three
-  // translated clients with its own PTE-read range. Round up to a power of two
-  // for simple local-ID range checking.
-  private val graphicsHostTransactions = 64
+  // Eight direct graphics line transactions plus the translated word-port
+  // clients (command data, framebuffer, texture), each with its own PTE-read
+  // range. Round up to a power of two for simple local-ID range checking.
+  private val graphicsHostTransactions = 32
   private val wordPortTransactions = 4
   private val cbBase = 8
-  private val adminBase = cbBase + wordPortTransactions
-  private val fbBase = adminBase + wordPortTransactions
+  private val fbBase = cbBase + wordPortTransactions
   private val texBase = fbBase + wordPortTransactions
   private val usedGraphicsTransactions = texBase + wordPortTransactions
   // The command, framebuffer and texture paths translate through the shared
   // Sv32 page tables; their PTE reads use reserved transaction ranges beyond
-  // the client IDs. The admin path stays physical and untranslated.
+  // the client IDs.
   private val graphicsTlbBase = usedGraphicsTransactions
   private val cbTlbBase = graphicsTlbBase + wordPortTransactions
   private val fbTlbBase = cbTlbBase + wordPortTransactions
@@ -206,15 +204,9 @@ class GpuHostSystemAxi(
       host.io.kernelGlobalAtomicRequest
     host.io.kernelGlobalAtomicResponse <>
       system.io.graphicsShaderAtomicResponse
-    // Command-draw and admin word ports are separate. Command records bypass
-    // L2 (uncached) and translate through the context's page tables so a
-    // driver can place a context's draw records in its own address space; the
-    // job queue's admin channel (descriptor fetches, IH record writes) stays a
-    // plain untranslated physical path so completion ordering is untouched.
-    // Framebuffer and texture stay cached for bandwidth.
+    // Command-draw, framebuffer and texture word clients. Command records
+    // bypass L2 (uncached); framebuffer and texture stay cached for bandwidth.
     val cbBridge = Module(new OmWordToLinePort(
-      gpuConfig, 64, wordPortTransactions, uncached = true))
-    val adminBridge = Module(new OmWordToLinePort(
       gpuConfig, 64, wordPortTransactions, uncached = true))
     val fbBridge = Module(new OmWordToLinePort(
       gpuConfig, 64, wordPortTransactions))
@@ -222,8 +214,6 @@ class GpuHostSystemAxi(
       gpuConfig, 64, wordPortTransactions))
     cbBridge.io.in <> host.io.cbMem.req
     host.io.cbMem.resp <> cbBridge.io.out
-    adminBridge.io.in <> host.io.adminMem.req
-    host.io.adminMem.resp <> adminBridge.io.out
     fbBridge.io.in <> host.io.fbMem.req
     host.io.fbMem.resp <> fbBridge.io.out
     texBridge.io.in <> host.io.texMem.req
@@ -258,7 +248,7 @@ class GpuHostSystemAxi(
     fbTranslator.io.in <> fbBridge.io.memoryRequest
 
     val graphicsRequestArbiter = Module(new RRArbiter(
-      new ComputeMemoryRequest(gpuConfig, 64, graphicsHostTransactions), 8))
+      new ComputeMemoryRequest(gpuConfig, 64, graphicsHostTransactions), 7))
     def attachGraphicsRequest(
       index: Int,
       request: DecoupledIO[ComputeMemoryRequest],
@@ -272,19 +262,17 @@ class GpuHostSystemAxi(
     }
     attachGraphicsRequest(0, host.io.kernelWordMemReq, 0)
     attachGraphicsRequest(1, cbTranslator.io.out, cbBase)
-    attachGraphicsRequest(2, adminBridge.io.memoryRequest, adminBase)
-    attachGraphicsRequest(3, fbTranslator.io.out, fbBase)
-    attachGraphicsRequest(4, texTranslator.io.out, texBase)
-    attachGraphicsRequest(5, texTranslator.io.pageWalk, graphicsTlbBase)
-    attachGraphicsRequest(6, cbTranslator.io.pageWalk, cbTlbBase)
-    attachGraphicsRequest(7, fbTranslator.io.pageWalk, fbTlbBase)
+    attachGraphicsRequest(2, fbTranslator.io.out, fbBase)
+    attachGraphicsRequest(3, texTranslator.io.out, texBase)
+    attachGraphicsRequest(4, texTranslator.io.pageWalk, graphicsTlbBase)
+    attachGraphicsRequest(5, cbTranslator.io.pageWalk, cbTlbBase)
+    attachGraphicsRequest(6, fbTranslator.io.pageWalk, fbTlbBase)
     system.io.graphicsHostRequest <> graphicsRequestArbiter.io.out
 
     val graphicsResponse = system.io.graphicsHostResponse
     val responseId = graphicsResponse.bits.transactionId
     val responseForKernelWord = responseId < cbBase.U
-    val responseForCb = responseId >= cbBase.U && responseId < adminBase.U
-    val responseForAdmin = responseId >= adminBase.U && responseId < fbBase.U
+    val responseForCb = responseId >= cbBase.U && responseId < fbBase.U
     val responseForFb = responseId >= fbBase.U && responseId < texBase.U
     val responseForTex = responseId >= texBase.U &&
       responseId < graphicsTlbBase.U
@@ -312,8 +300,6 @@ class GpuHostSystemAxi(
     attachGraphicsResponse(
       cbResponseArbiter.io.in(1), responseForCb, cbBase)
     cbBridge.io.memoryResponse <> cbResponseArbiter.io.out
-    attachGraphicsResponse(
-      adminBridge.io.memoryResponse, responseForAdmin, adminBase)
     val fbResponseArbiter = Module(new RRArbiter(
       new ComputeMemoryResponse(64, graphicsHostTransactions), 2))
     fbResponseArbiter.io.in(0) <> fbTranslator.io.faultResponse
@@ -356,14 +342,13 @@ class GpuHostSystemAxi(
     graphicsResponse.ready := MuxCase(false.B, Seq(
       responseForKernelWord -> host.io.kernelWordMemResp.ready,
       responseForCb -> cbResponseArbiter.io.in(1).ready,
-      responseForAdmin -> adminBridge.io.memoryResponse.ready,
       responseForFb -> fbResponseArbiter.io.in(1).ready,
       responseForTex -> texResponseArbiter.io.in(1).ready,
       responseForTlb -> texTranslator.io.pageWalkResp.ready,
       responseForCbTlb -> cbTranslator.io.pageWalkResp.ready,
       responseForFbTlb -> fbTranslator.io.pageWalkResp.ready))
     when(graphicsResponse.valid) {
-      assert(responseForKernelWord || responseForCb || responseForAdmin ||
+      assert(responseForKernelWord || responseForCb ||
         responseForFb || responseForTex || responseForTlb ||
         responseForCbTlb || responseForFbTlb,
         "graphics response must target an attached line, word or TLB client")

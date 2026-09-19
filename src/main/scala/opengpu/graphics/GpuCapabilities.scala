@@ -8,8 +8,6 @@ package opengpu.graphics
 object GpuCapabilities {
   /** Fragment-core executables are accepted (bit0). */
   val FragmentCore = 0
-  /** The host-memory job ring is implemented (bit1). */
-  val JobQueue = 1
   /** Vertex-core draw records are accepted (bit2). */
   val VertexCore = 2
   /** Patterned hardware fill engine (bit3). */

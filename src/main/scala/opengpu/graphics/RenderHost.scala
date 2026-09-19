@@ -193,12 +193,6 @@ class RenderHost(
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
     }
-    /** Job-queue admin word port (descriptor fetches, IH record writes).
-      * Physical and untranslated; kept separate from the command-draw port. */
-    val adminMem = new Bundle {
-      val req = Decoupled(new OmMemoryRequest)
-      val resp = Flipped(Decoupled(new OmMemoryResponse))
-    }
     val fbMem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
@@ -402,19 +396,12 @@ class RenderHost(
   private val id = ((deviceId & 0xffff) << 16 | (version & 0xffff)).U
 
   // ---------------------------------------------------------------------------
-  // Hardware job queue: fetches descriptors from the host-memory ring and
-  // writes IH records into a second host-memory ring before raising IRQs.
+  // The host-memory job ring (JobQueue) was retired: user draws are unified
+  // render commands and the fallback/self-test uses the legacy START snapshot.
+  // The job-ring registers remain readable/writable for ABI compatibility.
   // ---------------------------------------------------------------------------
-  private val jq = Module(new JobQueue(config.maxSampleCount))
-  private val jqEnabled = jobEnableReg && jobRingSizeReg.orR &&
-    jobRingBaseReg.orR && ihSizeReg.orR && ihBaseReg.orR
-  jq.io.enable := jqEnabled
-  jq.io.ringBase := jobRingBaseReg
-  jq.io.ringMask := (jobRingSizeReg - 1.U)(15, 0)
-  jq.io.hostWptr := jobWptrReg(15, 0)
-  jq.io.ihBase := ihBaseReg
-  jq.io.ihMask := (ihSizeReg - 1.U)(15, 0)
-  jq.io.reset := jqResetPulse
+  private val jqEnabled = false.B
+  private val noCfg = 0.U.asTypeOf(new JobConfig())
 
   // ---------------------------------------------------------------------------
   // Register read (combinational) and write (registered) access.
@@ -445,7 +432,7 @@ class RenderHost(
   }
 
   // Queue launches are held off when a legacy START pulses the same cycle.
-  jq.io.launchReady := !busy && !startWrite
+  // (The job ring is retired; no queue launches occur.)
 
   private val statusBits =
     Cat(0.U(26.W), strided.io.busy, blit.io.busy, fill.io.busy,
@@ -457,7 +444,6 @@ class RenderHost(
   private val scanoutStatusBits = Cat(0.U(31.W), scanoutActive)
   private val capabilityBits =
     ((if (fragCore) (1 << GpuCapabilities.FragmentCore) else 0) |
-      (1 << GpuCapabilities.JobQueue) |
       (if (vertCore) (1 << GpuCapabilities.VertexCore) else 0) |
       (1 << GpuCapabilities.ClearEngine) |
       (1 << GpuCapabilities.BlitEngine) |
@@ -474,8 +460,8 @@ class RenderHost(
       (if (unifiedCommands) (1 << GpuCapabilities.UnifiedRender) else 0) |
       (gpuConfig.warps * gpuConfig.lanes << GpuCapabilities.FragmentBatchShift))
       .U(32.W)
-  private val jobStatusBits = Cat(
-    0.U(22.W), jq.io.pendingValid, jq.io.running, 0.U(7.W), jqEnabled)
+  private val jobStatusBits = Cat(0.U(22.W), 0.U(1.W), 0.U(1.W), 0.U(7.W),
+    jqEnabled)
 
   private def readReg: UInt =
     MuxLookup(rAddr, 0.U(32.W))(Seq(
@@ -510,11 +496,11 @@ class RenderHost(
       RenderHostRegs.JOB_RING_BASE.U -> jobRingBaseReg,
       RenderHostRegs.JOB_RING_SIZE.U -> jobRingSizeReg,
       RenderHostRegs.JOB_WPTR.U -> jobWptrReg,
-      RenderHostRegs.JOB_RPTR.U -> Cat(0.U(16.W), jq.io.rptr),
+      RenderHostRegs.JOB_RPTR.U -> 0.U(32.W),
       RenderHostRegs.JOB_CONTROL.U -> jobStatusBits,
       RenderHostRegs.IH_BASE.U -> ihBaseReg,
       RenderHostRegs.IH_SIZE.U -> ihSizeReg,
-      RenderHostRegs.IH_WPTR.U -> Cat(0.U(16.W), jq.io.ihWptr),
+      RenderHostRegs.IH_WPTR.U -> 0.U(32.W),
       RenderHostRegs.IH_RPTR.U -> ihRptrReg,
       RenderHostRegs.CLEAR_BASE.U -> clearBaseReg,
       RenderHostRegs.CLEAR_BYTES.U -> clearBytesReg,
@@ -762,17 +748,8 @@ class RenderHost(
   // This must follow the snapshot block so it wins over its ERROR clear.
   when(startWrite && !msaaModeValid) { error := true.B }
 
-  // Queue-initiated launches are accepted when the engine is idle and no
-  // legacy START pulses in the same cycle (legacy has priority).
-  when(jq.io.launch && jq.io.launchReady) {
-    busy := true.B
-    done := false.B
-    error := false.B
-    sawBusy := false.B
-    ownerQueue := true.B
-    ownerUnified := false.B
-    textureFaulted := false.B
-  }
+  // Queue-initiated launches were retired with the job ring; only the legacy
+  // START and the unified render command launch the engine.
 
   // Unified render command: fetch the 16-word descriptor over the translated
   // command port, then launch from a packed register snapshot.
@@ -833,22 +810,16 @@ class RenderHost(
   // return to idle counts as done.  `core.done` is high before/at the launch
   // cycle (the command stage has not yet started), so the sawBusy guard stops
   // that pre-launch idle from being mistaken for completion.
-  jqDonePulse := false.B
   when(busy && !core.io.done) { sawBusy := true.B }
   when(busy && sawBusy && core.io.done) {
     busy := false.B
     done := true.B
-    when(ownerQueue) {
-      jqDonePulse := true.B
-    }.elsewhen(ownerUnified) {
+    when(ownerUnified) {
       renderDonePending := true.B
     }.otherwise {
       irqPending := true.B
     }
   }
-  jq.io.done := jqDonePulse
-  jq.io.doneStatus := Mux(textureFaulted || textureFaultNow,
-    JobQueueStatus.TextureMemoryFault.U, JobQueueStatus.Completed.U)
   when(textureFaultNow) {
     textureFaulted := true.B
     error := true.B
@@ -856,13 +827,6 @@ class RenderHost(
   // Preserve failure at completion even if STATUS.ERROR was acknowledged
   // while the failed draw was still draining.
   when(busy && sawBusy && core.io.done && textureFaulted) { error := true.B }
-  // Queue completions become interrupt-visible only after all IH words have
-  // completed and JobQueue has advanced IH_WPTR.  Raising IRQ at core.done
-  // races the handler against the still-empty IH ring.
-  when(jq.io.ihCommitted) {
-    irqPending := true.B
-    when(jq.io.ihError) { error := true.B }
-  }
   // Integrated compute/DMA completions share the same sticky, AXI-visible
   // pending bit and W1C acknowledgement as graphics completions.
   when(io.externalCompletion) { irqPending := true.B }
@@ -882,60 +846,58 @@ class RenderHost(
   // queued job was accepted.
   private def muxActive[T <: Data](legacy: T, queued: T): T =
     Mux(ownerQueue, queued, legacy)
-  core.io.cmdBase := muxActive(activeCmdBase, jq.io.cfg.cmdBase)
-  core.io.cmdCount := muxActive(activeCmdCount(15, 0), jq.io.cfg.cmdCount)
-  core.io.colorBase := muxActive(activeColorBase, jq.io.cfg.colorBase)
-  core.io.depthBase := muxActive(activeDepthBase, jq.io.cfg.depthBase)
-  core.io.stride := muxActive(activeStride, jq.io.cfg.stride)
+  core.io.cmdBase := muxActive(activeCmdBase, noCfg.cmdBase)
+  core.io.cmdCount := muxActive(activeCmdCount(15, 0), noCfg.cmdCount)
+  core.io.colorBase := muxActive(activeColorBase, noCfg.colorBase)
+  core.io.depthBase := muxActive(activeDepthBase, noCfg.depthBase)
+  core.io.stride := muxActive(activeStride, noCfg.stride)
   core.io.depthTestEnable := muxActive(
-    activeDepthTestEnable(0), jq.io.cfg.depthTestEnable)
-  core.io.depthFunc := muxActive(activeDepthFunc(2, 0), jq.io.cfg.depthFunc)
+    activeDepthTestEnable(0), noCfg.depthTestEnable)
+  core.io.depthFunc := muxActive(activeDepthFunc(2, 0), noCfg.depthFunc)
   core.io.depthWriteEnable := muxActive(
-    activeDepthWriteEnable(0), jq.io.cfg.depthWriteEnable)
+    activeDepthWriteEnable(0), noCfg.depthWriteEnable)
   core.io.blendCfgEnable := muxActive(
-    activeBlendConfig(0), jq.io.cfg.blendCfgEnable)
+    activeBlendConfig(0), noCfg.blendCfgEnable)
   core.io.blendSrcFactor := muxActive(
-    activeBlendConfig(7, 4), jq.io.cfg.blendSrcFactor)
+    activeBlendConfig(7, 4), noCfg.blendSrcFactor)
   core.io.blendDstFactor := muxActive(
-    activeBlendConfig(11, 8), jq.io.cfg.blendDstFactor)
+    activeBlendConfig(11, 8), noCfg.blendDstFactor)
   core.io.blendEquation := muxActive(
-    activeBlendConfig(14, 12), jq.io.cfg.blendEquation)
+    activeBlendConfig(14, 12), noCfg.blendEquation)
   core.io.stencilTestEnable := muxActive(
-    activeStencilConfig(0), jq.io.cfg.stencilTestEnable)
+    activeStencilConfig(0), noCfg.stencilTestEnable)
   core.io.stencilFunc := muxActive(
-    activeStencilConfig(6, 4), jq.io.cfg.stencilFunc)
+    activeStencilConfig(6, 4), noCfg.stencilFunc)
   core.io.stencilRef := muxActive(
-    activeStencilRefMasks(7, 0), jq.io.cfg.stencilRef)
+    activeStencilRefMasks(7, 0), noCfg.stencilRef)
   core.io.stencilReadMask := muxActive(
-    activeStencilRefMasks(15, 8), jq.io.cfg.stencilReadMask)
+    activeStencilRefMasks(15, 8), noCfg.stencilReadMask)
   core.io.stencilWriteMask := muxActive(
-    activeStencilRefMasks(23, 16), jq.io.cfg.stencilWriteMask)
+    activeStencilRefMasks(23, 16), noCfg.stencilWriteMask)
   core.io.stencilFailOp := muxActive(
-    activeStencilConfig(9, 7), jq.io.cfg.stencilFailOp)
+    activeStencilConfig(9, 7), noCfg.stencilFailOp)
   core.io.stencilZFailOp := muxActive(
-    activeStencilConfig(12, 10), jq.io.cfg.stencilZFailOp)
+    activeStencilConfig(12, 10), noCfg.stencilZFailOp)
   core.io.stencilZPassOp := muxActive(
-    activeStencilConfig(15, 13), jq.io.cfg.stencilZPassOp)
-  core.io.cullMode := muxActive(activeCullMode(1, 0), jq.io.cfg.cullMode)
-  core.io.texEnable := muxActive(activeTexConfig(8), jq.io.cfg.texEnable)
-  core.io.texBase := muxActive(activeTexBase, jq.io.cfg.texBase)
-  core.io.texWidth := muxActive(activeTexWidth(13, 0), jq.io.cfg.texWidth)
-  core.io.texHeight := muxActive(activeTexHeight(13, 0), jq.io.cfg.texHeight)
+    activeStencilConfig(15, 13), noCfg.stencilZPassOp)
+  core.io.cullMode := muxActive(activeCullMode(1, 0), noCfg.cullMode)
+  core.io.texEnable := muxActive(activeTexConfig(8), noCfg.texEnable)
+  core.io.texBase := muxActive(activeTexBase, noCfg.texBase)
+  core.io.texWidth := muxActive(activeTexWidth(13, 0), noCfg.texWidth)
+  core.io.texHeight := muxActive(activeTexHeight(13, 0), noCfg.texHeight)
   core.io.texWrapClamp := muxActive(
-    activeTexConfig(0), jq.io.cfg.texWrapClamp)
+    activeTexConfig(0), noCfg.texWrapClamp)
   core.io.texMaxLevel := muxActive(
-    activeTexConfig(5, 2), jq.io.cfg.texMaxLevel)
+    activeTexConfig(5, 2), noCfg.texMaxLevel)
   core.io.sampleMode := muxActive(
-    activeMsaaConfig(1, 0), jq.io.cfg.sampleMode)
-  core.io.start := launch || (jq.io.launch && jq.io.launchReady) ||
-    (renderLaunch && !busy)
+    activeMsaaConfig(1, 0), noCfg.sampleMode)
+  core.io.start := launch || (renderLaunch && !busy)
 
   // Separate word ports.  The engine's command stage (draw records) and the
   // job queue's admin agent (descriptor fetches, IH record writes) are distinct
   // clients with different coherence and translation needs, so they expose
-  // independent ports instead of sharing one arbitrated word port.  The admin
-  // path stays a plain physical channel; only the command path is translated.
-  private val admin = jq.io.mem
+  // The command word port carries draw records and the unified render
+  // descriptor; the admin port was removed with the job ring.
   private val cbPort = core.io.cbMem
 
   // The descriptor fetch owns the command word port while it runs (the core is
@@ -951,8 +913,6 @@ class RenderHost(
   cbPort.resp.valid := !renderFetching && io.cbMem.resp.valid
   cbPort.resp.bits := io.cbMem.resp.bits
   io.cbMem.resp.ready := Mux(renderFetching, true.B, cbPort.resp.ready)
-  io.adminMem.req <> admin.req
-  admin.resp <> io.adminMem.resp
 
   core.io.fbMem.req <> io.fbMem.req
   io.fbMem.resp <> core.io.fbMem.resp
