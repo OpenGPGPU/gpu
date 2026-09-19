@@ -628,44 +628,10 @@ int opengpu_hw_init(struct opengpu_device *gpu, struct platform_device *pdev)
             return dev_err_probe(gpu->dev, ret, "cannot request irq\n");
     }
 
-    /* Host-memory job queue + IH ring, when the device advertises it. */
-    if (gpu->hw.capabilities & GPU_CAP_JOB_QUEUE) {
-        ret = opengpu_buffer_alloc(gpu, &gpu->hw.job_ring,
-            OPENGPU_JOB_RING_ENTRIES * GPU_JOB_WORDS * 4);
-        if (ret)
-            return ret;
-        ret = opengpu_buffer_alloc(gpu, &gpu->hw.ih_ring,
-            OPENGPU_IH_RING_ENTRIES * GPU_IH_WORDS * 4);
-        if (ret) {
-            opengpu_buffer_free(gpu, &gpu->hw.job_ring);
-            return ret;
-        }
-        memset(gpu->hw.job_ring.cpu, 0, gpu->hw.job_ring.size);
-        memset(gpu->hw.ih_ring.cpu, 0, gpu->hw.ih_ring.size);
-        gpu->hw.job_mask = OPENGPU_JOB_RING_ENTRIES - 1;
-        gpu->hw.ih_mask = OPENGPU_IH_RING_ENTRIES - 1;
-
-        opengpu_reg_write(gpu, GPU_REG_JOB_RING_BASE,
-                          lower_32_bits(gpu->hw.job_ring.dma));
-        opengpu_reg_write(gpu, GPU_REG_JOB_RING_SIZE,
-                          OPENGPU_JOB_RING_ENTRIES);
-        opengpu_reg_write(gpu, GPU_REG_IH_BASE,
-                          lower_32_bits(gpu->hw.ih_ring.dma));
-        opengpu_reg_write(gpu, GPU_REG_IH_SIZE,
-                          OPENGPU_IH_RING_ENTRIES);
-        opengpu_reg_write(gpu, GPU_REG_IH_RPTR, 0);
-        /* Queue completions are delivered through the IH ring and the same
-         * completion IRQ as the legacy START path.  Enable it before the
-         * first doorbell; the queue submit path does not have a separate
-         * interrupt-programming phase. */
-        opengpu_reg_write(gpu, GPU_REG_IRQ, GPU_IRQ_ENABLE);
-        opengpu_reg_write(gpu, GPU_REG_JOB_CONTROL, GPU_JOB_ENABLE);
-        gpu->hw.queue_ready = true;
-        dev_info(gpu->dev,
-                 "GPU job queue ready: ring=%u entries ih=%u records\n",
-                 OPENGPU_JOB_RING_ENTRIES, OPENGPU_IH_RING_ENTRIES);
-    }
-
+    /* The host-memory job ring is retired: user draws are submitted as unified
+     * render commands and the self-test/fallback uses the legacy START
+     * snapshot, so the driver no longer programs the admin ring.  The RTL
+     * module is left idle until it is removed. */
     return 0;
 }
 

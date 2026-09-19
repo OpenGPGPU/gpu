@@ -504,7 +504,10 @@ Staged work, each independently testable:
   verified end to end by the guest test's render/scanout result check.
 - [ ] **S6:** retire the job ring, the legacy `START` snapshot and the admin
   word port; update `GpuAbiLayoutSpec`, capability discovery and the negative
-  UAPI tests.
+  UAPI tests. The driver no longer programs or uses the ring: user draws are
+  unified render commands and the self-test/fallback uses the legacy `START`
+  snapshot, so the admin port is idle. Removing the RTL `JobQueue`/`adminMem`,
+  the `JOB_*`/`IH_*` registers and the ring test suites remains.
 
 Exit: a draw is submitted and completed through the unified command path with
 its descriptor, command buffer and vertex data fetched through translated
