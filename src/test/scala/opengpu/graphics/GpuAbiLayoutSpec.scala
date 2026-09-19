@@ -62,15 +62,6 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
       "GPU_REG_SCANOUT_CONTROL" -> RenderHostRegs.SCANOUT_CONTROL,
       "GPU_REG_SCANOUT_STATUS" -> RenderHostRegs.SCANOUT_STATUS,
       "GPU_REG_CAPABILITIES" -> RenderHostRegs.CAPABILITIES,
-      "GPU_REG_JOB_RING_BASE" -> RenderHostRegs.JOB_RING_BASE,
-      "GPU_REG_JOB_RING_SIZE" -> RenderHostRegs.JOB_RING_SIZE,
-      "GPU_REG_JOB_WPTR" -> RenderHostRegs.JOB_WPTR,
-      "GPU_REG_JOB_RPTR" -> RenderHostRegs.JOB_RPTR,
-      "GPU_REG_JOB_CONTROL" -> RenderHostRegs.JOB_CONTROL,
-      "GPU_REG_IH_BASE" -> RenderHostRegs.IH_BASE,
-      "GPU_REG_IH_SIZE" -> RenderHostRegs.IH_SIZE,
-      "GPU_REG_IH_WPTR" -> RenderHostRegs.IH_WPTR,
-      "GPU_REG_IH_RPTR" -> RenderHostRegs.IH_RPTR,
       "GPU_REG_CLEAR_BASE" -> RenderHostRegs.CLEAR_BASE,
       "GPU_REG_CLEAR_BYTES" -> RenderHostRegs.CLEAR_BYTES,
       "GPU_REG_CLEAR_PATTERN" -> RenderHostRegs.CLEAR_PATTERN,
@@ -195,13 +186,12 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
     ))
   }
 
-  it should "match the draw, vertex, job and IH record sizes" in {
+  it should "match the draw, vertex and job record sizes" in {
     checkAll(Seq(
       "GPU_DRAW_WORDS" -> 40L,
       "GPU_VERT_DRAW_WORDS" -> 40L,
       "GPU_VERTEX_STRIDE_BYTES" -> 32L,
-      "GPU_JOB_WORDS" -> 16L,
-      "GPU_IH_WORDS" -> 4L
+      "GPU_JOB_WORDS" -> 16L
     ))
   }
 
@@ -228,14 +218,9 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
     ))
   }
 
-  it should "match the job-state and interrupt-history completion encodings" in {
+  it should "match the job-state stencil-test encoding" in {
     checkAll(Seq(
-      "GPU_JOB_STATE_STENCIL_TEST" -> (1L << 17),
-      "GPU_IH_STATUS_COMPLETED" -> JobQueueStatus.Completed.toLong,
-      "GPU_IH_STATUS_INVALID_SAMPLE_MODE" ->
-        JobQueueStatus.InvalidSampleMode.toLong,
-      "GPU_IH_HDR_DONE_BIT" -> 16L,
-      "GPU_IH_HDR_ERROR_BIT" -> 17L
+      "GPU_JOB_STATE_STENCIL_TEST" -> (1L << 17)
     ))
   }
 }

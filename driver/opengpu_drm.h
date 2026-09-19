@@ -122,7 +122,7 @@ struct drm_opengpu_param {
 
 #define OPENGPU_PARAM_CAPABILITIES 0u
 #define OPENGPU_CAP_FRAGMENT_CORE (1u << 0)
-#define OPENGPU_CAP_JOB_QUEUE (1u << 1)
+/* Bit1 was the host-memory job ring, retired; it is reserved and never set. */
 #define OPENGPU_CAP_VERTEX_CORE (1u << 2)
 #define OPENGPU_CAP_CLEAR_ENGINE (1u << 3)
 #define OPENGPU_CAP_BLIT_ENGINE (1u << 4)

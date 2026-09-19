@@ -55,16 +55,7 @@ struct opengpu_buffer {
     size_t size;
 };
 
-/* Host-memory job ring / IH ring sizing (entries; powers of two). */
-#define OPENGPU_JOB_RING_ENTRIES 8u
-#define OPENGPU_IH_RING_ENTRIES  16u
-
-/* One in-flight submission tracked per job-ring slot. */
-struct opengpu_pending_job {
-    struct dma_fence *fence;
-    u32 id;
-    u32 delay_ms;
-};
+/* Host-memory job ring / IH ring sizing were retired with the job ring. */
 
 struct opengpu_fault_snapshot {
     u64 sequence;
@@ -108,22 +99,8 @@ struct opengpu_hw {
     u64 fence_context;
     u64 fence_seqno;
     u32 capabilities;
-    /* Host-memory job queue + IH ring (AMDGPU-style), when the device
-     * advertises GPU_CAP_JOB_QUEUE.  Submissions publish descriptors into
-     * the ring and ring the doorbell; the IRQ handler drains IH records and
-     * retires the fence named by the job id. */
-    bool queue_ready;
-    struct opengpu_buffer job_ring;
-    struct opengpu_buffer ih_ring;
-    u32 job_mask;               /* OPENGPU_JOB_RING_ENTRIES - 1 */
-    u32 ih_mask;                /* OPENGPU_IH_RING_ENTRIES - 1 */
-    u32 job_wptr;               /* next free ring slot (free-running) */
-    u32 job_done;               /* oldest job not yet retired (free-running) */
-    u32 ih_rptr;                /* next IH record to drain */
+    /* Free-running job/command id allocator (unified command ids). */
     u32 job_seqno;              /* last allocated job id */
-    /* Fence awaiting its simulated slow completion (test hook). */
-    struct dma_fence *delayed_fence;
-    struct opengpu_pending_job pending[OPENGPU_JOB_RING_ENTRIES];
 };
 
 /* Bring-up execution client. This becomes the render/compute client as queue

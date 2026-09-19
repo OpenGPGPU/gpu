@@ -619,7 +619,6 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
   for ((busFault, textureBusFault) <- Seq(
     (false, false), (true, false), (false, true))) {
     it should s"report texture faults to the host and recover (pageBusFault=$busFault, textureBusFault=$textureBusFault)" in {
-      val queued = false
       val gfx = GraphicsConfig(screenWidth = 4, screenHeight = 4, subPixelBits = 8)
       val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
       simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
@@ -629,8 +628,6 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
         val cmdBase = 0x4000
         val colorBase = 0x8000
         val depthBase = 0x9000
-        val ringBase = 0x10000
-        val ihBase = 0x20000
         val rootBase = 0x30000
         val textureVa = 0x400000
         val texturePa = 0x800000
@@ -644,14 +641,6 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
         def ww(address: Long, value: Int): Unit =
           words(address) = BigInt(value.toLong & 0xffffffffL)
         draw.zipWithIndex.foreach { case (v, i) => ww(cmdBase + 4L * i, v) }
-        // A second descriptor is present before the first fetch fills L2.
-        for (slot <- 0 until 2) {
-          val descriptor = Seq((1 << 16) | (slot + 1), cmdBase, colorBase,
-            depthBase, 16, 0, textureVa, (1 << 16) | 1, 0x101) ++ Seq.fill(7)(0)
-          descriptor.zipWithIndex.foreach { case (v, i) =>
-            ww(ringBase + slot * 64L + i * 4L, v)
-          }
-        }
         ww(texturePa, 0xff00ffff)
         // The command-draw port translates through the same page tables, so
         // the low 4 MiB must identity-map uncached exactly as the driver's
@@ -676,25 +665,16 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
         axiWrite(dut, GpuCommandMmioRegs.VECTOR_SATP, 0x80000000 | (rootBase >> 12))
         axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
         axiWrite(dut, RenderHostRegs.IRQ, 1)
-        if (queued) {
-          axiWrite(dut, RenderHostRegs.JOB_RING_BASE, ringBase)
-          axiWrite(dut, RenderHostRegs.JOB_RING_SIZE, 4)
-          axiWrite(dut, RenderHostRegs.IH_BASE, ihBase)
-          axiWrite(dut, RenderHostRegs.IH_SIZE, 4)
-          axiWrite(dut, RenderHostRegs.JOB_WPTR, 1)
-          axiWrite(dut, RenderHostRegs.JOB_CONTROL, 1)
-        } else {
-          axiWrite(dut, RenderHostRegs.CMD_BASE, cmdBase)
-          axiWrite(dut, RenderHostRegs.CMD_COUNT, 1)
-          axiWrite(dut, RenderHostRegs.COLOR_BASE, colorBase)
-          axiWrite(dut, RenderHostRegs.DEPTH_BASE, depthBase)
-          axiWrite(dut, RenderHostRegs.STRIDE, 16)
-          axiWrite(dut, RenderHostRegs.TEX_BASE, textureVa)
-          axiWrite(dut, RenderHostRegs.TEX_WIDTH, 1)
-          axiWrite(dut, RenderHostRegs.TEX_HEIGHT, 1)
-          axiWrite(dut, RenderHostRegs.TEX_CONFIG, 0x101)
-          axiWrite(dut, RenderHostRegs.CONTROL, 1)
-        }
+        axiWrite(dut, RenderHostRegs.CMD_BASE, cmdBase)
+        axiWrite(dut, RenderHostRegs.CMD_COUNT, 1)
+        axiWrite(dut, RenderHostRegs.COLOR_BASE, colorBase)
+        axiWrite(dut, RenderHostRegs.DEPTH_BASE, depthBase)
+        axiWrite(dut, RenderHostRegs.STRIDE, 16)
+        axiWrite(dut, RenderHostRegs.TEX_BASE, textureVa)
+        axiWrite(dut, RenderHostRegs.TEX_WIDTH, 1)
+        axiWrite(dut, RenderHostRegs.TEX_HEIGHT, 1)
+        axiWrite(dut, RenderHostRegs.TEX_CONFIG, 0x101)
+        axiWrite(dut, RenderHostRegs.CONTROL, 1)
         serviceMemoryMaster(dut, readLine,
           address => (busFault && address == rootBase + 4) ||
             (textureBusFault && address == texturePa))(writeLine) {
@@ -704,27 +684,16 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
         assert(!reads.exists(a => a >= textureVa && a < textureVa + 4096),
           "faulted virtual address must never reach physical memory")
         assert((axiRead(dut, RenderHostRegs.STATUS) & 7) == 6, "DONE and ERROR, not BUSY")
-        if (queued) {
-          assert(words(ihBase) == BigInt(0x30001), "IH must name failed job 1")
-          assert(words(ihBase + 8) == 2, "IH must report texture memory fault")
-          assert(axiRead(dut, RenderHostRegs.IH_WPTR) == 1)
-        }
         // Repair the PTE and run again: per-job failure cannot poison success.
         ww(rootBase + 4, (0x800 << 10) | 0x43)
         axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
         axiWrite(dut, RenderHostRegs.IRQ, 3)
-        if (queued) axiWrite(dut, RenderHostRegs.JOB_WPTR, 2)
-        else axiWrite(dut, RenderHostRegs.CONTROL, 1)
+        axiWrite(dut, RenderHostRegs.CONTROL, 1)
         serviceMemoryMaster(dut, readLine)(writeLine) {
           dut.io.m_irq.peek().litToBoolean
         }
         assert(reads.contains(BigInt(texturePa)), "repaired mapping must access translated PA")
         assert((axiRead(dut, RenderHostRegs.STATUS) & 7) == 2)
-        if (queued) {
-          assert(words(ihBase + 16) == BigInt(0x10002))
-          assert(words(ihBase + 24) == 0)
-          assert(axiRead(dut, RenderHostRegs.IH_WPTR) == 2)
-        }
       }
     }
   }

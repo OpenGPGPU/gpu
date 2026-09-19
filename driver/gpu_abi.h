@@ -56,20 +56,9 @@ typedef int32_t s32;
 #define GPU_REG_SCANOUT_STATUS  0x05c
 #define GPU_REG_CAPABILITIES    0x060
 
-/* Hardware job queue + interrupt history (IH) ring, both in host memory.
- * The device fetches job descriptors from the ring behind JOB_RING_BASE and
- * rings the completion interrupt only after recording the interrupt details
- * (job id, ring slot, status) into the IH ring behind IH_BASE — AMDGPU-style
- * interrupt history that the IRQ handler drains instead of guessing. */
-#define GPU_REG_JOB_RING_BASE   0x064
-#define GPU_REG_JOB_RING_SIZE   0x068
-#define GPU_REG_JOB_WPTR        0x06c
-#define GPU_REG_JOB_RPTR        0x070
-#define GPU_REG_JOB_CONTROL     0x074
-#define GPU_REG_IH_BASE         0x078
-#define GPU_REG_IH_SIZE         0x07c
-#define GPU_REG_IH_WPTR         0x080
-#define GPU_REG_IH_RPTR         0x084
+/* 0x064..0x084 held the retired host-memory job queue and interrupt-history
+ * (IH) ring registers; they are reserved and unmapped.  Draws are submitted as
+ * unified render commands (GPU_UCMD_OP_RENDER). */
 /* Hardware clear (FillEngine): 64-byte-aligned destination, byte count a
  * multiple of 64, 32-bit fill pattern.  Write 1 to CLEAR_START to run one
  * clear of the programmed range; STATUS.CLEAR_BUSY reports completion. */
@@ -209,13 +198,6 @@ typedef int32_t s32;
  * context's VM instead of the host-memory job ring.  Implies
  * GPU_CAP_UNIFIED_COMMANDS. */
 #define GPU_CAP_UNIFIED_RENDER  (1u << 20)
-
-/* JOB_CONTROL: bit0 ENABLE (RW), bit1 RESET (w1p, idle only),
- * bit8 ACTIVE (ro: a job is running), bit9 PENDING (ro: descriptor staged). */
-#define GPU_JOB_ENABLE          (1u << 0)
-#define GPU_JOB_RESET           (1u << 1)
-#define GPU_JOB_STATUS_ACTIVE   (1u << 8)
-#define GPU_JOB_STATUS_PENDING  (1u << 9)
 
 #define GPU_SCANOUT_FORMAT_RGBA8888 0u
 #define GPU_SCANOUT_ENABLE          (1u << 0)
@@ -657,37 +639,7 @@ struct gpu_job_record {
     GPU_BLEND_CONFIG(src, dst, eq)
 #define GPU_JOB_TEX_SIZE(w, h)  ((((u32)(h)) << 16) | ((u32)(w) & 0x3fffu))
 
-/* ---------------------------------------------------------------------------
- * IH (interrupt history) record, 4 32-bit words (16 bytes).  The device
- * writes one record per completed job, in job order, before raising the
- * completion interrupt.  The driver drains records from IH_RPTR up to the
- * device's IH_WPTR and retires the fence named by the job id.
- *                                                                   word idx
- *   bits 15:0 job id, bit16 DONE, bit17 ERROR                            [0]
- *   bits 15:0 job-ring slot index (queue position)                       [1]
- *   status code (0 = completed)                                          [2]
- *   reserved                                                             [3]
- * ------------------------------------------------------------------------ */
-#define GPU_IH_WORDS 4u
-#define GPU_IH_STATUS_COMPLETED           0u
-/* Rejected before launch: reserved mode, above-build maximum, or nonzero
- * reserved bits in job word 9. DONE and ERROR are both set in the header. */
-#define GPU_IH_STATUS_INVALID_SAMPLE_MODE 1u
-/* Texture translation or memory access failed. Rendering drains before the
- * failed completion is published; framebuffer contents may be partial. */
-#define GPU_IH_STATUS_TEXTURE_MEMORY_FAULT 2u
-struct gpu_ih_record {
-    u32 header;
-    u32 slot;
-    u32 status;
-    u32 reserved;
-};
-
-#define GPU_IH_HDR_ID_BITS   0xffffu
-#define GPU_IH_HDR_DONE_BIT  16u
-#define GPU_IH_HDR_ERROR_BIT 17u
-#define GPU_IH_HDR_ID(h)     ((h) & GPU_IH_HDR_ID_BITS)
-#define GPU_IH_HDR_DONE(h)   ((h) & (1u << GPU_IH_HDR_DONE_BIT))
-#define GPU_IH_HDR_ERROR(h)  ((h) & (1u << GPU_IH_HDR_ERROR_BIT))
+/* The interrupt-history (IH) ring record and its status/header encodings were
+ * retired with the job ring; a unified completion now names the command. */
 
 #endif /* RISCV_SIMT_GPU_ABI_H */

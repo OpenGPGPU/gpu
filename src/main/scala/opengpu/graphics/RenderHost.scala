@@ -53,27 +53,11 @@ object RenderHostRegs {
   val SCANOUT_CONTROL   = 0x58
   /** bit0: active (enable && non-zero base/stride/size). */
   val SCANOUT_STATUS    = 0x5C
-  /** bit0: fragment core; bit1: job queue; bit2: vertex core;
+  /** bit0: fragment core; bit2: vertex core;
     * bits 15:8: fragment batch capacity. */
   val CAPABILITIES      = 0x60
-  /** Job submission ring (host memory): base byte address of the entries. */
-  val JOB_RING_BASE     = 0x64
-  /** Job ring entry count (power of two). 0 keeps the queue disabled. */
-  val JOB_RING_SIZE     = 0x68
-  /** Host doorbell: index of the next free job-ring entry. */
-  val JOB_WPTR          = 0x6C
-  /** Device read pointer (RO): next job-ring entry to fetch. */
-  val JOB_RPTR          = 0x70
-  /** bit0 ENABLE (RW), bit1 RESET (w1p), bit8 ACTIVE (ro), bit9 PENDING (ro). */
-  val JOB_CONTROL       = 0x74
-  /** Interrupt-history ring (host memory): base byte address of the records. */
-  val IH_BASE           = 0x78
-  /** IH ring record count (power of two). */
-  val IH_SIZE           = 0x7C
-  /** Device write pointer (RO): next IH record the engine will write. */
-  val IH_WPTR           = 0x80
-  /** Host read pointer (RW, informational): next IH record to drain. */
-  val IH_RPTR           = 0x84
+  /* 0x64..0x84 were the retired host-memory job ring and interrupt-history
+   * ring registers; they are reserved and unmapped. */
   /** Hardware clear (FillEngine): destination base, byte count (multiple of
     * the 64-byte line) and the 32-bit fill pattern. */
   val CLEAR_BASE        = 0x88
@@ -151,15 +135,13 @@ class RenderHostRegResponse extends Bundle {
   * bit0 START), 0x08 STATUS (ro + w1c; bit0 BUSY, bit1 DONE, bit2 ERROR),
    * 0x0C IRQ (bit0 ENABLE, bit1 PENDING w1c), execution config 0x10..0x40,
    * the independent display scanout bank 0x44..0x5c, read-only
-   * CAPABILITIES at 0x60, and the hardware job queue / interrupt-history
-   * (IH) ring programming at 0x64..0x84.
+   * CAPABILITIES at 0x60, and a reserved region at 0x64..0x84 that held the
+   * retired job-ring / interrupt-history registers.
    *
-   * The job queue (AMDGPU-style) fetches job descriptors from a host-memory
-   * ring behind JOB_RING_BASE/JOB_RING_SIZE, launched whenever the engine is
-   * idle and the host has rung the JOB_WPTR doorbell; on completion it writes
-   * an IH record (job id, ring slot, status) into the host-memory ring behind
-   * IH_BASE/IH_SIZE and then raises the same completion interrupt. Legacy
-   * register-programmed START submissions remain fully functional.
+   * Draws arrive either as legacy register-programmed START submissions or as
+   * unified render commands (`GPU_UCMD_OP_RENDER`) whose 16-word descriptor the
+   * engine fetches through the translated command port. The host-memory job
+   * ring was retired.
   */
 class RenderHost(
   config: GraphicsConfig = GraphicsConfig(),
@@ -338,15 +320,6 @@ class RenderHost(
   private val scanoutControlReg = RegInit(0.U(32.W))
 
   // Job queue / IH ring programming (host-written; device exposes RPTR/WPTR).
-  private val jobRingBaseReg = RegInit(0.U(32.W))
-  private val jobRingSizeReg = RegInit(0.U(32.W))
-  private val jobWptrReg = RegInit(0.U(32.W))
-  private val jobEnableReg = RegInit(false.B)
-  private val ihBaseReg = RegInit(0.U(32.W))
-  private val ihSizeReg = RegInit(0.U(32.W))
-  private val ihRptrReg = RegInit(0.U(32.W))
-  private val jqResetPulse = RegInit(false.B)
-
   private val activeCmdBase = RegInit(0.U(32.W))
   private val activeCmdCount = RegInit(0.U(32.W))
   private val activeColorBase = RegInit(0.U(32.W))
@@ -374,12 +347,10 @@ class RenderHost(
   private val irqEnable = RegInit(false.B)
   private val irqPending = RegInit(false.B)
   private val sawBusy = RegInit(false.B)
-  /** True while the running job was launched by the hardware job queue. */
-  private val ownerQueue = RegInit(false.B)
+  /** The job queue was retired; no submission is queue-owned. */
+  private val ownerQueue = false.B
   /** True while the running job was launched by a unified render command. */
   private val ownerUnified = RegInit(false.B)
-  /** One-cycle pulse telling the queue its launched job has completed. */
-  private val jqDonePulse = RegInit(false.B)
 
   // Unified render command: fetch the 16-word render descriptor through the
   // translated command port, then launch from a packed register snapshot.
@@ -398,9 +369,7 @@ class RenderHost(
   // ---------------------------------------------------------------------------
   // The host-memory job ring (JobQueue) was retired: user draws are unified
   // render commands and the fallback/self-test uses the legacy START snapshot.
-  // The job-ring registers remain readable/writable for ABI compatibility.
   // ---------------------------------------------------------------------------
-  private val jqEnabled = false.B
   private val noCfg = 0.U.asTypeOf(new JobConfig())
 
   // ---------------------------------------------------------------------------
@@ -460,8 +429,6 @@ class RenderHost(
       (if (unifiedCommands) (1 << GpuCapabilities.UnifiedRender) else 0) |
       (gpuConfig.warps * gpuConfig.lanes << GpuCapabilities.FragmentBatchShift))
       .U(32.W)
-  private val jobStatusBits = Cat(0.U(22.W), 0.U(1.W), 0.U(1.W), 0.U(7.W),
-    jqEnabled)
 
   private def readReg: UInt =
     MuxLookup(rAddr, 0.U(32.W))(Seq(
@@ -493,15 +460,6 @@ class RenderHost(
       RenderHostRegs.SCANOUT_CONTROL.U -> scanoutControlReg,
       RenderHostRegs.SCANOUT_STATUS.U -> scanoutStatusBits,
       RenderHostRegs.CAPABILITIES.U -> capabilityBits,
-      RenderHostRegs.JOB_RING_BASE.U -> jobRingBaseReg,
-      RenderHostRegs.JOB_RING_SIZE.U -> jobRingSizeReg,
-      RenderHostRegs.JOB_WPTR.U -> jobWptrReg,
-      RenderHostRegs.JOB_RPTR.U -> 0.U(32.W),
-      RenderHostRegs.JOB_CONTROL.U -> jobStatusBits,
-      RenderHostRegs.IH_BASE.U -> ihBaseReg,
-      RenderHostRegs.IH_SIZE.U -> ihSizeReg,
-      RenderHostRegs.IH_WPTR.U -> 0.U(32.W),
-      RenderHostRegs.IH_RPTR.U -> ihRptrReg,
       RenderHostRegs.CLEAR_BASE.U -> clearBaseReg,
       RenderHostRegs.CLEAR_BYTES.U -> clearBytesReg,
       RenderHostRegs.CLEAR_PATTERN.U -> clearPatternReg,
@@ -596,29 +554,6 @@ class RenderHost(
         irqEnable := io.reg.req.bits.data(0)
         when(io.reg.req.bits.data(1)) { irqPending := false.B }
       }
-      is(RenderHostRegs.JOB_RING_BASE.U) {
-        jobRingBaseReg := merge(jobRingBaseReg, io.reg.req.bits.data, io.reg.req.bits.strb)
-      }
-      is(RenderHostRegs.JOB_RING_SIZE.U) {
-        jobRingSizeReg := merge(jobRingSizeReg, io.reg.req.bits.data, io.reg.req.bits.strb)
-      }
-      is(RenderHostRegs.JOB_WPTR.U) {
-        // Doorbell: the queue compares its (masked) read pointer against this.
-        jobWptrReg := merge(jobWptrReg, io.reg.req.bits.data, io.reg.req.bits.strb)
-      }
-      is(RenderHostRegs.JOB_CONTROL.U) {
-        jobEnableReg := io.reg.req.bits.data(0)
-        when(io.reg.req.bits.data(1)) { jqResetPulse := true.B }
-      }
-      is(RenderHostRegs.IH_BASE.U) {
-        ihBaseReg := merge(ihBaseReg, io.reg.req.bits.data, io.reg.req.bits.strb)
-      }
-      is(RenderHostRegs.IH_SIZE.U) {
-        ihSizeReg := merge(ihSizeReg, io.reg.req.bits.data, io.reg.req.bits.strb)
-      }
-      is(RenderHostRegs.IH_RPTR.U) {
-        ihRptrReg := merge(ihRptrReg, io.reg.req.bits.data, io.reg.req.bits.strb)
-      }
       is(RenderHostRegs.CLEAR_BASE.U) {
         clearBaseReg := merge(clearBaseReg, io.reg.req.bits.data, io.reg.req.bits.strb)
       }
@@ -683,13 +618,6 @@ class RenderHost(
     }
   }
 
-  // The reset pulse lasts a single cycle.
-  jqResetPulse := false.B
-  when(wFire && rAddr === RenderHostRegs.JOB_CONTROL.U &&
-      io.reg.req.bits.data(1)) {
-    jqResetPulse := true.B
-  }
-
   // START and queued descriptors share the same full-word admission rule.
   private val msaaModeValid = Msaa.validModeWord(msaaConfigReg, config.maxSampleCount)
   private val launch = startWrite && !busy && msaaModeValid
@@ -722,7 +650,6 @@ class RenderHost(
       done := false.B
       error := false.B
       sawBusy := false.B
-      ownerQueue := false.B
       ownerUnified := false.B
       textureFaulted := false.B
       activeCmdBase := cmdBaseReg
@@ -779,7 +706,6 @@ class RenderHost(
     done := false.B
     error := false.B
     sawBusy := false.B
-    ownerQueue := false.B
     ownerUnified := true.B
     textureFaulted := false.B
     // Pack the gpu_job_record words into the legacy snapshot layout the core

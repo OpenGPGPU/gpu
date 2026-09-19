@@ -525,6 +525,49 @@ Notes:
   add noticeable latency per draw; perform a real workload measurement before
   widening the translator or making the unified path the only submission route.
 
+### P6: Structural pipeline cleanup
+
+A structural review of the integrated RTL found the top-level decomposition
+sound (one shared L2, one external memory port, one SIMT core shared by compute
+and graphics shaders, one unified command completion/event path) but carrying
+the seams of two pipelines bolted together. This milestone pays down those
+debts. Each item is independent and should preserve behavior and coverage.
+
+- **C1 - Unify command distribution.** A draw currently round-trips across the
+  host/system module seam: `GpuCommandMmio` produces a command in `GpuHostAxi`,
+  `GpuSystem`'s router dispatches it, and a render command is routed back to
+  `RenderHost` in `GpuHostAxi`. Put the graphics engine under the same
+  dispatcher as the compute engines (or move command distribution to one place)
+  so a draw does not cross the seam twice.
+- **C2 - Collapse the two submission paths.** The unified render command and
+  the legacy `START` register snapshot decode into `muxActive(legacy, queued,
+  unified)` with `ownerQueue`/`ownerUnified`; `active*` registers are packed
+  from two different bit layouts, which is a correctness trap. Move the probe
+  self-test to the unified path (with a `NULL` VM) and delete the legacy
+  snapshot, leaving one configuration source.
+- **C3 - Generate the dispatch ID map.** Graphics-host transaction IDs are
+  hand-partitioned (`cbBase`/`fbBase`/`texBase`/TLB bases) into a fixed budget
+  and bridged by offsets into the system transaction namespace. Generate the
+  layout from one table and assert the budget so a new client cannot silently
+  overflow it (this was hit while adding the framebuffer client).
+- **C4 - Extract render-state bundles.** Depth/stencil/blend/target/sampler
+  state recurs in `JobConfig`, `DrawRenderState`, `DrawContext`,
+  `SceneTriangle`, vertex records and wrapper IOs. Factor one state bundle with
+  explicit decode/copy helpers (this is the incremental half of P2).
+- **C5 - Delete the inert ring surface (done).** The `JOB_*`/`IH_*` registers,
+  the `gpu_ih_record` layout and its status encodings, the dead driver ring
+  code (`opengpu_hw_submit_queue_locked`, `opengpu_ih_drain`, ring fields) and
+  `OPENGPU_CAP_JOB_QUEUE` are removed; the register offsets are reserved. The
+  guest test passes end to end on the unified path.
+- **C6 - Consolidate translation clients.** Three blocking
+  `GraphicsAddressTranslator` instances (command, framebuffer, texture) plus
+  the CU MMU duplicate the same walker/TLB. Share a walker/TLB pool and make
+  the "Bare vs VM" behavior explicit per client.
+
+Exit: a draw is dispatched without crossing the host/system seam twice, there is
+one submission/configuration path, the dispatch ID map is generated and checked,
+render state has one bundle, and no inert job-ring surface remains.
+
 ### Later capability expansion
 
 - Prioritize additional shader/RVV operations from real workload or compiler
