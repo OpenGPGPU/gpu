@@ -847,41 +847,6 @@ static int opengpu_hw_unified_dma_locked(struct opengpu_device *gpu,
     return ret;
 }
 
-int opengpu_hw_submit_async(struct opengpu_device *gpu,
-                            const struct opengpu_job *job,
-                            const struct opengpu_vm *vm,
-                            struct dma_fence **out_fence)
-{
-    return opengpu_hw_draw_submit_async(gpu, job, NULL, 0, false, 0, 0, 0, vm,
-                                        out_fence);
-}
-
-int opengpu_hw_submit(struct opengpu_device *gpu,
-                      const struct opengpu_job *job)
-{
-    struct dma_fence *fence;
-    long timeout;
-    int ret;
-
-    ret = opengpu_hw_submit_async(gpu, job, NULL, &fence);
-    if (ret)
-        return ret;
-
-    timeout = dma_fence_wait_timeout(fence, false,
-                                     msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS +
-                                                      100));
-    if (timeout <= 0) {
-        opengpu_hw_complete(gpu, timeout < 0 ? (int)timeout : -ETIMEDOUT);
-        ret = timeout < 0 ? timeout : -ETIMEDOUT;
-    } else {
-        ret = dma_fence_get_status(fence);
-        if (ret > 0)
-            ret = 0;
-    }
-    dma_fence_put(fence);
-    return ret;
-}
-
 /** Hardware clear through the FillEngine: program base/count/pattern, kick
  * CLEAR_START and poll STATUS.CLEAR_BUSY.  The destination must be 64-byte
  * aligned with a byte count that is a multiple of 64 (the engine rejects

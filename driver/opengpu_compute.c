@@ -211,11 +211,40 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
         .depth_write = true,
         .cull_mode = GPU_CULL_NONE,
     };
+    struct opengpu_buffer descriptor;
+    struct dma_fence *fence = NULL;
+    long timeout;
+    int ret;
 
     if (gpu->hw.capabilities & GPU_CAP_VERTEX_CORE)
         return -EOPNOTSUPP;
+    if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_RENDER))
+        return -EOPNOTSUPP;
     opengpu_fill_test_command(gpu);
-    return opengpu_hw_submit(gpu, &job);
+    /* The probe self-test uses the same unified render command as a user draw,
+     * with no VM (the global ASID-0 identity map). */
+    ret = opengpu_buffer_alloc(gpu, &descriptor, 64);
+    if (ret)
+        return ret;
+    ret = opengpu_hw_render_async(
+        gpu, &job, descriptor.cpu, lower_32_bits(descriptor.dma),
+        (u32)descriptor.size, NULL, 0, false, 0, 0, 0, NULL, NULL, &fence);
+    if (ret)
+        goto out_descriptor;
+    timeout = dma_fence_wait_timeout(
+        fence, false, msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS + 100));
+    if (timeout <= 0) {
+        opengpu_hw_abort(gpu, timeout < 0 ? (int)timeout : -ETIMEDOUT);
+        ret = timeout < 0 ? (int)timeout : -ETIMEDOUT;
+    } else {
+        ret = dma_fence_get_status(fence);
+        if (ret > 0)
+            ret = 0;
+    }
+    dma_fence_put(fence);
+out_descriptor:
+    opengpu_buffer_free(gpu, &descriptor);
+    return ret;
 }
 
 static int opengpu_wait_fence(struct opengpu_device *gpu,

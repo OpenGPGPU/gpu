@@ -242,12 +242,6 @@ struct opengpu_scanout {
 int opengpu_hw_init(struct opengpu_device *gpu,
                     struct platform_device *pdev);
 void opengpu_hw_fini(struct opengpu_device *gpu);
-int opengpu_hw_submit(struct opengpu_device *gpu,
-                      const struct opengpu_job *job);
-int opengpu_hw_submit_async(struct opengpu_device *gpu,
-                            const struct opengpu_job *job,
-                            const struct opengpu_vm *vm,
-                            struct dma_fence **fence);
 int opengpu_hw_clear_and_submit_async(struct opengpu_device *gpu,
                                       const struct opengpu_job *job,
                                       u32 clear_base, u32 clear_bytes,
