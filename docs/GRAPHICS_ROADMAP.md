@@ -547,9 +547,10 @@ debts. Each item is independent and should preserve behavior and coverage.
   snapshot, leaving one configuration source.
 - **C3 - Generate the dispatch ID map.** Graphics-host transaction IDs are
   hand-partitioned (`cbBase`/`fbBase`/`texBase`/TLB bases) into a fixed budget
-  and bridged by offsets into the system transaction namespace. Generate the
-  layout from one table and assert the budget so a new client cannot silently
-  overflow it (this was hit while adding the framebuffer client).
+  and bridged by offsets into the system transaction namespace. An elaboration
+  `require` now rejects a client that overflows the budget (the immediate
+  hazard hit while adding the framebuffer client); generating the layout from
+  one table remains.
 - **C4 - Extract render-state bundles.** Depth/stencil/blend/target/sampler
   state recurs in `JobConfig`, `DrawRenderState`, `DrawContext`,
   `SceneTriangle`, vertex records and wrapper IOs. Factor one state bundle with

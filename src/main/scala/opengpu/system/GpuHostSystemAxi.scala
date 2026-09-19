@@ -59,6 +59,11 @@ class GpuHostSystemAxi(
   private val fbTlbBase = cbTlbBase + wordPortTransactions
   private val usedGraphicsTransactionsWithTlb =
     fbTlbBase + wordPortTransactions
+  // The graphics host exposes one local ID space; a new client must not
+  // silently overflow it (which would alias another client's responses).
+  require(usedGraphicsTransactionsWithTlb <= graphicsHostTransactions,
+    s"graphics host ID budget $graphicsHostTransactions < used " +
+      s"$usedGraphicsTransactionsWithTlb")
   private val systemTransactions = GpuSystem.totalMemoryTransactions(
     numComputeUnits, transactionsPerCu, graphicsHostTransactions)
   private val memoryAxiIdWidth = math.max(1, log2Ceil(systemTransactions))
