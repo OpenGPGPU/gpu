@@ -24,7 +24,7 @@ import opengpu.dispatch.KernelCompletion
   * shader descriptor and render-target state fields are passed through to the
   * downstream pipeline unchanged.
   */
-class VertexDrawCommand(config: GraphicsConfig) extends Bundle {
+class VertexDrawCommand(config: GraphicsConfig) extends Bundle with HasDrawState {
   val vertBufferBase = UInt(32.W)
   val vertCount = UInt(16.W)
   val vertStride = UInt(16.W)
@@ -34,29 +34,6 @@ class VertexDrawCommand(config: GraphicsConfig) extends Bundle {
   val fragShaderPc = UInt(32.W)
   val fragKernarg = UInt(32.W)
   val fragKernargBankStride = UInt(32.W)
-  val stateOverride = Bool()
-  val depthTestEnable = Bool()
-  val depthFunc = UInt(3.W)
-  val depthWriteEnable = Bool()
-  val blendEnable = Bool()
-  val blendCfgEnable = Bool()
-  val blendSrcFactor = UInt(4.W)
-  val blendDstFactor = UInt(4.W)
-  val blendEquation = UInt(3.W)
-  val stencilTestEnable = Bool()
-  val stencilFunc = UInt(3.W)
-  val stencilFailOp = UInt(3.W)
-  val stencilZFailOp = UInt(3.W)
-  val stencilZPassOp = UInt(3.W)
-  val stencilRef = UInt(8.W)
-  val stencilReadMask = UInt(8.W)
-  val stencilWriteMask = UInt(8.W)
-  val cullMode = UInt(2.W)
-  val texEnable = Bool()
-  val texWrapClamp = Bool()
-  val texMaxLevel = UInt(4.W)
-  val texLodBias = SInt(5.W)
-  val texMinLevel = UInt(4.W)
 }
 
 /** Core-backed vertex shader stage.

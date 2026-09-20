@@ -18,7 +18,7 @@ import opengpu.core.memory.{
   * from the draw-call record.  A core-backed shader reads varyings/uniforms
   * from the kernarg buffer and writes its output through the same memory.
   */
-class SceneTriangle(config: GraphicsConfig) extends Bundle {
+class SceneTriangle(config: GraphicsConfig) extends Bundle with HasDrawState {
   val clip = Vec(3, new ClipVertex)
   val color = Vec(3, new Varyings)
   val depth = Vec(3, SInt(32.W))
@@ -26,34 +26,6 @@ class SceneTriangle(config: GraphicsConfig) extends Bundle {
   val uv = Vec(3, new TexUV)
   val shaderPc = UInt(32.W)
   val shaderKernarg = UInt(32.W)
-  val stateOverride = Bool()
-  val depthTestEnable = Bool()
-  val depthFunc = UInt(3.W)
-  val depthWriteEnable = Bool()
-  /** Source-over RGBA8888 blending, valid when stateOverride is set. */
-  val blendEnable = Bool()
-  /** GL-style blend config (draw word 35): bit0 present overrides source-over;
-    * bits[7:4] src factor, bits[11:8] dst factor, bits[14:12] equation. */
-  val blendCfgEnable = Bool()
-  val blendSrcFactor = UInt(4.W)
-  val blendDstFactor = UInt(4.W)
-  val blendEquation = UInt(3.W)
-  /** Single-sided stencil state (draw words 36/37): func shares the depth-func
-    * encoding; ops use the GL 3-bit encoding. */
-  val stencilTestEnable = Bool()
-  val stencilFunc = UInt(3.W)
-  val stencilFailOp = UInt(3.W)
-  val stencilZFailOp = UInt(3.W)
-  val stencilZPassOp = UInt(3.W)
-  val stencilRef = UInt(8.W)
-  val stencilReadMask = UInt(8.W)
-  val stencilWriteMask = UInt(8.W)
-  val cullMode = UInt(2.W)
-  val texEnable = Bool()
-  val texWrapClamp = Bool()
-  val texMaxLevel = UInt(4.W)
-  val texLodBias = SInt(5.W)
-  val texMinLevel = UInt(4.W)
   val kernargBankStride = UInt(32.W)
 }
 
@@ -289,6 +261,56 @@ class RenderPipeline(
   private val drawHold = RegInit(0.U.asTypeOf(new SceneTriangle(config)))
   private val drawHoldValid = RegInit(false.B)
   private val drawState = RegInit(0.U.asTypeOf(new DrawRenderState))
+
+  /** Resolve the draw's fixed-function state from a command record, falling
+    * back to the global host registers where the record does not override.
+    * Both fixed-function and vertex-core records mix in `HasDrawState`, so the
+    * field-by-field copy lives here once. */
+  private def resolveDrawState(src: HasDrawState): Unit = {
+    drawState.depthTestEnable := Mux(src.stateOverride,
+      src.depthTestEnable, io.depthTestEnable)
+    drawState.depthFunc := Mux(src.stateOverride, src.depthFunc, io.depthFunc)
+    drawState.depthWriteEnable := Mux(src.stateOverride,
+      src.depthWriteEnable, io.depthWriteEnable)
+    // Blending currently has no global host register: it is opt-in per draw so
+    // legacy command streams remain bit-identical.
+    drawState.blendEnable := src.stateOverride && src.blendEnable
+    drawState.blendCfgEnable := Mux(src.stateOverride,
+      src.blendCfgEnable, io.blendCfgEnable)
+    drawState.blendSrcFactor := Mux(src.stateOverride,
+      src.blendSrcFactor, io.blendSrcFactor)
+    drawState.blendDstFactor := Mux(src.stateOverride,
+      src.blendDstFactor, io.blendDstFactor)
+    drawState.blendEquation := Mux(src.stateOverride,
+      src.blendEquation, io.blendEquation)
+    drawState.stencilTestEnable := Mux(src.stateOverride,
+      src.stencilTestEnable, io.stencilTestEnable)
+    drawState.stencilFunc := Mux(src.stateOverride,
+      src.stencilFunc, io.stencilFunc)
+    drawState.stencilRef := Mux(src.stateOverride,
+      src.stencilRef, io.stencilRef)
+    drawState.stencilReadMask := Mux(src.stateOverride,
+      src.stencilReadMask, io.stencilReadMask)
+    drawState.stencilWriteMask := Mux(src.stateOverride,
+      src.stencilWriteMask, io.stencilWriteMask)
+    drawState.stencilFailOp := Mux(src.stateOverride,
+      src.stencilFailOp, io.stencilFailOp)
+    drawState.stencilZFailOp := Mux(src.stateOverride,
+      src.stencilZFailOp, io.stencilZFailOp)
+    drawState.stencilZPassOp := Mux(src.stateOverride,
+      src.stencilZPassOp, io.stencilZPassOp)
+    drawState.cullMode := Mux(src.stateOverride, src.cullMode, io.cullMode)
+    drawState.texEnable := Mux(src.stateOverride, src.texEnable, io.texEnable)
+    drawState.texBase := io.texBase
+    drawState.texWidth := io.texWidth
+    drawState.texHeight := io.texHeight
+    drawState.texWrapClamp := Mux(src.stateOverride,
+      src.texWrapClamp, io.texWrapClamp)
+    drawState.texMaxLevel := Mux(src.stateOverride,
+      src.texMaxLevel, io.texMaxLevel)
+    drawState.texLodBias := Mux(src.stateOverride, src.texLodBias, 0.S)
+    drawState.texMinLevel := Mux(src.stateOverride, src.texMinLevel, 0.U)
+  }
   when(triSource.fire) {
     drawHold := triSource.bits
     drawHoldValid := true.B
@@ -298,104 +320,8 @@ class RenderPipeline(
     drawState.depthBase := io.depthBase
     drawState.stride := io.stride
     drawState.sampleMode := io.sampleMode
-    if (vertCore) {
-      val cmd = vertDrawCmd.get
-      drawState.depthTestEnable := Mux(cmd.stateOverride,
-        cmd.depthTestEnable, io.depthTestEnable)
-      drawState.depthFunc := Mux(cmd.stateOverride,
-        cmd.depthFunc, io.depthFunc)
-      drawState.depthWriteEnable := Mux(cmd.stateOverride,
-        cmd.depthWriteEnable, io.depthWriteEnable)
-      drawState.blendEnable := cmd.stateOverride && cmd.blendEnable
-      drawState.blendCfgEnable := Mux(cmd.stateOverride,
-        cmd.blendCfgEnable, io.blendCfgEnable)
-      drawState.blendSrcFactor := Mux(cmd.stateOverride,
-        cmd.blendSrcFactor, io.blendSrcFactor)
-      drawState.blendDstFactor := Mux(cmd.stateOverride,
-        cmd.blendDstFactor, io.blendDstFactor)
-      drawState.blendEquation := Mux(cmd.stateOverride,
-        cmd.blendEquation, io.blendEquation)
-      drawState.stencilTestEnable := Mux(cmd.stateOverride,
-        cmd.stencilTestEnable, io.stencilTestEnable)
-      drawState.stencilFunc := Mux(cmd.stateOverride,
-        cmd.stencilFunc, io.stencilFunc)
-      drawState.stencilRef := Mux(cmd.stateOverride,
-        cmd.stencilRef, io.stencilRef)
-      drawState.stencilReadMask := Mux(cmd.stateOverride,
-        cmd.stencilReadMask, io.stencilReadMask)
-      drawState.stencilWriteMask := Mux(cmd.stateOverride,
-        cmd.stencilWriteMask, io.stencilWriteMask)
-      drawState.stencilFailOp := Mux(cmd.stateOverride,
-        cmd.stencilFailOp, io.stencilFailOp)
-      drawState.stencilZFailOp := Mux(cmd.stateOverride,
-        cmd.stencilZFailOp, io.stencilZFailOp)
-      drawState.stencilZPassOp := Mux(cmd.stateOverride,
-        cmd.stencilZPassOp, io.stencilZPassOp)
-      drawState.cullMode := Mux(cmd.stateOverride,
-        cmd.cullMode, io.cullMode)
-      drawState.texEnable := Mux(cmd.stateOverride,
-        cmd.texEnable, io.texEnable)
-      drawState.texBase := io.texBase
-      drawState.texWidth := io.texWidth
-      drawState.texHeight := io.texHeight
-      drawState.texWrapClamp := Mux(cmd.stateOverride,
-        cmd.texWrapClamp, io.texWrapClamp)
-      drawState.texMaxLevel := Mux(cmd.stateOverride,
-        cmd.texMaxLevel, io.texMaxLevel)
-      drawState.texLodBias := Mux(cmd.stateOverride,
-        cmd.texLodBias, 0.S)
-      drawState.texMinLevel := Mux(cmd.stateOverride,
-        cmd.texMinLevel, 0.U)
-    } else {
-      drawState.depthTestEnable := Mux(triSource.bits.stateOverride,
-        triSource.bits.depthTestEnable, io.depthTestEnable)
-      drawState.depthFunc := Mux(triSource.bits.stateOverride,
-        triSource.bits.depthFunc, io.depthFunc)
-      drawState.depthWriteEnable := Mux(triSource.bits.stateOverride,
-        triSource.bits.depthWriteEnable, io.depthWriteEnable)
-      // Blending currently has no global host register: it is deliberately
-      // opt-in per draw so legacy command streams remain bit-identical.
-      drawState.blendEnable := triSource.bits.stateOverride && triSource.bits.blendEnable
-      drawState.blendCfgEnable := Mux(triSource.bits.stateOverride,
-        triSource.bits.blendCfgEnable, io.blendCfgEnable)
-      drawState.blendSrcFactor := Mux(triSource.bits.stateOverride,
-        triSource.bits.blendSrcFactor, io.blendSrcFactor)
-      drawState.blendDstFactor := Mux(triSource.bits.stateOverride,
-        triSource.bits.blendDstFactor, io.blendDstFactor)
-      drawState.blendEquation := Mux(triSource.bits.stateOverride,
-        triSource.bits.blendEquation, io.blendEquation)
-      drawState.stencilTestEnable := Mux(triSource.bits.stateOverride,
-        triSource.bits.stencilTestEnable, io.stencilTestEnable)
-      drawState.stencilFunc := Mux(triSource.bits.stateOverride,
-        triSource.bits.stencilFunc, io.stencilFunc)
-      drawState.stencilRef := Mux(triSource.bits.stateOverride,
-        triSource.bits.stencilRef, io.stencilRef)
-      drawState.stencilReadMask := Mux(triSource.bits.stateOverride,
-        triSource.bits.stencilReadMask, io.stencilReadMask)
-      drawState.stencilWriteMask := Mux(triSource.bits.stateOverride,
-        triSource.bits.stencilWriteMask, io.stencilWriteMask)
-      drawState.stencilFailOp := Mux(triSource.bits.stateOverride,
-        triSource.bits.stencilFailOp, io.stencilFailOp)
-      drawState.stencilZFailOp := Mux(triSource.bits.stateOverride,
-        triSource.bits.stencilZFailOp, io.stencilZFailOp)
-      drawState.stencilZPassOp := Mux(triSource.bits.stateOverride,
-        triSource.bits.stencilZPassOp, io.stencilZPassOp)
-      drawState.cullMode := Mux(triSource.bits.stateOverride,
-        triSource.bits.cullMode, io.cullMode)
-      drawState.texEnable := Mux(triSource.bits.stateOverride,
-        triSource.bits.texEnable, io.texEnable)
-      drawState.texBase := io.texBase
-      drawState.texWidth := io.texWidth
-      drawState.texHeight := io.texHeight
-      drawState.texWrapClamp := Mux(triSource.bits.stateOverride,
-        triSource.bits.texWrapClamp, io.texWrapClamp)
-      drawState.texMaxLevel := Mux(triSource.bits.stateOverride,
-        triSource.bits.texMaxLevel, io.texMaxLevel)
-      drawState.texLodBias := Mux(triSource.bits.stateOverride,
-        triSource.bits.texLodBias, 0.S)
-      drawState.texMinLevel := Mux(triSource.bits.stateOverride,
-        triSource.bits.texMinLevel, 0.U)
-    }
+    if (vertCore) resolveDrawState(vertDrawCmd.get)
+    else resolveDrawState(triSource.bits)
   }
   when(drawHoldValid && clipper.io.done && clipper.io.outValid === 0.U) {
     drawHoldValid := false.B
