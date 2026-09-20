@@ -312,8 +312,8 @@ int opengpu_hw_activate_vm(struct opengpu_device *gpu,
                            const struct opengpu_vm *vm);
 int opengpu_hw_flush_tlbs(struct opengpu_device *gpu);
 /* Scoped shootdown: drop only the entries for one ASID or one VPN.  Global
- * mappings and other address spaces stay warm; the texture translator is
- * flushed by the same pulse. */
+ * mappings and other address spaces stay warm in the CU TLBs and the three
+ * graphics word clients alike. */
 int opengpu_hw_flush_tlb_asid(struct opengpu_device *gpu, u32 asid);
 int opengpu_hw_flush_tlb_vpn(struct opengpu_device *gpu, u32 vpn);
 /* Caller holds submit_lock until its page-table update and flush finish. */

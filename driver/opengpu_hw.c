@@ -1283,8 +1283,8 @@ int opengpu_hw_flush_tlbs(struct opengpu_device *gpu)
 
 /** Invalidate only the TLB entries tagged with `asid`.  Global mappings and
   * entries of other address spaces stay resident, so switching between
-  * address spaces does not pay a full-flush refill.  The fixed-function
-  * texture translator has no ASID and is cleared by the same pulse. */
+  * address spaces does not pay a full-flush refill.  The three graphics word
+  * clients are ASID-tagged too and honour the same scope. */
 int opengpu_hw_flush_tlb_asid(struct opengpu_device *gpu, u32 asid)
 {
     opengpu_tlb_u32 word;
