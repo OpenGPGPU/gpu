@@ -35,10 +35,9 @@ Old completions are discarded during reset; RESET_BUSY clears only after
 retirement. A hung client leaves reset draining; the driver reports bounded
 recovery failure rather than claiming that memory has stopped.
 
-Legacy render START and job/IH rings are retired. Register offsets 0x64–0x84
-are unmapped/reserved. Execution shadow registers remain readable/writable
-for compatibility but do not configure unified renders. Dedicated legacy DMA
-registers remain supported.
+Register offsets 0x64–0x84 are unmapped/reserved. Execution shadow registers
+remain readable/writable for compatibility but do not configure unified
+renders. Dedicated legacy DMA registers remain supported.
 
 ## Registers
 
@@ -246,6 +245,6 @@ framebuffers after their write fences. Display starts disabled and does not
 borrow the execution self-test buffer. `opengpu,render-only` omits KMS setup
 while retaining GEM, render and syncobj services.
 
-Run `python3 scripts/test_driver.py` for host validation and
-`GPU_SIM=verilator bash scripts/run_arti_gpu.sh` for the Linux integration.
-See [qualification](QUALIFICATION.md) for configuration-specific evidence.
+Host validation: `python3 scripts/test_driver.py`. Linux integration:
+`GPU_SIM=verilator bash scripts/run_arti_gpu.sh`. Status:
+[GRAPHICS_ROADMAP.md](GRAPHICS_ROADMAP.md).

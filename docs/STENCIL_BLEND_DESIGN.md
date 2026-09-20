@@ -12,9 +12,9 @@ ships in all builds (fixed-function, fragment-core and vertex-core).
 
 Source references: `OutputMerger.scala`, `Msaa.scala`, `RenderPipeline.scala`,
 `CommandBufferStage.scala`, `KernelVertStage.scala`, `DrawContextFifo.scala`,
-`RenderHost.scala`, `JobQueue.scala` under
-`src/main/scala/opengpu/graphics/`, plus `driver/gpu_abi.h`,
-`driver/opengpu_drm.h`, `driver/opengpu_compute.c` and `driver/opengpu_hw.c`.
+`RenderHost.scala` under `src/main/scala/opengpu/graphics/`, plus
+`driver/gpu_abi.h`, `driver/opengpu_drm.h`, `driver/opengpu_compute.c` and
+`driver/opengpu_hw.c`.
 
 The design has four invariants:
 
@@ -223,25 +223,11 @@ a per-channel colour/alpha factor split.
 
 ## Verification
 
-From the repository root:
-
 ```sh
-sbt 'testOnly opengpu.graphics.OutputMergerSpec opengpu.graphics.RenderCoreSpec opengpu.graphics.CommandBufferStageSpec opengpu.graphics.JobQueueSpec opengpu.graphics.RenderHostSpec'
+sbt 'testOnly opengpu.graphics.OutputMergerSpec opengpu.graphics.RenderCoreSpec \
+  opengpu.graphics.CommandBufferStageSpec opengpu.graphics.RenderHostSpec'
 ```
 
-Key cases:
-
-1. Every blend factor pair and equation against a software reference
-   (11 × 11 × 5 sweep), plus a present-config-overrides-source-over case.
-2. Every stencil func before the depth test with the z-pass op applied on
-   pass and colour skipped on fail.
-3. Every stencil op with saturation, 8-bit wrap, and partial write masks.
-4. z-fail on a depth fail; stencil-only write with depth write disabled;
-   stencil test with the depth test disabled.
-5. Pipeline-level stencil gating in one command buffer: a stamped byte
-   admits one later draw and blocks another; the winning sample carries the
-   stamped stencil byte under the new depth.
-6. Negative UAPI cases: reserved factor, reserved equation, stencil words
-   without the enable bit (`-EINVAL`).
-7. Legacy bit-identity: existing source-over and depth-write expectations are
-   unchanged, and the D24S8 clear keeps stencil at 0.
+Coverage includes blend factor/equation sweeps, stencil func/op/mask/order,
+pipeline stencil gating, negative UAPI cases, and legacy bit-identity with
+D24S8 clear (stencil 0).

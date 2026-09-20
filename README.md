@@ -17,7 +17,11 @@ package that is incrementally verifiable.
 - `src/main/scala/opengpu/config/` — architectural configuration
 - `src/test/scala/` — tests
 - `build.sbt` — Scala and Chisel dependency configuration
-- `docs/GRAPHICS_ROADMAP.md` — graphics pipeline roadmap and resolved design decisions
+- `docs/GRAPHICS_ROADMAP.md` — implemented surface, capability status, remaining work
+- `docs/HOST_INTERFACE.md` — AXI registers and shared-memory layouts
+- `docs/DRIVER_ARCHITECTURE.md` — Linux driver ownership split
+- `docs/MSAA_DESIGN.md`, `docs/STENCIL_BLEND_DESIGN.md` — feature contracts
+- `timing/README.md` — current ASAP7 PPA status
 
 ## Quick start
 
@@ -87,8 +91,6 @@ one SIMT compute unit. The Linux DRM/KMS driver exposes validated resource
 bindings, queued fence-aware submission, vertex/fragment shader sandboxes and
 ARTI/QEMU end-to-end display tests. See `docs/GRAPHICS_ROADMAP.md`.
 
-Current development continues on RVV execution coverage, CSR/trap semantics,
-host/software integration, unified (SIMT) shading, and full-system physical
-timing closure.
-
-Qualification and measured next steps: [docs/QUALIFICATION.md](docs/QUALIFICATION.md).
+Current development continues on RVV coverage, CSR/trap semantics, host
+integration and physical timing closure. Status:
+[docs/GRAPHICS_ROADMAP.md](docs/GRAPHICS_ROADMAP.md).

@@ -165,23 +165,20 @@ There is no separate enable bit: mode 0 is the disabled/1x state. There are no
 MSAA resolve-PC or resolve-kernarg registers; resolve uses the existing unified
 kernel command interface.
 
-Legacy `START` snapshots `MSAA_CONFIG` with the other render state. An invalid
-mode or a mode above the elaborated maximum reports a submission error rather
-than silently falling back.
+`MSAA_CONFIG` is a legacy shadow; unified renders take mode from descriptor
+word 9. An invalid mode or a mode above the elaborated maximum reports a
+submission error rather than falling back.
 
-`GpuHostAxi` routes `[0xC4, 0x134)`, the safe-reset register at `0x138` and
-the resolve `UCMD_SAMPLE_MODE` register at `0x148` to `GpuCommandMmio`. `0x134`
-routes to `RenderHost`, as do the stencil/blend registers at `0x13C`–`0x144`.
-The current exclusive mapped end is `0x14C`.
+`GpuHostAxi` routes `[0xC4, 0x134)`, safe-reset at `0x138` and resolve
+`UCMD_SAMPLE_MODE` at `0x148` to `GpuCommandMmio`. `0x134` and stencil/blend
+at `0x13C`–`0x144` route to `RenderHost`. Mapped end is `0x158`.
 
-### Job Ring and Linux UAPI
+### Unified descriptor and Linux UAPI
 
-Queue submission must carry the same state as legacy register submission:
-
-- Job descriptor word 9 bits `[1:0]` carry `sampleMode`; bits `[31:2]` are zero.
+- Render descriptor word 9 bits `[1:0]` carry `sampleMode`; bits `[31:2]` are zero.
 - `JobConfig`, `DrawRenderState`, and `DrawContext` carry `sampleMode`.
 - The render-submit UAPI exposes `sample_mode`; reserved bits must be zero.
-- The driver publishes word 9 when it constructs a job descriptor.
+- The driver publishes word 9 when it builds the unified render descriptor.
 
 The driver uses the physical-stride validation in the memory layout section
 instead of requiring the platform’s logical stride. The private depth
@@ -376,152 +373,48 @@ different in-flight entries. Fragments for the same sample remain serialized,
 preserving draw order. The initial implementation keeps the current table
 depth; increasing it is a measured optimisation, not a correctness dependency.
 
-## Resolve (Planned)
+## Resolve (implemented)
 
-No typed resolve ioctl, scheduler job or trusted resolve kernel is currently
-implemented. The following describes the intended interface and fence contract.
-The RTL path exists ahead of the driver: `GPU_UCMD_OP_RESOLVE` carries a
-`ResolveDescriptor` through `GpuCommandRouter` to the `MsaaResolveEngine`
-(behind an `OmWordToLinePort` into the shared L2), both verified end to end by
-`GpuSystemSpec`. The unified MMIO bridge stages the source/destination,
-extent, strides and the `UCMD_SAMPLE_MODE` register (0x148), so a host can
-submit a resolve with the existing unified command path. The range and overlap
-rules the driver must enforce are implemented in
-`opengpu_resolve_validator.h` and unit-tested by
-`tests/opengpu_resolve_validator_test.c` (mode/alignment/stride/overflow,
-two-dimensional bounds and source/destination overlap); the same header builds
-the unified-command fields (`opengpu_resolve_build_command`). The UAPI is
-`drm_opengpu_resolve` / `DRM_IOCTL_OPENGPU_RESOLVE`, and
-`opengpu_compute_resolve_ioctl` submits it through the DRM scheduler with the
-source read and destination write reservations and an optional output syncobj.
-The guest DRM test exercises the ioctl end to end under ARTI/QEMU - including a
-multisample render into a samples-interleaved target, the resolve of that
-target, and scanout of the resolved buffer - and `GpuSystemSpec` /
-`GpuHostSystemAxiSpec` cover multi-row resolves through the shared L2 and the
-full AXI top. The resolve fence is published to the destination BO's
-reservation as `DMA_RESV_USAGE_WRITE`, so the standard KMS implicit-sync path
-(`prepare_fb` extracts the exclusive fence; the atomic commit tail waits for
-it) already orders scanout of a resolved buffer. The remaining work is physical
-timing closure of the programmable fragment stage, which is a PPA gate separate
-from the functional capability advertised by bit 7.
+`GPU_UCMD_OP_RESOLVE` carries a `ResolveDescriptor` through `GpuCommandRouter`
+to `MsaaResolveEngine`. Unified MMIO stages source/destination, extent,
+strides and `UCMD_SAMPLE_MODE` (0x148). Driver range rules live in
+`opengpu_resolve_validator.h`; UAPI is `DRM_IOCTL_OPENGPU_RESOLVE` via the
+common scheduler with source-read / destination-write reservations. KMS
+orders scanout on the destination write fence. Depth resolve is out of scope.
+Remaining work is broader guest coverage and physical closure of the
+programmable fragment stage (capability bit 7 is functional only).
 
 Resolve averages every pixel's physical colour samples into a separate
-single-sample RGBA8888 buffer. Depth resolve is out of scope.
+single-sample RGBA8888 buffer.
 
-A resolve source normally comes from a render target, so its contents are
-GPU-written. The operation also tolerates a CPU-initialized source: before the
-engine reads, the resolve adapter invalidates the source range in the shared L2
-with a host-driven line invalidate that drops any resident line and snoops its
-L1 holders. The CPU does not write the GPU L2, and lower memory is
-authoritative because stores are write-through, so the following read observes
-the CPU write. The same invalidate primitive can extend to other CPU-written
-inputs (textures, vertex buffers) as needed.
+A source normally comes from a GPU-written render target. CPU-initialized
+sources are tolerated via host-driven shared-L2 line invalidate before the
+engine reads (write-through makes lower memory authoritative).
 
-### Trusted Resolve Kernel
+### Resolve contract
 
-The existing user compute profile cannot dereference arbitrary buffer pointers:
-it is intentionally limited to one validated kernarg range. Therefore the
-initial resolve is a driver-owned trusted kernel, submitted through the
-existing unified kernel command engine but exposed through a typed resolve
-driver operation rather than as an unvalidated user compute shader.
+Resolve is a normal scheduler job: source BO read dep, destination BO write
+dep, optional input syncobj, completion fence on the destination (and optional
+output syncobj). KMS waits on that fence before scanout. Resolve does not
+modify the multisample target; expanding resolved colour back to every sample
+needs a separate expand, not a linear copy.
 
-The typed operation is independent of its execution backend. A dedicated
-streaming resolve engine can implement the same validated operation and fence
-contract without changing the userspace interface.
-
-The resolve operation takes validated GEM-relative input and output ranges:
-
-| Field | Meaning |
-|---|---|
-| source | Multisample colour buffer and offset |
-| destination | Single-sample colour buffer and offset |
-| width, height | Logical extent |
-| source stride | Physical multisample row stride |
-| destination stride | Single-sample row stride |
-| sample mode | 1x, 2x, or 4x encoding |
-
-The driver rejects overlapping source and destination ranges, validates both
-two-dimensional bounds, translates them to DMA addresses, and builds a private
-kernarg. The built-in program is not supplied by userspace and is audited to
-access only those validated ranges.
-
-Conceptually, the kernel performs:
-
-```c
-for each logical (x, y) {
-    uint32_t *src = (uint32_t *)(source_bytes + y * source_stride +
-                                 x * samples_per_pixel * 4);
-    uint32_t *dst = (uint32_t *)(destination_bytes +
-                                 y * destination_stride + x * 4);
-
-    sum each RGBA channel over src[0 .. samples_per_pixel-1];
-    dst[0] = pack((sum + samples_per_pixel / 2) / samples_per_pixel);
-}
-```
-
-Because supported counts are powers of two, division is implemented with a
-rounded right shift. Both programmed strides are used; tight packing is not
-assumed. Dispatch may be one-dimensional internally, but every workgroup must
-include its group offset when deriving the global pixel index.
-
-### Scheduling and Fences
-
-Resolve is a normal scheduler job with explicit resource ownership:
-
-1. The multisample source BO is added as a read dependency.
-2. The resolved destination BO is added as a write dependency.
-3. An optional input sync object is honoured.
-4. The completion fence is attached to the destination BO and optional output
-   sync object.
-5. KMS waits for that destination fence before switching `SCANOUT_BASE`.
-
-This makes render-to-resolve and resolve-to-scanout ordering explicit even when
-the two jobs use different hardware clients.
-
-Resolve does not modify the multisample target, so later draws in the same
-render pass continue using its per-sample contents. Reusing resolved pixels as
-new multisample contents requires a separate expand operation that writes the
-resolved colour to every sample; an ordinary linear copy is insufficient.
+The initial backend is the dedicated resolve engine. A trusted kernel with the
+same validated ranges and fence contract remains an allowed alternate backend;
+userspace does not supply the program.
 
 ## Driver Behaviour
 
-All six steps below are implemented for both backends; the fragment-core build
-additionally requires a shader and kernarg slot. For an MSAA render submission,
-the driver:
+For an MSAA render the driver verifies capability and `sampleMode`, validates
+physical colour stride, allocates/clears a private depth plane (or binds a
+persistent depth attachment), writes mode into descriptor word 9, submits and
+publishes the colour write fence, then optionally submits a typed resolve to a
+single-sample scanout BO. Resolve is never implicit after every draw.
 
-1. Verifies the MSAA capability and requested `sampleMode`.
-2. Validates the physical colour stride and allocation.
-3. Allocates and clears a private depth buffer of `stride * height` bytes.
-4. Writes `sampleMode` into the legacy snapshot or job descriptor word 9.
-5. Submits the render job and publishes the colour-buffer write fence.
-6. On request, submits the typed resolve job with the colour BO as input and a
-   single-sample scanout BO as output.
-
-The render API does not resolve implicitly after every draw. Applications or a
-higher render-pass layer resolve only after the last draw that contributes to
-the multisample target.
-
-A submission without a depth attachment is one complete render pass: the driver
-allocates a private depth plane, clears it, and frees it, so a later submission
-cannot continue that pass. Splitting a pass over several submissions uses the
-persistent depth attachment: `drm_opengpu_submit.depth_handle`/`depth_offset`
-bind a caller-owned GEM range as the depth/stencil plane, and
-`OPENGPU_SUBMIT_DEPTH_LOAD` keeps its stored contents instead of clearing it at
-the start of the submission. The first submission of a pass binds the
-attachment and may clear it (no load flag); later submissions re-bind the same
-range with the load flag so their depth tests see the accumulated results. The
-attachment is written in place by the output merger, so no explicit store
-operation is needed - a plain depth write persists - and the standard scheduler
-read/write reservations order it against other clients. The capability is
-advertised as `OPENGPU_CAP_PERSISTENT_DEPTH` (bit 19) and is always set;
-`RenderHostSpec` covers a queued two-submission pass at the RTL level and the
-guest DRM test repeats it through ARTI/QEMU on the Verilator backend, binding
-the attachment on a first (clearing) submission and re-binding it with the load
-flag so a greater-depth continuation matches the stored plane. The same test
-rejects `DEPTH_LOAD` without a handle, a colour object bound as the depth plane,
-a misaligned offset and a binding past the backing allocation. The FlashSim
-model does not currently expose the prior depth write to the continuation, so
-this path is verified on Verilator.
+Persistent depth: `drm_opengpu_submit.depth_handle`/`depth_offset` plus
+`OPENGPU_SUBMIT_DEPTH_LOAD` continue a pass across submissions
+(`OPENGPU_CAP_PERSISTENT_DEPTH`, bit 19). First submission may clear; later
+ones load. FlashSim does not yet expose the prior depth write; Verilator does.
 
 ## Performance
 
@@ -553,58 +446,16 @@ memory-port utilisation under 2x and 4x workloads.
 
 ## Verification
 
-Existing test sources include `FragmentShaderAbiSpec` (mode-to-profile
-selection and full-width control-word decisions), `MsaaSpec` (sample patterns,
-2x/4x and 1x expander passes and depth reference/clamping), `RenderPipelineSpec`
-(sample depth at every mode and core-backed expansion at 1x, 2x and 4x),
-`KernelFragStageSpec` (ABI-1 emit/depth override, per-mode discard masks,
-malformed-control discard/retirement, helper-lane suppression and quad
-derivatives, and overlapping batch ABI snapshots), `OutputMergerSpec`
-(write-acknowledgement drain, blending and stencil) and `MsaaResolveSpec`
-(resolve channel averaging, rounding and padded strides). `RenderCoreSpec`
-(per-sample depth and depth override at 1x, 2x and 4x), `RenderHostSpec` and
-`GpuHostAxiSpec` (MSAA advertised on both backends) and `GpuHostSystemAxiSpec`
-(including an AXI-submitted 4x resolve end to end) cover integration and host
-behavior. The guest DRM test renders a multisample target, resolves it and
-scans the result out. Test presence is not a claim that all cases below are
-complete or that a full regression has passed.
-
-Run the focused suites from the repository root:
+Covered by `MsaaSpec`, `MsaaResolveSpec`, `FragmentShaderAbiSpec`,
+`KernelFragStageSpec`, `RenderPipelineSpec`, `RenderCoreSpec`,
+`OutputMergerSpec`, `RenderHostSpec`, `GpuHostAxiSpec`,
+`GpuHostSystemAxiSpec`, host resolve/depth validators, and the guest DRM
+MSAA render → resolve → scanout path. Focused run:
 
 ```sh
-sbt 'testOnly opengpu.graphics.FragmentShaderAbiSpec opengpu.graphics.MsaaSpec opengpu.graphics.MsaaResolveSpec opengpu.graphics.OutputMergerSpec opengpu.graphics.KernelFragStageSpec opengpu.graphics.RenderPipelineSpec opengpu.graphics.RenderCoreSpec opengpu.graphics.RenderHostSpec opengpu.graphics.GpuHostAxiSpec'
+sbt 'testOnly opengpu.graphics.FragmentShaderAbiSpec opengpu.graphics.MsaaSpec \
+  opengpu.graphics.MsaaResolveSpec opengpu.graphics.OutputMergerSpec \
+  opengpu.graphics.KernelFragStageSpec opengpu.graphics.RenderPipelineSpec \
+  opengpu.graphics.RenderCoreSpec opengpu.graphics.RenderHostSpec \
+  opengpu.graphics.GpuHostAxiSpec'
 ```
-
-The lists below are the target verification matrix, including the resolve and
-programmable-MSAA integration cases.
-
-### Unit Tests
-
-1. Exact fixed-point sample LUT values for every mode.
-2. Coverage masks for horizontal, vertical, diagonal, shared, and sub-pixel
-   edges in both windings.
-3. Bounding boxes where the pixel centre is outside but a sample is covered.
-4. Per-sample depth against an unbounded-integer software reference, including
-   rounding and D24 limits.
-5. Sample-expander ordering and backpressure for sparse masks.
-6. OM addresses for padded strides and every sample index.
-7. Same-sample serialization and different-sample concurrency.
-8. Resolve with padded source/destination strides and all channel extrema.
-9. Invalid modes, undersized buffers, overflow, and overlapping resolve ranges.
-
-### Integration Tests
-
-1. 1x output remains bit-identical to the current renderer.
-2. Shared-edge triangles own every sample exactly once, with no cracks or
-   double blending.
-3. A fragment shader runs once for a partially covered pixel.
-4. Helper lanes and quad derivatives match 1x behaviour.
-5. Shader discard clears the complete effective mask.
-6. Interpolated sample depth and shader-overridden depth follow their distinct
-   rules.
-7. Source-over blending occurs once per covered sample.
-8. Clear, render, resolve, fence, and scanout work through the queue/DRM path
-   under ARTI and QEMU.
-9. Switching 1x -> 4x -> 2x -> 1x across queued jobs does not leak state.
-
-Existing single-sample tests remain mandatory and run with `sampleMode = 0`.
