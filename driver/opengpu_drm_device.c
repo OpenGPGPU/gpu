@@ -145,7 +145,11 @@ static struct dma_buf *opengpu_gem_prime_export(struct drm_gem_object *obj,
     exp_info.size = obj->size;
     exp_info.flags = flags;
     exp_info.priv = obj;
-    return dma_buf_export(&exp_info);
+    exp_info.resv = obj->resv;
+    /* Take the device and GEM references that drm_gem_dmabuf_release drops,
+     * and share the object's reservation; a bare dma_buf_export underflows
+     * both refcounts when the export fd is closed. */
+    return drm_gem_dmabuf_export(obj->dev, &exp_info);
 }
 
 /* The GEM DMA helpers keep their object-function wrappers private, so mirror

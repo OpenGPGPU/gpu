@@ -88,18 +88,23 @@ Numbers land in `generated/qualification/workloads/`.
    [../timing/README.md](../timing/README.md)). Derive real parent IO budgets;
    1 GHz remains an objective.
 4. **Software-driven growth** — grow the shader ISA from a small compiler
-   corpus. Snapshot code now runs from private, executable code windows and
-   the shared identity map is read/write but non-executable; the remaining
-   isolation step is removing or bounding those identity mappings.
+   corpus. Compute kernel code runs from a private, executable code window and
+   the shared identity map is read/write but non-executable; the graphics
+   shader core still fetches physical code. The remaining isolation step is
+   enabling translation on that core and then removing or bounding the
+   identity mappings.
 
 ## Known limits
 
-- Guest ARTI/QEMU: last boot timed out; no pass claimed.
+- Guest ARTI/QEMU: the default (non-fragment-core) end-to-end DRM test passes
+  and powers off cleanly. The fragment-core programmable texture render hangs;
+  that path is not yet validated.
 - Qualification gate is boundary suites + workload sweep, not the full Scala
   suite.
 - No parent-level per-interface timing budgets.
 - Display/scanout is simulation-only.
-- Shared identity mappings remain (read/write, non-executable); no
+- Shared identity mappings remain (read/write, non-executable). The graphics
+  shader core is untranslated, so fragment/vertex code is not yet isolated; no
   page-fault handling and not yet full VM isolation.
 - Shader ISA growth is validation-profile driven, not a real compiler corpus.
 

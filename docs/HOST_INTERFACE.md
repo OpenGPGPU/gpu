@@ -128,9 +128,11 @@ VPN-scoped shootdown, so a scoped flush does not evict unrelated warm entries.
 ASID reuse takes an ASID-scoped shootdown, while installing a private mapping
 takes a full flush so a cached global identity entry cannot shadow the new
 leaf. GPU VMs retain shared identity mappings for compatibility, but those
-leaves are read/write and never executable: snapshot shader code is mapped
-into a private code window, so instruction fetch never runs from identity.
-This is not yet a claim of complete process memory isolation.
+leaves are read/write and never executable: compute kernel code is mapped
+into a private code window, so its instruction fetch never runs from
+identity. The graphics shader core fetches instructions untranslated and so
+still executes physical code. This is not yet a claim of complete process
+memory isolation.
 
 The command client remains uncached. Texture/framebuffer clients use the
 PTE cache policy. CPU writes still require the appropriate CPU cache/DMA

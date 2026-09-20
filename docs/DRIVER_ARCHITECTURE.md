@@ -18,11 +18,12 @@ Validation happens before scheduler submission. On success the scheduler owns
 the job and retained GEM references; the common free callback releases staged
 buffers. All opcodes share one dependency/fence path and one-credit policy.
 Per-job VM remapping runs when the scheduler starts the job after its
-predecessor drains. Snapshot shader code is remapped into a private code VA
-window at run time (compute via `kernel_pc`, render by rewriting the command
-records), so instruction fetch translates under the context ASID instead of
-the shared identity map; a mapping that cannot be made keeps the physical
-base.
+predecessor drains. Compute kernel code is remapped into a private code VA
+window at run time (`kernel_pc`), so compute instruction fetch translates
+under the context ASID instead of the shared identity map. The graphics
+shader core fetches instructions untranslated, so fragment/vertex shader
+code stays a physical address; its data still goes through the translated
+clients.
 
 DRM is allocated and registered from platform probe. KMS only configures
 display objects; it starts disabled and binds caller-owned GEM framebuffers.
