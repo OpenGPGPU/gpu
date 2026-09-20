@@ -546,12 +546,10 @@ debts. Each item is independent and should preserve behavior and coverage.
   the unified path (the inert render fallback is gone). The RTL tests that
   drove the legacy START path are converted to the unified command or removed,
   preserving per-sample (4x) and texture-fault coverage.
-- **C3 - Generate the dispatch ID map.** Graphics-host transaction IDs are
-  hand-partitioned (`cbBase`/`fbBase`/`texBase`/TLB bases) into a fixed budget
-  and bridged by offsets into the system transaction namespace. An elaboration
-  `require` now rejects a client that overflows the budget (the immediate
-  hazard hit while adding the framebuffer client); generating the layout from
-  one table remains.
+- **C3 - Generate the dispatch ID map (done).** The graphics-host client and
+  PTE-read ranges are generated from one `translatedClients` list, and the
+  elaboration `require` rejects a layout that overflows the budget (the hazard
+  hit while adding the framebuffer client).
 - **C4 - Extract render-state bundles (done).** The depth/stencil/blend/cull/
   sampler state now lives once in a `HasResolvedDrawState` trait mixed into
   `DrawRenderState`, `DrawContext`, `JobConfig`, `SceneTriangle` and

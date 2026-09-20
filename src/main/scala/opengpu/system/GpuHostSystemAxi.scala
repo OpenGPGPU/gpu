@@ -42,23 +42,28 @@ class GpuHostSystemAxi(
   require(!vertCore || fragCore,
     "vertex-core graphics requires fragment-core graphics")
 
-  // Eight direct graphics line transactions plus the translated word-port
-  // clients (command data, framebuffer, texture), each with its own PTE-read
-  // range. Round up to a power of two for simple local-ID range checking.
+  // Eight direct graphics line transactions plus one range per translated word
+  // client (command, framebuffer, texture) and one per client's PTE reads.
+  // Round up to a power of two for simple local-ID range checking.
   private val graphicsHostTransactions = 32
   private val wordPortTransactions = 4
-  private val cbBase = 8
-  private val fbBase = cbBase + wordPortTransactions
-  private val texBase = fbBase + wordPortTransactions
-  private val usedGraphicsTransactions = texBase + wordPortTransactions
-  // The command, framebuffer and texture paths translate through the shared
-  // Sv32 page tables; their PTE reads use reserved transaction ranges beyond
-  // the client IDs.
-  private val graphicsTlbBase = usedGraphicsTransactions
-  private val cbTlbBase = graphicsTlbBase + wordPortTransactions
-  private val fbTlbBase = cbTlbBase + wordPortTransactions
-  private val usedGraphicsTransactionsWithTlb =
-    fbTlbBase + wordPortTransactions
+  private val lineClientTransactions = 8
+  // The translated word clients, in ID order. Each takes a client range and a
+  // PTE-read range; a new client is one entry here plus its wiring, and the
+  // require below rejects a layout that overflows the budget.
+  private val translatedClients = Seq("command", "framebuffer", "texture")
+  private val clientBases: Seq[Int] = translatedClients.indices
+    .scanLeft(lineClientTransactions)((base, _) => base + wordPortTransactions)
+  private val cbBase = clientBases(0)
+  private val fbBase = clientBases(1)
+  private val texBase = clientBases(2)
+  private val usedGraphicsTransactions = clientBases.last
+  private val tlbBases: Seq[Int] = translatedClients.indices
+    .scanLeft(usedGraphicsTransactions)((base, _) => base + wordPortTransactions)
+  private val graphicsTlbBase = tlbBases(0)
+  private val cbTlbBase = tlbBases(1)
+  private val fbTlbBase = tlbBases(2)
+  private val usedGraphicsTransactionsWithTlb = tlbBases.last
   // The graphics host exposes one local ID space; a new client must not
   // silently overflow it (which would alias another client's responses).
   require(usedGraphicsTransactionsWithTlb <= graphicsHostTransactions,
