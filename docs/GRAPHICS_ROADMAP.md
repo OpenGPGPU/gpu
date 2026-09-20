@@ -88,7 +88,9 @@ Numbers land in `generated/qualification/workloads/`.
    [../timing/README.md](../timing/README.md)). Derive real parent IO budgets;
    1 GHz remains an objective.
 4. **Software-driven growth** — grow the shader ISA from a small compiler
-   corpus; strengthen GPUVM isolation beyond identity-mapped windows.
+   corpus. Snapshot code now runs from private, executable code windows and
+   the shared identity map is read/write but non-executable; the remaining
+   isolation step is removing or bounding those identity mappings.
 
 ## Known limits
 
@@ -97,7 +99,8 @@ Numbers land in `generated/qualification/workloads/`.
   suite.
 - No parent-level per-interface timing budgets.
 - Display/scanout is simulation-only.
-- No page-fault handling / full VM isolation.
+- Shared identity mappings remain (read/write, non-executable); no
+  page-fault handling and not yet full VM isolation.
 - Shader ISA growth is validation-profile driven, not a real compiler corpus.
 
 ## Later / out of scope
