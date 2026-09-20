@@ -28,8 +28,8 @@ MODESET/ATOMIC while keeping render, GEM and syncobj.
 Probe order: hardware → execution → DRM allocate → optional KMS → DRM
 register. Teardown reverses that. Shader snapshots use a validated RV32IMF+V
 profile with defined-register tracking; that is separate from GPUVM isolation.
-Context VMs still inherit identity mappings. Graphics TLBs are ASID-tagged
-but flush all entries on any shootdown pulse.
+Context VMs still inherit identity mappings. Graphics TLBs are ASID-tagged and
+honour the same full/ASID/VPN-scoped shootdown as the CU TLBs.
 
 CPU/GPU visibility uses DMA allocation/cache sync, GPU line invalidate and
 reservation fences. KMS waits for render/resolve destination write fences.

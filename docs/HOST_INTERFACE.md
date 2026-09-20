@@ -122,8 +122,9 @@ The C definitions in `driver/gpu_abi.h` and Scala definitions are compared by
 ## Translation and ownership
 
 `satp` changes require quiescence. Distinct ASIDs preserve CU and graphics TLB
-entries on a plain VM switch. The CU TLBs implement scoped invalidation;
-graphics translators currently invalidate all entries on any flush pulse.
+entries on a plain VM switch. Both the CU TLBs and the graphics word clients
+implement the same scoped invalidation: a full flush, an ASID-scoped or a
+VPN-scoped shootdown, so a scoped flush does not evict unrelated warm entries.
 ASID reuse and mapping changes require shootdown. GPU VMs retain shared
 identity mappings for compatibility: private VA windows are implemented, but
 this is not a claim of complete process memory isolation.

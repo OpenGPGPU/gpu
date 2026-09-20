@@ -18,6 +18,8 @@ import opengpu.config.{CachePolicy, GpuConfig}
   * TLB entries are ASID-tagged: a global (G) page hits any address space, and a
   * private page only hits under the ASID that filled it, so a coarse VM switch
   * needs no flush here and contexts cannot resolve one another's mappings.
+  * `flush` honours the same full/ASID/VPN scope as `VectorTlb`, leaving the
+  * other entries warm across a scoped shootdown.
   *
   * Hit and translation-disabled paths accept a new request in the same cycle a
   * prior response retires, so a warm TLB sustains one translation per cycle.
@@ -54,7 +56,9 @@ class GraphicsAddressTranslator(
       new ComputeMemoryResponse(lineBytes, maxOutstanding)))
     /** Sv32 satp: bit 31 enables translation, bits 19:0 are the root PPN. */
     val satp = Input(UInt(32.W))
-    val flush = Input(Bool())
+    /** Scoped shootdown: clear a full range, one ASID or one VPN. Both scope
+      * bits clear is a full flush, matching the CU TLB contract. */
+    val flush = Flipped(Valid(new VectorTlbFlush(config)))
     val miss = Output(Bool())
     val walkActive = Output(Bool())
     /** Addresses presented to `pageWalk`/`pageWalkResp`. */
@@ -206,9 +210,22 @@ class GraphicsAddressTranslator(
     }
   }
 
-  when(io.flush) {
+  // Accept a scoped shootdown only while idle, so a lookup or walk cannot
+  // refill an invalidated mapping. A global entry is not owned by an ASID, so
+  // an ASID-scoped flush leaves globals warm; a VPN-scoped flush drops only the
+  // one mapping. Both scope bits clear is a full flush.
+  when(io.flush.valid) {
     assert(state === State.idle, "graphics TLB flush requires an idle port")
-    for (entry <- 0 until entries)
-      valid(entry) := false.B
+    for (entry <- 0 until entries) {
+      val vpnMatches =
+        !io.flush.bits.virtualPageNumberValid ||
+          vpn(entry) === io.flush.bits.virtualPageNumber
+      val asidMatches =
+        !io.flush.bits.asidValid ||
+          (!global(entry) && asid(entry) === io.flush.bits.asid)
+      when(vpnMatches && asidMatches) {
+        valid(entry) := false.B
+      }
+    }
   }
 }

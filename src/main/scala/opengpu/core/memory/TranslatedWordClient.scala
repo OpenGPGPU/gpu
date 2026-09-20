@@ -33,7 +33,7 @@ class TranslatedWordClient(
     val pageWalkResp = Flipped(Decoupled(
       new ComputeMemoryResponse(64, outstanding)))
     val satp = Input(UInt(32.W))
-    val flush = Input(Bool())
+    val flush = Flipped(Valid(new VectorTlbFlush(config)))
     /** A translated or fault response for this client was consumed. */
     val fault = Output(Bool())
     val translationStall = Output(Bool())

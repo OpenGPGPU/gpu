@@ -250,7 +250,7 @@ class GpuHostSystemAxi(
     host.io.texMem.resp <> texClient.io.out
     for (client <- Seq(cbClient, fbClient, texClient)) {
       client.io.satp := host.io.vectorSatp
-      client.io.flush := host.io.tlbFlush.valid
+      client.io.flush := host.io.tlbFlush
     }
 
     val graphicsRequestArbiter = Module(new RRArbiter(
@@ -420,9 +420,9 @@ class GpuHostSystemAxi(
     system.io.invalidateInstructionCache := false.B
     system.io.instructionSatp := host.io.instructionSatp
     system.io.vectorSatp := host.io.vectorSatp
-    // `TLB_FLUSH` forwards its scope to both CU MMUs, so an ASID- or
-    // VPN-scoped shootdown leaves other entries warm. Graphics TLBs are
-    // ASID-tagged but currently invalidate every entry on any flush pulse.
+    // `TLB_FLUSH` forwards its scope to both CU MMUs and the three graphics
+    // word clients, so an ASID- or VPN-scoped shootdown leaves other entries
+    // warm everywhere.
     system.io.vectorTlbFlush := host.io.tlbFlush
     system.io.instructionTlbFlush := host.io.tlbFlush
 
