@@ -15,11 +15,17 @@ case class GraphicsConfig(
   screenHeight: Int = 128,
   subPixelBits: Int = 8,
   drawFifoDepth: Int = 8,
-  maxSampleCount: Int = 4
+  maxSampleCount: Int = 4,
+  /** Concurrent output-merger RMW slots. Workload baselines showed flat draws
+    * are OM-bound with zero address conflicts, so depth hides memory latency
+    * rather than same-pixel serialization. */
+  omInflight: Int = 8
 ) {
   require(drawFifoDepth >= 2, "draw FIFO must hold at least two records")
   require(Set(1, 2, 4)(maxSampleCount),
     "maxSampleCount must be 1, 2, or 4")
+  require(omInflight >= 1 && omInflight <= 16,
+    "omInflight must be in [1, 16]")
   def coordWidth: Int = 32
   def edgeWidth: Int = 64
 

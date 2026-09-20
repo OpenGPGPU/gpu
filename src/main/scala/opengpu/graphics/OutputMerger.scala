@@ -42,12 +42,12 @@ class OmFragment extends Bundle {
 
 /** Depth-test / output-merge read-modify-write with an in-flight pixel table.
   *
-  * Up to `inflight` fragments process concurrently: each in-flight entry runs
-  * its own read depth word -> compare per `depthFunc` -> (optionally read the
-  * destination colour for source-over blending) -> write colour/depth
-  * pipeline, and a round-robin arbiter multiplexes the entries onto the single
-  * word memory port, so the port issues a transaction every cycle instead of
-  * idling through each fragment's read latency.
+  * Up to `config.omInflight` fragments process concurrently: each in-flight
+  * entry runs its own read depth word -> compare per `depthFunc` ->
+  * (optionally read the destination colour for source-over blending) -> write
+  * colour/depth pipeline, and a round-robin arbiter multiplexes the entries
+  * onto the single word memory port, so the port issues a transaction every
+  * cycle instead of idling through each fragment's read latency.
   *
   * Per-pixel submission order is preserved by the table itself: a fragment
   * whose colour or depth word address matches an in-flight entry is not
@@ -86,10 +86,10 @@ class OmFragment extends Bundle {
 class OutputMerger(
   config: GraphicsConfig,
   colorBytesPerPixel: Int = 4,
-  depthBytesPerPixel: Int = 4,
-  inflight: Int = 4
+  depthBytesPerPixel: Int = 4
 ) extends Module {
-  require(inflight >= 1, "the output merger needs at least one in-flight slot")
+  private val slots = config.omInflight
+  require(slots >= 1, "the output merger needs at least one in-flight slot")
   private val bppColor = colorBytesPerPixel
   private val bppDepth = depthBytesPerPixel
 
@@ -170,7 +170,7 @@ class OutputMerger(
     val depthWriteData = UInt(32.W)
   }
 
-  private val entries = RegInit(VecInit(Seq.fill(inflight)(0.U.asTypeOf(new Entry))))
+  private val entries = RegInit(VecInit(Seq.fill(slots)(0.U.asTypeOf(new Entry))))
 
   private def depthPass(newDepth: UInt, stored: UInt, func: UInt): Bool =
     MuxLookup(func, true.B)(
@@ -305,9 +305,9 @@ class OutputMerger(
   // ---------------------------------------------------------------------
   // Memory port: round-robin arbitration among the requesting entries.
   // ---------------------------------------------------------------------
-  private val portArbiter = Module(new RRArbiter(new OmMemoryRequest, inflight))
-  private val granted = Wire(Vec(inflight, Bool()))
-  for (i <- 0 until inflight) {
+  private val portArbiter = Module(new RRArbiter(new OmMemoryRequest, slots))
+  private val granted = Wire(Vec(slots, Bool()))
+  for (i <- 0 until slots) {
     val e = entries(i)
     val reading = e.state === sReadDepth || e.state === sReadColor
     val writing = e.state === sWriteColor || e.state === sWriteDepth
@@ -343,7 +343,7 @@ class OutputMerger(
       "a read response must match exactly one in-flight OM entry")
   }
 
-  for (i <- 0 until inflight) {
+  for (i <- 0 until slots) {
     val e = entries(i)
     when(!e.valid) {
       when(io.fragIn.fire && freeIdx === i.U) {

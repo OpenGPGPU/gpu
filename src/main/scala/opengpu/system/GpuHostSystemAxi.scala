@@ -60,14 +60,18 @@ class GpuHostSystemAxi(
 
   // Eight direct graphics line transactions plus one range per translated word
   // client (command, framebuffer, texture) and one per client's PTE reads.
-  // Round up to a power of two for simple local-ID range checking.
-  private val graphicsHostTransactions = 32
-  private val wordPortTransactions = 4
+  // Word-port depth tracks the output-merger in-flight table so OM slots are
+  // not starved by the word-to-line bridge. Round the host ID budget up to a
+  // power of two for simple local-ID range checking.
+  private val translatedClients = Seq("command", "framebuffer", "texture")
+  private val wordPortTransactions = math.max(4, graphicsConfig.omInflight)
   private val lineClientTransactions = 8
+  private val usedExact =
+    lineClientTransactions + wordPortTransactions * translatedClients.size * 2
+  private val graphicsHostTransactions = 1 << log2Ceil(usedExact)
   // The translated word clients, in ID order. Each takes a client range and a
   // PTE-read range; a new client is one entry here plus its wiring, and the
   // require below rejects a layout that overflows the budget.
-  private val translatedClients = Seq("command", "framebuffer", "texture")
   private val clientBases: Seq[Int] = translatedClients.indices
     .scanLeft(lineClientTransactions)((base, _) => base + wordPortTransactions)
   private val cbBase = clientBases(0)
