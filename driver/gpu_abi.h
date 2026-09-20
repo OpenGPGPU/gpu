@@ -141,8 +141,9 @@ typedef int32_t s32;
  * Bit 2 flushes only entries whose virtual page number matches
  * GPU_TLB_FLUSH_VPN.  Bits 1 and 2 may be combined to drop a single mapping.
  * A set bit 0 dominates the scoped bits; a write with no field set is a
- * no-op. Graphics TLBs are ASID-tagged but currently perform a full
- * invalidate on any flush pulse. */
+ * no-op.  The scoped fields apply to both CU TLBs and the three graphics
+ * word clients (command, framebuffer, texture), so a scoped shootdown leaves
+ * global mappings and unrelated address spaces warm everywhere. */
 #define GPU_TLB_FLUSH_FULL           (1u << 0)
 #define GPU_TLB_FLUSH_ASID           (1u << 1)
 #define GPU_TLB_FLUSH_ASID_SHIFT     3

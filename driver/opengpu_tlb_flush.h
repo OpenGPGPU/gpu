@@ -6,11 +6,11 @@
  * Encoding for the write-1 GPU_REG_UCMD_TLB_FLUSH register.
  *
  * The register carries a one-shot TLB shootdown.  A full flush invalidates
- * every entry of both CU translation caches.  A scoped flush drops only the
- * entries that match an ASID, a virtual page number, or both, so other
- * address spaces and global mappings stay warm; the fixed-function texture
- * translator tracks no ASID/VPN and is cleared by any flush pulse.  A set
- * full-flush bit dominates the scope bits.
+ * every entry of both CU translation caches and the three graphics word
+ * clients.  A scoped flush drops only the entries that match an ASID, a
+ * virtual page number, or both, so other address spaces and global mappings
+ * stay warm; the graphics clients are ASID-tagged and honour the same scope.
+ * A set full-flush bit dominates the scope bits.
  *
  * This header is deliberately free of kernel dependencies so the encoding is
  * exercised by a userspace unit test (tests/opengpu_tlb_flush_test.c),
