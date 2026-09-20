@@ -21,10 +21,10 @@ A passing sim is not silicon; a completed tool run is not timing closure.
   system router; one completion slot/IRQ serves both.
 - Driver scheduler owns GEM references, dependencies and fences. Display
   consumes GEM framebuffers; it does not own execution lifetime.
-- Sv32 private VA windows and ASIDs. Command, framebuffer and texture clients
-  translate with CU accesses. Global identity mappings remain but are
-  read/write, non-executable; snapshot code runs from private code windows.
-  This is not yet full VM isolation.
+- Sv32 private VA windows and ASIDs. Command, framebuffer, texture and the
+  programmable `vtex.sample` path translate with CU accesses. Global identity
+  mappings remain but are read/write, non-executable; compute code runs from a
+  private code window. This is not yet full VM isolation.
 - External display hardware owns scanout and signal generation.
 
 ## Capability status
@@ -96,9 +96,10 @@ Numbers land in `generated/qualification/workloads/`.
 
 ## Known limits
 
-- Guest ARTI/QEMU: the default (non-fragment-core) end-to-end DRM test passes
-  and powers off cleanly. The fragment-core programmable texture render hangs;
-  that path is not yet validated.
+- Guest ARTI/QEMU: both the default and fragment-core end-to-end DRM tests
+  pass and power off cleanly. The programmable `vtex.sample` texture path
+  routes through the translated texture client (a VM virtual address), while
+  the kernarg staging port stays physical.
 - Qualification gate is boundary suites + workload sweep, not the full Scala
   suite.
 - No parent-level per-interface timing budgets.
