@@ -417,9 +417,12 @@ int opengpu_mmu_vm_map(struct opengpu_device *gpu, struct opengpu_vm *vm,
         ((u32 *)vm->root.cpu)[vm->l1_region[i]] =
             mmu_link_pte(vm->l1[i].dma);
     dma_wmb();
-    /* Drop any translation this VM already held for the range; other ASIDs'
-     * entries and the global map are untouched. */
-    ret = opengpu_hw_flush_tlb_asid(gpu, vm->asid);
+    /* A mapping change must evict any cached translation for the range,
+     * including a global identity entry that would otherwise shadow the new
+     * private leaf: an ASID-scoped flush deliberately keeps globals, so a VA
+     * this VM had resolved through the shared identity map would keep hitting
+     * the identity PA.  Full-flush, as the global policy split does. */
+    ret = opengpu_hw_flush_tlbs(gpu);
     goto out_mmu;
 
 rollback:

@@ -125,9 +125,11 @@ The C definitions in `driver/gpu_abi.h` and Scala definitions are compared by
 entries on a plain VM switch. Both the CU TLBs and the graphics word clients
 implement the same scoped invalidation: a full flush, an ASID-scoped or a
 VPN-scoped shootdown, so a scoped flush does not evict unrelated warm entries.
-ASID reuse and mapping changes require shootdown. GPU VMs retain shared
-identity mappings for compatibility: private VA windows are implemented, but
-this is not a claim of complete process memory isolation.
+ASID reuse takes an ASID-scoped shootdown, while installing a private mapping
+takes a full flush so a cached global identity entry cannot shadow the new
+leaf. GPU VMs retain shared identity mappings for compatibility: private VA
+windows are implemented, but this is not a claim of complete process memory
+isolation.
 
 The command client remains uncached. Texture/framebuffer clients use the
 PTE cache policy. CPU writes still require the appropriate CPU cache/DMA

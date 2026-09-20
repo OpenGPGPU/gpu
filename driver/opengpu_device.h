@@ -331,8 +331,9 @@ int opengpu_mmu_vm_activate(struct opengpu_device *gpu,
                             const struct opengpu_vm *vm);
 /* Map `size` bytes of 4 KiB-aligned VA (`va`) to PA (`pa`) in this VM's private
  * address space with `policy`.  Mapped leaves are non-global, so only this
- * VM's ASID resolves them, and a scoped ASID flush drops any prior
- * translation.  Untouched pages keep the shared global identity mapping. */
+ * VM's ASID resolves them, and a full flush drops any prior private or global
+ * identity translation that could shadow the new leaf.  Untouched pages keep
+ * the shared global identity mapping. */
 int opengpu_mmu_vm_map(struct opengpu_device *gpu, struct opengpu_vm *vm,
                        dma_addr_t va, dma_addr_t pa, size_t size, u32 policy);
 void opengpu_mmu_vm_destroy(struct opengpu_device *gpu, struct opengpu_vm *vm);

@@ -235,12 +235,16 @@ int main(void)
         u32 region = (u32)(va / MMU_SUPERPAGE_SIZE);
         u32 *table;
         int live_before = live_allocations;
-        unsigned asid_before;
+        unsigned full_before, asid_before;
 
         assert(!opengpu_mmu_vm_create(&gpu, &vm));
+        full_before = flushes;
         asid_before = asid_flushes;
         assert(!opengpu_mmu_vm_map(&gpu, &vm, va, pa, MMU_PAGE_SIZE, 2));
-        assert(asid_flushes == asid_before + 1);
+        /* A mapping change full-flushes: an ASID-scoped flush would keep a
+         * cached global identity entry that could shadow the new private leaf. */
+        assert(flushes == full_before + 1);
+        assert(asid_flushes == asid_before);
         assert(vm.l1_count == 1);
         assert((((u32 *)vm.root.cpu)[region] & 1) != 0);
         assert((((u32 *)vm.root.cpu)[region] >> 10) ==
