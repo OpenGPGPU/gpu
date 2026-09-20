@@ -41,6 +41,10 @@ typedef uint32_t opengpu_kernarg_u32;
 #define OPENGPU_VERTEX_VA_STRIDE  (4ull * 1024ull * 1024ull)
 #define OPENGPU_FRAMEBUFFER_VA_BASE 0xbc000000ull
 #define OPENGPU_FRAMEBUFFER_VA_STRIDE (4ull * 1024ull * 1024ull)
+/* Snapshot shader code is mapped here, privately per context, so instruction
+ * fetch never runs from the shared identity map. */
+#define OPENGPU_CODE_VA_BASE      0xc0000000ull
+#define OPENGPU_CODE_VA_STRIDE    (4ull * 1024ull * 1024ull)
 
 enum opengpu_kernarg_va_status {
 	OPENGPU_KERNARG_VA_OK = 0,
@@ -143,6 +147,17 @@ static inline int opengpu_framebuffer_va_plan(opengpu_kernarg_u64 dma,
 	return opengpu_resource_va_plan(dma, size, slot, page_size,
 					OPENGPU_FRAMEBUFFER_VA_BASE,
 					OPENGPU_FRAMEBUFFER_VA_STRIDE, out);
+}
+
+static inline int opengpu_code_va_plan(opengpu_kernarg_u64 dma,
+				       opengpu_kernarg_u64 size,
+				       opengpu_kernarg_u32 slot,
+				       opengpu_kernarg_u32 page_size,
+				       struct opengpu_kernarg_va_plan *out)
+{
+	return opengpu_resource_va_plan(dma, size, slot, page_size,
+					OPENGPU_CODE_VA_BASE,
+					OPENGPU_CODE_VA_STRIDE, out);
 }
 
 #endif /* OPENGPU_KERNARG_VA_H */

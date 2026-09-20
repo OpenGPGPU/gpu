@@ -571,6 +571,29 @@ static int opengpu_binding_map_framebuffer(struct opengpu_device *gpu,
     return 0;
 }
 
+/* Map a snapshot code buffer into the context VM's private code window, so
+ * instruction fetch translates under this ASID instead of running from the
+ * shared identity map.  Remapped per job, after the previous job drained. */
+static int opengpu_binding_map_code(struct opengpu_device *gpu,
+                                    struct opengpu_render_context *context,
+                                    dma_addr_t dma, size_t size, u32 slot,
+                                    dma_addr_t *out_va)
+{
+    struct opengpu_kernarg_va_plan plan;
+    int ret;
+
+    ret = opengpu_code_va_plan(dma, size, slot, OPENGPU_MMU_PAGE_SIZE, &plan);
+    if (ret)
+        return ret;
+    ret = opengpu_mmu_vm_map(gpu, &context->vm, (dma_addr_t)plan.va_page,
+                             (dma_addr_t)plan.pa_page, (size_t)plan.span,
+                             OPENGPU_MMU_POLICY_CACHED);
+    if (ret)
+        return ret;
+    *out_va = (dma_addr_t)plan.va;
+    return 0;
+}
+
 /* Global (identity) uncached mapping, the fallback when a private VM mapping
  * is not possible; directly-read bindings are also invalidated here when the
  * MMU cannot take a policy split (no MMU, or table capacity). */
@@ -1238,6 +1261,17 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
     int ret;
 
     if (job->type == OPENGPU_SCHED_COMPUTE) {
+        /* Run the kernel from a private code mapping so instruction fetch
+         * translates under this ASID; fall back to the physical address when
+         * the VM is absent or the snapshot does not fit the code window. */
+        if (vm && job->context && job->shader.dma) {
+            dma_addr_t code_va = 0;
+
+            if (opengpu_binding_map_code(job->gpu, job->context,
+                    job->shader.dma, job->shader.size, 1, &code_va) == 0)
+                job->kernel.kernel_pc = code_va +
+                    (job->kernel.kernel_pc - job->shader.dma);
+        }
         ret = opengpu_hw_compute_async(job->gpu, &job->kernel,
                                        &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
@@ -1309,6 +1343,48 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
             snapshots[snapshot_count++] = &job->shader;
         if (job->vertex_shader.cpu)
             snapshots[snapshot_count++] = &job->vertex_shader;
+
+        /* Reach the snapshot code through the context VM too, and rewrite the
+         * command records from the physical base to the code VA, so shader
+         * instruction fetch translates under this ASID instead of running from
+         * the shared identity map.  A mapping that fails keeps the physical
+         * base, so a Bare build or an oversized snapshot still draws. */
+        if (vm && job->context) {
+            dma_addr_t code_va = 0, vertex_code_va = 0;
+            u32 shader_delta = 0, vertex_delta = 0;
+
+            if (job->shader.dma &&
+                opengpu_binding_map_code(job->gpu, job->context,
+                    job->shader.dma, job->shader.size, 1, &code_va) == 0)
+                shader_delta = (u32)code_va - (u32)job->shader.dma;
+            if (job->vertex_shader.dma &&
+                opengpu_binding_map_code(job->gpu, job->context,
+                    job->vertex_shader.dma, job->vertex_shader.size, 2,
+                    &vertex_code_va) == 0)
+                vertex_delta = (u32)vertex_code_va -
+                    (u32)job->vertex_shader.dma;
+            if ((shader_delta || vertex_delta) && job->commands.cpu) {
+                u32 count = job->hw.cmd_count;
+                u32 i;
+
+                if (job->vertex_shader.cpu) {
+                    struct gpu_vert_draw_record *records =
+                        (struct gpu_vert_draw_record *)job->commands.cpu;
+
+                    for (i = 0; i < count; i++) {
+                        records[i].vert_shader_pc += vertex_delta;
+                        records[i].frag_shader_pc += shader_delta;
+                    }
+                } else {
+                    struct gpu_draw_record *records =
+                        (struct gpu_draw_record *)job->commands.cpu;
+
+                    for (i = 0; i < count; i++)
+                        records[i].shader_pc += shader_delta;
+                }
+                dma_wmb();
+            }
+        }
 
         /* Reach the colour and depth planes through the context VM too, so the
          * output merger translates render-target traffic under this ASID.  The

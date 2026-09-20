@@ -123,6 +123,18 @@ int main(void)
 					  1, PAGE, &plan) ==
 	       OPENGPU_KERNARG_VA_E_RANGE);
 
+	/* The code window is its own, above the framebuffer window, so snapshot
+	 * code maps privately instead of running from the identity map. */
+	assert(opengpu_code_va_plan(0xaaaaa000, 0x800, 1, PAGE, &plan) ==
+	       OPENGPU_KERNARG_VA_OK);
+	assert(plan.va_page == OPENGPU_CODE_VA_BASE + OPENGPU_CODE_VA_STRIDE);
+	assert(plan.pa_page == 0xaaaaa000);
+	assert(plan.span == PAGE);
+	assert(plan.va_page >= OPENGPU_FRAMEBUFFER_VA_BASE +
+	       OPENGPU_FRAMEBUFFER_VA_STRIDE);
+	assert(opengpu_code_va_plan(0, OPENGPU_CODE_VA_STRIDE + 1, 1, PAGE,
+				    &plan) == OPENGPU_KERNARG_VA_E_RANGE);
+
 	puts("kernarg VA planner tests passed");
 	return 0;
 }
