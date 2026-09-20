@@ -425,6 +425,34 @@ ChipAgent tooling fixed alongside: clock auto-detect + fail-loud SDC, and
 `high_fanout_nets` substring matching (yosys canonicalization mangles net
 names, so exact-name patterns silently no-oped).
 
+## Full GpuSystem flat-1GHz verdict (2026-09-20)
+
+No. Synthesis gate already fails: 591.9 MHz, setup WNS -689.48 ps, TNS
+-2.27M ps over 971,321 instances / 974,596 nets / 7,511 IOs (SLVT/TC,
+`syn`, no SRAM blackboxes — all memories are flop arrays). Wire delay
+only worsens pre-layout numbers, so no place/route option can close this.
+
+Breakdown (50 worst core_clock paths): worst flop-to-flop -622.3 ps
+(ALU-flavored cone: MAJ carry chains + AO select + ~20-deep AND reduce);
+worst IO -689.5 ps (`io_copyCompletion_ready` → control) and -614.8 ps
+(`io_stridedCopyDescriptor_bits_height[0]` → control). Prime suspect is
+`StridedCopyEngine` descriptor validation: `lastRow * sourceStride` /
+`lastRow * destinationStride` 32-bit multiplies feeding the overflow
+OR-reduce and the nested `descriptorError` mux — one cone implicated in
+all three worst classes. Fix is RTL pipelining of descriptor decode
+(+1 cycle accept latency), a product decision, not a flow tweak.
+
+Scale note: at ~1M flat instances this also exceeds what the local ORFS
+image has proven (repair loops do not converge past ~200-400k placed
+instances). The `gpu-system` emitter sets `useBlackBoxes = false`; with
+real SRAM macros the instance count and the flop-array read-mux cones
+would both shrink dramatically. Per-block closure plus parent budgets
+remains the working methodology (SharedL2Slice 1086 MHz, KernelFragStage
+internals clean).
+
+Artifact: `generated/chipagent_asap7/gpu_system_synth/` (1_synth.odb,
+synthesis_sta.log).
+
 ## Whole-block physical-flow limit (current)
 
 Whole-block `VectorBackend` (~404k cells, 48 SRAM macros) cannot close in the
