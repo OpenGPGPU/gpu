@@ -12,6 +12,7 @@ class GpuSystemSpec extends AnyFlatSpec {
 
   private def initialize(dut: GpuSystem, numComputeUnits: Int): Unit = {
     dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+    dut.io.graphicsDrained.poke(true.B)
     dut.io.command.valid.poke(false.B)
     dut.io.command.bits.poke(0.U.asTypeOf(dut.io.command.bits))
     dut.io.commandCompletion.ready.poke(true.B)
@@ -564,11 +565,36 @@ class GpuSystemSpec extends AnyFlatSpec {
     }
   }
 
+  it should "wait for graphics retirement even when the shared L2 is empty" in {
+    val config = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuSystem(config, numComputeUnits = 1,
+      enableUnifiedCommands = true)) { dut =>
+      initialize(dut, 1)
+      dut.io.graphicsDrained.poke(false.B)
+      dut.io.commandResetActive.poke(true.B)
+      for (_ <- 0 until 20) {
+        dut.io.commandResetDone.expect(false.B)
+        dut.io.memoryRequest.valid.expect(false.B)
+        dut.clock.step()
+      }
+      dut.io.graphicsDrained.poke(true.B)
+      var cycles = 0
+      while (!dut.io.commandResetDone.peek().litToBoolean && cycles < 10) {
+        dut.clock.step(); cycles += 1
+      }
+      assert(cycles < 10, "reset must acknowledge after graphics retires")
+      dut.io.commandResetActive.poke(false.B)
+      dut.clock.step()
+      dut.io.commandResetDone.expect(false.B)
+    }
+  }
+
   it should "drain in-flight unified work and reset the command path on request" in {
     val config = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
     simulate(new GpuSystem(config, numComputeUnits = 2,
       enableUnifiedCommands = true)) { dut =>
       initialize(dut, 2)
+      dut.io.graphicsDrained.poke(true.B)
       dut.io.commandResetActive.poke(false.B)
       val pattern = BigInt("13579bdf", 16)
 
@@ -623,6 +649,7 @@ class GpuSystemSpec extends AnyFlatSpec {
       dut.io.commandResetDone.expect(true.B)
       dut.clock.step()
       dut.io.commandResetDone.expect(false.B)
+      dut.io.graphicsDrained.poke(true.B)
       dut.io.commandResetActive.poke(false.B)
       dut.io.unifiedCommandRouterBusy.expect(false.B)
       dut.io.fillEngineBusy.expect(false.B)

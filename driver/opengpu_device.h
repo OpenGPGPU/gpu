@@ -181,6 +181,7 @@ struct opengpu_vm {
 };
 
 struct opengpu_device {
+    struct opengpu_drm *drm;
     struct device *dev;
     struct opengpu_hw hw;
     struct opengpu_compute compute;
@@ -380,8 +381,7 @@ int opengpu_compute_invalidate_ioctl(struct drm_device *drm, void *data,
 int opengpu_compute_launch_ioctl(struct drm_device *drm, void *data,
                                  struct drm_file *file);
 
-int opengpu_display_init(struct opengpu_device *gpu,
-                         const struct opengpu_buffer *boot_fb);
+int opengpu_display_init(struct opengpu_device *gpu);
 void opengpu_display_fini(struct opengpu_device *gpu);
 
 #endif /* OPENGPU_DEVICE_H */

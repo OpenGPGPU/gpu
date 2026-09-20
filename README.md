@@ -13,7 +13,7 @@ package that is incrementally verifiable.
 - `src/main/scala/opengpu/core/frontend/simt/` — SIMT divergence/reconvergence state
 - `src/main/scala/opengpu/core/execute/` — execution units
 - `src/main/scala/opengpu/core/simt/` — SIMT lane wrapper
-- `src/main/scala/opengpu/graphics/` — graphics pipeline (rasterizer, interpolators, output merger, geometry, command buffer, host-memory job queue with interrupt-history ring), see `docs/GRAPHICS_ROADMAP.md`
+- `src/main/scala/opengpu/graphics/` — graphics pipeline (rasterizer, interpolators, output merger, geometry, command buffer, unified render descriptors and completions), see `docs/GRAPHICS_ROADMAP.md`
 - `src/main/scala/opengpu/config/` — architectural configuration
 - `src/test/scala/` — tests
 - `build.sbt` — Scala and Chisel dependency configuration
@@ -79,7 +79,7 @@ pipeline on the unified-shader + separated-fixed-function model:
 (fixed-point, top-left fill rule, cull) -> `FragmentInterpolator` /
 `PerspectiveInterpolator` (barycentric colour + depth, perspective-correct) ->
 `OutputMerger` (depth test + write to software-allocated colour/depth buffers),
-driven by `CommandBufferStage` (reads draw-call records from host memory) and
+driven by unified render descriptors and `CommandBufferStage` (reads draw records) and
 composed in `RenderPipeline` / `RenderCore`. The framebuffer, depth buffer and
 command buffer are all software-allocated shared memory; hardware only computes
 addresses and issues reads/writes. Core-backed vertex and fragment shaders share
@@ -90,3 +90,5 @@ ARTI/QEMU end-to-end display tests. See `docs/GRAPHICS_ROADMAP.md`.
 Current development continues on RVV execution coverage, CSR/trap semantics,
 host/software integration, unified (SIMT) shading, and full-system physical
 timing closure.
+
+Qualification and measured next steps: [docs/QUALIFICATION.md](docs/QUALIFICATION.md).

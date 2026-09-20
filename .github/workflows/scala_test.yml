@@ -15,6 +15,15 @@ permissions:
   contents: write
 
 jobs:
+  driver:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Run host driver tests
+      run: python3 scripts/test_driver.py
+    - name: Check integration test selection
+      run: python3 scripts/test_test_selection.py
+
   build:
 
     runs-on: ubuntu-latest

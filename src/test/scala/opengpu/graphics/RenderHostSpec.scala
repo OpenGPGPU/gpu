@@ -422,4 +422,86 @@ class RenderHostSpec extends AnyFlatSpec {
     }
   }
 
+  for (capacity <- Seq(1, 2, 4)) {
+    it should s"reject invalid descriptor sample words and recover (capacity=$capacity)" in {
+      simulate(new RenderHost(
+        GraphicsConfig(screenWidth = 16, screenHeight = 16, maxSampleCount = capacity),
+        GpuConfig(lanes = 4, warps = 2))) { dut =>
+        dut.io.externalCompletion.poke(false.B)
+        dut.io.renderCommand.valid.poke(false.B)
+        dut.io.renderCompletion.ready.poke(false.B)
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        val m = new MemModel
+        val modes = Seq(0x100, 3, 0x80000000) ++
+          (Integer.numberOfTrailingZeros(capacity) + 1 to 2) ++ Seq(0)
+        for ((mode, id) <- modes.zipWithIndex) {
+          val base = 0x1000
+          for (i <- 0 until 16) m.wwrite(base + i * 4, if (i == 9) mode else 0)
+          dut.io.renderCommand.bits.descriptorId.poke(id.U)
+          dut.io.renderCommand.bits.descriptorAddress.poke(base.U)
+          dut.io.renderCommand.bits.bytes.poke(64.U)
+          dut.io.renderCommand.valid.poke(true.B)
+          dut.io.renderCommand.ready.expect(true.B)
+          dut.clock.step()
+          dut.io.renderCommand.valid.poke(false.B)
+          serviceMem(dut, m, 2000) {
+            dut.io.fbMem.req.valid.expect(false.B)
+            dut.io.renderCompletion.valid.peek().litToBoolean
+          }
+          dut.io.renderCompletion.bits.descriptorId.expect(id.U)
+          dut.io.renderCompletion.bits.success.expect((mode == 0).B)
+          dut.io.renderCompletion.bits.status.expect((if (mode == 0) 0 else 2).U)
+          // Completion backpressure keeps the engine owned and reset draining.
+          dut.io.drained.expect(false.B)
+          dut.io.renderCommand.ready.expect(false.B)
+          dut.clock.step(8)
+          dut.io.renderCompletion.valid.expect(true.B)
+          dut.io.renderCompletion.ready.poke(true.B)
+          dut.clock.step()
+          dut.io.renderCompletion.ready.poke(false.B)
+          dut.io.drained.expect(true.B)
+        }
+      }
+    }
+  }
+
+  it should "fail a descriptor fetch fault before launch and retain it until completion" in {
+    simulate(new RenderHost(
+      GraphicsConfig(screenWidth = 16, screenHeight = 16),
+      GpuConfig(lanes = 4, warps = 2), textureFaultReporting = true)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
+      dut.io.textureFault.get.poke(false.B)
+      dut.io.renderCompletion.ready.poke(false.B)
+      dut.io.cbMem.req.ready.poke(true.B)
+      dut.io.cbMem.resp.valid.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.renderCommand.valid.poke(true.B)
+      dut.io.renderCommand.bits.descriptorAddress.poke(0x1000.U)
+      dut.io.renderCommand.bits.descriptorId.poke(7.U)
+      dut.io.renderCommand.bits.bytes.poke(64.U)
+      dut.clock.step()
+      dut.io.renderCommand.valid.poke(false.B)
+      dut.io.cbMem.req.valid.expect(true.B)
+      dut.clock.step()
+      dut.io.cbMem.resp.valid.poke(true.B)
+      dut.io.cbMem.resp.bits.data.poke(0.U)
+      dut.io.cbMem.resp.bits.addr.poke(0x1000.U)
+      dut.io.cbMem.resp.bits.write.poke(false.B)
+      dut.io.textureFault.get.poke(true.B)
+      dut.clock.step()
+      dut.io.cbMem.resp.valid.poke(false.B)
+      dut.io.textureFault.get.poke(false.B)
+      dut.clock.step(4)
+      dut.io.cbMem.req.valid.expect(false.B)
+      dut.io.fbMem.req.valid.expect(false.B)
+      dut.io.renderCompletion.valid.expect(true.B)
+      dut.io.renderCompletion.bits.success.expect(false.B)
+      dut.io.renderCompletion.bits.status.expect(1.U)
+      dut.io.drained.expect(false.B)
+      dut.io.renderCompletion.ready.poke(true.B)
+      dut.clock.step()
+      dut.io.drained.expect(true.B)
+    }
+  }
+
 }

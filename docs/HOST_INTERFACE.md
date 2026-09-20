@@ -1,58 +1,54 @@
-# Host Interface and Driver
+# Host interface
 
-## Interface
+The product top is `GpuHostSystemAxi`: one AXI4 control slave, one AXI4 memory
+master, one IRQ and one clock/reset domain. CPU and GPU have separate L2
+caches. Shared DRAM ownership uses driver cache maintenance and fences;
+GPU-internal invalidation is not CPU cache snooping.
 
-### SoC interface
+## Submission and completion
 
-OpenGPU is an integrated shared-memory accelerator. An RV64 Linux host accesses
-an AXI4 slave control port; the GPU accesses command, shader, texture, colour
-and depth buffers in shared DRAM through an AXI4 master port behind its GPU
-L2. The CPU and GPU have separate L2 caches and share the SoC fabric and DRAM.
-There is no v1 GPU-local VRAM or CPU access port into the GPU L2.
+All renders use `GPU_UCMD_OP_RENDER` (6). Software writes the descriptor VA to
+`UCMD_SOURCE`, stages the ID/byte count, then writes `UCMD_SUBMIT`. The immutable
+16-word descriptor is fetched through the translated command client. Its
+command, colour/depth and texture addresses resolve under the selected VM.
+`UCMD_BYTES` is completion accounting, not a variable descriptor length.
 
-`opengpu.graphics.GpuHostAxi` exposes `s_axi_*` AXI4 control signals and the
-`m_irq` completion interrupt. The register file accepts 32-bit accesses and
-INCR bursts, one read or write transaction at a time.
+`GpuHostAxi` dispatches render locally and other commands to `GpuSystem`.
+Their results share an arbitrated completion slot and IRQ. Driver scheduler
+jobs retain GEM references and reservation/syncobj fences until completion.
+Render dependency ordering is provided by the driver scheduler; hardware
+wait/signal events are implemented by the system router for compute/DMA.
+The render demultiplexer does not implement those event fields.
 
-`opengpu.system.GpuHostSystemAxi` is the product integration top. Its external
-surface is only one clock/reset pair, a 32-bit `s_axi_*` AXI4 control slave, an
-`m_axi_*` AXI4 memory master and `m_irq`. Graphics, compute and DMA commands are
-submitted through MMIO; no command, cache-line or performance-counter bundle is
-exported as a product pin.
+Render status is opcode-specific: 0 success, 1 memory fault, 2 invalid sample
+mode. The entire descriptor sample word must be within the build's supported
+mode range. Reserved bits, mode 3 and modes above capacity complete with error
+without launching the renderer. Descriptor faults stop the fetch; execution
+faults drain the active render before error completion. Failed rendering may
+leave partial output. Clearing STATUS.ERROR does not erase the owning job's
+fault, and the next accepted job starts clean.
 
-The memory master defaults to a 64-bit data bus. A 64-byte cache-line request
-becomes an eight-beat INCR burst; a page-table word becomes one four-byte AXI
-narrow transfer with the correct byte lane and strobe. `BRESP` and `RRESP`
-errors are returned to the internal requester as faults. The data width is
-elaboration-time configurable to 4, 8, 16, 32 or 64 bytes with
-`--memory-axi-data-bytes`; the current bridge serializes lower-memory
-transactions while preserving their AXI IDs.
+Reset blocks new bridge submissions, discards queued bridge commands and
+waits for graphics descriptor fetch, launch, execution, pending completion,
+system engines and shared-L2 transactions. Empty L2 alone is insufficient.
+Old completions are discarded during reset; RESET_BUSY clears only after
+retirement. A hung client leaves reset draining; the driver reports bounded
+recovery failure rather than claiming that memory has stopped.
 
-Internally, the graphics host's line and word clients, compute units and DMA
-engines all converge on one GPU-internal shared L2. The graphics shader is an
-additional coherent L2 client, including private-cache invalidation and global
-atomics.
-Private `ComputeMemoryRequest/Response` bundles stop at the AXI master adapter
-and are not part of the SoC ABI.
+Legacy render START and job/IH rings are retired. Register offsets 0x64–0x84
+are unmapped/reserved. Execution shadow registers remain readable/writable
+for compatibility but do not configure unified renders. Dedicated legacy DMA
+registers remain supported.
 
-The memory master exposes the GPU L2's lower-memory traffic; the control slave
-provides MMIO, not a CPU data path into that L2. GPU-internal cache coherence
-does not extend to CPU caches. CPU/GPU buffer handoff uses driver-managed cache
-maintenance, job fences and interrupts; v1 has no CPU/GPU hardware snooping
-protocol.
+## Registers
 
-### Register ABI
-
-The table describes the current RTL register map. `RenderHostRegs` and
-`driver/gpu_abi.h` must remain synchronized; the stencil/blend registers at
-`0x13C`–`0x144` are defined in both (`GPU_REG_STENCIL_CONFIG`,
-`GPU_REG_STENCIL_REF_MASKS`, `GPU_REG_BLEND_CONFIG`) and mirror the per-draw
-record words 36/37/35 (see [STENCIL_BLEND_DESIGN.md](STENCIL_BLEND_DESIGN.md)).
+The C definitions in `driver/gpu_abi.h` and Scala definitions are compared by
+`GpuAbiLayoutSpec`. The mapped end of an integrated build is 0x158.
 
 | Offset | Name | Access | Meaning |
 |---|---|---|---|
 | 0x00 | ID | RO | `device_id << 16 \| version` |
-| 0x04 | CONTROL | W1P | bit 0 START |
+| 0x04 | CONTROL | W1P | legacy START bit is inert; does not launch rendering |
 | 0x08 | STATUS | RO/W1C | BUSY, DONE, ERROR and DMA-engine busy bits |
 | 0x0C | IRQ | RW/W1C | bit 0 ENABLE; bit 1 PENDING for graphics or unified-command completion |
 | 0x10 | CMD_BASE | RW | command-buffer byte address |
@@ -75,16 +71,7 @@ record words 36/37/35 (see [STENCIL_BLEND_DESIGN.md](STENCIL_BLEND_DESIGN.md)).
 | 0x54 | SCANOUT_FORMAT | RW | 0 = RGBA8888 |
 | 0x58 | SCANOUT_CONTROL | RW | bit 0 ENABLE |
 | 0x5C | SCANOUT_STATUS | RO | bit 0 ACTIVE |
-| 0x60 | CAPABILITIES | RO | fragment core, job/IH rings, vertex core, clear/blit/strided engines, unified commands, MSAA, batch capacity and safe unified reset |
-| 0x64 | JOB_RING_BASE | RW | job-ring byte address |
-| 0x68 | JOB_RING_SIZE | RW | power-of-two entry count |
-| 0x6C | JOB_WPTR | RW | host producer pointer/doorbell |
-| 0x70 | JOB_RPTR | RO | device consumer pointer |
-| 0x74 | JOB_CONTROL | RW | enable, reset, active and pending |
-| 0x78 | IH_BASE | RW | completion-ring byte address |
-| 0x7C | IH_SIZE | RW | power-of-two record count |
-| 0x80 | IH_WPTR | RO | device producer pointer |
-| 0x84 | IH_RPTR | RW | host consumer pointer |
+| 0x60 | CAPABILITIES | RO | fragment core, vertex core, clear/blit/strided engines, unified commands, MSAA, batch capacity and safe unified reset |
 | 0x88 | CLEAR_BASE | RW | 64-byte-aligned fill destination |
 | 0x8C | CLEAR_BYTES | RW | fill size, multiple of 64 |
 | 0x90 | CLEAR_PATTERN | RW | 32-bit fill pattern |
@@ -101,14 +88,14 @@ record words 36/37/35 (see [STENCIL_BLEND_DESIGN.md](STENCIL_BLEND_DESIGN.md)).
 | 0xBC | STRIDED_DST_STRIDE | RW | destination row stride, aligned and at least width |
 | 0xC0 | STRIDED_START | W1P | start non-overlapping 2D copy |
 | 0xC4 | UCMD_ID | RW | unified command ID, low 8 bits |
-| 0xC8 | UCMD_OPCODE | RW | kernel, copy, fill or strided-copy opcode |
+| 0xC8 | UCMD_OPCODE | RW | kernel, copy, fill, strided-copy, resolve, invalidate or render |
 | 0xCC | UCMD_KERNEL_PC | RW | compute kernel entry PC |
 | 0xD0 | UCMD_KERNARG | RW | compute kernarg byte address |
 | 0xD4-0xDC | UCMD_GRID_X/Y/Z | RW | compute grid dimensions |
 | 0xE0-0xE8 | UCMD_LOCAL_X/Y/Z | RW | compute workgroup dimensions |
 | 0xEC | UCMD_FLAGS | RW | wait-DMA, wait-event and signal-event enables |
 | 0xF0 | UCMD_DMA_DEPENDENCY | RW | DMA source `[1:0]` and descriptor ID `[15:8]` |
-| 0xF4 | UCMD_SOURCE | RW | copy source byte address |
+| 0xF4 | UCMD_SOURCE | RW | copy source address or render descriptor VA |
 | 0xF8 | UCMD_DESTINATION | RW | copy/fill destination byte address |
 | 0xFC | UCMD_BYTES | RW | linear copy/fill byte count |
 | 0x100 | UCMD_PATTERN | RW | fill pattern |
@@ -123,7 +110,7 @@ record words 36/37/35 (see [STENCIL_BLEND_DESIGN.md](STENCIL_BLEND_DESIGN.md)).
 | 0x124 | UCMD_COMPLETION | RO | ID `[7:0]`, opcode `[10:8]`, status `[14:11]`, success `[15]` |
 | 0x128-0x12C | UCMD_COMPLETION_BYTES | RO | processed byte count, low then high word |
 | 0x130 | UCMD_COMPLETION_POP | W1P | consume completion when bit 0 is written |
-| 0x134 | MSAA_CONFIG | RW | bits 1:0 sample mode (0 = 1x, 1 = 2x, 2 = 4x), snapshotted at START |
+| 0x134 | MSAA_CONFIG | RW | bits 1:0 sample mode (0 = 1x, 1 = 2x, 2 = 4x), legacy shadow; render mode comes from descriptor word 9 |
 | 0x138 | UCMD_RESET | W1P | request a safe unified-command reset when bit 0 is written |
 | 0x13C | STENCIL_CONFIG | RW | enable bit 0; func 6:4; fail op 9:7; depth-fail op 12:10; depth-pass op 15:13 |
 | 0x140 | STENCIL_REF_MASKS | RW | reference 7:0, read mask 15:8, write mask 23:16 |
@@ -133,187 +120,20 @@ record words 36/37/35 (see [STENCIL_BLEND_DESIGN.md](STENCIL_BLEND_DESIGN.md)).
 | 0x150 | UCMD_INSTRUCTION_SATP | RW | Sv32 `satp` for the instruction MMU (same layout as VECTOR_SATP) |
 | 0x154 | UCMD_TLB_FLUSH | W1P | bit 0 full flush; bit 1 ASID-scoped flush (ASID `[11:3]`); bit 2 VPN-scoped flush (VPN `[31:12]`); no bit set is a no-op |
 
-The exclusive mapped end is `0x158`. Unified-command routing covers
-`[0xC4, 0x134)`, `0x138` and `[0x148, 0x158)`; the other mapped registers route
-to `RenderHost`. Stencil/blend state is snapshotted at START.
+## Translation and ownership
 
-Programming either `satp` requires a `UCMD_TLB_FLUSH`. A full flush clears both
-CU translation caches. An ASID-scoped or VPN-scoped flush drops only matching
-entries, so global mappings and other address spaces stay warm; the
-fixed-function texture translator tracks no ASID/VPN and is cleared by any
-pulse. The driver helper functions are `opengpu_hw_flush_tlb_asid` and
-`opengpu_hw_flush_tlb_vpn`.
+`satp` changes require quiescence. Distinct ASIDs preserve CU and graphics TLB
+entries on a plain VM switch. The CU TLBs implement scoped invalidation;
+graphics translators currently invalidate all entries on any flush pulse.
+ASID reuse and mapping changes require shootdown. GPU VMs retain shared
+identity mappings for compatibility: private VA windows are implemented, but
+this is not a claim of complete process memory isolation.
 
-START snapshots the programmed job state. On queue-capable hardware, the host
-writes a 64-byte descriptor to the job ring and advances `JOB_WPTR`. Jobs
-execute in order. Completion writes a 16-byte IH record before raising the
-interrupt; the driver drains records by job id and retires the matching fence.
-Legacy register-programmed START remains supported and is mutually exclusive
-with queued execution.
+The command client remains uncached. Texture/framebuffer clients use the
+PTE cache policy. CPU writes still require the appropriate CPU cache/DMA
+synchronization; uncached GPU mappings only bypass GPU caches.
 
-Integrated hosts advertise `CAPABILITIES[6]` when the unified command bank is
-present. Software must test this bit before accessing `UCMD_*`. A command ID
-remains reserved from submission until its completion is popped; duplicate IDs
-are not accepted. The staging FIFO preserves submission order, while engines
-may finish independently and report their opcode and status in the common
-completion format.
-
-`CAPABILITIES[18]` advertises the safe unified-command reset. Writing
-`UCMD_RESET[0]` stops dispatch, discards staged commands, refuses new
-submissions and drains every in-flight command and its memory transaction
-before resetting the command-path state. Until the drain completes the hardware
-reports `UCMD_STATUS.RESET_BUSY` and raises the shared completion IRQ when the
-path is clean and ready again. A submission that races the drain is not queued
-and sets `UCMD_STATUS.RESET_REJECTED`; late completions from the abandoned
-stream are consumed and dropped so the post-reset completion slot starts empty.
-The reset is drain-based rather than invalidating: outstanding L2 accesses are
-allowed to retire, because discarding them would orphan memory responses that
-the response demultiplexer still expects. A reset that cannot quiesce (a hung
-engine or lower memory) leaves `RESET_BUSY` set; the driver turns that into an
-explicit wedge rather than a silent hang.
-
-`CAPABILITIES[7]` advertises MSAA on both backends: the backend is the one
-selected by `CAPABILITIES[0]` (`FRAGMENT_CORE`), so bit 7 with bit 0 set is
-programmable (fragment-shader) MSAA and bit 7 with bit 0 clear is
-fixed-function MSAA. Bits 17:16 carry the maximum supported sample mode
-(`log2Ceil(maxSampleCount)`). Bit 7 is a functional claim only and does not
-assert physical timing closure of the programmable fragment stage.
-`MSAA_CONFIG[1:0]` selects 1x/2x/4x for the next
-START. Both START and queued job word 9 reject mode 3, a mode above the
-elaborated `maxSampleCount`, or nonzero bits 31:2. Rejected START sets
-`STATUS.ERROR` without launching. Queue rejection consumes the descriptor and
-writes an ordered IH record with DONE and ERROR, the original job id/slot,
-and status `GPU_IH_STATUS_INVALID_SAMPLE_MODE` (1); normal completion uses
-`GPU_IH_STATUS_COMPLETED` (0). No render commands execute for a rejected job.
-The next queued job waits for that IH record to commit, then can proceed.
-`IH_WPTR`, IRQ pending and host `STATUS.ERROR` update only after the final IH
-write acknowledgement. Linux's existing IH error handling signals an `-EIO`
-fence. A rejected queue job does not itself set host `STATUS.DONE`; software
-uses IH records to identify queue completions. The existing DONE latch from
-earlier rendered jobs is preserved. In multi-sample
-modes a pixel's samples are contiguous words at
-`base + y*stride + ((x << mode) + sample)*4`, so the physical stride must
-cover `width << mode` pixels.
-
-Linux exposes the kernel opcode through `DRM_IOCTL_OPENGPU_COMPUTE`.
-Applications bind separate `OPENGPU_RESOURCE_COMPUTE_SHADER` and
-`OPENGPU_RESOURCE_COMPUTE_KERNARG` resources to a render context, then submit
-binding-relative entry/kernarg offsets and three-dimensional grid and local
-sizes. The initial sandbox accepts bounded forward control flow and the
-supported scalar subset plus masked and unmasked lane-local RVV integer ALU,
-saturating, multiply, divide and remainder operations. Comparisons,
-single-width reductions, gather and slide retain their unmasked profile.
-Masked arithmetic requires defined source, v0 and old destination registers,
-rejects destination v0, and preserves masked-off and inactive lanes.
-The sandbox admits `vssrl.vv/vx/vi` and `vssra.vv/vx/vi` scaling right shifts
-with rounding. They use one 32-bit vector source and the low five shift-amount
-bits, support source/destination overlap, and do not set `vxsat`. Masked
-forms follow the defined-register and destination-v0 restrictions above.
-Hardware honors `vxrm`; the current shader interface uses reset RNU. Scaling
-results invalidate trusted byte-index provenance.
-The sandbox also supports masked and unmasked fixed-profile
-`vsext/vzext.vf2/vf4/vf8`.
-These extensions use the low 16/8/4 bits of each 32-bit source lane. Masked
-forms require defined v0 and destination registers and preserve disabled
-lanes. Source/destination overlap and masked writes to v0 are rejected, in
-line with the [RVV register overlap rules](https://docs.riscv.org/reference/isa/unpriv/v-st-ext).
-The sandbox also admits `vnsrl.wv/wx/wi` and `vnsra.wv/wx/wi` using a
-fixed lane-local 64-bit source `{v[vs2+1][lane], v[vs2][lane]}` and a 32-bit
-result. Vector/scalar shift amounts use six bits; immediates are unsigned
-five-bit values. Both source registers must be defined, `vs2` must be even,
-and `vd` must be disjoint from the pair. Masked forms additionally require
-defined v0 and old `vd`, reject destination v0, and preserve disabled lanes.
-Narrowing results cannot retain trusted byte-index provenance. Software must
-prepare separate low/high word vectors; this pair layout differs from RVV's
-general double-width register-group layout.
-`vnclipu.wv/wx/wi` and `vnclip.wv/wx/wi` use the same pair layout and
-validation rules. They round the shifted unsigned/signed 64-bit source
-before saturating to 32 bits. Enabled saturated lanes set the warp's sticky
-`vxsat` at commit; masked-off and inactive lanes preserve old `vd` and do
-not raise saturation. Hardware supports all four `vxrm` modes, while the
-current shader interface uses reset RNU and does not admit rounding-CSR
-writes. Clip results also discard trusted byte-index provenance.
-This fixed lane layout does not implement general RVV register groups or
-variable-SEW extension semantics. The sandbox permits memory
-access only inside the bound kernarg range and limits a workgroup to the fixed 32
-resident work-items. `vrgather.vv/vx/vi` selects within the fixed per-warp
-VLMAX and returns zero for an out-of-range index. Vector-vector and
-vector-scalar forms require proven defined VGPR or SGPR sources; immediate
-forms do not consume a source register.
-`vslideup.vx/vi` preserves destination elements below its unsigned offset;
-`vslidedown.vx/vi` returns zero when the selected source is outside VLMAX.
-The validator rejects the architecturally reserved `vslideup`
-destination/source overlap and requires its partially preserved destination
-register to be defined before use.
-The `vredsum/and/or/xor/minu/min/maxu/max.vs` family combines active source
-lanes with the always-included `vs1[0]` seed and writes `vd[0]`. Because this
-implementation preserves the remaining destination elements, the validator
-requires the destination VGPR to be defined before a reduction.
-Unit-stride `vle32.v` and `vse32.v` may use `v0.t`. Masked loads require both
-`v0` and the partially preserved destination VGPR to be defined, and cannot
-target `v0`; masked stores require a defined `v0` and source VGPR. Bounds are
-proved for the complete vector range, so masking can only remove accesses from
-an already safe range.
-The RTL LSU additionally implements scalar-stride `vlse8/16/32.v` and
-`vsse8/16/32.v`, including sparse cache-line transactions and elements that
-cross a line boundary. The Linux shader sandbox admits `vlse32.v` and
-`vsse32.v` when `rs2` is an aligned signed constant created directly with
-`addi rd,x0,imm` and proves each lane address independently. The base must be a
-fixed kernarg-relative pointer; lane-relative bases remain excluded. Loads must
-stay inside the kernarg object and stores must also stay inside its writable
-output range. The same defined-mask and preserved-destination rules apply to
-masked strided operations.
-The RTL also accepts ordered and unordered 32-bit indexed word operations
-`vluxei32/vloxei32/vsuxei32/vsoxei32`; each `vs2` lane is an unsigned byte
-offset from the scalar base and overlapping ordered stores resolve in element
-order. The Linux validator admits these instructions when the index vector is
-derived from trusted launch-time local IDs by an unmasked `vsll.vi ...,2`.
-Masked shifts cannot establish this proof because disabled lanes retain old
-destination values. The validator then
-proves the fixed kernarg-relative base plus the complete batch byte span,
-including the writable output interval for stores; other index provenance is
-rejected.
-The driver snapshots and validates the program, tracks the kernarg GEM object
-for both reads and writes, and publishes completion through the context's
-normal scheduler and optional input/output sync objects.
-
-The compute, fill, blit and strided-copy ioctls also expose hardware events.
-`OPENGPU_COMMAND_WAIT_EVENT` makes a command wait for the event encoded by
-`wait_event`; `OPENGPU_COMMAND_SIGNAL_EVENT` publishes `signal_event` with the
-command's success state. Each event word stores its ID in bits 7:0 and its
-generation in bits 15:8. Generations let users reuse an event ID without
-accidentally consuming an older completion. Event fields must be zero unless
-their corresponding flag is set, and DMA ioctls reject event flags on hardware
-without the unified-command capability. A failed waited event completes the
-dependent command with an error fence instead of dispatching it.
-
-`DRM_IOCTL_OPENGPU_GET_FAULT` returns one atomic, device-global snapshot of the
-most recent unified-command failure. Sequence zero and a clear
-`OPENGPU_FAULT_VALID` bit mean that the driver has not observed a fault. Each
-new hardware completion error, completion-protocol mismatch or watchdog abort
-advances the nonzero sequence and records the Linux errno, raw hardware status,
-observed and expected command ID/opcode, and actual and expected byte counts.
-Reason flags distinguish hardware completion errors, timeouts, aborts, ID or
-opcode mismatches, inconsistent success metadata and short/long successful
-transfers. A timeout or abort on reset-capable hardware also records
-`OPENGPU_FAULT_RESET_ISSUED` because the driver asked the hardware for a safe
-reset; if the drain never completes within the recovery window the driver
-records `OPENGPU_FAULT_RESET_TIMEOUT` alongside it and marks the device wedged.
-For an abort without a completion, raw status and processed bytes are zero. The
-snapshot intentionally contains no GPU addresses and remains available after
-the failing fence is consumed, so render clients can diagnose asynchronous
-failures without racing completion handling. Reserved input words must be zero.
-
-Recovery is explicit: after a timeout or abort the driver requests the hardware
-reset described above. Unified-command submissions made while it drains fail
-with `-EBUSY`; if the drain times out, every later unified submission fails with
-`-EIO` until the device is reloaded. Dedicated register-bank paths are
-unaffected.
-
-### Shared-memory ABI
-
-The Linux layouts are defined in `driver/gpu_abi.h`. The RTL extensions
-below are explicitly marked where they differ from those layouts.
+## Shared-memory layouts
 
 #### Draw record
 
@@ -395,9 +215,10 @@ raster staging can overlap SIMT execution without aliasing scratch data.
 - Mip levels are tightly packed from `TEX_BASE`, largest to smallest, without
   row padding. The driver validates the full advertised chain.
 
-#### Queued job and completion records
+### Unified render descriptor
 
-The 16-word job descriptor is:
+The `gpu_job_record` C name is retained for the 16-word layout; it no longer
+implies a job ring. Unified command ID owns completion identification.
 
 | Words | Content |
 |---|---|
@@ -416,136 +237,15 @@ The 16-word job descriptor is:
 | 12 | RTL blend config, same layout as draw word 35 |
 | 13-15 | reserved, zero |
 
-Job word 5 bit 17 enables stencil. Linux defines words 10–12 in
-`struct gpu_job_record` (`stencil_config`, `stencil_ref_masks`,
-`blend_config`) and publishes them as zero for its own submissions — per-draw
-state rides the command records, and the job-level words act as global
-defaults for records that select no per-draw override. Unused words are zero.
-Texture translation and memory errors drain the active render and complete it
-with `STATUS.ERROR`. Queued renders publish DONE|ERROR and
-`GPU_IH_STATUS_TEXTURE_MEMORY_FAULT` (2) in their IH record before raising the
-completion IRQ; the driver's existing IH handling signals the fence with
-`-EIO`. Legacy START submissions expose DONE|ERROR and the completion IRQ.
-Software clearing STATUS.ERROR during execution does not clear the per-job
-failure. The next accepted render starts with a clean per-job fault latch.
-Failed texture reads supply zero only to allow draining; the framebuffer may
-contain partial results and must not be treated as a successful render.
+## Linux and display
 
-The four-word IH record contains job id and flags in word 0, ring slot in
-word 1, status in word 2 and reserved zero in word 3.
+The platform owns DRM allocation/registration. Execution owns contexts and
+job preparation; the common scheduler owns dependency publication and
+retirement. KMS owns connector/pipe state and programs scanout from GEM
+framebuffers after their write fences. Display starts disabled and does not
+borrow the execution self-test buffer. `opengpu,render-only` omits KMS setup
+while retaining GEM, render and syncobj services.
 
-RTL stencil operations 0–7 are KEEP, ZERO, REPLACE, saturating INCR/DECR,
-INVERT and wrapping INCR/DECR. Stencil funcs share the depth-func encoding.
-Blend factors 0–10 are ZERO, ONE, SRC_COLOR, ONE_MINUS_SRC_COLOR, SRC_ALPHA,
-ONE_MINUS_SRC_ALPHA, DST_COLOR, ONE_MINUS_DST_COLOR, DST_ALPHA,
-ONE_MINUS_DST_ALPHA and SRC_ALPHA_SATURATE. Equations 0–4 are ADD, SUBTRACT,
-REVERSE_SUBTRACT, MIN and MAX; MIN/MAX ignore factors. A present blend config
-overrides legacy source-over, using one factor pair/equation for RGBA.
-The driver validates these fields for both record forms and rejects reserved
-encodings; see [STENCIL_BLEND_DESIGN.md](STENCIL_BLEND_DESIGN.md).
-
-### Linux ownership and synchronization
-
-The driver exposes typed GEM bindings and per-file render contexts. It copies
-commands and shaders into immutable per-job DMA storage, validates all resource
-ranges and shader accesses, publishes GEM reservation fences, and accepts
-optional input/output sync objects. KMS waits on render fences before changing
-the dedicated scanout registers.
-
-The boot mode must match the elaborated power-of-two RTL resolution. Device
-tree properties provide width, height and stride; builds without those
-properties use matching driver defaults.
-
-### ARTI integration
-
-`scripts/run_arti_gpu.sh` emits `GpuHostSystemAxi`, builds the driver and guest
-test, and runs the generated device under QEMU/Linux. `GPU_SIM=verilator`
-(default) embeds a Verilator model; `GPU_SIM=flashsim` embeds FlashSim instead
-(`FLASHSIM_DIR` defaults to `../FlashSim`). `GPU_FRAG_CORE=1` selects the
-fragment-core configuration; adding `GPU_VERT_CORE=1` selects vertex-core
-records. `GPU_WIDTH` and `GPU_HEIGHT` select a matching RTL and guest mode.
-
-For an interactive Debian rootfs (persistent qcow2, apt, manual `insmod`), use
-`scripts/run_arti_debian.sh`. It builds a tiny cloud-init ISO plus a separate
-`opengpu-modules.iso` (DRM deps + `/root/load_opengpu.sh`), then boots
-`run_debian.sh`. Large modules are not embedded in cloud-init YAML. The script
-does not re-run `setup_env.sh`, so a FlashSim-linked QEMU is left alone. In the
-guest: `/root/load_opengpu.sh` or `/root/load_opengpu.sh test`
-(login `root` / `arti`).
-
-ARTI drives the AXI control slave and implements an AXI memory slave for the
-GPU's `m_axi_*` master. AXI masters are discovered from channel shape and port
-direction, not from GPU-specific names such as `kernelMemReq` or
-`memoryRequest`. In silicon, `m_axi_*` attaches to the SoC L2/DRAM fabric.
-
-`GpuHostSystemAxi` connects `GpuHostAxi.kernelWordMem*` to
-`GpuSystem.graphicsHostRequest/graphicsHostResponse`. It remaps the graphics
-host's eight local IDs above the CU and DMA ranges and returns responses with
-their original IDs. Three four-entry word-to-line bridges occupy separate
-command-buffer, framebuffer and texture ID ranges in the same 32-ID graphics
-namespace. `GpuHostAxi.kernelMem*`, invalidate and atomic channels occupy one
-additional CU-sized coherent range and connect directly to the L2 directory.
-RTL can be emitted with
-`runMain opengpu.elaboration.EmitGpuHostSystemAxi [target-dir]`, optionally
-adding `--compute-units N`, `--frag-core`, `--vert-core`, `--width N`, and
-`--height N`, and `--memory-axi-data-bytes N`.
-
-The integrated top also feeds `GpuSystem.gpuCompletion.valid` into the same
-sticky IRQ pending bit used by graphics jobs. Software consumes the structured
-`gpuCompletion` result and clears IRQ.PENDING through the existing AXI W1C
-write. A completion held under backpressure keeps reasserting pending, so the
-result must be consumed before the interrupt is acknowledged.
-
-## Implemented
-
-- AXI4 register control, interrupt delivery and capability discovery.
-- Register and queued submissions with ordered IH completion records.
-- Immutable job state, context/resource lifetime tracking and fences.
-- Fixed-function, fragment-core and vertex-core draw ABIs.
-- Validated shader, kernarg, texture and vertex-buffer bindings.
-- Hardware clears, texture mip chains, shader depth/discard and blending state.
-- Scheduler-ordered per-job depth clears using the hardware fill engine, with
-  a CPU fallback when the capability is absent.
-- Scheduler-ordered colour blits with GEM range validation, implicit
-  reservation fences and optional input/output sync objects.
-- Scheduler-ordered patterned GEM fills using the same validation and
-  synchronization model.
-- Scheduler-ordered strided GEM copies with independently validated source and
-  destination row layouts.
-- Separate render-target and KMS scanout programming.
-- ARTI-generated QEMU/Linux device, shared guest-memory access and end-to-end
-  DRM/KMS execution.
-- Shared `m_irq` delivery for graphics and unified-command completions.
-- Capability discovery and a synchronized register ABI for unified compute and
-  DMA command submission/completion.
-- Linux fill/blit/strided-copy ioctls use unified commands when capability bit
-  6 is present and fall back to their dedicated register banks otherwise.
-- Unified DMA submission returns an asynchronous DRM scheduler fence. The IRQ
-  handler validates completion ID, opcode, status and processed byte count
-  before signaling it; timeout and abort paths signal an error fence. A 5 ms
-  progress poll is retained for MMIO-driven emulators, not for synchronous job
-  execution.
-- Linux general-compute submission uses distinct shader/kernarg bindings,
-  immutable validated program snapshots and the same scheduler-owned unified
-  completion fence.
-- The validator exposes the implemented RVV integer ALU, comparison,
-  saturation, reduction, gather, slide, multiply, divide and remainder families
-  with exact operand-form and defined-register checks.
-- Unit-, constant-stride and trusted-local-index word vector loads and stores
-  support validated `v0.t` predication, including preserved-destination checks
-  for masked loads.
-- Compute and DMA ioctls expose generation-tagged wait/signal hardware events;
-  event-dependency failures propagate as scheduler fence errors.
-- `DRM_IOCTL_OPENGPU_GET_FAULT` exposes an atomic retained snapshot of the most
-  recent unified completion error, protocol mismatch or watchdog abort.
-- A safe unified-command reset (`UCMD_RESET`, `CAPABILITIES[18]`) drains
-  in-flight commands and memory transactions, refuses racing submissions and
-  discards the abandoned stream's completions. Timeout/abort recovery requests
-  it automatically, reports `OPENGPU_FAULT_RESET_ISSUED`, and turns a drain that
-  never completes into `OPENGPU_FAULT_RESET_TIMEOUT` plus `-EIO` wedging.
-
-## Next
-
-- Expand shader profiles and resource types only with matching hardware and
-  validation.
-- Stabilize the ABI and performance envelope before a Mesa userspace driver.
+Run `python3 scripts/test_driver.py` for host validation and
+`GPU_SIM=verilator bash scripts/run_arti_gpu.sh` for the Linux integration.
+See [qualification](QUALIFICATION.md) for configuration-specific evidence.

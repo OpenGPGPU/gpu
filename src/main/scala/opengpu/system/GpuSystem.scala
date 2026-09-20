@@ -180,6 +180,8 @@ class GpuSystem(
       * drain every in-flight command and memory transaction, reset the
       * command-path state, then pulse `commandResetDone`.  Meaningful only
       * when enableUnifiedCommands is set. */
+    /** Parent graphics engine is idle, including its pending completions. */
+    val graphicsDrained = Input(Bool())
     val commandResetActive = Input(Bool())
     val commandResetDone = Output(Bool())
     val clearPerformanceCounters = Input(Bool())
@@ -383,7 +385,7 @@ class GpuSystem(
   if (enableUnifiedCommands) {
     object ResetState extends ChiselEnum { val idle, draining, resetting = Value }
     val resetState = RegInit(ResetState.idle)
-    val quiesced = !copyEngine.io.busy && !fillEngine.io.busy &&
+    val quiesced = io.graphicsDrained && !copyEngine.io.busy && !fillEngine.io.busy &&
       !stridedCopyEngine.io.busy && !resolveEngine.io.busy &&
       !resolveActive && !resolveDonePending &&
       !commandProcessor.io.busy &&

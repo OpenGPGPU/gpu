@@ -51,6 +51,8 @@ class GraphicsAddressTranslator(
     /** Sv32 satp: bit 31 enables translation, bits 19:0 are the root PPN. */
     val satp = Input(UInt(32.W))
     val flush = Input(Bool())
+    val miss = Output(Bool())
+    val walkActive = Output(Bool())
     /** Addresses presented to `pageWalk`/`pageWalkResp`. */
     val pageWalkTransactionId = Input(
       UInt(math.max(1, log2Ceil(maxOutstanding)).W))
@@ -115,6 +117,8 @@ class GraphicsAddressTranslator(
   walker.io.memoryResponse.bits.fault := io.pageWalkResp.bits.fault
   io.pageWalkResp.ready := walker.io.memoryResponse.ready
 
+  io.miss := state === State.lookup && translationEnabled && !hit
+  io.walkActive := state === State.walkRequest || state === State.walkResponse
   io.in.ready := state === State.idle
   io.out.valid := state === State.respond
   io.out.bits := translated

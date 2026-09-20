@@ -116,6 +116,7 @@ class RenderPipeline(
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
     }
+    val performance = Output(new GraphicsPerformanceEvents)
     val done = Output(Bool())
   })
 
@@ -380,6 +381,15 @@ class RenderPipeline(
   textured.io.fragIn.bits := shader.io.pixel.bits
 
   io.mem <> om.io.mem
+  io.performance.omStall := om.io.fragIn.valid && !om.io.fragIn.ready
+  io.performance.omConflict := om.io.addressConflict
+  io.performance.rasterStall := (if (fragCore || vertCore)
+    shader.io.quad.valid && !shader.io.quad.ready
+    else shader.io.pixel.valid && !shader.io.pixel.ready)
+  io.performance.stagingReadBytes := Mux(io.kernelWordMemReq.fire &&
+    !io.kernelWordMemReq.bits.isWrite, 1.U(8.W) << io.kernelWordMemReq.bits.sizeLog2, 0.U)
+  io.performance.stagingWriteBytes := Mux(io.kernelWordMemReq.fire &&
+    io.kernelWordMemReq.bits.isWrite, 1.U(8.W) << io.kernelWordMemReq.bits.sizeLog2, 0.U)
 
   if (fragCore || vertCore) {
     val kernelFrag = Module(new KernelFragStage(gpuConfig, config))

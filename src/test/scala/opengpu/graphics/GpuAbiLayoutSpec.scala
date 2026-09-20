@@ -3,7 +3,7 @@ package opengpu.graphics
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
 
-import opengpu.command.GpuCommandOpcode
+import opengpu.command.{GpuCommandOpcode, RenderStatus}
 import org.scalatest.flatspec.AnyFlatSpec
 
 /** Synchronization checks between the hardware/Scala definitions and the
@@ -34,6 +34,12 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
 
   private def checkAll(pairs: Seq[(String, Long)]): Unit =
     for ((name, expected) <- pairs) check(name, expected)
+
+  it should "match render completion status encodings" in {
+    check("GPU_RENDER_STATUS_SUCCESS", RenderStatus.success.litValue.toLong)
+    check("GPU_RENDER_STATUS_MEMORY_FAULT", RenderStatus.memoryFault.litValue.toLong)
+    check("GPU_RENDER_STATUS_INVALID_SAMPLE_MODE", RenderStatus.invalidSampleMode.litValue.toLong)
+  }
 
   it should "match the render-host register map" in {
     checkAll(Seq(

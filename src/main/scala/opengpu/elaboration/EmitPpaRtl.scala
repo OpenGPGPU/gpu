@@ -59,6 +59,10 @@ object EmitPpaRtl {
             numComputeUnits = 2, transactionsPerCu = 4,
             useSramBlackBoxes = true),
           stageArgs, firtoolArgs)
+      case "strided-copy" =>
+        ChiselStage.emitSystemVerilogFile(
+          new opengpu.dma.StridedCopyEngine(GpuConfig(lanes = 4), descriptorIdWidth = 4),
+          stageArgs, firtoolArgs)
       case "command-router" =>
         ChiselStage.emitSystemVerilogFile(
           new GpuCommandRouter(
@@ -248,6 +252,7 @@ object EmitPpaRtl {
             numComputeUnits = 1,
             commandIdWidth = 4,
             transactionsPerCu = 4,
+            enableUnifiedCommands = true,
             useBlackBoxes = true,
             enableFpuBackend = true,
             instructionCacheSets = 16,
@@ -256,7 +261,7 @@ object EmitPpaRtl {
             vectorCacheSets = 8,
             vectorCacheWays = 2),
           stageArgs, firtoolArgs)
-      case "gpu-host-system-fc" | "gpu-host-system-vc" =>
+      case "gpu-host-system-fixed" | "gpu-host-system-fc" | "gpu-host-system-vc" =>
         val vertCore = args(0) == "gpu-host-system-vc"
         ChiselStage.emitSystemVerilogFile(
           new GpuHostSystemAxi(
@@ -275,9 +280,9 @@ object EmitPpaRtl {
             numComputeUnits = 1,
             commandIdWidth = 4,
             transactionsPerCu = 4,
-            fragCore = true,
+            fragCore = args(0) != "gpu-host-system-fixed",
             vertCore = vertCore,
-            useBlackBoxes = false,
+            useBlackBoxes = true,
             enableFpuBackend = true,
             instructionCacheSets = 16,
             instructionCacheWays = 2,

@@ -112,6 +112,8 @@ class GpuHostAxi(
     } else None
     /** Sv32 page-table state for the vector and instruction MMUs, plus a
       * one-cycle scoped TLB flush, programmed through the unified bridge. */
+    val graphicsDrained = Output(Bool())
+    val performance = Output(new opengpu.graphics.GraphicsPerformanceEvents)
     val vectorSatp = Output(UInt(32.W))
     val instructionSatp = Output(UInt(32.W))
     val tlbFlush = Output(Valid(new VectorTlbFlush(gpuConfig)))
@@ -150,6 +152,8 @@ class GpuHostAxi(
       textureFaultReporting = textureFaultReporting,
       commandIdWidth = commandIdWidth))
     host.io.textureFault.foreach(_ := io.textureFault.get)
+    io.graphicsDrained := host.io.drained
+    io.performance := host.io.performance
     val unified = if (unifiedCommandMmio) {
       Some(Module(new GpuCommandMmio(
         gpuConfig, commandIdWidth, gpuConfig.commandQueueDepth)))

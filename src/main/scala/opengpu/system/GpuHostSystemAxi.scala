@@ -6,6 +6,21 @@ import opengpu.config.GpuConfig
 import opengpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse, TranslatedWordClient}
 import opengpu.graphics.GraphicsConfig
 
+/** Optional simulation counters; the default product port list is unchanged. */
+class GpuHostPerformanceCounters extends Bundle {
+  val system = new GpuPerformanceCounters
+  val omStallCycles = UInt(64.W)
+  val omConflictCycles = UInt(64.W)
+  val rasterStallCycles = UInt(64.W)
+  val stagingReadBytes = UInt(64.W)
+  val stagingWriteBytes = UInt(64.W)
+  val lowerReadBytes = UInt(64.W)
+  val lowerWriteBytes = UInt(64.W)
+  val translationStallCycles = Vec(3, UInt(64.W))
+  val translationMisses = Vec(3, UInt(64.W))
+  val walkCycles = Vec(3, UInt(64.W))
+}
+
 /** AXI-controlled graphics host attached to the GPU-internal shared L2.
   *
   * CPU and GPU L2 caches are separate. The AXI memory master carries GPU L2
@@ -36,7 +51,8 @@ class GpuHostSystemAxi(
   instructionCacheMissEntries: Int = 4,
   vectorCacheSets: Int = 64,
   vectorCacheWays: Int = 2,
-  memoryAxiDataBytes: Int = 8
+  memoryAxiDataBytes: Int = 8,
+  exposePerformance: Boolean = false
 ) extends RawModule {
   require(numComputeUnits > 0)
   require(!vertCore || fragCore,
@@ -106,6 +122,7 @@ class GpuHostSystemAxi(
     val s_axi_rvalid = Output(Bool())
     val s_axi_rready = Input(Bool())
     val m_irq = Output(Bool())
+    val performance = if (exposePerformance) Some(Output(new GpuHostPerformanceCounters)) else None
 
     val m_axi_awid = Output(UInt(memoryAxiIdWidth.W))
     val m_axi_awaddr = Output(UInt(gpuConfig.xLen.W))
@@ -198,6 +215,7 @@ class GpuHostSystemAxi(
 
     system.io.gpuCommand <> host.io.gpuCommand.get
     host.io.gpuCompletion.get <> system.io.gpuCompletion
+    system.io.graphicsDrained := host.io.graphicsDrained
     system.io.commandResetActive := host.io.commandResetActive.get
     host.io.commandResetDone.get := system.io.commandResetDone
 
@@ -372,13 +390,35 @@ class GpuHostSystemAxi(
       0.U.asTypeOf(system.io.stridedCopyDescriptor.bits)
     system.io.stridedCopyCompletion.ready := true.B
 
+    io.performance.foreach { perf =>
+      def count(value: UInt): UInt = {
+        val counter = RegInit(0.U(64.W))
+        counter := counter + value
+        counter
+      }
+      perf.system := system.io.performance
+      perf.omStallCycles := count(host.io.performance.omStall.asUInt)
+      perf.omConflictCycles := count(host.io.performance.omConflict.asUInt)
+      perf.rasterStallCycles := count(host.io.performance.rasterStall.asUInt)
+      perf.stagingReadBytes := count(host.io.performance.stagingReadBytes)
+      perf.stagingWriteBytes := count(host.io.performance.stagingWriteBytes)
+      for ((client, index) <- Seq(cbClient, fbClient, texClient).zipWithIndex) {
+        perf.translationStallCycles(index) := count(client.io.translationStall.asUInt)
+        perf.translationMisses(index) := count(client.io.translationMiss.asUInt)
+        perf.walkCycles(index) := count(client.io.walkActive.asUInt)
+      }
+      val request = system.io.memoryRequest
+      val bytes = 1.U(8.W) << request.bits.sizeLog2
+      perf.lowerReadBytes := count(Mux(request.fire && !request.bits.isWrite, bytes, 0.U))
+      perf.lowerWriteBytes := count(Mux(request.fire && request.bits.isWrite, bytes, 0.U))
+    }
     system.io.clearPerformanceCounters := false.B
     system.io.invalidateInstructionCache := false.B
     system.io.instructionSatp := host.io.instructionSatp
     system.io.vectorSatp := host.io.vectorSatp
     // `TLB_FLUSH` forwards its scope to both CU MMUs, so an ASID- or
-    // VPN-scoped shootdown leaves other entries warm.  The fixed-function
-    // texture translator tracks no ASID/VPN, so any flush pulse clears it.
+    // VPN-scoped shootdown leaves other entries warm. Graphics TLBs are
+    // ASID-tagged but currently invalidate every entry on any flush pulse.
     system.io.vectorTlbFlush := host.io.tlbFlush
     system.io.instructionTlbFlush := host.io.tlbFlush
 

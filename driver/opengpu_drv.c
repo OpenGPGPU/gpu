@@ -5,10 +5,12 @@
 #include <linux/platform_device.h>
 
 #include "opengpu_device.h"
+#include "opengpu_drm_device.h"
 
 static int opengpu_probe(struct platform_device *pdev)
 {
     struct opengpu_device *gpu;
+    bool render_only;
     int ret;
 
     gpu = devm_kzalloc(&pdev->dev, sizeof(*gpu), GFP_KERNEL);
@@ -36,29 +38,43 @@ static int opengpu_probe(struct platform_device *pdev)
 
     platform_set_drvdata(pdev, gpu);
     ret = opengpu_compute_init(gpu);
-    if (ret)
+    if (ret) {
+        opengpu_hw_fini(gpu);
         return dev_err_probe(gpu->dev, ret,
                              "cannot initialize execution client\n");
-
-    /* Temporary bring-up handoff: display receives a shared buffer explicitly
-     * from core. DRM/GEM replaces this with framebuffer-object ownership. */
-    ret = opengpu_display_init(gpu, &gpu->compute.color);
-    if (ret) {
-        opengpu_compute_fini(gpu);
-        return dev_err_probe(gpu->dev, ret,
-                             "cannot initialize display client\n");
     }
+
+    render_only = of_property_read_bool(pdev->dev.of_node, "opengpu,render-only");
+    ret = opengpu_drm_init(gpu, render_only);
+    if (ret)
+        goto err_compute;
+    if (!render_only) {
+        ret = opengpu_display_init(gpu);
+        if (ret)
+            goto err_compute;
+    }
+    ret = opengpu_drm_register(gpu);
+    if (ret)
+        goto err_display;
 
     dev_info(gpu->dev, "GPU probe: ctrl=%pa+%pa stride=%u mode=%ux%u\n",
              &gpu->hw.regs_phys, &gpu->hw.regs_size, gpu->stride,
              gpu->width, gpu->height);
     return 0;
+
+err_display:
+    opengpu_display_fini(gpu);
+err_compute:
+    opengpu_compute_fini(gpu);
+    opengpu_hw_fini(gpu);
+    return ret;
 }
 
 static void opengpu_remove(struct platform_device *pdev)
 {
     struct opengpu_device *gpu = platform_get_drvdata(pdev);
 
+    opengpu_drm_unregister(gpu);
     opengpu_display_fini(gpu);
     opengpu_compute_fini(gpu);
     opengpu_hw_fini(gpu);

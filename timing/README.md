@@ -1,467 +1,83 @@
 # ASAP7 PPA status
 
-Reproducible flow: ChipAgent ASAP7 physical flow (ORFS), Yosys + ABC at
-500 ps, no retiming, `sv_frontend=native`. Blocks are emitted with
-`sbt -batch 'runMain opengpu.elaboration.EmitPpaRtl <block> <dir>'` and run
-with `scripts/run_graphics_ppa.py` (env `GRAPHICS_PPA_TIMING_EFFORT` selects
-`closure_no_cts` (default) or `explore`; the output directory suffix follows
-the effort). Timing: 1.0 GHz target unless noted, TC corner.
+Current physical status of the checked-in RTL, refreshed 2026-09-20. Every
+figure here names its source manifest and scope. Synthesis estimates,
+register-only STA and post-route STA are separate claims: a completed tool run
+is not timing closure, and a pre-layout number does not predict a routed one.
 
-Current state per block, 2026-09-15. Intermediate candidate/attempt history
-has been pruned; only the latest closed result per block is kept.
+The previous per-block campaign (2026-09-15 and earlier, including results
+measured before the ChipAgent `clock_port` correction) is archived verbatim in
+[history/PPA_2026-09-20.md](history/PPA_2026-09-20.md). Those figures were
+produced with a different flow and are not used as baselines.
 
-## SharedL2Slice
+## Reproducible qualification
 
-Not closed at 1 GHz. The latest run is core-clean, hold-clean and DRC-free; the
-only residual is the virtual-IO boundary setup group (see the whole-block limit
-below). Five post-route attempts on record:
+`scripts/qualify_ppa.py` emits current RTL with `EmitPpaRtl`, then runs the
+ChipAgent ASAP7 (ORFS) flow with:
 
-| Recipe | Core Fmax | Worst setup (all groups) | Worst hold | Area | Power | DRC |
-|---|---:|---:|---:|---:|---:|---:|
-| LVT closure_no_cts, `syn` engine, pendingEntry fanout split (no explicit io_delay) | 1069.09 MHz | -748.10 ps (1322 viol.) | -17.94 ps (4 viol.) | 20329.2 um^2 | 125.07 mW | 455 |
-| LVT closure_no_cts, yosys no-retime, io_delay 20%, margin 50 ps, util 15 / density 0.30 | 986.36 MHz | -378.07 ps (1142 viol.) | -16.20 ps (12 viol.) | 20729.9 um^2 | 129.85 mW | 469 |
-| LVT closure_no_cts, yosys no-retime, same recipe, registered missEngine fill -> SRAM write stage | 1046.57 MHz | -318.44 ps (1151 viol.) | -19.53 ps (33 viol.) | 20824.6 um^2 | 130.93 mW | 474 |
-| same fill-pipeline RTL, adaptive centered grid, 10 um channel (`compute_unit_sram_macro_placement.tcl`) | 1027.75 MHz | -352.21 ps (1149 viol.) | +0.90 ps (0 viol.) | 21129.3 um^2 | 133.52 mW | 1 |
-| same, 12 um channel (`l2_sram_macro_placement_adaptive.tcl`) | 1026.25 MHz | -377.13 ps (1146 viol.) | +1.52 ps (0 viol.) | 21006.8 um^2 | 132.31 mW | 0 |
-
-The `syn`-engine run closes the reg-to-reg core (+64.62 ps core slack) but
-fails the virtual-IO groups wholesale; the yosys rerun fixes most of the IO
-gap but its core path degrades (`missEngine.table_0.valid_1 ->
-data_1.memory_6`, a miss-table register to SRAM-macro access, core slack
--13.8 ps).
-
-The third run applies the first suggested lever: the fill handshake now
-captures the MSHR fill (`fillWriteValid`/`fillWriteSet`/`fillWriteWay`/
-`fillWriteTag`/`fillWriteData`/`fillWriteSharers`/`fillWriteFault` in
-`SharedL2Cache.scala`) one cycle before committing the write to the tag/data
-arrays, with a one-cycle lookup bubble while the fresh SRAM read relaunches
-(same-line requests still merge in the MSHR). That removes the former core
-critical path entirely. The new core critical path is
-`atomicRequest_address[3] -> data_0.memory_5` at +44.50 ps, so the core clock
-now closes: 986.36 -> 1046.57 MHz core Fmax and worst all-groups slack
--378.07 -> -318.44 ps. Cost is ~544 sequential cells (the 512-bit refill data
-plus tag/index/way/sharers capture) and +94.7 um^2 / +1.07 mW; hold regresses
-slightly (-16.20 -> -19.53 ps, 12 -> 33 violations) from the added fill
-registers.
-
-The 455-474 routing DRCs are not structural to the macro or the RTL. Every
-violation is a macro pin-access error (`Cut Short`, `Lef58CutSpacingTable`,
-`Lef58SpacingEndOfLine`/`EolKeepOut` on M3/V3), and in the fill-pipeline run
-473 of the 474 land on the three macros in the x=225 column of the fixed 6x3
-`l2_sram_macro_placement.tcl` grid (`data_0.memory_4`, `data_1.memory_2`,
-`tags_0.memory`) - i.e. a placement-dependent pin-access collision, not a
-`64x4x64`-only or routing-congestion problem. DRT plateaus at ~474 from
-iteration ~5 to 64 (`-droute_end_iter 64`), so more iterations do not help.
-
-The fourth run tests the placement hypothesis: keeping the RTL identical and
-swapping only the placement for the adaptive centered grid that signs off DRC 0
-on ScalarBackend (`timing/asap7/compute_unit_sram_macro_placement.tcl`, 10 um
-channels, 9x2 grid) drops DRC 474 -> 1 and clears hold completely (+0.90 ps, 0
-violations vs -19.53 ps / 33). The single survivor is one `Cut Short` (V3,
-`net12581` vs a `data_0.memory` pin). The fifth run widens the channel to 12 um
-(`timing/asap7/l2_sram_macro_placement_adaptive.tcl`) and reaches **DRC 0**
-(empty `5_route_drc.rpt`, 0 antennas) with hold still clean (+1.52 ps, 0
-violations).
-
-The placement trade is real: the adaptive grids move the virtual-IO setup group
-the wrong way (-318.44 ps baseline -> -352.21 at 10 um -> -377.13 at 12 um) even
-as they fix DRC and hold. The core clock is unaffected and still closes
-(+27.0 ps at 10 um, +25.6 ps at 12 um on `atomicRequest_address[...] ->
-data_1.memory_2`). So DRC is fully solvable by placement alone; the block's
-remaining limiter is the virtual-IO boundary, not the macro pins.
-
-The residual setup failure is the virtual-IO boundary group
-(`request_writeData`/`response_readData` capture registers), the same class the
-`syn`-engine run could not fix and which the whole-block section below
-classifies as a parent-level hierarchy concern rather than something the block
-can pipeline away. Next lever: the parent IO boundary (the DRC side is now
-settled - placement alone reaches 0).
-
-Artifacts:
-
-- `generated/ppa_runs/025_shared_l2_slice_lvt_closure_no_cts_pendingentry_tc_lvt_1ghz/`
-- `generated/ppa_runs/head_shared_l2_slice_tc_lvt_1ghz_yosys_noretime_closure_u15_d30_margin50/` (fill-pipeline yosys run; overwrote the pre-pipeline yosys baseline)
-- `generated/ppa_runs/probe_l2_adaptive_placement_shared_l2_slice_tc_lvt_1ghz_closure_u15_d30_margin50/` (adaptive grid, 10 um channel; DRC 1)
-- `generated/ppa_runs/probe_l2_adaptive12_placement_shared_l2_slice_tc_lvt_1ghz_closure_u15_d30_margin50/` (adaptive grid, 12 um channel; DRC 0)
-
-The ORFS GDS export step fails in the local image because the KLayout merge
-artifact is not produced; DEF/ODB and post-route SPEF STA remain valid.
-
-## ScalarBackend / FPU / Vector pipeline blocks
-
-Per-block closure at 1 GHz / TC / SLVT, Yosys no-retime recipe unless noted.
-SRAM macro placement keeps a 10 um routing channel
-(`timing/asap7/compute_unit_sram_macro_placement.tcl`).
-
-| Block | Effort | Core Fmax | Worst setup slack | DRC |
-|---|---|---:|---:|---:|
-| ScalarBackend | closure_no_cts, no retime, util 30, density 0.50, margin 50 ps | 1433.9 MHz | +61.3 ps | 0 |
-| Fp32FmaLane | closure, no retime | 1284.9 MHz | +204.9 ps | 0 |
-| FpuBackend | closure, no retime, density 0.60 | 1152.3 MHz | +19.7 ps | 0 |
-| VectorFmaAlu | closure_no_cts, no retime | 1018.8 MHz | +18.4 ps | 0 |
-| VectorFcvtAlu | closure_no_cts, no retime | 1124.1 MHz | +110.4 ps | 0 |
-
-ScalarBackend post-route result: 1433.94 MHz core Fmax, +61.33 ps setup /
-+19.29 ps hold (all groups, zero violations), 7297.55 um^2, 63.51 mW,
-DRC 0 / antenna 0. This replaces the older LVT `syn`-engine attempt
-(`032_scalar_backend_tc_lvt_1ghz_closure`, -28.4 ps, DRC 57), which never
-signed off.
-
-Artifact directories:
-
-- `generated/ppa_runs/head_scalar_backend_tc_slvt_1ghz_yosys_noretime_closure_u30_d50_margin50/`
-- `generated/ppa_runs/095_vectorfmaalu_tc_slvt_1ghz_yosys_noretime_closure/`
-- `generated/ppa_runs/100_vectorfcvtalu_tc_slvt_1ghz_yosys_noretime_pipe5_closure/`
-- `generated/ppa_runs/113_fp32fmalane_tc_slvt_1ghz_yosys_noretime_infsign_closure/`
-- `generated/ppa_runs/114_fpu_backend_tc_slvt_1ghz_yosys_noretime_pipe5_infsign_closure_density60/`
-
-## Vector submodules
-
-Synthesis gate (SLVT, TC, no-retime, `abc_clock_period_ps=500`): all nine
-submodules pass 1 GHz pre-layout.
-
-Physical closure, closure/`closure_no_cts` with the square-grid SRAM layout
-and the noted util/density, no retime:
-
-| Block | Effort | Status | Worst setup slack |
-|---|---|---|---:|
-| VectorIntegerAlu | closure_no_cts, util 25, density 0.60 | PASS | +5.08 ps |
-| VectorDivideAlu | closure_no_cts, density 0.5 | PASS | +296.7 ps |
-| VectorMemoryUnit | closure_no_cts, density 0.5 | PASS | +243.5 ps |
-| VectorConfigurationUnit | closure_no_cts, density 0.5 | PASS | +435.3 ps |
-| VectorExecutionDispatch | - | N/A | combinational only |
-| VectorMultiplyAlu | closure_no_cts, util 15, density 0.55 | PASS | +198.9 ps |
-| VectorRegisterFile | closure, density 0.6 | PASS | +28.3 ps |
-| VectorIssueStage | closure, density 0.6 | PASS | +68.4 ps |
-| VectorRegisterManager | closure, util 25, density 0.6, 3x16 grid | PASS | +71.4 ps |
-
-VectorIntegerAlu post-route result: 1005.11 MHz core Fmax, 9826.54 um^2,
-83.02 mW, zero hold violations, DRC errors, and antenna violations.
-Artifacts: `generated/ppa_runs/head_ppa_scaling_pair_vector_integer_tc_slvt_1ghz_closure_u25_d60/`.
-
-## Graphics blocks
-
-Graphics emitters are available through `EmitPpaRtl`; physical runs use
-ASAP7 TC/SLVT, 1 GHz, 25% utilization, density 0.60, no retiming. Emitted RTL
-is under `generated/ppa_refresh_head/`, physical artifacts under
-`generated/ppa_runs/head_*` (post-route unless noted).
-
-The bounded complete integration tops are `gpu-host-system-fc` and
-`gpu-host-system-vc`. They include the AXI host, fixed-function graphics,
-shared shader CU, general compute CU, DMA engines and shared L2. Both use a
-16x16 render target and reduced cache/L2 capacities so full-top synthesis can
-be attempted without changing the product defaults. For example:
+- a real top-level `clock` port (`--clock clock`) at a 1000 ps target, TC
+  corner, SLVT cells, `syn` engine, no retiming;
+- explicit SRAM macro `.lib`/`.lef` from `depends/asap7_sram_0p0` for every
+  `srambank_*` cell the RTL instantiates, with the adaptive placement TCL;
+- an input/output delay budget of 25% of the period on every boundary port;
+- an immutable run directory holding `manifest.json` (git commit, dirty flag,
+  SHA-256 of every tracked source, emitted RTL and macro file, plus the exact
+  flow inputs), `result.json` (verdict, QoR, critical path) and the ORFS run
+  artifacts.
 
 ```sh
-sbt -batch 'runMain opengpu.elaboration.EmitPpaRtl gpu-host-system-vc generated/ppa_refresh_head/gpu_host_system_vc'
-scripts/run_graphics_ppa.py generated/ppa_refresh_head/gpu_host_system_vc GpuHostSystemAxi synthesis-only
+# Emit current RTL, then qualify a block.
+sbt -batch 'runMain opengpu.elaboration.EmitPpaRtl gpu-system generated/qualification/rtl/gpu-system'
+python3 scripts/qualify_ppa.py generated/qualification/rtl/gpu-system GpuSystem \
+    --output generated/qualification/ppa/gpu-system --stage synthesis
+python3 scripts/qualify_ppa.py generated/qualification/rtl/strided-copy StridedCopyEngine \
+    --output generated/qualification/ppa/strided-copy --stage route
 ```
 
-| Block | Status | Result |
-|---|---|---|
-| CommandBufferStage (scene/scalar) | post-route PASS | 1779.42 MHz, +55.829 ps, 5412.91 um^2, 29.10 mW, DRC 0 |
-| CommandBufferStage (vertex) | post-route PASS | 1859.66 MHz, +70.154 ps, 1828.67 um^2, 10.02 mW, DRC 0 |
-| TriangleRasterizer | post-route PASS | 1011.01 MHz, +10.895 ps, 8185.10 um^2, 411.18 mW, DRC 0 |
-| KernelFragStage | post-route FAIL on timing (explore), DRC clean | 995.2 MHz, core setup -4.9 ps (all groups -4.9 ps, vclk MET), hold -84.6 ps, 27148.8 um^2, 313.62 mW, DRC 0 |
+The script exits 2 when the flow completes but the physical verdict is FAIL, so
+a failing run is recorded as a failure and cannot be mistaken for closure.
 
-KernelFragStage request-queue registers: sequential cell count 29906
-(+6.6% vs the pre-queue state), total instances 870016, IO-virtual-clock
-Fmax 1421 MHz (> 1 GHz target, IO/ready boundary register closure holds),
-0 DRC / 0 antenna. Two pipeline stages have been added on the staging path
-(10/10 KernelFragStageSpec tests pass after each):
+## Current results (2026-09-20)
 
-1. Producer write pipe: quad + resolved slot + pre-computed lane indices
-   captured at accept, slot arrays written one cycle later. Removed the old
-   `prodSlot -> fragE0_0_27` critical path (606.2 -> 667.4 MHz,
-   `head_kernel_frag_stage_wp_tc_slvt_1ghz_explore_u25_d60/`).
-2. Consumer word-request register: a 1-deep queue between the staging FSM
-   and the word->line bridge. Removed the `index -> execLane/field mux ->
-   bridge -> wordMemReqPipe.ram` critical path (667.4 -> 777.2 MHz, setup
-   violations 7594 -> 4977,
-   `head_kernel_frag_stage_wp2_tc_slvt_1ghz_explore_u25_d60/`).
+Both current runs use the same RTL revision (`generated/qualification/rtl/`),
+the same 1 GHz / TC / SLVT recipe and the same 25% boundary delay budget.
 
-The `wp2` critical path was the write-pipe drain (`wpLaneIdx(2) ->
-fragE0_0_8`, 1262 ps / 18 cells, ~50% net delay): the per-entry write
-decode fans out over 2 slots x 32 entries x 10 arrays spread across the
-die.
+| Run | Scope | Core Fmax | Worst setup | Hold | DRC | Area | Power | Verdict |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| `gpu-system` | synthesis estimate | 505.13 MHz | -979.70 ps (TNS -1.47M ps) | n/a | n/a | 155,887 um^2 | 1.021 W | **FAIL** |
+| `strided-copy` | post-route, includes IO | 505.06 MHz | -979.97 ps (718 viol., TNS -116.4 kps) | +30.70 ps (0 viol.) | 0 | 3,345 um^2 | 254.3 mW | **FAIL** |
 
-The 2026-09-09 RTL candidate replaces the binary lane indices with registered
-one-hot slot/quad-group write strobes and statically indexed array writes.
-The strobes are decoded at quad acceptance, alongside the existing data
-registers, preserving the one-cycle producer write latency and one quad per
-cycle throughput. Its full `explore` physical result is now available under
-`generated/ppa_runs/head_kernel_frag_stage_onehot_tc_slvt_1ghz_explore_u25_d60/`:
-724.69 MHz core Fmax, -379.90 ps core setup slack, -78.69 ps hold slack,
-24,937 um^2 area, 304.01 mW, and zero DRC/antenna errors. This is 52.47 MHz
-slower than the 777.16 MHz `wp2` baseline; the critical path moved to
-`index -> wordReqQ.ram[31]`, so the one-hot write change did not address the
-dominant post-route path.
-Emitted RTL is under `generated/ppa_refresh_head/kernel_frag_stage_onehot/`.
-Validation: all 10 existing KernelFragStageSpec cases pass, as does a new
-case covering consecutive quad acceptance, full batches, both slots and
-slot reuse, stalled memory/output, and per-lane staging/edge preservation.
+`gpu-system` is the bounded integrated top (`GpuHostSystemAxi`: AXI host,
+fixed-function graphics, shared shader CU, general compute CU, DMA engines,
+shared L2). Its synthesis gate instantiates 62 SRAM macros and 801,488 cells;
+the virtual-IO clock closes at 828.7 MHz but `core_clock` does not. Evidence:
+`generated/qualification/ppa/gpu-system/manifest.json`, `flow/orfs-work/logs/base/1_synth.json`,
+`flow/orfs-work/reports/base/1_synth.rpt`.
 
-The packed-record follow-up removes the one-entry `wordReqQ` and stores each
-2x2 quad as one producer-side record, while selecting consumer fields
-individually to keep FIRRTL legal. Its full physical result is
-807.91 MHz, -237.77 ps core setup slack, -83.04 ps hold slack, 26,245 um^2,
-324.65 mW, and zero DRC/antenna errors. This improves on the one-hot result
-by 83.22 MHz and moves the critical path to `index[2] -> wordReqReg_data[16]`.
+`strided-copy` reaches full detailed routing with DRC 0 / antenna 0 and clean
+hold. The failing `core_clock` path is flop-to-flop, 84 cells, 92.65% cell
+delay, dominated by `AND2`/`XOR2`/`MAJ` cells — a descriptor address-arithmetic
+carry cone, not a routing artifact. The same near-identical core Fmax and WNS
+appear in the integrated `gpu-system` synthesis, so this cone is a current
+limiter of the integrated top as well. Evidence:
+`generated/qualification/ppa/strided-copy/result.json`.
 
-The subsequent micro-op register experiment is complete and regresses to
-711.60 MHz (core setup -405.29 ps, hold -87.32 ps, 26,228 um^2,
-318.35 mW, DRC/antenna 0). Its critical path is `index[3] ->
-microReqReg_data[18]` at 1383.94 ps, showing that an extra register only moves
-the existing field/index mux cone; it does not reduce the cone. The packed
-record version remains the best measured implementation.
+## Parent-interface timing budgets
 
-The next selector-register experiment keeps separate quad and lane selectors
-for the staging request data path, advancing them with each word response so
-`index` no longer drives the packed-record muxes. It reaches 846.21 MHz,
--181.75 ps core setup slack, -87.13 ps hold slack, 26,590 um^2, 311.21 mW,
-and zero DRC/antenna errors. The critical path is now
-`requestQuadIdx[1] -> wordReqReg_data[3]`.
+The 25% boundary budget is a placeholder, not a sign-off: it models a parent
+that launches and captures block IO with a quarter-period of external delay. The
+reported `vclk_core_clock` groups (input-to-register and register-to-output) are
+always weaker than the internal `core_clock`, because the flat flow places the
+boundary capture registers far from the die edge. A meaningful top-level sign-off
+needs per-interface budgets derived from the enclosing SoC (source clock,
+skew, and the actual launch/capture registers), which do not exist yet. Until
+then, internal `core_clock` closure is the only transferable claim, and even
+that is not met by the current RTL at 1 GHz.
 
-The selector-quad experiment captures the whole 4-lane record (`requestQuad`)
-into a register before issuing its words, so the dynamic record-array select
-leaves the word-request data path. It measures 864.12 MHz core Fmax, -157.25 ps
-core setup slack, 332.43 mW, DRC 0 — above `selectors` but below the
-output-register variants described next.
+## Status
 
-Registering the output port (`outreg`) removes the emit lane-select mux from
-the top-level output cone: 898.15 MHz core Fmax, -113.40 ps core setup slack,
--101.63 ps hold, 327.93 mW, DRC 0. Rerunning with the request-record capture
-reverted (the register-only `outreg2` variant) reaches 937.11 MHz, -67.11 ps
-core setup slack, -100.70 ps hold, 325.40 mW, DRC 0.
-
-The split emit-cache variant (`emitquad`) captures a whole quad of emit payload
-into a register selected by the batch-derived index and improves to 928.76 MHz,
-but the cache-fill select is still `index`-derived. Replacing that select with a
-dedicated registered counter (`emitptr`) keeps the increment and the
-`index`-derived mux off the wide cache-fill read and collapses the per-cycle
-output selection to a 4:1 mux over the 2-bit lane index. It reaches 951.78 MHz
-core Fmax, -109.51 ps setup / -106.98 ps hold (all groups; core
-critical-path slack -50.67 ps), 27,538.4 um^2, 320.63 mW, and zero DRC/antenna
-errors. The critical path is now `requestQuadIdx[2] ->
-requestQuad_lanes_1_depth[6]`. All 11 KernelFragStageSpec cases pass. Emitted
-RTL is under `generated/ppa_refresh_head/kernel_frag_stage_emitptr/`.
-
-The `emitptr` critical path exposed the real limit of the staging read: the
-binary `requestQuadIdx` bit fanned out to every field mux of every quad entry
-(8 quads x 4 lanes x ~10 fields, ~4k loads), so the resizer built a chain of
-~10 BUFx16f cells (~856 ps) between the register and the mux. Replacing the
-binary read index with a registered one-hot selector (`requestQuadSel`, shifted
-once per quad and re-armed per write burst) gives each entry its own select net,
-cutting the fanout per net by the entry count; `execSlot` moves after the
-one-hot mux so it drives one load per output bit. This `onehotread` variant
-reaches 997.72 MHz core Fmax, -2.28 ps core setup slack (all groups -117.08 ps,
-the virtual-IO path), -104.81 ps hold, 26,968.6 um^2, 295.52 mW, and zero
-DRC/antenna errors. Setup violations drop 56 -> 2 and setup TNS -832 -> -119 ps,
-a +45.9 MHz gain that essentially reaches the 1 GHz target on the core clock.
-The staging path no longer appears in the timing report at all: the new core
-critical path is inside the texture unit
-(`texUnit.texWidthReg[4] -> texUnit.gradReg_1[44]`, 37 cells, 84.8% cell delay),
-so the remaining core headroom is in the sampler's gradient path, not the
-fragment staging. All 11 KernelFragStageSpec cases pass. Emitted RTL is under
-`generated/ppa_refresh_head/kernel_frag_stage_onehotread/`.
-
-The `gradsplit` variant pipelines the texture-unit extent multiply in
-`TexSampleUnit`, which was the new core critical path after `onehotread`. The
-32x14 gradient product (`diffReg(i) * texWidthReg/texHeightReg`) sat in one
-cycle; its post-route path ran `texWidthReg[4]` through a 6-deep BUFx16f fanout
-chain (~286 ps), a ~7-stage FA carry chain plus one HAxp5 (~440 ps), and a
-prefix-adder tail (~200 ps) into `gradReg[44]`. Splitting the 32-bit difference
-into two 16-bit halves gives two 16x14 partial products per entry (registered in
-`gradLoReg`/`gradHiReg`, exact: `diff = diffLo + diffHi*2^16`) that recombine into
-`gradReg` one cycle later in a new `sAdd` FSM state. It reaches 999.82 MHz core
-Fmax, -0.18 ps core setup slack (all groups -103.44 ps), -107.67 ps hold,
-27,428.4 um^2, 320.31 mW, and zero DRC/antenna errors: setup TNS improves
--119.36 -> -103.62 ps and the virtual-IO all-groups worst path gains 13.6 ps.
-Cost is +459.8 um^2 and +24.8 mW for the extra partial-product registers and
-recombine adder. The texture gradient path is no longer in the timing report;
-the new core critical path is the emit-cache fill mux
-(`emitQuadPtr[0] -> emitQuad_3_e2[54]`, 29 cells, ~680 ps of the 978 ps path in
-a BUFx16f/BUFx6f chain driven by the binary `emitQuadPtr` fanout). All 11
-KernelFragStageSpec and 3 TexSampleUnitSpec cases pass. Emitted RTL is under
-`generated/ppa_refresh_head/kernel_frag_stage_gradsplit/`.
-
-The `emitquadsel` variant applies the same one-hot-selector fix to the emit
-cache: the binary `emitQuadPtr` selected the quad loaded into the emit cache,
-and its bit drove the fill enable of every field register of every quad entry
-(~4 lanes x 6 fields x ~40 bits x 8 quads), so the resizer built a ~680 ps
-BUFx16f/BUFx6f chain on it. A registered one-hot `emitQuadSel` (shifted once per
-loaded quad, re-armed when the walk restarts) gives each entry its own select
-net, mirroring `requestQuadSel`. This is the largest single result so far:
-worst setup slack across all groups improves -103.44 -> -4.86 ps and setup TNS
--103.62 -> -6.92 ps (5 violations), so the virtual-IO groups now close and the
-core clock is the sole remaining setup limiter. It also lowers area
-27,428.4 -> 27,148.8 um^2, power 320.31 -> 313.62 mW, and hold -107.67 ->
--84.59 ps; DRC/antenna stay 0. The reported core-clock Fmax dips slightly to
-995.17 MHz (from 999.82) because removing the large buffer tree shifted
-placement and the new core critical path is `execSlot -> texUnit.sampler.lodFracReg[5]`
-(28 cells, 238 ps of BUFx16f), a 2:1 `execSlot` mux into the sampler LOD cone
-that was previously hidden behind the emit path. All 11 KernelFragStageSpec and
-3 TexSampleUnitSpec cases pass. Emitted RTL is under
-`generated/ppa_refresh_head/kernel_frag_stage_emitquadsel/`.
-
-A `texcfg` attempt tried to remove that `execSlot` fanout by registering the
-selected sampler configuration (`RegNext(slotTex*(execSlot))` for all seven
-fields) so the sampler would not depend on `execSlot` combinationally. It
-regressed hard and was reverted: worst setup slack -4.86 -> -119.72 ps, setup
-TNS -6.92 -> -16,536.6 ps (399 violations), core Fmax 995.17 -> 893.08 MHz
-(area 27,148.8 -> 27,084.8 um^2, power 313.62 -> 311.80 mW). The added
-registers shifted placement and exposed a much worse path in the write-pipe
-drain (`wpWrite_0_0 -> fragRecords_0_0_v_1[10]`, 1090 ps, 499 ps of BUFx16f and
-45% net delay), so the config-register idea is not viable as-is. The
-`emitquadsel` RTL remains checked in and is the best measured implementation.
-
-Core utilization is a larger lever than any remaining RTL change. The block had
-always been run at 25%; sweeping util at fixed density 0.60 with the
-`emitquadsel` RTL and `explore` gives:
-
-| util | core Fmax | vclk Fmax | setup (all groups) | setup viol. | setup TNS | hold | hold viol. | hold TNS | area | power |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 25% | 995.17 | 1264.21 | -4.86 ps | 5 | -6.92 | -84.59 ps | 2553 | -127693 | 27148.8 | 313.62 |
-| 35% | 1025.50 | 1121.07 | -67.22 ps | 32 | -1686.6 | -67.15 ps | 2158 | -44387 | 26979.7 | 313.64 |
-| 45% | 995.02 | 1084.07 | -5.00 ps | 1 | -5.00 | -39.85 ps | 1350 | -12627 | 26839.7 | 310.81 |
-| 50% | 1022.98 | 1079.55 | +13.27 ps | 0 | 0 | -34.79 ps | 990 | -6938 | 26784.6 | 310.03 |
-
-u35 is a non-monotonic bad point: the core clock is pushed past 1 GHz
-(+24.87 ps) but the virtual-IO input->register group collapses to -67.22 ps.
-Clock leaf insertion drops (306 -> 231 ps) yet the input data arrival rises
-~95 ps, so the cross-domain group regresses. u45 and u50 dominate the 25%
-baseline across the board, with u50 the first point to close setup on every
-group: worst slack +13.27 ps, 0 setup violations, both clocks > 1 GHz, hold
-violations down 2553 -> 990 (TNS -127693 -> -6938 ps), lowest area (26784.6
-um^2) and power (310.03 mW), DRC/antenna 0. The setup bottleneck also changes
-character: at 25% the reported path was the `execSlot` fanout/buffer mux into
-`texUnit.sampler.lodFracReg`, while at u50 the critical path is
-`prodSlot -> wpRecord_lanes_2_e2[60]` and is MET (+22.47 ps, 963 ps data path),
-so no further RTL pipelining is required for the core clock. 55% was also
-attempted and abandoned: detailed-route iteration 0 climbed to 19,380 DRC
-violations in 48 min (u50 converged 18 -> 8 -> 5 -> 0), so 50% sits at the
-congestion cliff and higher utilization is not viable. All 990 remaining
-hold violations are the virtual-IO boundary class (worst
-`io_texLodBias[0] -> wpTexLodBias[0]`: ideal output-port launch clock against a
-~250 ps propagated `core_clock` capture insertion); reg-to-reg hold is clean.
-Masking the core input buses with `io_false_path_ports`
-(`io_tex*`, `io_fragIn_bits*`, `io_fragUv*`, `io_wordMemResp_bits*`,
-`io_memResp_bits*`, `io_shaderPc`, `io_kernarg*`) confirms the classification:
-setup is untouched (+13.27 ps, 0 violations) and hold falls 990 -> 529
-violations / -34.79 -> -27.60 ps / TNS -6938 -> -4547 ps, with the new worst
-path on another boundary signal (`io_wordMemReq_ready` ->
-`wordMemReqPipe.maybe_full`). No selective constraint clears the residual; only
-blanket IO false-pathing would, which is not a meaningful carry-boundary
-sign-off — these paths belong to the parent. Emitted RTL is unchanged
-(`emitquadsel`) at `generated/ppa_refresh_head/kernel_frag_stage_emitquadsel/`.
-
-Graphics artifact directories:
-
-- `generated/ppa_runs/head_command_buffer_scalar_tc_slvt_1ghz_closure/`
-- `generated/ppa_runs/head_command_buffer_vert_tc_slvt_1ghz_closure/`
-- `generated/ppa_runs/raster_quad_incr_edges_1ghz_yosys_noretime_closure_util25_density60/`
-- `generated/ppa_runs/head_kernel_frag_stage_wp2_tc_slvt_1ghz_explore_u25_d60/`
-- `generated/ppa_runs/head_kernel_frag_stage_onehot_tc_slvt_1ghz_explore_u25_d60/`
-- `generated/ppa_runs/head_kernel_frag_stage_packed_tc_slvt_1ghz_explore_u25_d60/`
-- `generated/ppa_runs/head_kernel_frag_stage_selectors_tc_slvt_1ghz_explore_u25_d60/`
-- `generated/ppa_runs/head_kernel_frag_stage_selected_quad_tc_slvt_1ghz_explore_u25_d60/`
-- `generated/ppa_runs/head_kernel_frag_stage_outreg2_tc_slvt_1ghz_explore_u25_d60/`
-- `generated/ppa_runs/head_kernel_frag_stage_emitquad_tc_slvt_1ghz_explore_u25_d60/`
-- `generated/ppa_runs/head_kernel_frag_stage_emitptr_tc_slvt_1ghz_explore_u25_d60/`
-- `generated/ppa_runs/head_kernel_frag_stage_onehotread_tc_slvt_1ghz_explore_u25_d60/`
-- `generated/ppa_runs/head_kernel_frag_stage_gradsplit_tc_slvt_1ghz_explore_u25_d60/`
-- `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u25_d60/`
-- `generated/ppa_runs/head_kernel_frag_stage_texcfg_tc_slvt_1ghz_explore_u25_d60/` (reverted)
-- `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u35_d60/` (bad point)
-- `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u45_d60/`
-- `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u50_d60/` (best)
-- `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u50_d60_iofp/` (io false-path probe)
-- `generated/ppa_runs/head_kernel_frag_stage_emitquadsel_tc_slvt_1ghz_explore_u55_d60/` (aborted, congestion)
-
-`closure_no_cts` / `closure` note for large blocks: `repair_timing
--repair_tns 100` does not converge on KernelFragStage (~870k instances; WNS
-plateaus and the stage spins indefinitely; the Sep-4 closure attempt
-`head_kernel_frag_stage_tc_slvt_1ghz_closure` died mid-flow with no metrics).
-Use `explore` for this scale.
-
-## ChipAgent clock-port correction (2026-09-19)
-
-ChipAgent defaulted `clock_port` to `clk` while Chisel emits `clock`, so the
-generated SDC created a **virtual** `core_clock` with no port target. Every
-ChipAgent "core Fmax" number above that was produced without this fix is
-invalid, including the SharedL2Slice "not closed" verdict and the
-KernelFragStage 995-1023 MHz figures. ChipAgent now auto-detects the clock
-port from the RTL and errors loudly when it is missing.
-
-Re-measured with real clocks (`clock_port='clock'`, SPEF parasitics):
-
-| Block | Recipe | Core Fmax | Setup | Hold | DRC | Verdict |
-|---|---|---:|---:|---:|---:|---|
-| SharedL2Slice | syn, LVT/TC, u15/d30, adaptive 12um, io_delay 25%, io false-paths | 1086.27 MHz | +79.41 ps (0 viol.) | +23.61 ps (0 viol.) | 0 | **CLOSES** |
-| KernelFragStage (emitquadsel+minusone) | syn, SLVT/TC, u50/d60, io_delay 25% | 837.86 MHz | -235.45 ps (213 viol.) | +15.73 ps (0 viol.) | 0 | IO-limited (see below) |
-
-SharedL2Slice artifact: `generated/chipagent_asap7/shared_l2_slice_clkfix/`.
-
-KernelFragStage internals (flop-to-flop, IO excluded via `set_false_path
--from/to [all_inputs/outputs]` on the routed ODB): **WNS 0.000, TNS 0.000,
-zero violations** — the block logic closes at 1GHz with margin (best shown
-+321 ps, `execSlot -> outValid_*`). All 200+ remaining violations start at
-input ports (157x `io_kernelTexSample_valid`, 32x
-`io_wordMemResp_bits_transactionId`, 11x `io_out_ready`) or are pure
-input-to-output feedthroughs (`io_kernelTexSample_valid ->
-io_kernelVectorTexSample_ready`, -490.96 ps). Same hierarchy verdict as
-SharedL2Slice: the boundary belongs to the parent.
-
-RTL lever landed for the compare cone: `TextureUnit` pre-computes
-`levelWMinusOne`/`levelHMinusOne` instead of eight combinational
-`levelW/H - 1.U` subtracts in `sIdx` (violations 342 -> 213, setup TNS
--14598 -> -5822 ps; all TextureUnitSpec + KernelFragStageSpec pass).
-Remaining worst internal cone is the `levelW * levelH` 14x14 multiply in the
-`sLevel` walk accumulate; pipelining it changes walk latency and needs a
-product decision. The `syn` engine ignores ORFS `SWAP_ARITH_OPERATORS` /
-`ABC_CLOCK_PERIOD_IN_PS` (verified: identical QoR with and without).
-
-ChipAgent tooling fixed alongside: clock auto-detect + fail-loud SDC, and
-`high_fanout_nets` substring matching (yosys canonicalization mangles net
-names, so exact-name patterns silently no-oped).
-
-## Full GpuSystem flat-1GHz verdict (2026-09-20)
-
-No. Synthesis gate already fails: 591.9 MHz, setup WNS -689.48 ps, TNS
--2.27M ps over 971,321 instances / 974,596 nets / 7,511 IOs (SLVT/TC,
-`syn`, no SRAM blackboxes — all memories are flop arrays). Wire delay
-only worsens pre-layout numbers, so no place/route option can close this.
-
-Breakdown (50 worst core_clock paths): worst flop-to-flop -622.3 ps
-(ALU-flavored cone: MAJ carry chains + AO select + ~20-deep AND reduce);
-worst IO -689.5 ps (`io_copyCompletion_ready` → control) and -614.8 ps
-(`io_stridedCopyDescriptor_bits_height[0]` → control). Prime suspect is
-`StridedCopyEngine` descriptor validation: `lastRow * sourceStride` /
-`lastRow * destinationStride` 32-bit multiplies feeding the overflow
-OR-reduce and the nested `descriptorError` mux — one cone implicated in
-all three worst classes. Fix is RTL pipelining of descriptor decode
-(+1 cycle accept latency), a product decision, not a flow tweak.
-
-Scale note: at ~1M flat instances this also exceeds what the local ORFS
-image has proven (repair loops do not converge past ~200-400k placed
-instances). The `gpu-system` emitter sets `useBlackBoxes = false`; with
-real SRAM macros the instance count and the flop-array read-mux cones
-would both shrink dramatically. Per-block closure plus parent budgets
-remains the working methodology (SharedL2Slice 1086 MHz, KernelFragStage
-internals clean).
-
-Artifact: `generated/chipagent_asap7/gpu_system_synth/` (1_synth.odb,
-synthesis_sta.log).
-
-## Whole-block physical-flow limit (current)
-
-Whole-block `VectorBackend` (~404k cells, 48 SRAM macros) cannot close in the
-flat local ORFS image: the worst path is always a virtual input port to a
-block-internal capture register; the flat placer puts the capture register
-near its consumer, far from the die edge, so the port wire stays long no
-matter how many boundary/skid registers are added. This is a hierarchy /
-top-level integration concern, not something closable by RTL pipelining
-inside the block. Per-block closure (tables above) is the correct and
-essentially complete methodology. Tooling supplied for this: the physical
-flow supports `io_delay_percent` (relaxed boundary assumption) and
-`io_false_path_ports` (emits `set_false_path -from` and `-to`).
+1 GHz is a design objective, not an achieved milestone. The next measured lever
+is RTL pipelining of the strided-copy descriptor decode (the shared
+`lastRow * stride` product feeding the bound check), which is the confirmed
+critical cone in both runs. That changes accept latency by one cycle and is a
+product decision, not a flow tweak.

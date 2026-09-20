@@ -91,6 +91,7 @@ class RenderCore(
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
     }
+    val performance = Output(new GraphicsPerformanceEvents)
     val done = Output(Bool())
   })
 
@@ -132,6 +133,7 @@ class RenderCore(
   rp.io.stencilZFailOp := io.stencilZFailOp
   rp.io.stencilZPassOp := io.stencilZPassOp
   rp.io.cullMode := io.cullMode
+  io.performance := rp.io.performance
   rp.io.sampleMode := io.sampleMode
   rp.io.texEnable := io.texEnable
   rp.io.texBase := io.texBase

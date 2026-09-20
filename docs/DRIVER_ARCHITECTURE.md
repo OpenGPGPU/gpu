@@ -1,149 +1,56 @@
-# Linux Driver Architecture
+# Linux driver architecture
 
-## Architecture
+The platform owns device and DRM lifetime. Execution, scheduling, memory and
+KMS are separate responsibilities:
 
-The driver uses a layered DRM architecture with downward-only dependencies:
+| File | Responsibility |
+|---|---|
+| `opengpu_drv.c` | Probe/remove, subsystem order, render-only selection |
+| `opengpu_drm_device.c` | DRM allocation/registration, ioctl table, GEM and dma-buf hooks |
+| `opengpu_hw.c` | MMIO, IRQ, unified submission, fences, reset and bounded recovery |
+| `opengpu_memory.c` | Coherent DMA buffer allocation/free |
+| `opengpu_mmu.c` | Page tables, ASIDs, VA windows and shootdown |
+| `opengpu_compute.c` | Contexts, binding validation, immutable job preparation, opcode execution |
+| `opengpu_scheduler.c` | One scheduler, reservation/syncobj dependencies and common job retirement |
+| `opengpu_display.c` | Connector, display pipe, atomic modeset, page flips and virtual vblank |
 
-```text
-platform/device lifetime
-        |
-hardware services: MMIO, IRQ, reset, queues
-        |
-memory services: DMA and GEM
-       / \
-execution client     display client
-render/compute       DRM/KMS scanout
-```
+`opengpu_scheduler.h` defines the private context/job ownership shared by
+preparation and scheduling. Validation occurs before scheduler submission.
+On successful submission the scheduler owns the job and retained GEM
+references; its common free callback releases every staged buffer. All
+opcodes use the same dependency/fence publication path and one-credit policy.
+Per-job VM remapping occurs when the scheduler runs the job after its
+predecessor has drained.
 
-- `opengpu_drv.c` owns probe/remove, the root device and subsystem lifetime.
-- `opengpu_hw.c` owns register access, interrupts, typed job launch and bounded
-  engine waits. Reset, recovery and power management belong here.
-- `opengpu_memory.c` owns coherent DMA storage and GEM object services.
-- `opengpu_compute.c` owns contexts, resource validation, scheduling,
-  submissions and completion fences.
-- `opengpu_display.c` owns the virtual connector, display pipe, atomic modeset,
-  scanout programming, page flips and vblank.
+The DRM device is allocated and registered from platform probe. KMS only
+configures display objects on that device. Display starts disabled, then
+atomic modesets bind caller-owned GEM framebuffers; it no longer receives
+`gpu->compute.color`. The self-test buffers remain execution-owned and are
+never borrowed by KMS. A DT `opengpu,render-only` boolean omits KMS setup and
+removes MODESET/ATOMIC from that device's feature mask while retaining render,
+GEM and syncobj services.
 
-Display and execution remain independent. They synchronize through GEM
-reservation fences; display never calls execution internals. `SCANOUT_*`
-registers are separate from render-target registers.
+Probe initializes hardware and execution, allocates DRM, optionally creates
+KMS objects and finally registers DRM. Teardown unregisters DRM, shuts down
+KMS, tears down execution and releases hardware services. Managed DRM objects
+remain owned by the platform device. Probe errors unwind initialized services.
 
-Each DRM file owns render contexts. A context owns a scheduler entity, a
-resource-binding table and its latest fence. Submission snapshots command and
-shader data into private DMA storage, validates binding-relative accesses and
-retains all referenced GEM objects until completion. The scheduler resolves
-GEM and sync-object dependencies, submits jobs through the hardware ring and
-signals fences from interrupt-history records.
+Shader snapshots use an explicit validated RV32IMF+V profile. Defined-register
+tracking and bounded memory provenance constrain accesses; this is separate
+from GPUVM isolation. Context VMs still inherit compatibility identity
+mappings. Quiescence precedes satp switches; scoped shootdown handles mapping
+changes and ASID reuse. Graphics TLBs are ASID-tagged but flush all entries on
+any shootdown pulse.
 
-The shader sandbox admits only explicitly validated RV32IMF+V operations.
-Scalar and vector memory accesses are proven to stay within the relevant
-kernarg slices; defined-register tracking prevents stale-register disclosure;
-bounded forward control flow must terminate. Texture and quad instructions are
-allowed only with the required validated resources and lane configuration.
+CPU/GPU visibility uses DMA allocation/cache synchronization, GPU line
+invalidation and reservation fences. KMS waits for render/resolve destination
+write fences. The virtual vblank timer is simulation pacing; actual scanout,
+display timing and PHY remain external.
 
-The display client uses GEM DMA framebuffers in native RGBA8888. Atomic helpers
-wait for render fences before switching `SCANOUT_BASE`. A software 60 Hz vblank
-source provides simulation pacing; physical scanout belongs to external SoC
-display hardware.
+Validation entry points:
 
-Initialization order is platform, hardware, memory, execution, display. Teardown
-unwinds the same sequence in reverse, and each layer frees only what it owns.
-
-### Scope boundaries
-
-- Raw MMIO is not a stable userspace ABI.
-- AMDGPU-scale firmware, VM, TTM and ASIC discovery are deferred until the
-  hardware requires them.
-- Scanout DMA, display timing, hotplug/EDID and HDMI/DP/eDP PHY stay outside GPU
-  RTL.
-
-## Implemented
-
-- Split platform, hardware, memory, execution and display modules.
-- Dedicated scanout register bank and independent render/display ownership.
-- DRM device, render node, GEM DMA buffers, contexts and typed bindings.
-- Immutable command/shader snapshots, shader validation and relocation.
-- Shared DRM scheduler, job and IH rings, implicit GEM synchronization and
-  explicit binary sync objects.
-- Ordered hardware blits with validated GEM-relative ranges, source read
-  fences, destination write fences and syncobj chaining.
-- Ordered hardware patterned fills with validated destination ranges and the
-  same destination-fence and syncobj contracts.
-- Ordered strided copies with validated two-dimensional source/destination
-  ranges and the same reservation-fence contracts.
-- Fragment and vertex core submissions using the shared SIMT compute unit.
-- General-compute submissions with separate shader/kernarg bindings, immutable
-  validated shader snapshots, GEM dependencies and sync-object fences.
-- Generation-tagged compute/DMA events and atomic unified-command fault queries.
-- MSAA submission on both backends (fixed-function and the fragment core) with
-  capability checks, physical-stride validation and a private depth
-  allocation/clear sized to the sample layout. Typed resolve is exposed through
-  `DRM_IOCTL_OPENGPU_RESOLVE` with validated ranges and scheduler fences, and
-  the guest test renders a multisample target, resolves it and scans it out.
-- Caller-owned persistent depth/stencil attachments: `depth_handle`/
-  `depth_offset` bind a validated GEM range and `OPENGPU_SUBMIT_DEPTH_LOAD`
-  continues a render pass across submissions, advertised as
-  `OPENGPU_CAP_PERSISTENT_DEPTH`. The cross-submission continuation is covered
-  by `RenderHostSpec` and the guest test under the Verilator backend.
-- Ordered shared-L2 line-invalidate jobs (`DRM_IOCTL_OPENGPU_INVALIDATE`) over
-  validated 64-byte-aligned GEM ranges, so a caller can make CPU-written memory
-  visible to a later GPU read without a full cache flush. Invalidate once per
-  CPU write (per upload), not per draw: each line costs an L2 lookup and the
-  operation is only worthwhile when the buffer changed. The driver drops the
-  lines of a directly-read binding (texture, vertex buffer, kernarg) when it is
-  bound, which is the upload boundary; shaders are snapshotted instead, and the
-  resolve path invalidates its source implicitly.
-- GEM objects export as dma-bufs whose `end_cpu_access` performs the same
-  invalidate, so a `DMA_BUF_IOCTL_SYNC` CPU-write window is coherent with a
-  later GPU read (the standard interface used by importers and cross-device
-  sharing).
-- An identity-mapped Sv32 GPU MMU (`opengpu_mmu.c`): the driver builds one root
-  table of 4 MiB identity superpages and enables translation for the CU data and
-  instruction paths; a region is split into a second-level table when a 4 KiB
-  page needs a non-default cache policy (Sv32 PTE bits [9:8]). Compute kernargs
-  are mapped uncached. Graphics shader CUs run Bare and still require bind-time
-  cache invalidation. Instruction fetch does not implement per-page cache policy.
-  `UCMD_TLB_FLUSH` supports full, ASID-scoped and VPN-scoped shootdown
-  (`opengpu_hw_flush_tlb_asid` / `opengpu_hw_flush_tlb_vpn`), so a mapping
-  update need not empty the whole TLB; the fixed-function texture translator
-  tracks no ASID and is cleared by any flush pulse. An ASID allocator
-  (`opengpu_asid.h`) and per-VM root tables (`opengpu_mmu_vm_create` /
-  `_activate` / `_destroy`) are in place; a VM clones the global identity map
-  (a later policy split propagates into every live VM root) and all leaf PTEs
-  carry the Sv32 global (G) bit, so an ASID switch reuses the resident
-  translations. Every hardware submission takes a VM and programs `satp` for
-  it inside the submit lock; each DRM context owns a VM that every job from it
-  carries.   `opengpu_mmu_vm_map` maps a VA range to a PA range with non-global
-  leaves, and compute kernargs and fixed-function textures are bound through
-  per-slot VM virtual windows (`opengpu_kernarg_va.h`) so contexts are isolated
-  at the same VA; other clients still pass physical addresses. The graphics
-  address translator tags its TLB entries with the filling ASID, so a VM switch
-  needs no graphics flush and a private page only resolves under its own ASID.
-- Texture translation/access faults drain the render and report an error
-  completion: STATUS.ERROR for legacy submissions, plus IH status 2 and ERROR
-  for queued jobs. The existing IH handler signals the owning fence with -EIO.
-- Texture sampling, shader depth output, discard, quad derivatives, mipmapping
-  and source-over blending in the validated graphics path.
-- D24S8 stencil and GL-style blend factor/equation state: UAPI words 35–37 on
-  both draw forms, layout/enum validation (reserved factors, equations and
-  stencil words rejected), job words 10–12, the `0x13C`–`0x144` registers, and
-  a stencil-gated multi-draw integration test.
-- Atomic modeset, render-fence-aware page flip and virtual vblank events.
-- Fixed-function and shader-backed probe paths selected from capabilities.
-- Unified compute/DMA MMIO register definitions, capability discovery and
-  capability-selected fill/blit/strided-copy submission with legacy fallback.
-- IRQ-driven unified DMA fences with validated completion identity/status,
-  timeout and abort signaling, plus an emulator progress-poll fallback.
-- Safe unified-command reset with explicit recovery semantics. On a timeout or
-  abort the hardware layer requests `UCMD_RESET` when the device advertises
-  `GPU_CAP_UNIFIED_RESET`; `reset_pending` refuses new unified submissions with
-  `-EBUSY` while the drain runs and is cleared when the drain completes (via the
-  shared IRQ or the progress poll). A drain that exceeds the reset window
-  records `OPENGPU_FAULT_RESET_TIMEOUT`, sets `wedged`, and fails later unified
-  submissions with `-EIO` until reload. Faults use `OPENGPU_FAULT_RESET_ISSUED`
-  to record that recovery was attempted.
-
-## Next
-
-- Grow the admitted shader ISA only with matching RTL, validator and ABI rules.
-- Add runtime power management when required by the SoC integration.
+- `python3 scripts/test_driver.py`: seven host programs, including the
+  production MMU implementation with dependency stubs.
+- `scripts/run_arti_gpu.sh`: build the exact driver and boot its DRM submission,
+  persistent-depth, resolve and scanout tests under ARTI/QEMU.
+- `docs/QUALIFICATION.md`: the current evidence matrix and limits.

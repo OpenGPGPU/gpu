@@ -141,8 +141,8 @@ typedef int32_t s32;
  * Bit 2 flushes only entries whose virtual page number matches
  * GPU_TLB_FLUSH_VPN.  Bits 1 and 2 may be combined to drop a single mapping.
  * A set bit 0 dominates the scoped bits; a write with no field set is a
- * no-op.  Any flush pulse also clears the fixed-function texture translator,
- * which tracks no ASID or VPN. */
+ * no-op. Graphics TLBs are ASID-tagged but currently perform a full
+ * invalidate on any flush pulse. */
 #define GPU_TLB_FLUSH_FULL           (1u << 0)
 #define GPU_TLB_FLUSH_ASID           (1u << 1)
 #define GPU_TLB_FLUSH_ASID_SHIFT     3
@@ -151,13 +151,11 @@ typedef int32_t s32;
 #define GPU_TLB_FLUSH_VPN_SHIFT      12
 #define GPU_TLB_FLUSH_VPN_MASK       0xfffffu
 
-/* MSAA sample-mode register (bits 1:0; 0 = 1x, 1 = 2x, 2 = 4x).  Snapshotted
- * on the legacy START path exactly like the other execution config; the
- * job-ring path carries the same mode in job-record word 9. */
+/* Legacy sample-mode shadow register. Unified renders use descriptor word 9. */
 #define GPU_REG_MSAA_CONFIG 0x134
 
-/* Stencil/blend execution config, snapshotted on START like DEPTH_FUNC and
- * mirrored by job-record words 10/11/12.  The unified-command block owns
+/* Legacy stencil/blend shadow config; unified renders use descriptor words
+ * 10/11/12. The unified-command block owns
  * 0xC4..0x130 (plus RESET at 0x138), so these live after it.  Layouts match
  * the per-draw record words 36/37/35. */
 #define GPU_REG_STENCIL_CONFIG    0x13c
@@ -213,7 +211,7 @@ typedef int32_t s32;
 #define GPU_DEVICE_ID          0x4755u   /* 'GU' */
 #define GPU_VERSION            0x0001u
 
-/* ---- CONTROL (write-1 pulse on START) --------------------------------- */
+/* ---- CONTROL (legacy START encoding is inert) ------------------------ */
 #define GPU_CTRL_START         (1u << 0)
 
 /* ---- STATUS (draw + DMA state; DONE/ERROR are w1c) -------------------- */
@@ -246,6 +244,10 @@ typedef int32_t s32;
  * the render command; the descriptor's state fields replace the legacy
  * snapshotted registers. */
 #define GPU_UCMD_OP_RENDER       6u
+/* Opcode-specific RENDER completion status. */
+#define GPU_RENDER_STATUS_SUCCESS             0u
+#define GPU_RENDER_STATUS_MEMORY_FAULT        1u
+#define GPU_RENDER_STATUS_INVALID_SAMPLE_MODE 2u
 #define GPU_UCMD_FLAG_WAIT_DMA   (1u << 0)
 #define GPU_UCMD_FLAG_WAIT_EVENT (1u << 1)
 #define GPU_UCMD_FLAG_SIGNAL_EVENT (1u << 2)
@@ -582,11 +584,9 @@ struct gpu_vert_draw_record {
 #define GPU_VERT_KERNARG_UNIFORM_OFF(s) (16u * (s))
 
 /* ---------------------------------------------------------------------------
- * Job ring descriptor (JobQueue), 16 32-bit words (64 bytes), little-endian.
- * One entry per submission; the host publishes entries in shared memory and
- * rings the JOB_WPTR doorbell.  Ring entry counts must be powers of two;
- * pointers are free-running modulo 65536 and index entries as ptr & (n - 1).
- * The host must keep fewer jobs in flight than ring entries.
+ * Unified render descriptor, 16 little-endian 32-bit words (64 bytes).
+ * The host publishes an immutable record and submits its VA using RENDER.
+ * The gpu_job_record type name is retained; there is no job or IH ring.
  *                                                                   word idx
  *   bits 15:0 job id, bits 31:16 command record count                    [0]
  *   command buffer base                                                  [1]

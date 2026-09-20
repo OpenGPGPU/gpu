@@ -94,6 +94,7 @@ class OutputMerger(
   private val bppDepth = depthBytesPerPixel
 
   val io = IO(new Bundle {
+    val addressConflict = Output(Bool())
     val fragIn = Flipped(Decoupled(new OmFragment))
     val mem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
@@ -296,6 +297,7 @@ class OutputMerger(
     (e.colorAddr === newColorAddr || e.depthAddr === newDepthAddr ||
       e.colorAddr === newDepthAddr || e.depthAddr === newColorAddr))).asUInt.orR
 
+  io.addressConflict := io.fragIn.valid && addrConflict
   io.fragIn.ready := anyFree && !addrConflict
   io.accepted := io.fragIn.fire
   io.drained := !VecInit(entries.map(_.valid)).asUInt.orR

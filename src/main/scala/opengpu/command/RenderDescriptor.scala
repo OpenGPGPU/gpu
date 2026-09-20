@@ -13,7 +13,7 @@ class RenderDescriptor(config: GpuConfig, val commandIdWidth: Int)
     extends Bundle {
   val descriptorId = UInt(commandIdWidth.W)
   val descriptorAddress = UInt(config.xLen.W)
-  /** Descriptor byte length; the fetcher reads ceil(bytes / 64) lines. */
+  /** Command byte count echoed at completion; the descriptor is always 64 bytes. */
   val bytes = UInt(32.W)
 }
 
@@ -22,6 +22,7 @@ object RenderStatus {
   val success = 0.U(width.W)
   /** A texture or memory fault failed the draw (drained before completion). */
   val memoryFault = 1.U(width.W)
+  val invalidSampleMode = 2.U(width.W)
 }
 
 class RenderCompletion(val commandIdWidth: Int) extends Bundle {

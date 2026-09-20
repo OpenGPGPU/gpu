@@ -36,6 +36,9 @@ class TranslatedWordClient(
     val flush = Input(Bool())
     /** A translated or fault response for this client was consumed. */
     val fault = Output(Bool())
+    val translationStall = Output(Bool())
+    val translationMiss = Output(Bool())
+    val walkActive = Output(Bool())
   })
 
   private val bridge = Module(new OmWordToLinePort(
@@ -54,6 +57,9 @@ class TranslatedWordClient(
   translator.io.flush := io.flush
   translator.io.pageWalkTransactionId := 0.U
   translator.io.in <> bridge.io.memoryRequest
+  io.translationStall := translator.io.in.valid && !translator.io.in.ready
+  io.translationMiss := translator.io.miss
+  io.walkActive := translator.io.walkActive
 
   io.memReq.valid := translator.io.out.valid
   io.memReq.bits := translator.io.out.bits

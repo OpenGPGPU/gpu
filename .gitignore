@@ -33,3 +33,6 @@ driver/*.mod.c
 driver/.*.cmd
 driver/Module.symvers
 driver/modules.order
+
+# Python caches from local qualification scripts.
+__pycache__/

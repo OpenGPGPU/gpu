@@ -40,6 +40,14 @@ for f in "$@"; do
   case "$f" in
     "$main_root"/*|"$test_root"/*)
       none=0
+      # Changes below shared boundaries must also exercise their consumers.
+      # In particular, render dispatch/reset lives across graphics and system.
+      case "$f" in
+        "$main_root"/graphics/*|"$main_root"/system/*|"$main_root"/command/*|"$main_root"/dma/*|"$main_root"/dispatch/*|"$main_root"/core/memory/*)
+          pkgs+=("opengpu.system.*" "opengpu.graphics.*" "opengpu.command.*") ;;
+        "$main_root"/config/*|src/main/scala/yunsuan/*)
+          full=1 ;;
+      esac
       p=$(map_pkg "$f")
       if [ "$p" = "ALL_NEEDED" ]; then
         full=1
@@ -47,7 +55,7 @@ for f in "$@"; do
         pkgs+=("$p")
       fi
       ;;
-    build.sbt|project/*)
+    src/main/scala/yunsuan/*|build.sbt|project/*)
       none=0
       full=1
       ;;

@@ -161,7 +161,7 @@ class SampleDepth(maxSampleCount: Int = 4) extends Module {
     clamped(29, 0).asUInt
   }
 
-  private val legacyCentre = io.centre(23, 0).asUInt
+  private val legacyCentre = io.centre(23, 0).asUInt.pad(30)
   private def modeDepths(mode: Int): Vec[UInt] = {
     val positions = Msaa.positions(mode)
     VecInit((0 until maxSampleCount).map { i =>

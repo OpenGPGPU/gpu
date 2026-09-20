@@ -9,272 +9,9 @@ import org.scalatest.flatspec.AnyFlatSpec
 
 import scala.collection.mutable
 
-class GpuHostSystemAxiSpec extends AnyFlatSpec {
+class GpuHostSystemAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
   behavior of "GpuHostSystemAxi"
 
-  private def initialize(dut: GpuHostSystemAxi): Unit = {
-    dut.io.s_axi_awvalid.poke(false.B)
-    dut.io.s_axi_wvalid.poke(false.B)
-    dut.io.s_axi_wlast.poke(false.B)
-    dut.io.s_axi_bready.poke(false.B)
-    dut.io.s_axi_arvalid.poke(false.B)
-    dut.io.s_axi_rready.poke(false.B)
-    dut.io.m_axi_awready.poke(false.B)
-    dut.io.m_axi_wready.poke(false.B)
-    dut.io.m_axi_bid.poke(0.U)
-    dut.io.m_axi_bresp.poke(0.U)
-    dut.io.m_axi_bvalid.poke(false.B)
-    dut.io.m_axi_arready.poke(false.B)
-    dut.io.m_axi_rid.poke(0.U)
-    dut.io.m_axi_rdata.poke(0.U)
-    dut.io.m_axi_rresp.poke(0.U)
-    dut.io.m_axi_rlast.poke(false.B)
-    dut.io.m_axi_rvalid.poke(false.B)
-    dut.io.s_axi_aresetn.poke(false.B)
-    dut.io.s_axi_aclk.step()
-    dut.io.s_axi_aresetn.poke(true.B)
-    dut.io.s_axi_aclk.step()
-  }
-
-  private def axiWrite(
-    dut: GpuHostSystemAxi,
-    address: Int,
-    data: Int
-  ): Unit = {
-    dut.io.s_axi_awaddr.poke(address.U)
-    dut.io.s_axi_awlen.poke(0.U)
-    dut.io.s_axi_awsize.poke(2.U)
-    dut.io.s_axi_awburst.poke(0.U)
-    dut.io.s_axi_awvalid.poke(true.B)
-    dut.io.s_axi_wdata.poke((data.toLong & 0xffffffffL).U)
-    dut.io.s_axi_wstrb.poke(0xf.U)
-    dut.io.s_axi_wlast.poke(true.B)
-    dut.io.s_axi_wvalid.poke(true.B)
-    dut.io.s_axi_bready.poke(true.B)
-
-    var addressDone = false
-    var dataDone = false
-    var responseDone = false
-    var cycles = 0
-    while (!responseDone && cycles < 64) {
-      if (!addressDone && dut.io.s_axi_awready.peek().litToBoolean)
-        addressDone = true
-      if (!dataDone && dut.io.s_axi_wready.peek().litToBoolean)
-        dataDone = true
-      if (dut.io.s_axi_bvalid.peek().litToBoolean)
-        responseDone = true
-      dut.io.s_axi_aclk.step()
-      if (addressDone) dut.io.s_axi_awvalid.poke(false.B)
-      if (dataDone) dut.io.s_axi_wvalid.poke(false.B)
-      cycles += 1
-    }
-    assert(responseDone, f"AXI write to 0x$address%x timed out")
-    dut.io.s_axi_awvalid.poke(false.B)
-    dut.io.s_axi_wvalid.poke(false.B)
-    dut.io.s_axi_wlast.poke(false.B)
-    dut.io.s_axi_bready.poke(false.B)
-  }
-
-  private def axiRead(dut: GpuHostSystemAxi, address: Int): BigInt = {
-    dut.io.s_axi_araddr.poke(address.U)
-    dut.io.s_axi_arlen.poke(0.U)
-    dut.io.s_axi_arsize.poke(2.U)
-    dut.io.s_axi_arburst.poke(0.U)
-    dut.io.s_axi_arvalid.poke(true.B)
-    dut.io.s_axi_rready.poke(true.B)
-
-    var addressDone = false
-    var responseDone = false
-    var result = BigInt(0)
-    var cycles = 0
-    while (!responseDone && cycles < 64) {
-      if (!addressDone && dut.io.s_axi_arready.peek().litToBoolean)
-        addressDone = true
-      if (dut.io.s_axi_rvalid.peek().litToBoolean) {
-        result = dut.io.s_axi_rdata.peek().litValue
-        responseDone = true
-      }
-      dut.io.s_axi_aclk.step()
-      if (addressDone) dut.io.s_axi_arvalid.poke(false.B)
-      cycles += 1
-    }
-    assert(responseDone, f"AXI read from 0x$address%x timed out")
-    dut.io.s_axi_arvalid.poke(false.B)
-    dut.io.s_axi_rready.poke(false.B)
-    result
-  }
-
-  private case class MemoryWrite(
-    address: BigInt, id: BigInt, data: BigInt, mask: BigInt)
-
-  private def acceptMemoryWrite(dut: GpuHostSystemAxi): MemoryWrite = {
-    dut.io.m_axi_awready.poke(true.B)
-    dut.io.m_axi_wready.poke(true.B)
-    var address = BigInt(0)
-    var id = BigInt(0)
-    var data = BigInt(0)
-    var mask = BigInt(0)
-    var addressDone = false
-    var dataDone = false
-    var beat = 0
-    var cycles = 0
-    while ((!addressDone || !dataDone) && cycles < 160) {
-      if (!addressDone && dut.io.m_axi_awvalid.peek().litToBoolean) {
-        address = dut.io.m_axi_awaddr.peek().litValue
-        id = dut.io.m_axi_awid.peek().litValue
-        dut.io.m_axi_awburst.expect(1.U)
-        addressDone = true
-      }
-      if (!dataDone && dut.io.m_axi_wvalid.peek().litToBoolean) {
-        data |= dut.io.m_axi_wdata.peek().litValue << (beat * 64)
-        mask |= dut.io.m_axi_wstrb.peek().litValue << (beat * 8)
-        dataDone = dut.io.m_axi_wlast.peek().litToBoolean
-        beat += 1
-      }
-      dut.io.s_axi_aclk.step()
-      cycles += 1
-    }
-    assert(addressDone && dataDone, "AXI memory write timed out")
-    dut.io.m_axi_awready.poke(false.B)
-    dut.io.m_axi_wready.poke(false.B)
-    dut.io.m_axi_bid.poke(id.U)
-    dut.io.m_axi_bresp.poke(0.U)
-    dut.io.m_axi_bvalid.poke(true.B)
-    dut.io.m_axi_bready.expect(true.B)
-    dut.io.s_axi_aclk.step()
-    dut.io.m_axi_bvalid.poke(false.B)
-    MemoryWrite(address, id, data, mask)
-  }
-
-  private def acceptMemoryRead(
-    dut: GpuHostSystemAxi,
-    line: BigInt,
-    respond: Boolean = true
-  ): (BigInt, BigInt) = {
-    dut.io.m_axi_arready.poke(true.B)
-    var address = BigInt(0)
-    var id = BigInt(0)
-    var cycles = 0
-    while (!dut.io.m_axi_arvalid.peek().litToBoolean && cycles < 160) {
-      dut.io.s_axi_aclk.step()
-      cycles += 1
-    }
-    assert(cycles < 160, "AXI memory read address timed out")
-    address = dut.io.m_axi_araddr.peek().litValue
-    id = dut.io.m_axi_arid.peek().litValue
-    dut.io.m_axi_arlen.expect(7.U)
-    dut.io.m_axi_arsize.expect(3.U)
-    dut.io.m_axi_arburst.expect(1.U)
-    dut.io.s_axi_aclk.step()
-    dut.io.m_axi_arready.poke(false.B)
-    if (respond) {
-      for (beat <- 0 until 8) {
-        dut.io.m_axi_rid.poke(id.U)
-        dut.io.m_axi_rdata.poke(((line >> (beat * 64)) &
-          ((BigInt(1) << 64) - 1)).U)
-        dut.io.m_axi_rresp.poke(0.U)
-        dut.io.m_axi_rlast.poke((beat == 7).B)
-        dut.io.m_axi_rvalid.poke(true.B)
-        dut.io.m_axi_rready.expect(true.B)
-        dut.io.s_axi_aclk.step()
-      }
-      dut.io.m_axi_rvalid.poke(false.B)
-      dut.io.m_axi_rlast.poke(false.B)
-    }
-    (address, id)
-  }
-
-  /** Services the 64-bit AXI memory master until `until` holds, accepting any
-    * mix of full-line and narrow reads and full-line writes. `readLine` supplies the 64-byte line
-    * for a read address; `onWrite` receives every completed write burst as
-    * (address, data, byte strobe). */
-  private def serviceMemoryMaster(
-    dut: GpuHostSystemAxi,
-    readLine: BigInt => BigInt,
-    readFault: BigInt => Boolean = _ => false
-  )(onWrite: (BigInt, BigInt, BigInt) => Unit)(until: => Boolean): Unit = {
-    val mask64 = (BigInt(1) << 64) - 1
-    var arDone = false
-    var arAddr = BigInt(0)
-    var arId = BigInt(0)
-    var rBeat = 0
-    var rLine = BigInt(0)
-    var rBeats = 8
-    var rFault = false
-    var awDone = false
-    var awAddr = BigInt(0)
-    var awId = BigInt(0)
-    var wBeat = 0
-    var wData = BigInt(0)
-    var wStrb = BigInt(0)
-    var wDone = false
-    var bPending = false
-    var guard = 0
-    while (!until && guard < 20000) {
-      // Read address channel.
-      dut.io.m_axi_arready.poke((!arDone && rBeat == 0).B)
-      if (!arDone && dut.io.m_axi_arvalid.peek().litToBoolean &&
-          dut.io.m_axi_arready.peek().litToBoolean) {
-        arAddr = dut.io.m_axi_araddr.peek().litValue
-        arId = dut.io.m_axi_arid.peek().litValue
-        rLine = readLine(arAddr) >> ((arAddr.toInt & 56) * 8)
-        rBeats = dut.io.m_axi_arlen.peek().litValue.toInt + 1
-        rFault = readFault(arAddr)
-        arDone = true
-        rBeat = 0
-      }
-      // Read data channel: narrow PTE reads use one lane-aligned beat.
-      if (arDone) {
-        dut.io.m_axi_rvalid.poke(true.B)
-        dut.io.m_axi_rid.poke(arId.U)
-        dut.io.m_axi_rdata.poke(((rLine >> (rBeat * 64)) & mask64).U)
-        dut.io.m_axi_rresp.poke((if (rFault) 2 else 0).U)
-        dut.io.m_axi_rlast.poke((rBeat == rBeats - 1).B)
-        if (dut.io.m_axi_rready.peek().litToBoolean) {
-          if (rBeat == rBeats - 1) { arDone = false; rBeat = 0 } else rBeat += 1
-        }
-      } else {
-        dut.io.m_axi_rvalid.poke(false.B)
-        dut.io.m_axi_rlast.poke(false.B)
-      }
-      // Write address channel.
-      dut.io.m_axi_awready.poke((!awDone && !wDone).B)
-      if (!awDone && dut.io.m_axi_awvalid.peek().litToBoolean &&
-          dut.io.m_axi_awready.peek().litToBoolean) {
-        awAddr = dut.io.m_axi_awaddr.peek().litValue
-        awId = dut.io.m_axi_awid.peek().litValue
-        awDone = true
-      }
-      // Write data channel.
-      dut.io.m_axi_wready.poke((!wDone).B)
-      if (!wDone && dut.io.m_axi_wvalid.peek().litToBoolean &&
-          dut.io.m_axi_wready.peek().litToBoolean) {
-        wData |= dut.io.m_axi_wdata.peek().litValue << (wBeat * 64)
-        wStrb |= dut.io.m_axi_wstrb.peek().litValue << (wBeat * 8)
-        wBeat += 1
-        if (dut.io.m_axi_wlast.peek().litToBoolean) wDone = true
-      }
-      if (awDone && wDone && !bPending) {
-        onWrite(awAddr, wData, wStrb)
-        bPending = true
-      }
-      // Write response channel.
-      dut.io.m_axi_bvalid.poke(bPending.B)
-      dut.io.m_axi_bid.poke(awId.U)
-      dut.io.m_axi_bresp.poke(0.U)
-      if (bPending && dut.io.m_axi_bready.peek().litToBoolean) {
-        bPending = false
-        awDone = false
-        wDone = false
-        wBeat = 0
-        wData = BigInt(0)
-        wStrb = BigInt(0)
-      }
-      dut.io.s_axi_aclk.step()
-      guard += 1
-    }
-    assert(guard < 20000, "AXI memory master service timed out")
-  }
   it should "route an AXI-programmed clear through the shared L2" in {
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
     val gpu = GpuConfig(
@@ -674,6 +411,62 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec {
         assert(reads.contains(BigInt(texturePa)), "repaired mapping must access translated PA")
         assert((axiRead(dut, RenderHostRegs.STATUS) & 7) == 2)
       }
+    }
+  }
+
+  it should "drain a unified render and delayed writes before acknowledging reset" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      val words = mutable.Map.empty[BigInt, BigInt]
+      def store(base: Int, data: Seq[Long]): Unit =
+        data.zipWithIndex.foreach { case (value, i) =>
+          words(BigInt(base + i * 4)) = BigInt(value & 0xffffffffL)
+        }
+      val vertices = Seq(-65536L, -65536L, 0L, 65536L,
+        65536L, -65536L, 0L, 65536L, -65536L, 65536L, 0L, 65536L)
+      store(0x2000, vertices ++ Seq.fill(3)(Seq(255L, 0L, 0L)).flatten ++
+        Seq.fill(3)(16L) ++ Seq.fill(16)(0L))
+      store(0x1000, Seq(1L << 16, 0x2000L, 0x8000L, 0x9000L,
+        64L, 0L) ++ Seq.fill(10)(0L))
+      def readLine(address: BigInt): BigInt = {
+        val base = address & ~BigInt(63)
+        (0 until 16).foldLeft(BigInt(0)) { (line, i) =>
+          line | (words.getOrElse(base + i * 4, BigInt(0)) << (32 * i))
+        }
+      }
+      var writes = 0
+      def writeLine(address: BigInt, data: BigInt, mask: BigInt): Unit = {
+        writes += 1
+        for (i <- 0 until 16 if ((mask >> (i * 4)) & 15) == 15)
+          words(address + i * 4) = (data >> (32 * i)) & 0xffffffffL
+      }
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 11)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE, GpuCommandOpcode.render.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.SOURCE, 0x1000)
+      axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      // Descriptor fetch has begun; memory has not responded yet. The reset
+      // must cover subsequent rasterization and stores, including L2-idle gaps.
+      axiWrite(dut, GpuCommandMmioRegs.RESET, 1)
+      assert((axiRead(dut, GpuCommandMmioRegs.STATUS) & 8) != 0)
+      serviceMemoryMaster(dut, readLine, writeAckDelay = 12)(writeLine) {
+        dut.io.m_irq.peek().litToBoolean
+      }
+      assert(writes > 0, "reset acknowledged before the render reached memory")
+      assert(words.getOrElse(BigInt(0x8000 + 5 * 64 + 5 * 4), BigInt(0)) == 0xff0000ffL)
+      assert((axiRead(dut, RenderHostRegs.STATUS) & 1) == 0, "render still busy after reset")
+      assert((axiRead(dut, GpuCommandMmioRegs.STATUS) & 10) == 0,
+        "reset must discard the old render completion and clear RESET_BUSY")
+      // Reuse the ID after reset. No stale render completion may occupy its slot.
+      axiWrite(dut, RenderHostRegs.IRQ, 3)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE, GpuCommandOpcode.fill.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, 0xa000)
+      axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      assert(acceptMemoryWrite(dut).address == 0xa000)
     }
   }
 

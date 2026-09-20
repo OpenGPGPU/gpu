@@ -78,3 +78,14 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -Itests/mmu_stubs \
     tests/opengpu_mmu_test.c -o /tmp/opengpu_mmu_test
 /tmp/opengpu_mmu_test
 ```
+
+## Ownership and tests
+
+`opengpu_scheduler.c` owns shared job scheduling/retirement;
+`opengpu_drm_device.c` owns the platform DRM/GEM layer. Display initializes
+without an execution-owned boot framebuffer. The optional DT boolean
+`opengpu,render-only` disables KMS setup. See
+[driver architecture](../docs/DRIVER_ARCHITECTURE.md).
+
+Run all seven host programs from the repository root with
+`python3 scripts/test_driver.py`; CI runs this independently of Scala changes.

@@ -13,14 +13,8 @@ import opengpu.core.memory.{
   SharedAtomicResponse
 }
 
-/** Byte offsets of the graphics renderer's control/status register file.
-  *
-  * All registers are 32-bit and byte-aligned (offsets are byte addresses the
-  * host writes through the MMIO port).  Each config register is host-writable
-  * at any time; it is snapshotted into a shadow the engine actually uses the
-  * moment a START is accepted, so the host may program the next frame while
-  * the current one is still in flight (a minimal double-buffered submission).
-  */
+/** Render status, legacy configuration shadows, DMA and scanout registers.
+  * Unified descriptors are the sole source of render launch configuration. */
 object RenderHostRegs {
   /** First invalid byte offset (exclusive end of the register file). */
   val END               = 0x148
@@ -80,8 +74,7 @@ object RenderHostRegs {
   val STRIDED_SRC_STRIDE= 0xB8
   val STRIDED_DST_STRIDE= 0xBC
   val STRIDED_START     = 0xC0
-  /** bits[1:0] sample mode: 0 = 1x, 1 = 2x, 2 = 4x.  Reserved on
-    * programmable (fragment-core) builds, which do not advertise MSAA. */
+  /** Legacy sample-mode shadow; unified renders use descriptor word 9. */
   val MSAA_CONFIG       = 0x134
   /** The unified-command block owns 0xC4..0x130 plus RESET at 0x138, so the
     * stencil/blend registers live immediately after it.  Layouts mirror the
@@ -114,34 +107,9 @@ class RenderHostRegResponse extends Bundle {
   val ok = Bool()
 }
 
-/** M6 host interface for the graphics renderer.
-  *
-  * Presents a software-programmable memory-mapped register file (command-buffer
-  * base, render-target bases, depth/state knobs, engine control, and status)
-  * with a device ID and a completion interrupt — the first hardware piece of
-  * the host-interface / Linux-device milestone.  A host writes the config
-  * registers, then sets START; the engine latches the configuration and drives
-  * the underlying `RenderCore`.  When the render completes, `done` is raised
-  * and `irq` is pulsed if the interrupt is enabled.
-  *
-  * The renderer's memory ports (command-buffer and framebuffer word ports, plus
-  * the core-backed shader kernel's line ports and coherence/atomic side ports)
-  * are passed straight through so the SoC/host attaches them to the shared
-  * off-chip hierarchy (`RenderCoreL2`, or directly to DRAM).  This module
-  * concerns itself only with the register file, the control state machine, and
-  * the completion interrupt.
-  *
-  * Register map (see `RenderHostRegs`): 0x00 ID (ro), 0x04 CONTROL (w1p;
-  * bit0 START), 0x08 STATUS (ro + w1c; bit0 BUSY, bit1 DONE, bit2 ERROR),
-   * 0x0C IRQ (bit0 ENABLE, bit1 PENDING w1c), execution config 0x10..0x40,
-   * the independent display scanout bank 0x44..0x5c, read-only
-   * CAPABILITIES at 0x60, and a reserved region at 0x64..0x84 that held the
-   * retired job-ring / interrupt-history registers.
-   *
-   * Draws arrive either as legacy register-programmed START submissions or as
-   * unified render commands (`GPU_UCMD_OP_RENDER`) whose 16-word descriptor the
-   * engine fetches through the translated command port. The host-memory job
-   * ring was retired.
+/** Unified render descriptor fetch, launch, retirement and host register bank.
+  * Command/framebuffer/shader ports attach to the shared GPU memory hierarchy.
+  * Legacy render START is inert; dedicated DMA and scanout registers remain.
   */
 class RenderHost(
   config: GraphicsConfig = GraphicsConfig(),
@@ -155,8 +123,6 @@ class RenderHost(
   commandIdWidth: Int = 8
 ) extends Module {
   override def desiredName: String = "RenderHost"
-
-  /** Largest sample mode this build supports: log2 of the sample count. */
   private val maxSampleMode = log2Ceil(config.maxSampleCount)
 
   val io = IO(new Bundle {
@@ -198,9 +164,13 @@ class RenderHost(
     val renderCommand = Flipped(Decoupled(
       new RenderDescriptor(gpuConfig, commandIdWidth)))
     val renderCompletion = Decoupled(new RenderCompletion(commandIdWidth))
+    /** Includes descriptor fetch, launch, execution and unconsumed completion. */
+    val drained = Output(Bool())
+    val performance = Output(new GraphicsPerformanceEvents)
   })
 
   private val core = Module(new RenderCore(config, gpuConfig, fragCore, vertCore))
+  io.performance := core.io.performance
 
   // The DMA engines share the kernelWordMem line port with the core's
   // staging/sampler bridge. Responses are routed by transaction-ID range:
@@ -324,7 +294,6 @@ class RenderHost(
   private val error = RegInit(false.B)
   // Per-job state is separate from STATUS.ERROR, which software can clear.
   private val textureFaulted = RegInit(false.B)
-  private val textureFaultNow = io.textureFault.getOrElse(false.B) && busy
   private val irqEnable = RegInit(false.B)
   private val irqPending = RegInit(false.B)
   private val sawBusy = RegInit(false.B)
@@ -342,12 +311,18 @@ class RenderHost(
   private val renderDonePending = RegInit(false.B)
   private val renderLaunch = RegInit(false.B)
   private val renderAddr = RegInit(0.U(gpuConfig.xLen.W))
+  private val invalidSampleMode = RegInit(false.B)
+  private val textureFaultNow = io.textureFault.getOrElse(false.B) &&
+    (busy || renderFetching || renderLaunch)
+  private val validRenderMode = Msaa.validModeWord(renderWords(9), config.maxSampleCount)
+  io.drained := !renderFetching && !renderLaunch && !busy &&
+    !renderDonePending && dmaOwner === dmaIdle &&
+    !fill.io.busy && !blit.io.busy && !strided.io.busy
 
   private val id = ((deviceId & 0xffff) << 16 | (version & 0xffff)).U
 
   // ---------------------------------------------------------------------------
-  // The host-memory job ring (JobQueue) was retired: user draws are unified
-  // render commands and the fallback/self-test uses the legacy START snapshot.
+  // User draws and the probe self-test both submit unified render commands.
   // ---------------------------------------------------------------------------
   /** Per-job configuration decoded from a unified render descriptor. */
   private val unifiedCfg = RegInit(0.U.asTypeOf(new JobConfig()))
@@ -624,9 +599,13 @@ class RenderHost(
   // Unified render command: fetch the 16-word descriptor over the translated
   // command port, then launch from a packed register snapshot.
   renderLaunch := false.B
-  io.renderCommand.ready := !renderFetching && !busy && !renderDonePending
+  io.renderCommand.ready := !renderFetching && !renderLaunch && !busy && !renderDonePending
   when(io.renderCommand.fire) {
     renderFetching := true.B
+    textureFaulted := false.B
+    invalidSampleMode := false.B
+    done := false.B
+    error := false.B
     descOutstanding := false.B
     renderWord := 0.U
     renderId := io.renderCommand.bits.descriptorId
@@ -637,20 +616,29 @@ class RenderHost(
   when(renderFetching && io.cbMem.resp.fire) {
     descOutstanding := false.B
     renderWords(renderWord) := io.cbMem.resp.bits.data
-    when(renderWord === 15.U) {
+    when(textureFaulted || textureFaultNow) {
+      renderFetching := false.B
+      renderDonePending := true.B
+      done := true.B
+    }.elsewhen(renderWord === 15.U) {
       renderFetching := false.B
       renderLaunch := true.B
     }.otherwise {
       renderWord := renderWord + 1.U
     }
   }
-  when(renderLaunch && !busy) {
+  when(renderLaunch && !validRenderMode) {
+    invalidSampleMode := true.B
+    renderDonePending := true.B
+    done := true.B
+    error := true.B
+  }
+  when(renderLaunch && validRenderMode && !busy) {
     busy := true.B
     done := false.B
     error := false.B
     sawBusy := false.B
     ownerUnified := true.B
-    textureFaulted := false.B
     // Decode the gpu_job_record words into the unified configuration bundle.
     unifiedCfg.cmdCount := renderWords(0)(31, 16)
     unifiedCfg.cmdBase := renderWords(1)
@@ -707,13 +695,14 @@ class RenderHost(
   // pending bit and W1C acknowledgement as graphics completions.
   when(io.externalCompletion) { irqPending := true.B }
 
-  // Unified render completions return to the command router rather than the
-  // graphics IRQ; the bridge publishes them through the unified result slot.
+  // The host completion arbiter publishes render results through the shared
+  // unified MMIO result slot.
   io.renderCompletion.valid := renderDonePending
   io.renderCompletion.bits.descriptorId := renderId
   io.renderCompletion.bits.status :=
-    Mux(textureFaulted, RenderStatus.memoryFault, RenderStatus.success)
-  io.renderCompletion.bits.success := !textureFaulted
+    Mux(textureFaulted, RenderStatus.memoryFault,
+      Mux(invalidSampleMode, RenderStatus.invalidSampleMode, RenderStatus.success))
+  io.renderCompletion.bits.success := !textureFaulted && !invalidSampleMode
   io.renderCompletion.bits.bytesProcessed := renderBytes
   when(io.renderCompletion.fire) { renderDonePending := false.B }
 
@@ -746,7 +735,7 @@ class RenderHost(
   core.io.texWrapClamp := unifiedCfg.texWrapClamp
   core.io.texMaxLevel := unifiedCfg.texMaxLevel
   core.io.sampleMode := unifiedCfg.sampleMode
-  core.io.start := renderLaunch && !busy
+  core.io.start := renderLaunch && validRenderMode && !busy
 
   // Separate word ports.  The engine's command stage (draw records) and the
   // job queue's admin agent (descriptor fetches, IH record writes) are distinct

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Bring-up render/compute client and its temporary misc-device ABI. */
+/* Contexts, resource validation and immutable render/compute job preparation. */
 #include <linux/dma-resv.h>
 #include <linux/fs.h>
 #include <linux/idr.h>
@@ -19,6 +19,7 @@
 
 #include "opengpu_depth_validator.h"
 #include "opengpu_device.h"
+#include "opengpu_scheduler.h"
 #include "opengpu_drm.h"
 #include "opengpu_kernarg_va.h"
 #include "opengpu_resolve_validator.h"
@@ -26,86 +27,6 @@
 
 static const struct file_operations opengpu_compute_fops;
 static u32 opengpu_fragment_batch_capacity(struct opengpu_device *gpu);
-
-struct opengpu_render_context {
-    u32 id;
-    struct drm_sched_entity entity;
-    struct dma_fence *last_fence;
-    struct opengpu_resource_binding *bindings[OPENGPU_MAX_RESOURCE_SLOTS];
-    /* Address space every job from this context runs in.  Disabled on
-     * builds without the MMU control path (Bare), which then use ASID 0. */
-    struct opengpu_vm vm;
-};
-
-struct opengpu_resource_binding {
-    struct drm_gem_object *object;
-    dma_addr_t dma;
-    u64 offset;
-    u64 size;
-    u32 type;
-    u32 width;
-    u32 height;
-    u32 flags;
-    /* Private virtual address in this context's VM that `dma` is mapped at;
-     * 0 means the binding is only reachable at its physical address. */
-    dma_addr_t va;
-};
-
-enum opengpu_sched_job_type {
-    OPENGPU_SCHED_RENDER,
-    OPENGPU_SCHED_COMPUTE,
-    OPENGPU_SCHED_BLIT,
-    OPENGPU_SCHED_FILL,
-    OPENGPU_SCHED_STRIDED_BLIT,
-    OPENGPU_SCHED_RESOLVE,
-    OPENGPU_SCHED_INVALIDATE,
-};
-
-struct opengpu_sched_job {
-    struct drm_sched_job base;
-    struct opengpu_device *gpu;
-    enum opengpu_sched_job_type type;
-    /* Address space of the submitting context, or NULL for the global ASID-0
-     * identity map (bring-up self-test). */
-    const struct opengpu_vm *vm;
-    /* Owning context, for mappings that must be (re)established at run time
-     * once the previous job has drained (per-job command snapshot). */
-    struct opengpu_render_context *context;
-    dma_addr_t dma_source;
-    dma_addr_t dma_destination;
-    u32 dma_bytes;
-    u32 dma_height;
-    u32 dma_source_stride;
-    u32 dma_destination_stride;
-    u32 dma_sample_mode;
-    u32 fill_pattern;
-    struct opengpu_command_events events;
-    struct opengpu_kernel_launch kernel;
-    struct opengpu_job hw;
-    struct opengpu_buffer commands;
-    /* 16-word unified render descriptor, filled at run time and submitted by
-     * virtual address so the device fetches it through the context VM. */
-    struct opengpu_buffer render_desc;
-    struct opengpu_buffer shader;
-    struct opengpu_buffer vertex_shader;
-    struct opengpu_buffer depth;
-    /* Depth-plane clear staging. A user-supplied persistent attachment is not
-     * owned by the job (so `depth` stays empty), but the pass-start clear and
-     * the CPU fallback still target its range. */
-    bool depth_user;
-    bool depth_load;
-    dma_addr_t depth_clear_dma;
-    size_t depth_clear_bytes;
-    u8 *depth_clear_cpu;
-    struct drm_gem_object *objects[6];
-    u32 object_count;
-};
-
-struct opengpu_file {
-    struct opengpu_device *gpu;
-    struct mutex lock;
-    struct idr contexts;
-};
 
 static void opengpu_fill_test_command(struct opengpu_device *gpu)
 {
@@ -1309,15 +1230,8 @@ static int opengpu_wait_reservation(struct drm_gem_object *object,
     return wait ? 0 : -ETIMEDOUT;
 }
 
-static struct opengpu_sched_job *
-opengpu_sched_job_from_base(struct drm_sched_job *base)
+struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
 {
-    return container_of(base, struct opengpu_sched_job, base);
-}
-
-static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
-{
-    struct opengpu_sched_job *job = opengpu_sched_job_from_base(base);
     /* The submitting context's address space; NULL for bring-up self-tests. */
     const struct opengpu_vm *vm = job->vm;
     struct dma_fence *fence;
@@ -1439,102 +1353,6 @@ static struct dma_fence *opengpu_sched_run_job(struct drm_sched_job *base)
         return ERR_PTR(ret);
     return fence;
 }
-
-static enum drm_gpu_sched_stat
-opengpu_sched_timedout_job(struct drm_sched_job *base)
-{
-    struct opengpu_sched_job *job = opengpu_sched_job_from_base(base);
-
-    dev_err(job->gpu->dev, "render scheduler timeout\n");
-    opengpu_hw_abort(job->gpu, -ETIMEDOUT);
-    return DRM_GPU_SCHED_STAT_RESET;
-}
-
-static void opengpu_sched_free_job(struct drm_sched_job *base)
-{
-    struct opengpu_sched_job *job = opengpu_sched_job_from_base(base);
-    u32 i;
-
-    drm_sched_job_cleanup(base);
-    for (i = 0; i < job->object_count; i++)
-        drm_gem_object_put(job->objects[i]);
-    opengpu_buffer_free(job->gpu, &job->depth);
-    opengpu_buffer_free(job->gpu, &job->vertex_shader);
-    opengpu_buffer_free(job->gpu, &job->shader);
-    opengpu_buffer_free(job->gpu, &job->render_desc);
-    opengpu_buffer_free(job->gpu, &job->commands);
-    kfree(job);
-}
-
-/* One scheduler job dependency: the object the job waits on, the usage it
- * waits for and the usage its completion fence is published under.  The wait
- * and signal usages differ deliberately - a blit waits on source writes yet
- * publishes a source read fence, and waits on destination reads yet publishes
- * a destination write fence. */
-struct opengpu_sched_dep {
-    struct drm_gem_object *object;
-    enum dma_resv_usage wait_usage;
-    enum dma_resv_usage signal_usage;
-};
-
-/* Initialize, populate, arm and push one scheduler job: register the optional
- * input sync object and every reservation dependency, take a job reference for
- * each dependency object, then publish the completion fence to the context,
- * each dependency reservation and the optional output sync object.  On any
- * failure after job initialization the scheduler job is torn down in place, so
- * callers only free their own staging; on success the scheduler owns the job. */
-static int opengpu_sched_job_submit(
-    struct opengpu_file *render_file, struct drm_file *file,
-    struct opengpu_render_context *context, struct opengpu_sched_job *job,
-    u32 in_syncobj, struct drm_syncobj *out_sync,
-    const struct opengpu_sched_dep *deps, u32 dep_count, u64 *fence_seqno)
-{
-    struct dma_fence *fence;
-    u32 i;
-    int ret;
-
-    ret = drm_sched_job_init(&job->base, &context->entity, 1, render_file,
-                             file->client_id);
-    if (ret)
-        return ret;
-    job->context = context;
-    if (in_syncobj)
-        ret = drm_sched_job_add_syncobj_dependency(&job->base, file,
-                                                    in_syncobj, 0);
-    for (i = 0; !ret && i < dep_count; i++)
-        ret = drm_sched_job_add_resv_dependencies(&job->base,
-                                                   deps[i].object->resv,
-                                                   deps[i].wait_usage);
-    if (ret) {
-        drm_sched_job_cleanup(&job->base);
-        return ret;
-    }
-
-    for (i = 0; i < dep_count; i++) {
-        drm_gem_object_get(deps[i].object);
-        job->objects[job->object_count++] = deps[i].object;
-    }
-    drm_sched_job_arm(&job->base);
-    fence = dma_fence_get(&job->base.s_fence->finished);
-    if (fence_seqno)
-        *fence_seqno = fence->seqno;
-    dma_fence_put(context->last_fence);
-    context->last_fence = dma_fence_get(fence);
-    for (i = 0; i < dep_count; i++)
-        dma_resv_add_fence(deps[i].object->resv, fence,
-                           deps[i].signal_usage);
-    if (out_sync)
-        drm_syncobj_replace_fence(out_sync, fence);
-    drm_sched_entity_push_job(&job->base);
-    dma_fence_put(fence);
-    return 0;
-}
-
-static const struct drm_sched_backend_ops opengpu_sched_ops = {
-    .run_job = opengpu_sched_run_job,
-    .timedout_job = opengpu_sched_timedout_job,
-    .free_job = opengpu_sched_free_job,
-};
 
 int opengpu_compute_drm_ioctl(struct drm_device *drm, void *data,
                               struct drm_file *file)
@@ -2816,15 +2634,6 @@ static const struct file_operations opengpu_compute_fops = {
 int opengpu_compute_init(struct opengpu_device *gpu)
 {
     struct opengpu_compute *compute = &gpu->compute;
-    const struct drm_sched_init_args sched_args = {
-        .ops = &opengpu_sched_ops,
-        .num_rqs = DRM_SCHED_PRIORITY_COUNT,
-        .credit_limit = 1,
-        .hang_limit = 0,
-        .timeout = msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS + 250),
-        .name = "opengpu-render",
-        .dev = gpu->dev,
-    };
     int ret;
 
     mutex_init(&compute->lock);
@@ -2860,7 +2669,7 @@ int opengpu_compute_init(struct opengpu_device *gpu)
         if (ret)
             goto err_shader;
     }
-    ret = drm_sched_init(&compute->scheduler, &sched_args);
+    ret = opengpu_sched_init(gpu);
     if (ret)
         goto err_shader;
     compute->misc = (struct miscdevice) {
@@ -2876,7 +2685,7 @@ int opengpu_compute_init(struct opengpu_device *gpu)
     return 0;
 
 err_scheduler:
-    drm_sched_fini(&compute->scheduler);
+    opengpu_sched_fini(gpu);
 err_shader:
     opengpu_buffer_free(gpu, &compute->kernarg);
     opengpu_buffer_free(gpu, &compute->shader);
@@ -2893,7 +2702,7 @@ err_cmd:
 void opengpu_compute_fini(struct opengpu_device *gpu)
 {
     misc_deregister(&gpu->compute.misc);
-    drm_sched_fini(&gpu->compute.scheduler);
+    opengpu_sched_fini(gpu);
     opengpu_buffer_free(gpu, &gpu->compute.kernarg);
     opengpu_buffer_free(gpu, &gpu->compute.shader);
     opengpu_mmu_fini(gpu);
