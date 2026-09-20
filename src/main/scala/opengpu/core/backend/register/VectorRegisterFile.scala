@@ -102,8 +102,29 @@ class VectorRegisterBank(config: GpuConfig, useBlackBox: Boolean = false)
     io.vs2Data := readPort(io.vs2, true)
     io.vs2OddData := readPort(io.vs2Odd, true)
     io.oldVdData := readPort(io.vd, true)
-    io.predicateMask :=
-      readPort(0.U, true).asUInt(config.lanes - 1, 0)
+    io.predicateMask := {
+      val selectedAddress = Mux(io.write.valid, io.write.bits.vd, 0.U).pad(8)
+      val chunk0 = if (physicalWidth == 32) {
+        val memory = Module(new Asap7Sram1Rw256x32)
+        memory.io.clk := clock
+        memory.io.ADDRESS := selectedAddress
+        memory.io.wd := io.write.bits.data.asUInt(31, 0)
+        memory.io.banksel := true.B | io.write.valid
+        memory.io.read := true.B & !io.write.valid
+        memory.io.write := io.write.valid
+        memory.io.dataout
+      } else {
+        val memory = Module(new Asap7Sram1Rw256x64)
+        memory.io.clk := clock
+        memory.io.ADDRESS := selectedAddress
+        memory.io.wd := io.write.bits.data.asUInt(63, 0)
+        memory.io.banksel := true.B | io.write.valid
+        memory.io.read := true.B & !io.write.valid
+        memory.io.write := io.write.valid
+        memory.io.dataout
+      }
+      writeThrough(0.U, chunk0).asUInt(config.lanes - 1, 0)
+    }
   } else {
     val storage = Mem(32, UInt(vectorWidth.W))
     when(io.write.valid) {
