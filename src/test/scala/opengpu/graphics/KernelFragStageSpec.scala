@@ -47,6 +47,10 @@ class KernelFragStageWithKernel(
     val memResp = Flipped(Decoupled(new ComputeMemoryResponse()))
     val wordMemReq = Decoupled(new ComputeMemoryRequest(config))
     val wordMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
+    val texMem = new Bundle {
+      val req = Decoupled(new OmMemoryRequest)
+      val resp = Flipped(Decoupled(new OmMemoryResponse))
+    }
     val l1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(config)))
     val l1InvalidateDone = Decoupled(new CacheLineInvalidate(config))
     val globalAtomicRequest = Decoupled(new SharedAtomicRequest(config))
@@ -79,6 +83,7 @@ class KernelFragStageWithKernel(
   io.drawRetire <> frag.io.drawRetire
   io.wordMemReq <> frag.io.wordMemReq
   frag.io.wordMemResp <> io.wordMemResp
+  io.texMem <> frag.io.texMem
 
   // Connect kernel internally: frag's kernel ports <-> kernel's IO
   kernel.io.launch.valid := frag.io.kernelLaunch.valid
@@ -335,6 +340,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
   ): Boolean = {
     var kResp = false; var kId = BigInt(0); var kData = BigInt(0)
     var wResp = false; var wId = BigInt(0); var wData = BigInt(0)
+    var tResp = false; var tData = BigInt(0); var tAddr = BigInt(0)
     var g = 0
     var hit = pred()
     while (!hit && g < guard) {
@@ -349,6 +355,12 @@ class KernelFragStageSpec extends AnyFlatSpec {
         dut.io.wordMemResp.bits.transactionId.poke(wId.U)
         dut.io.wordMemResp.bits.readData.poke((wData & LineMask).U)
         dut.io.wordMemResp.bits.fault.poke(false.B)
+      }
+      dut.io.texMem.resp.valid.poke(tResp)
+      if (tResp) {
+        dut.io.texMem.resp.bits.data.poke(tData.U)
+        dut.io.texMem.resp.bits.write.poke(false.B)
+        dut.io.texMem.resp.bits.addr.poke(tAddr.U)
       }
       val kFired = dut.io.memReq.valid.peek().litToBoolean &&
         dut.io.memReq.ready.peek().litToBoolean
@@ -374,6 +386,12 @@ class KernelFragStageSpec extends AnyFlatSpec {
         } else wData = mem.readLine(addr)
         wId = id; wResp = true
       } else wResp = false
+      val tFired = dut.io.texMem.req.valid.peek().litToBoolean &&
+        dut.io.texMem.req.ready.peek().litToBoolean
+      if (tFired) {
+        val addr = dut.io.texMem.req.bits.addr.peek().litValue.toLong
+        tData = mem.getWord(addr); tAddr = BigInt(addr); tResp = true
+      } else tResp = false
       dut.clock.step()
       g += 1
       hit = pred()
@@ -382,6 +400,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
     // stepping after the predicate becomes true.
     dut.io.memResp.valid.poke(false.B)
     dut.io.wordMemResp.valid.poke(false.B)
+    dut.io.texMem.resp.valid.poke(false.B)
     hit
   }
 
@@ -408,6 +427,11 @@ class KernelFragStageSpec extends AnyFlatSpec {
     dut.io.wordMemResp.bits.readData.poke(0.U)
     dut.io.wordMemResp.bits.fault.poke(false.B)
     dut.io.wordMemResp.bits.transactionId.poke(0.U)
+    dut.io.texMem.req.ready.poke(true.B)
+    dut.io.texMem.resp.valid.poke(false.B)
+    dut.io.texMem.resp.bits.data.poke(0.U)
+    dut.io.texMem.resp.bits.write.poke(false.B)
+    dut.io.texMem.resp.bits.addr.poke(0.U)
   }
 
   /** One fragment lane of a quad under test; lanes not supplied to a poke

@@ -373,7 +373,6 @@ class RenderPipeline(
   textured.io.texHeight := drawState.texHeight
   textured.io.wrapClamp := drawState.texWrapClamp
   textured.io.texMaxLevel := drawState.texMaxLevel
-  io.texMem <> textured.io.mem
 
   // Whole-bundle payload lives outside the fragCore branches so both
   // elaborations fully initialize the stage; the consumer ready and the
@@ -618,6 +617,14 @@ class RenderPipeline(
     textured.io.fragDepths := 0.U.asTypeOf(
       Vec(config.maxSampleCount, UInt(30.W)))
 
+    // The programmable fragment shader samples through the translated texture
+    // client, so its texture unit's word port carries the texture VA.  The
+    // fixed-function texture stage is idle on this branch.
+    io.texMem <> kernelFrag.io.texMem
+    textured.io.mem.req.ready := false.B
+    textured.io.mem.resp.valid := false.B
+    textured.io.mem.resp.bits := 0.U.asTypeOf(textured.io.mem.resp.bits)
+
     // Tie off kernelFrag's unused memReq/memResp ports
     kernelFrag.io.memReq.ready := false.B
     kernelFrag.io.memResp.valid := false.B
@@ -695,6 +702,8 @@ class RenderPipeline(
     // free of sampler latency and frees its memory port entirely.
     def packColor(r: UInt, g: UInt, b: UInt, a: UInt): UInt = Cat(r, g, b, a)
 
+    // Fixed-function texturing samples through the translated texture client.
+    io.texMem <> textured.io.mem
     textured.io.fragIn.valid := drawState.texEnable && shader.io.pixel.valid
 
     // The sample expander is the per-pixel/per-sample boundary: it visits the

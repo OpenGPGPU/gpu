@@ -122,10 +122,10 @@ private class KernelFragEmitLane(gfxConfig: GraphicsConfig) extends Bundle {
   * by the owner after its sample expander drains into OM entries that snapshot
   * their state. Job completion additionally waits for acknowledged OM writes.
   *
-  * The shader program, kernarg, and output all sit in the line-based memory
-  * behind the two memory ports: `memReq/memResp` serve the compute unit and
-  * `wordMemReq/wordMemResp` serve the word->line bridge.  A shared L2 (or the
-  * harness memory model) arbitrates the two clients onto one physical memory.
+  * The shader program, kernarg, and output sit in the line-based memory behind
+  * `memReq/memResp` (compute unit) and `wordMemReq/wordMemResp` (physical
+  * kernarg staging).  Texture samples leave as words on `texMem` so the caller
+  * can translate the texture virtual address through the texture client.
   */
 class KernelFragStage(
   config: GpuConfig = GpuConfig(),
@@ -171,6 +171,12 @@ class KernelFragStage(
     val memResp = Flipped(Decoupled(new ComputeMemoryResponse()))
     val wordMemReq = Decoupled(new ComputeMemoryRequest(config))
     val wordMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
+    /** Texture-unit word memory.  Routed through the translated texture client
+      * (a VM virtual address), unlike the physical kernarg staging port. */
+    val texMem = new Bundle {
+      val req = Decoupled(new OmMemoryRequest)
+      val resp = Flipped(Decoupled(new OmMemoryResponse))
+    }
     val l1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(config)))
     val l1InvalidateDone = Decoupled(new CacheLineInvalidate(config))
     val globalAtomicRequest = Decoupled(new SharedAtomicRequest(config))
@@ -202,9 +208,9 @@ class KernelFragStage(
   private val wordValid = Wire(Bool())
   private val wordBits = Wire(new OmMemoryRequest)
 
-  // Kernarg staging is CPU-written; bypass L1/L2. Texture samples stay cached.
+  // Kernarg staging is CPU-written; bypass L1/L2. Texture samples stay cached
+  // and leave through `io.texMem` so the caller can translate the texture VA.
   private val bridge = Module(new OmWordToLinePort(config, uncached = true))
-  private val texBridge = Module(new OmWordToLinePort(config))
   private val texUnit = Module(new TexSampleUnit(config, gfxConfig))
 
   texUnit.io.in.valid := io.kernelTexSample.valid
@@ -219,8 +225,8 @@ class KernelFragStage(
   io.kernelVectorTexWriteback.valid := texUnit.io.vectorCommit.valid
   io.kernelVectorTexWriteback.bits := texUnit.io.vectorCommit.bits
   texUnit.io.vectorCommit.ready := io.kernelVectorTexWriteback.ready
-  texBridge.io.in <> texUnit.io.mem.req
-  texUnit.io.mem.resp <> texBridge.io.out
+  io.texMem.req <> texUnit.io.mem.req
+  texUnit.io.mem.resp <> io.texMem.resp
 
   io.kernelLaunch.kernelPc := 0.U
   io.kernelLaunch.kernargAddress := 0.U
@@ -895,29 +901,21 @@ class KernelFragStage(
     }
   }
 
-  // The staging FSM (kernarg write/read phases) and the sampler never have
-  // requests in flight at the same time (staging completes before the kernel
-  // launches; sampling happens while the kernel runs), so a phase-selected
-  // mux over the single line-memory port is race-free.  The producer never
-  // touches the word port: its fragments stage into registers and stream
-  // through sWrite only after the slot is swapped in.
-  private val stagingActive = state === sWrite || state === sRead
+  // The kernarg staging FSM (write/read phases) drives the physical word
+  // port; texture sampling leaves through `io.texMem` instead, so the two
+  // never share a port and the staging port carries only physical addresses.
+  // The producer never touches the word port: its fragments stage into
+  // registers and stream through sWrite only after the slot is swapped in.
   // Register the wide line request at the block boundary.  Besides providing
-  // one entry of elastic backpressure, this prevents the staging/texture mux
-  // and its 512-bit write-data cone from becoming a top-level output path.
+  // one entry of elastic backpressure, this prevents the 512-bit write-data
+  // cone from becoming a top-level output path.
   private val wordMemReqPipe = Module(
     new Queue(new ComputeMemoryRequest(config), 1, pipe = false, flow = false))
-  wordMemReqPipe.io.enq.valid := Mux(stagingActive, bridge.io.memoryRequest.valid,
-    texBridge.io.memoryRequest.valid)
-  wordMemReqPipe.io.enq.bits := Mux(stagingActive, bridge.io.memoryRequest.bits,
-    texBridge.io.memoryRequest.bits)
-  bridge.io.memoryRequest.ready := wordMemReqPipe.io.enq.ready && stagingActive
-  texBridge.io.memoryRequest.ready := wordMemReqPipe.io.enq.ready && !stagingActive
+  wordMemReqPipe.io.enq.valid := bridge.io.memoryRequest.valid
+  wordMemReqPipe.io.enq.bits := bridge.io.memoryRequest.bits
+  bridge.io.memoryRequest.ready := wordMemReqPipe.io.enq.ready
   io.wordMemReq <> wordMemReqPipe.io.deq
-  io.wordMemResp.ready := Mux(stagingActive, bridge.io.memoryResponse.ready,
-    texBridge.io.memoryResponse.ready)
-  bridge.io.memoryResponse.valid := io.wordMemResp.valid && stagingActive
+  io.wordMemResp.ready := bridge.io.memoryResponse.ready
+  bridge.io.memoryResponse.valid := io.wordMemResp.valid
   bridge.io.memoryResponse.bits := io.wordMemResp.bits
-  texBridge.io.memoryResponse.valid := io.wordMemResp.valid && !stagingActive
-  texBridge.io.memoryResponse.bits := io.wordMemResp.bits
 }
