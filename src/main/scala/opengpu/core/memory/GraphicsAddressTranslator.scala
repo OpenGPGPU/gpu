@@ -18,6 +18,10 @@ import opengpu.config.{CachePolicy, GpuConfig}
   * TLB entries are ASID-tagged: a global (G) page hits any address space, and a
   * private page only hits under the ASID that filled it, so a coarse VM switch
   * needs no flush here and contexts cannot resolve one another's mappings.
+  *
+  * Hit and translation-disabled paths accept a new request in the same cycle a
+  * prior response retires, so a warm TLB sustains one translation per cycle.
+  * Misses still serialize through the single page-table walker.
   */
 class GraphicsAddressTranslator(
   config: GpuConfig = GpuConfig(),
@@ -59,7 +63,7 @@ class GraphicsAddressTranslator(
   })
 
   private object State extends ChiselEnum {
-    val idle, lookup, walkRequest, walkResponse, respond, fault = Value
+    val idle, walkRequest, walkResponse, respond, fault = Value
   }
 
   private val walker = Module(new Sv32PageTableWalker(config))
@@ -78,22 +82,51 @@ class GraphicsAddressTranslator(
   private val translated = Reg(new ComputeMemoryRequest(config, lineBytes,
                                                         maxOutstanding))
 
-  private val requestVpn = request.address(config.xLen - 1, 12)
   // Tag each entry with the ASID under which it was filled (Sv32 satp bits
   // [30:22]).  An entry filled from a global (G) PTE hits any address space;
   // a private entry only hits its own ASID, so a VM switch needs no graphics
   // flush and one context can never resolve another's private mapping.
   private val currentAsid = io.satp(30, 22)
-  private val hitByEntry = VecInit((0 until entries).map { entry =>
-    valid(entry) && (global(entry) || asid(entry) === currentAsid) &&
-      vpn(entry) === requestVpn
-  })
-  private val hit = hitByEntry.asUInt.orR
-  private val hitPpn = Mux1H(hitByEntry, ppn)
-  private val hitPolicy = Mux1H(hitByEntry, policy)
-  private val hitPermission = Mux(request.isWrite,
-    Mux1H(hitByEntry, writable), Mux1H(hitByEntry, readable))
   private val translationEnabled = io.satp(31)
+
+  private def hitVec(probeVpn: UInt): Vec[Bool] = VecInit((0 until entries).map {
+    entry => valid(entry) && (global(entry) || asid(entry) === currentAsid) &&
+      vpn(entry) === probeVpn
+  })
+
+  private val acceptVpn = io.in.bits.address(config.xLen - 1, 12)
+  private val acceptHitByEntry = hitVec(acceptVpn)
+  private val acceptHit = acceptHitByEntry.asUInt.orR
+  private val acceptHitPpn = Mux1H(acceptHitByEntry, ppn)
+  private val acceptHitPolicy = Mux1H(acceptHitByEntry, policy)
+  private val acceptHitPermission = Mux(io.in.bits.isWrite,
+    Mux1H(acceptHitByEntry, writable), Mux1H(acceptHitByEntry, readable))
+
+  private val requestVpn = request.address(config.xLen - 1, 12)
+
+  private val completing =
+    (state === State.respond && io.out.fire) ||
+      (state === State.fault && io.faultResponse.fire)
+  private val walking =
+    state === State.walkRequest || state === State.walkResponse
+  io.in.ready := (state === State.idle || completing) && !walking
+
+  private def fillTranslated(
+    src: ComputeMemoryRequest,
+    physical: UInt,
+    cachePolicy: UInt
+  ): ComputeMemoryRequest = {
+    val next = Wire(new ComputeMemoryRequest(config, lineBytes, maxOutstanding))
+    next := src
+    next.address := physical
+    next.cachePolicy := cachePolicy
+    next
+  }
+
+  private val disabledPolicy =
+    if (preserveCachePolicy) io.in.bits.cachePolicy else CachePolicy.cached
+  private val hitPolicyOut =
+    if (preserveCachePolicy) io.in.bits.cachePolicy else acceptHitPolicy
 
   walker.io.rootPpn := io.satp(19, 0)
   walker.io.request.valid := state === State.walkRequest
@@ -117,9 +150,8 @@ class GraphicsAddressTranslator(
   walker.io.memoryResponse.bits.fault := io.pageWalkResp.bits.fault
   io.pageWalkResp.ready := walker.io.memoryResponse.ready
 
-  io.miss := state === State.lookup && translationEnabled && !hit
-  io.walkActive := state === State.walkRequest || state === State.walkResponse
-  io.in.ready := state === State.idle
+  io.miss := io.in.fire && translationEnabled && !acceptHit
+  io.walkActive := walking
   io.out.valid := state === State.respond
   io.out.bits := translated
   io.faultResponse.valid := state === State.fault
@@ -127,24 +159,20 @@ class GraphicsAddressTranslator(
   io.faultResponse.bits.fault := true.B
   io.faultResponse.bits.transactionId := request.transactionId
 
-  when(io.in.fire) {
-    request := io.in.bits
-    state := State.lookup
+  // Default: retire respond/fault into idle unless a new accept overrides.
+  when(completing) {
+    state := State.idle
   }
 
-  when(state === State.lookup) {
+  when(io.in.fire) {
+    request := io.in.bits
     when(!translationEnabled) {
-      translated := request
-      translated.cachePolicy :=
-        (if (preserveCachePolicy) request.cachePolicy
-         else CachePolicy.cached)
+      translated := fillTranslated(io.in.bits, io.in.bits.address, disabledPolicy)
       state := State.respond
-    }.elsewhen(hit) {
-      translated := request
-      translated.address := Cat(hitPpn, request.address(11, 0))
-      translated.cachePolicy :=
-        (if (preserveCachePolicy) request.cachePolicy else hitPolicy)
-      state := Mux(hitPermission, State.respond, State.fault)
+    }.elsewhen(acceptHit) {
+      translated := fillTranslated(io.in.bits,
+        Cat(acceptHitPpn, io.in.bits.address(11, 0)), hitPolicyOut)
+      state := Mux(acceptHitPermission, State.respond, State.fault)
     }.otherwise {
       state := State.walkRequest
     }
@@ -168,20 +196,15 @@ class GraphicsAddressTranslator(
       asid(replacement) := currentAsid
       replacement := Mux(replacement === (entries - 1).U, 0.U,
                          replacement + 1.U)
-      translated := request
-      translated.address := Cat(walker.io.response.bits.physicalPageNumber,
-                                request.address(11, 0))
-      translated.cachePolicy :=
-        (if (preserveCachePolicy) request.cachePolicy
-         else walker.io.response.bits.cachePolicy)
+      val walkPolicy =
+        if (preserveCachePolicy) request.cachePolicy
+        else walker.io.response.bits.cachePolicy
+      translated := fillTranslated(request,
+        Cat(walker.io.response.bits.physicalPageNumber, request.address(11, 0)),
+        walkPolicy)
       state := State.respond
     }
   }
-
-  when(state === State.respond && io.out.fire) {
-    state := State.idle
-  }
-  when(io.faultResponse.fire) { state := State.idle }
 
   when(io.flush) {
     assert(state === State.idle, "graphics TLB flush requires an idle port")

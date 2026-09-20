@@ -63,12 +63,12 @@ descriptor-fetch fault retention; texture/page-fault reporting
 (`RenderHostSpec`, `GpuHostSystemAxiSpec`, `GpuSystemSpec`).
 
 Workload note (`scripts/benchmark_gpu.py`): flat draws are OM-bound
-(`om_stall` ≈ `raster_stall`, `om_conflict` = 0). Raising
-`GraphicsConfig.omInflight` from 4 → 8 (and matching word-port ID depth)
-cut cycles ~5–7% on flat/overdraw/texture scenes; programmable shading is
-still staging-bound and essentially unchanged. Deeper OM also raises the
-framebuffer translation-stall counter because the single word client stays
-busier — the next measured lever if more flat throughput is needed.
+(`om_stall` ≈ `raster_stall`, `om_conflict` = 0). Measured changes kept:
+`GraphicsConfig.omInflight` 4 → 8 (~5–7% flat cycles) and a same-cycle
+retire/accept on graphics TLB hits (~1% more). Programmable shading is still
+staging-bound. Framebuffer translation-stall cycles stay high because the
+word client backs up on downstream memory ready, not only on walks — further
+flat gains need outstanding translated requests or a wider OM memory port.
 Numbers land in `generated/qualification/workloads/`.
 
 ## Next work
@@ -78,10 +78,10 @@ Numbers land in `generated/qualification/workloads/`.
    completion backpressure, recovery and mixed sample modes. Boundary edits
    must pull system integration tests.
 2. **Measure before optimizing** — compare with `scripts/benchmark_gpu.py`
-   under the same source hash, scene and memory model. OM depth 8 is the
-   current default after a measured win; further flat gains likely need
-   graphics translation concurrency or a wider OM memory port, not more
-   conflict logic (`om_conflict` remains 0).
+   under the same source hash, scene and memory model. OM depth 8 and
+   hit-path graphics translation (accept on response retire) are in after
+   measured wins. Further flat gains likely need outstanding translated
+   requests or a wider OM memory port (`om_conflict` remains 0).
 3. **Physical closure** — pipeline the strided-copy descriptor address cone
    (~505 MHz today on both `gpu-system` and `strided-copy`; see
    [../timing/README.md](../timing/README.md)). Derive real parent IO budgets;
