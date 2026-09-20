@@ -110,6 +110,11 @@ class GpuCommandRouter(
     new GpuCommand(config, commandIdWidth), commandQueueDepth))
   val completions = Module(new Queue(
     new GpuCommandResult(commandIdWidth), completionQueueDepth))
+  val hold0Cmd = Reg(new GpuCommand(config, commandIdWidth))
+  val hold0Valid = RegInit(false.B)
+  val hold1Cmd = Reg(new GpuCommand(config, commandIdWidth))
+  val hold1Failed = RegInit(false.B)
+  val hold1Valid = RegInit(false.B)
   val reservedIds = RegInit(0.U(idCount.W))
   val commandOpcode = Reg(Vec(idCount,
     UInt(GpuCommandOpcode.width.W)))
@@ -125,7 +130,12 @@ class GpuCommandRouter(
   io.command.ready := commands.io.enq.ready && !duplicate
   io.duplicateCommandId := io.command.valid && duplicate
 
-  val head = commands.io.deq.bits
+  val head = hold1Cmd
+  val h0 = hold0Cmd
+  val h0Match = eventValid(h0.waitEventId) &&
+    eventGeneration(h0.waitEventId) === h0.waitEventGeneration
+  val h0Known = !h0.waitForEvent || h0Match
+  val h0Failed = h0.waitForEvent && h0Match && !eventSuccess(h0.waitEventId)
   val isKernel = head.opcode === GpuCommandOpcode.kernel
   val isCopy = head.opcode === GpuCommandOpcode.copy
   val isFill = head.opcode === GpuCommandOpcode.fill
@@ -134,33 +144,27 @@ class GpuCommandRouter(
   val isInvalidate = head.opcode === GpuCommandOpcode.invalidate
   val opcodeValid = isKernel || isCopy || isFill || isStrided || isResolve ||
     isInvalidate
-  val waitedEventMatches = eventValid(head.waitEventId) &&
-    eventGeneration(head.waitEventId) === head.waitEventGeneration
-  val dependencyKnown = !head.waitForEvent || waitedEventMatches
-  val dependencyFailed = head.waitForEvent && waitedEventMatches &&
-    !eventSuccess(head.waitEventId)
 
-  io.kernel.valid := commands.io.deq.valid && dependencyKnown &&
-    !dependencyFailed && isKernel && !io.blockDispatch
+  io.kernel.valid := hold1Valid && !hold1Failed && isKernel && !io.blockDispatch
   io.kernel.bits.commandId := head.commandId
   io.kernel.bits.launch := head.launch
   io.kernel.bits.waitForDma := head.waitForDma
   io.kernel.bits.dmaSource := head.dmaSource
   io.kernel.bits.dmaDescriptorId := head.dmaDescriptorId
-  io.copy.valid := commands.io.deq.valid && dependencyKnown &&
-    !dependencyFailed && isCopy && !io.blockDispatch
+  io.copy.valid := hold1Valid && !hold1Failed &&
+    isCopy && !io.blockDispatch
   io.copy.bits.descriptorId := head.commandId
   io.copy.bits.sourceAddress := head.sourceAddress
   io.copy.bits.destinationAddress := head.destinationAddress
   io.copy.bits.bytes := head.bytes
-  io.fill.valid := commands.io.deq.valid && dependencyKnown &&
-    !dependencyFailed && isFill && !io.blockDispatch
+  io.fill.valid := hold1Valid && !hold1Failed &&
+    isFill && !io.blockDispatch
   io.fill.bits.descriptorId := head.commandId
   io.fill.bits.destinationAddress := head.destinationAddress
   io.fill.bits.bytes := head.bytes
   io.fill.bits.pattern := head.pattern
-  io.stridedCopy.valid := commands.io.deq.valid && dependencyKnown &&
-    !dependencyFailed && isStrided && !io.blockDispatch
+  io.stridedCopy.valid := hold1Valid && !hold1Failed &&
+    isStrided && !io.blockDispatch
   io.stridedCopy.bits.descriptorId := head.commandId
   io.stridedCopy.bits.sourceAddress := head.sourceAddress
   io.stridedCopy.bits.destinationAddress := head.destinationAddress
@@ -168,8 +172,8 @@ class GpuCommandRouter(
   io.stridedCopy.bits.height := head.height
   io.stridedCopy.bits.sourceStride := head.sourceStride
   io.stridedCopy.bits.destinationStride := head.destinationStride
-  io.resolve.valid := commands.io.deq.valid && dependencyKnown &&
-    !dependencyFailed && isResolve && !io.blockDispatch
+  io.resolve.valid := hold1Valid && !hold1Failed &&
+    isResolve && !io.blockDispatch
   io.resolve.bits.descriptorId := head.commandId
   io.resolve.bits.sourceAddress := head.sourceAddress
   io.resolve.bits.destinationAddress := head.destinationAddress
@@ -178,8 +182,8 @@ class GpuCommandRouter(
   io.resolve.bits.sourceStride := head.sourceStride
   io.resolve.bits.destinationStride := head.destinationStride
   io.resolve.bits.sampleMode := head.sampleMode
-  io.invalidate.valid := commands.io.deq.valid && dependencyKnown &&
-    !dependencyFailed && isInvalidate && !io.blockDispatch
+  io.invalidate.valid := hold1Valid && !hold1Failed &&
+    isInvalidate && !io.blockDispatch
   io.invalidate.bits.descriptorId := head.commandId
   io.invalidate.bits.address := head.sourceAddress
   io.invalidate.bits.bytes := head.bytes
@@ -226,12 +230,11 @@ class GpuCommandRouter(
     io.invalidateCompletion.bits.success,
     io.invalidateCompletion.bits.bytesInvalidated)
   io.invalidateCompletion.ready := completionEvents.io.in(5).ready
-  mapCompletion(6, commands.io.deq.valid && dependencyKnown &&
-    (!opcodeValid || dependencyFailed) && !io.blockDispatch, head.commandId,
-    Mux(dependencyFailed, GpuCommandResultStatus.eventDependencyFailed,
+  mapCompletion(6, hold1Valid && (!opcodeValid || hold1Failed) && !io.blockDispatch, head.commandId,
+    Mux(hold1Failed, GpuCommandResultStatus.eventDependencyFailed,
       GpuCommandResultStatus.invalidOpcode), false.B, 0.U)
 
-  commands.io.deq.ready := !io.blockDispatch && dependencyKnown && MuxCase(
+  val engineReady = MuxCase(
     completionEvents.io.in(6).ready, Seq(
     isKernel -> io.kernel.ready,
     isCopy -> io.copy.ready,
@@ -239,6 +242,19 @@ class GpuCommandRouter(
     isStrided -> io.stridedCopy.ready,
     isResolve -> io.resolve.ready,
     isInvalidate -> io.invalidate.ready))
+  val dispatchFire = hold1Valid && !io.blockDispatch &&
+    ((opcodeValid && !hold1Failed && engineReady) ||
+      ((!opcodeValid || hold1Failed) && completionEvents.io.in(6).ready))
+  val popFire = commands.io.deq.fire
+  val shiftFire = hold0Valid && h0Known && (!hold1Valid || dispatchFire)
+  commands.io.deq.ready := !hold0Valid || shiftFire
+  hold0Valid := (hold0Valid && !shiftFire) || popFire
+  hold1Valid := (hold1Valid && !dispatchFire) || shiftFire
+  when(popFire) { hold0Cmd := commands.io.deq.bits }
+  when(shiftFire) {
+    hold1Cmd := hold0Cmd
+    hold1Failed := h0Failed
+  }
   completions.io.enq <> completionEvents.io.out
   io.completion <> completions.io.deq
 

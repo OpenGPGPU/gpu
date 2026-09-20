@@ -49,6 +49,15 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
     dut.clock.step(); dut.io.command.valid.poke(false.B)
   }
 
+  private def awaitValid(dut: GpuCommandRouter, probe: => Boolean,
+                         cycles: Int = 12): Unit = {
+    var remaining = cycles
+    while (!probe && remaining > 0) {
+      dut.clock.step()
+      remaining -= 1
+    }
+  }
+
   private def setEventDependency(dut: GpuCommandRouter, wait: Boolean,
                                  eventId: Int, generation: Int): Unit = {
     dut.io.command.bits.waitForEvent.poke(wait.B)
@@ -72,6 +81,7 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
       dut.io.command.bits.destinationAddress.poke(0x2000.U)
       dut.io.command.bits.bytes.poke(128.U)
       submit(dut, 3, GpuCommandOpcode.copy)
+      awaitValid(dut, dut.io.copy.valid.peek().litToBoolean)
       dut.io.copy.valid.expect(true.B)
       dut.io.copy.bits.descriptorId.expect(3.U)
       dut.io.copy.bits.sourceAddress.expect(0x1000.U)
@@ -117,7 +127,7 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
       dut.io.completion.ready.poke(true.B); dut.clock.step()
 
       submit(dut, 2, 7.U)
-      dut.clock.step()
+      awaitValid(dut, dut.io.completion.valid.peek().litToBoolean)
       dut.io.completion.valid.expect(true.B)
       dut.io.completion.bits.commandId.expect(2.U)
       dut.io.completion.bits.status.expect(GpuCommandResultStatus.invalidOpcode)
@@ -147,9 +157,11 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
       dut.io.fillCompletion.valid.poke(true.B)
       dut.clock.step(); dut.io.fillCompletion.valid.poke(false.B)
 
+      awaitValid(dut, dut.io.kernel.valid.peek().litToBoolean)
       dut.io.kernel.valid.expect(true.B)
       dut.io.kernel.bits.commandId.expect(2.U)
       dut.io.kernel.ready.poke(true.B); dut.clock.step()
+      awaitValid(dut, dut.io.copy.valid.peek().litToBoolean)
       dut.io.copy.valid.expect(true.B)
       dut.io.copy.bits.descriptorId.expect(3.U)
       // The kernel did not consume the broadcast event.
@@ -181,6 +193,7 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
       dut.clock.step()
       dut.io.kernel.valid.expect(false.B)
       dut.clock.step()
+      awaitValid(dut, dut.io.completion.valid.peek().litToBoolean)
       dut.io.completion.valid.expect(true.B)
       dut.io.completion.bits.commandId.expect(2.U)
       dut.io.completion.bits.status.expect(
@@ -214,6 +227,7 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
 
       // The same ID is immediately reusable and dispatches normally.
       submit(dut, 5, GpuCommandOpcode.fill)
+      awaitValid(dut, dut.io.fill.valid.peek().litToBoolean)
       dut.io.fill.valid.expect(true.B)
       dut.io.fill.bits.descriptorId.expect(5.U)
       dut.io.fill.ready.poke(true.B)
@@ -245,6 +259,7 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
       dut.io.command.bits.sampleMode.poke(2.U)
       submit(dut, 6, GpuCommandOpcode.resolve)
 
+      awaitValid(dut, dut.io.resolve.valid.peek().litToBoolean)
       dut.io.resolve.valid.expect(true.B)
       dut.io.resolve.bits.descriptorId.expect(6.U)
       dut.io.resolve.bits.sourceAddress.expect(0x8000.U)
@@ -279,6 +294,7 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
       dut.io.command.bits.bytes.poke(256.U)
       submit(dut, 9, GpuCommandOpcode.invalidate)
 
+      awaitValid(dut, dut.io.invalidate.valid.peek().litToBoolean)
       dut.io.invalidate.valid.expect(true.B)
       dut.io.invalidate.bits.descriptorId.expect(9.U)
       dut.io.invalidate.bits.address.expect(0x4000.U)
