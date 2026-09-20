@@ -552,13 +552,12 @@ debts. Each item is independent and should preserve behavior and coverage.
   `require` now rejects a client that overflows the budget (the immediate
   hazard hit while adding the framebuffer client); generating the layout from
   one table remains.
-- **C4 - Extract render-state bundles (partial).** The per-draw depth/stencil/
-  blend/cull/sampler state now lives once in a `HasDrawState` trait mixed into
-  both `SceneTriangle` (fixed-function records) and `VertexDrawCommand`
-  (vertex-core records), and the duplicated field-by-field override copy in
-  `RenderPipeline` collapses to one `resolveDrawState` helper. Remaining:
-  `JobConfig`, `DrawRenderState`, `DrawContext` and the vertex records still
-  repeat the target/sampler fields.
+- **C4 - Extract render-state bundles (done).** The depth/stencil/blend/cull/
+  sampler state now lives once in a `HasResolvedDrawState` trait mixed into
+  `DrawRenderState`, `DrawContext`, `JobConfig`, `SceneTriangle` and
+  `VertexDrawCommand`; the record bundles add `stateOverride` via `HasDrawState`.
+  The duplicated field-by-field override copy in `RenderPipeline` collapses to
+  one `resolveDrawState` helper.
 - **C5 - Delete the inert ring surface (done).** The `JOB_*`/`IH_*` registers,
   the `gpu_ih_record` layout and its status encodings, the dead driver ring
   code (`opengpu_hw_submit_queue_locked`, `opengpu_ih_drain`, ring fields) and

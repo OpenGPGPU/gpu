@@ -30,36 +30,14 @@ class SceneTriangle(config: GraphicsConfig) extends Bundle with HasDrawState {
 }
 
 /** Fixed-function and render-target state sampled at a draw boundary. */
-private class DrawRenderState extends Bundle {
+private class DrawRenderState extends Bundle with HasResolvedDrawState {
   val colorBase = UInt(32.W)
   val depthBase = UInt(32.W)
   val stride = UInt(32.W)
-  val depthTestEnable = Bool()
-  val depthFunc = UInt(3.W)
-  val depthWriteEnable = Bool()
-  val blendEnable = Bool()
-  val blendCfgEnable = Bool()
-  val blendSrcFactor = UInt(4.W)
-  val blendDstFactor = UInt(4.W)
-  val blendEquation = UInt(3.W)
-  val stencilTestEnable = Bool()
-  val stencilFunc = UInt(3.W)
-  val stencilFailOp = UInt(3.W)
-  val stencilZFailOp = UInt(3.W)
-  val stencilZPassOp = UInt(3.W)
-  val stencilRef = UInt(8.W)
-  val stencilReadMask = UInt(8.W)
-  val stencilWriteMask = UInt(8.W)
-  val cullMode = UInt(2.W)
   val sampleMode = UInt(2.W)
-  val texEnable = Bool()
   val texBase = UInt(32.W)
   val texWidth = UInt(14.W)
   val texHeight = UInt(14.W)
-  val texWrapClamp = Bool()
-  val texMaxLevel = UInt(4.W)
-  val texLodBias = SInt(5.W)
-  val texMinLevel = UInt(4.W)
 }
 
 /** Top-of-pipeline renderer.
@@ -517,6 +495,8 @@ class RenderPipeline(
     ctxFifo.io.enq.bits.stencilFailOp := drawState.stencilFailOp
     ctxFifo.io.enq.bits.stencilZFailOp := drawState.stencilZFailOp
     ctxFifo.io.enq.bits.stencilZPassOp := drawState.stencilZPassOp
+    ctxFifo.io.enq.bits.cullMode := drawState.cullMode
+    ctxFifo.io.enq.bits.texEnable := drawState.texEnable
     // Ordered retire handshake: the stage presents one completion event per
     // draw boundary in submission order and holds it until the owner accepts
     // it.  Every OM entry snapshots its render-target state at fragment

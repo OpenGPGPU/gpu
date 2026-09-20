@@ -2,16 +2,12 @@ package opengpu.graphics
 
 import chisel3._
 
-/** Per-draw fixed-function state carried by every command record.
-  *
-  * `SceneTriangle` (fixed-function records) and `VertexDrawCommand`
-  * (vertex-core records) both mix this in, so the pipeline can resolve the
-  * draw's depth/stencil/blend/cull/sampler state from either source with one
-  * helper instead of duplicating the field-by-field copy.
+/** Resolved per-draw fixed-function state: depth, blend, stencil, cull and
+  * sampler fields with no per-record override flag.  `DrawRenderState` and any
+  * other bundle that stores the state a draw actually runs with mixes this in,
+  * so the fields are declared once.
   */
-trait HasDrawState extends Bundle {
-  /** When set, this record's state fields override the global registers. */
-  val stateOverride = Bool()
+trait HasResolvedDrawState extends Bundle {
   val depthTestEnable = Bool()
   val depthFunc = UInt(3.W)
   val depthWriteEnable = Bool()
@@ -34,4 +30,14 @@ trait HasDrawState extends Bundle {
   val texMaxLevel = UInt(4.W)
   val texLodBias = SInt(5.W)
   val texMinLevel = UInt(4.W)
+}
+
+/** A command record's per-draw state: the resolved fields plus the record's
+  * override flag and the record-only source-over/lod inputs.  `SceneTriangle`
+  * (fixed-function records) and `VertexDrawCommand` (vertex-core records)
+  * both mix this in, so the pipeline resolves either with one helper.
+  */
+trait HasDrawState extends HasResolvedDrawState {
+  /** When set, this record's state fields override the global registers. */
+  val stateOverride = Bool()
 }
