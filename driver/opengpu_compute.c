@@ -133,7 +133,9 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
         .cull_mode = GPU_CULL_NONE,
     };
     struct opengpu_buffer descriptor;
+    struct opengpu_vm vm;
     struct dma_fence *fence = NULL;
+    bool vm_ready = false;
     long timeout;
     int ret;
 
@@ -142,14 +144,37 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
     if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_RENDER))
         return -EOPNOTSUPP;
     opengpu_fill_test_command(gpu);
-    /* The probe self-test uses the same unified render command as a user draw,
-     * with no VM (the global ASID-0 identity map). */
+    /* The probe self-test uses the same unified render command as a user draw.
+     * Identity leaves are not executable, so run its snapshot code from a
+     * private mapping under a temporary VM; a Bare build (no MMU) needs none. */
+    if (gpu->mmu.enabled && (gpu->hw.capabilities & GPU_CAP_FRAGMENT_CORE)) {
+        struct opengpu_kernarg_va_plan plan;
+        struct gpu_draw_record *record = gpu->compute.cmd.cpu;
+
+        ret = opengpu_mmu_vm_create(gpu, &vm);
+        if (ret)
+            return ret;
+        vm_ready = true;
+        if (opengpu_code_va_plan(gpu->compute.shader.dma,
+                                 gpu->compute.shader.size, 1,
+                                 OPENGPU_MMU_PAGE_SIZE, &plan) ||
+            opengpu_mmu_vm_map(gpu, &vm, (dma_addr_t)plan.va_page,
+                               (dma_addr_t)plan.pa_page, (size_t)plan.span,
+                               OPENGPU_MMU_POLICY_CACHED)) {
+            ret = -EIO;
+            goto out_vm;
+        }
+        record->shader_pc = (u32)plan.va +
+            (record->shader_pc - lower_32_bits(gpu->compute.shader.dma));
+        dma_wmb();
+    }
     ret = opengpu_buffer_alloc(gpu, &descriptor, 64);
     if (ret)
-        return ret;
+        goto out_vm;
     ret = opengpu_hw_render_async(
         gpu, &job, descriptor.cpu, lower_32_bits(descriptor.dma),
-        (u32)descriptor.size, NULL, 0, false, 0, 0, 0, NULL, NULL, &fence);
+        (u32)descriptor.size, NULL, 0, false, 0, 0, 0, NULL,
+        vm_ready ? &vm : NULL, &fence);
     if (ret)
         goto out_descriptor;
     timeout = dma_fence_wait_timeout(
@@ -165,6 +190,11 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
     dma_fence_put(fence);
 out_descriptor:
     opengpu_buffer_free(gpu, &descriptor);
+out_vm:
+    if (vm_ready) {
+        opengpu_mmu_vm_destroy(gpu, &vm);
+        opengpu_hw_activate_vm(gpu, NULL);
+    }
     return ret;
 }
 
@@ -1262,15 +1292,18 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
 
     if (job->type == OPENGPU_SCHED_COMPUTE) {
         /* Run the kernel from a private code mapping so instruction fetch
-         * translates under this ASID; fall back to the physical address when
-         * the VM is absent or the snapshot does not fit the code window. */
+         * translates under this ASID.  Identity leaves are not executable, so
+         * a VM job whose code cannot be mapped fails rather than running from
+         * the physical address; a Bare job (no VM) keeps the physical PC. */
         if (vm && job->context && job->shader.dma) {
             dma_addr_t code_va = 0;
 
-            if (opengpu_binding_map_code(job->gpu, job->context,
-                    job->shader.dma, job->shader.size, 1, &code_va) == 0)
-                job->kernel.kernel_pc = code_va +
-                    (job->kernel.kernel_pc - job->shader.dma);
+            ret = opengpu_binding_map_code(job->gpu, job->context,
+                    job->shader.dma, job->shader.size, 1, &code_va);
+            if (ret)
+                return ERR_PTR(ret);
+            job->kernel.kernel_pc = code_va +
+                (job->kernel.kernel_pc - job->shader.dma);
         }
         ret = opengpu_hw_compute_async(job->gpu, &job->kernel,
                                        &job->events, vm, &fence);
@@ -1347,22 +1380,28 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
         /* Reach the snapshot code through the context VM too, and rewrite the
          * command records from the physical base to the code VA, so shader
          * instruction fetch translates under this ASID instead of running from
-         * the shared identity map.  A mapping that fails keeps the physical
-         * base, so a Bare build or an oversized snapshot still draws. */
+         * the shared identity map.  Identity leaves are not executable, so a
+         * mapping failure is fatal; a Bare job (no VM) keeps physical PCs. */
         if (vm && job->context) {
             dma_addr_t code_va = 0, vertex_code_va = 0;
             u32 shader_delta = 0, vertex_delta = 0;
 
-            if (job->shader.dma &&
-                opengpu_binding_map_code(job->gpu, job->context,
-                    job->shader.dma, job->shader.size, 1, &code_va) == 0)
+            if (job->shader.dma) {
+                ret = opengpu_binding_map_code(job->gpu, job->context,
+                    job->shader.dma, job->shader.size, 1, &code_va);
+                if (ret)
+                    return ERR_PTR(ret);
                 shader_delta = (u32)code_va - (u32)job->shader.dma;
-            if (job->vertex_shader.dma &&
-                opengpu_binding_map_code(job->gpu, job->context,
+            }
+            if (job->vertex_shader.dma) {
+                ret = opengpu_binding_map_code(job->gpu, job->context,
                     job->vertex_shader.dma, job->vertex_shader.size, 2,
-                    &vertex_code_va) == 0)
+                    &vertex_code_va);
+                if (ret)
+                    return ERR_PTR(ret);
                 vertex_delta = (u32)vertex_code_va -
                     (u32)job->vertex_shader.dma;
+            }
             if ((shader_delta || vertex_delta) && job->commands.cpu) {
                 u32 count = job->hw.cmd_count;
                 u32 i;

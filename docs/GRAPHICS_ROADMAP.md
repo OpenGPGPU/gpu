@@ -22,8 +22,9 @@ A passing sim is not silicon; a completed tool run is not timing closure.
 - Driver scheduler owns GEM references, dependencies and fences. Display
   consumes GEM framebuffers; it does not own execution lifetime.
 - Sv32 private VA windows and ASIDs. Command, framebuffer and texture clients
-  translate with CU accesses. Global identity mappings remain; this is not
-  full VM isolation.
+  translate with CU accesses. Global identity mappings remain but are
+  read/write, non-executable; snapshot code runs from private code windows.
+  This is not yet full VM isolation.
 - External display hardware owns scanout and signal generation.
 
 ## Capability status

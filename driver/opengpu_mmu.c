@@ -2,7 +2,9 @@
 /* Identity-map GPU MMU with per-page Sv32 cache policy.
  *
  * The CU MMUs are enabled with a root table of 4 MiB identity superpages, so
- * every existing physical-address binding keeps working.  When a 4 KiB page
+ * every existing physical-address binding keeps working.  Identity leaves are
+ * read/write but not executable: code runs only from VM-private leaves, so a
+ * shader cannot execute shared identity memory.  When a 4 KiB page
  * needs a non-default cache policy (for example an uncached buffer that the CPU
  * writes), the containing superpage is split into a second-level table and only
  * that page's PTE changes.  Page tables live in coherent DMA memory and are
@@ -28,7 +30,10 @@
 #define MMU_PTE_G 0x020u
 #define MMU_PTE_A 0x040u
 #define MMU_PTE_D 0x080u
-#define MMU_PTE_LEAF_FLAGS (MMU_PTE_V | MMU_PTE_R | MMU_PTE_W | MMU_PTE_X | \
+/* Identity leaves are read/write but never executable: instruction fetch must
+ * run through a private code mapping, so a shader cannot execute shared
+ * identity memory. */
+#define MMU_PTE_LEAF_FLAGS (MMU_PTE_V | MMU_PTE_R | MMU_PTE_W | \
                             MMU_PTE_G | MMU_PTE_A | MMU_PTE_D)
 #define MMU_PTE_POLICY_SHIFT 8u
 
@@ -41,10 +46,10 @@ static u32 mmu_leaf_pte(dma_addr_t phys, u32 policy)
 }
 
 /* A VM-private leaf: the same PTE without the global bit, so only the owning
- * ASID resolves it. */
+ * ASID resolves it, and executable, so privately-mapped snapshot code runs. */
 static u32 mmu_leaf_pte_private(dma_addr_t phys, u32 policy)
 {
-    return mmu_leaf_pte(phys, policy) & ~(u32)MMU_PTE_G;
+    return (mmu_leaf_pte(phys, policy) | MMU_PTE_X) & ~(u32)MMU_PTE_G;
 }
 
 static u32 mmu_link_pte(dma_addr_t table)

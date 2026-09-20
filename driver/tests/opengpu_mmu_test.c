@@ -125,6 +125,8 @@ int main(void)
 
     assert(!opengpu_mmu_init(&gpu));
     assert((((u32 *)gpu.mmu.root.cpu)[0] & 0x20) != 0); /* global identity */
+    /* Identity leaves are read/write but never executable. */
+    assert((((u32 *)gpu.mmu.root.cpu)[0] & MMU_PTE_X) == 0);
     memcpy(root_before, gpu.mmu.root.cpu, sizeof(root_before));
     idle_error = -ETIMEDOUT;
     assert(opengpu_mmu_set_range_policy(&gpu, 0, 4096, 2) == -ETIMEDOUT);
@@ -250,15 +252,18 @@ int main(void)
         assert((((u32 *)vm.root.cpu)[region] >> 10) ==
                (u32)(vm.l1[0].dma >> 12));
         table = vm.l1[0].cpu;
-        /* The mapped page points at the requested PA, without the G bit and
-         * with the requested policy. */
+        /* The mapped page points at the requested PA, without the G bit, with
+         * the requested policy, and executable (private code/data). */
         assert((table[0] >> 10) == 0x12345);
         assert((table[0] & 0x20) == 0);
         assert((table[0] & 0x300) == 0x200);
-        /* An untouched sibling is still the cached global identity leaf. */
+        assert((table[0] & MMU_PTE_X) != 0);
+        /* An untouched sibling is still the cached global identity leaf, which
+         * stays non-executable. */
         assert((table[1] & 0x20) != 0);
         assert((table[1] >> 10) == 0x20001);
         assert((table[1] & 0x300) == 0);
+        assert((table[1] & MMU_PTE_X) == 0);
         /* Validation: alignment, size, policy and the 32-bit window. */
         assert(opengpu_mmu_vm_map(&gpu, &vm, va + 1, pa, MMU_PAGE_SIZE, 0) ==
                -EINVAL);
