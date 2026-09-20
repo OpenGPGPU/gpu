@@ -563,10 +563,11 @@ debts. Each item is independent and should preserve behavior and coverage.
   code (`opengpu_hw_submit_queue_locked`, `opengpu_ih_drain`, ring fields) and
   `OPENGPU_CAP_JOB_QUEUE` are removed; the register offsets are reserved. The
   guest test passes end to end on the unified path.
-- **C6 - Consolidate translation clients.** Three blocking
-  `GraphicsAddressTranslator` instances (command, framebuffer, texture) plus
-  the CU MMU duplicate the same walker/TLB. Share a walker/TLB pool and make
-  the "Bare vs VM" behavior explicit per client.
+- **C6 - Consolidate translation clients (done).** The repeated word-to-line
+  bridge + `GraphicsAddressTranslator` + fault/response arbiter wiring for the
+  command, framebuffer and texture clients now lives in one
+  `TranslatedWordClient` module; `GpuHostSystemAxi` instantiates it three times
+  and only owns the shared request arbiter and ID-range response routing.
 
 Exit: a draw is dispatched without crossing the host/system seam twice, there is
 one submission/configuration path, the dispatch ID map is generated and checked,
