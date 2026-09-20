@@ -248,7 +248,7 @@ object EmitPpaRtl {
             numComputeUnits = 1,
             commandIdWidth = 4,
             transactionsPerCu = 4,
-            useBlackBoxes = false,
+            useBlackBoxes = true,
             enableFpuBackend = true,
             instructionCacheSets = 16,
             instructionCacheWays = 2,

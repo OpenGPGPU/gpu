@@ -78,43 +78,67 @@ class StridedCopyEngine(
   private val resultStatus = RegInit(CopyStatus.success)
 
   private val d = descriptors.io.deq.bits
-  private val aligned = d.sourceAddress(offsetWidth - 1, 0) === 0.U &&
-    d.destinationAddress(offsetWidth - 1, 0) === 0.U &&
-    d.sourceStride(offsetWidth - 1, 0) === 0.U &&
-    d.destinationStride(offsetWidth - 1, 0) === 0.U
-  private val dimensionsValid = d.widthBytes.orR && d.height.orR &&
-    d.widthBytes(offsetWidth - 1, 0) === 0.U &&
-    d.sourceStride >= d.widthBytes && d.destinationStride >= d.widthBytes
-  private val lastRow = d.height - 1.U
-  private val sourceOffset = lastRow * d.sourceStride
-  private val destinationOffset = lastRow * d.destinationStride
-  private val sourceEnd = (Cat(0.U(32.W), d.sourceAddress) +&
-    sourceOffset) +& d.widthBytes
-  private val destinationEnd = (Cat(0.U(32.W), d.destinationAddress) +&
-    destinationOffset) +& d.widthBytes
+  private val decodeStage = RegInit(0.U(2.W))
+  private val holdId = Reg(UInt(descriptorIdWidth.W))
+  private val holdSrcAddr = Reg(UInt(config.xLen.W))
+  private val holdDstAddr = Reg(UInt(config.xLen.W))
+  private val holdWidth = Reg(UInt(32.W))
+  private val holdHeight = Reg(UInt(32.W))
+  private val holdSrcStride = Reg(UInt(32.W))
+  private val holdDstStride = Reg(UInt(32.W))
+  private val holdSourceEnd = Reg(UInt((32 + config.xLen).W))
+  private val holdDestinationEnd = Reg(UInt((32 + config.xLen).W))
+  private val lastRow = holdHeight - 1.U
+  private val sourceEnd =
+    (Cat(0.U(32.W), holdSrcAddr) +& (lastRow * holdSrcStride)) +& holdWidth
+  private val destinationEnd =
+    (Cat(0.U(32.W), holdDstAddr) +& (lastRow * holdDstStride)) +& holdWidth
+  private val aligned = holdSrcAddr(offsetWidth - 1, 0) === 0.U &&
+    holdDstAddr(offsetWidth - 1, 0) === 0.U &&
+    holdSrcStride(offsetWidth - 1, 0) === 0.U &&
+    holdDstStride(offsetWidth - 1, 0) === 0.U
+  private val dimensionsValid = holdWidth.orR && holdHeight.orR &&
+    holdWidth(offsetWidth - 1, 0) === 0.U &&
+    holdSrcStride >= holdWidth && holdDstStride >= holdWidth
   private val overflow =
-    sourceEnd(sourceEnd.getWidth - 1, config.xLen).orR ||
-      destinationEnd(destinationEnd.getWidth - 1, config.xLen).orR
-  private val overlap = Cat(0.U(32.W), d.sourceAddress) < destinationEnd &&
-    Cat(0.U(32.W), d.destinationAddress) < sourceEnd
+    holdSourceEnd(holdSourceEnd.getWidth - 1, config.xLen).orR ||
+      holdDestinationEnd(holdDestinationEnd.getWidth - 1, config.xLen).orR
+  private val overlap = Cat(0.U(32.W), holdSrcAddr) < holdDestinationEnd &&
+    Cat(0.U(32.W), holdDstAddr) < holdSourceEnd
   private val descriptorValid = aligned && dimensionsValid && !overflow && !overlap
   private val descriptorError = Mux(!aligned, CopyStatus.invalidAlignment,
     Mux(!dimensionsValid, CopyStatus.invalidLength,
       Mux(overflow, CopyStatus.addressOverflow, CopyStatus.overlapUnsupported)))
 
-  descriptors.io.deq.ready := !active && !completionValid
+  descriptors.io.deq.ready := !active && !completionValid && decodeStage === 0.U
   when(descriptors.io.deq.fire) {
-    descriptorId := d.descriptorId
-    sourceAddress := d.sourceAddress
-    destinationAddress := d.destinationAddress
-    widthBytes := d.widthBytes
-    rowsRemaining := d.height
-    sourceStride := d.sourceStride
-    destinationStride := d.destinationStride
+    holdId := d.descriptorId
+    holdSrcAddr := d.sourceAddress
+    holdDstAddr := d.destinationAddress
+    holdWidth := d.widthBytes
+    holdHeight := d.height
+    holdSrcStride := d.sourceStride
+    holdDstStride := d.destinationStride
+    decodeStage := 1.U
+  }
+  when(decodeStage === 1.U) {
+    holdSourceEnd := sourceEnd
+    holdDestinationEnd := destinationEnd
+    decodeStage := 2.U
+  }
+  when(decodeStage === 2.U) {
+    descriptorId := holdId
+    sourceAddress := holdSrcAddr
+    destinationAddress := holdDstAddr
+    widthBytes := holdWidth
+    rowsRemaining := holdHeight
+    sourceStride := holdSrcStride
+    destinationStride := holdDstStride
     copiedBytes := 0.U
     resultStatus := Mux(descriptorValid, CopyStatus.success, descriptorError)
     when(descriptorValid) { active := true.B }
       .otherwise { completionValid := true.B }
+    decodeStage := 0.U
   }
 
   rowCopy.io.descriptor.valid := active && !rowInFlight
@@ -148,5 +172,6 @@ class StridedCopyEngine(
   io.completion.bits.success := resultStatus === CopyStatus.success
   io.completion.bits.bytesCopied := copiedBytes
   when(io.completion.fire) { completionValid := false.B }
-  io.busy := active || completionValid || descriptors.io.deq.valid || rowCopy.io.busy
+  io.busy := active || completionValid || decodeStage =/= 0.U ||
+    descriptors.io.deq.valid || rowCopy.io.busy
 }
