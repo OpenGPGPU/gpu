@@ -1390,8 +1390,8 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
             snapshots[snapshot_count++] = &job->vertex_shader;
 
         /* Bind snapshot code only after the preceding job has drained. The
-         * fragment and vertex stages share the instruction VM, while their
-         * kernarg addresses retain the physical staging ABI. */
+         * fragment and vertex stages share the instruction VM; kernarg and
+         * vertex-buffer staging share VECTOR_SATP with CU data loads. */
         if (vm && job->context) {
             dma_addr_t code_va = 0, vertex_code_va = 0;
             u32 shader_delta = 0, vertex_delta = 0;
