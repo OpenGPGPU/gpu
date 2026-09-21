@@ -417,7 +417,9 @@ class GpuHostSystemAxi(
       perf.lowerWriteBytes := count(Mux(request.fire && request.bits.isWrite, bytes, 0.U))
     }
     system.io.clearPerformanceCounters := false.B
-    system.io.invalidateInstructionCache := false.B
+    // Remapped executable snapshots may recycle physical lines; drop I-cache
+    // contents whenever software shoots down translation.
+    system.io.invalidateInstructionCache := host.io.tlbFlush.valid
     system.io.instructionSatp := host.io.instructionSatp
     system.io.vectorSatp := host.io.vectorSatp
     // `TLB_FLUSH` forwards its scope to both CU MMUs and the three graphics

@@ -99,7 +99,9 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   io.vectorTexSample <> cu.io.vectorTexSample
   cu.io.vectorTexWriteback <> io.vectorTexWriteback
 
-  cu.io.invalidateInstructionCache := false.B
+  // Instruction fetch is PA-tagged after the TLB. Remapped snapshot pages can
+  // reuse a physical line, so a TLB shootdown must also drop I-cache contents.
+  cu.io.invalidateInstructionCache := io.instructionTlbFlush.valid
   cu.io.instructionSatp := io.instructionSatp
   cu.io.instructionTlbFlush := io.instructionTlbFlush
   // Staged shader inputs/outputs retain the physical kernarg ABI. Instruction
@@ -107,11 +109,12 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   cu.io.vectorSatp := 0.U
   cu.io.vectorTlbFlush.valid := false.B
   cu.io.vectorTlbFlush.bits := 0.U.asTypeOf(cu.io.vectorTlbFlush.bits)
-  // These are sink ports for ops the graphics CU does not implement. Hold them
-  // ready so a stray decode cannot wedge the pipeline; traps still report
-  // through io.trap.
-  cu.io.fpu.ready := true.B
-  cu.io.vector.ready := true.B
-  cu.io.memory.ready := true.B
-  cu.io.unsupportedSystem.ready := true.B
+  // Unsupported execution handoffs have no completion service here. Do not
+  // consume and silently discard them: ready alone neither traps nor releases
+  // their reservations. Shader validation must exclude these operations;
+  // decode/access faults use the separate trap-to-failed-completion path.
+  cu.io.fpu.ready := false.B
+  cu.io.vector.ready := false.B
+  cu.io.memory.ready := false.B
+  cu.io.unsupportedSystem.ready := false.B
 }

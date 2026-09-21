@@ -30,7 +30,14 @@ GPU_WIDTH="${GPU_WIDTH:-16}"
 GPU_HEIGHT="${GPU_HEIGHT:-16}"
 # Emulated quad shading is roughly linear in covered+helper lanes, so scale
 # the draw watchdog with the pixel count (60 s at the 16x16 baseline).
-ARTI_GPU_DRAW_WAIT_MS="${ARTI_GPU_DRAW_WAIT_MS:-$((60000 * GPU_WIDTH * GPU_HEIGHT / 256))}"
+# Fragment-core builds also run a second queued draw under live scanout and
+# per-job snapshot invalidate, so give them more headroom than fixed-function.
+_ARTI_GPU_DRAW_WAIT_DEFAULT=$((60000 * GPU_WIDTH * GPU_HEIGHT / 256))
+if [ "$GPU_FRAG_CORE" = "1" ]; then
+    _ARTI_GPU_DRAW_WAIT_DEFAULT=$((_ARTI_GPU_DRAW_WAIT_DEFAULT * 5))
+fi
+ARTI_GPU_DRAW_WAIT_MS="${ARTI_GPU_DRAW_WAIT_MS:-$_ARTI_GPU_DRAW_WAIT_DEFAULT}"
+unset _ARTI_GPU_DRAW_WAIT_DEFAULT
 QEMU_VERSION="${QEMU_VERSION:-11.1.0}"
 LINUX_VERSION="${LINUX_VERSION:-7.2}"
 BUSYBOX_DIR="${BUSYBOX_DIR:-$ARTI_WORK/busybox-1.36.1}"
@@ -190,11 +197,12 @@ echo "=== 1/4 Emit GpuHostSystemAxi RTL ==="
 if [ "$GPU_VERT_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
         sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --frag-core --vert-core --width $GPU_WIDTH --height $GPU_HEIGHT")
-    TIMEOUT="${TIMEOUT:-240}"
+    TIMEOUT="${TIMEOUT:-900}"
 elif [ "$GPU_FRAG_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
         sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --frag-core --width $GPU_WIDTH --height $GPU_HEIGHT")
-    TIMEOUT="${TIMEOUT:-240}"
+    # Guest draw watchdog is 5x the fixed-function baseline; keep QEMU above it.
+    TIMEOUT="${TIMEOUT:-900}"
 else
     (cd "$GPU_DIR" && \
         sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --width $GPU_WIDTH --height $GPU_HEIGHT")

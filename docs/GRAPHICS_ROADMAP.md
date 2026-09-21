@@ -23,9 +23,9 @@ A passing sim is not silicon; a completed tool run is not timing closure.
   consumes GEM framebuffers; it does not own execution lifetime.
 - Sv32 private VA windows and ASIDs. Command, framebuffer, texture and the
   programmable `vtex.sample` path translate with CU accesses. Global identity
-  mappings remain but are read/write, non-executable; compute and fragment
-  code use private executable windows. Vertex instruction SATP is wired, but
-  host back-to-back vertex→fragment coverage is still deferred. Shader
+  mappings remain but are read/write, non-executable; compute, fragment and
+  vertex code use private executable windows. Host vertex→fragment translation
+  and instruction-fault recovery are covered. Shader
   kernarg/data accesses remain physical. This is not yet full VM isolation.
 - External display hardware owns scanout and signal generation.
 
@@ -81,7 +81,8 @@ Numbers land in `generated/qualification/workloads/`.
 
 Recorded from a clean checkout of `28eebd47634843842c3254ca70bcd842139cabbf`
 (instruction-translation commit; dirty-tree timing/command-processor work was
-not included).
+not included). Follow-up on the dirty tree that closes shared-CU reuse and
+I-cache shootdown: fragment-core guest now also passes (see Known limits).
 
 | Gate | Result |
 |---|---|
@@ -89,7 +90,7 @@ not included).
 | `scripts/test_driver.py` + `scripts/test_test_selection.py` | pass |
 | Workload sweep (`scripts/benchmark_gpu.py`, 10 cases) | pass; `manifest.json` commit matches above |
 | Guest DRM, default (`GPU_FRAG_CORE=0`) | pass; powers off (`OPENGPU USERSPACE DRM PASS`) |
-| Guest DRM, fragment-core (`GPU_FRAG_CORE=1`) | fail: QEMU exit 0 but userspace reports `strided blit result` after two `render scheduler timeout`s; probe/draw/DRM/fence passed first |
+| Guest DRM, fragment-core (`GPU_FRAG_CORE=1`) | pass on the follow-up tree (shared-CU L1 probe progress + I-cache invalidate on `TLB_FLUSH` + 5× frag-core draw watchdog); powers off (`OPENGPU USERSPACE DRM PASS`) |
 
 Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0).
 `flat_16_1x` is 5271 cycles. Programmable `shader_16_1x` is staging-bound
@@ -116,18 +117,17 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
    real parent IO budgets.
 4. **Software-driven growth** — grow the shader ISA from a small compiler
    corpus. Compute and graphics fragment shader code use private executable
-   windows; the shared identity map is read/write but non-executable. Vertex
-   instruction translation is wired but host back-to-back vertex→fragment reuse
-   of the shared CU still hangs after vector-heavy vertex kernels, so that
-   coverage is deferred. Remaining isolation work is translating shader data
+   windows; the shared identity map is read/write but non-executable. Shared-CU
+   vertex→fragment reuse and vertex instruction-fault recovery are now covered:
+   L1 probes progress while a demand miss waits for an L2 eviction, avoiding
+   the circular wait exposed by vector-heavy vertex kernels.
+   Remaining isolation work is translating shader data
    and removing or bounding the identity mappings.
 
 ## Known limits
 
-- Guest ARTI/QEMU: the default end-to-end DRM test passes and powers off
-  cleanly at `28eebd4`. The fragment-core guest reaches probe, draw, DRM and
-  fence pass, then fails the userspace strided-blit step after render
-  scheduler timeouts (see Qualification baseline). The programmable
+- Guest ARTI/QEMU: the default and fragment-core end-to-end DRM tests pass and
+  power off cleanly on the follow-up tree above. The programmable
   `vtex.sample` texture path routes through the translated texture client (a
   VM virtual address), while the kernarg staging port stays physical.
 - Qualification gate is boundary suites + workload sweep, not the full Scala
@@ -136,9 +136,9 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
 - Display/scanout is simulation-only.
 - Shared identity mappings remain (read/write, non-executable), and shader
   kernarg/data accesses remain physical. Fragment instruction faults fail the
-  render and allow a later draw to recover; vertex instruction translation is
-  wired but host vertex→fragment CU reuse still hangs after vector-heavy
-  vertex kernels. No resumable page faults or full VM isolation.
+  render and allow a later draw to recover; vertex instruction faults and
+  subsequent shared-CU reuse are also covered. No resumable page faults or
+  full VM isolation.
 - Shader ISA growth is validation-profile driven, not a real compiler corpus.
 
 ## Later / out of scope

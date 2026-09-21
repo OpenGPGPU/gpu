@@ -1606,6 +1606,20 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL blit capability");
         return 1;
     }
+    /* Isolate a second-draw hang from a blit/coherence failure: the ordered
+     * blit waits on syncobjs[2], but a timed-out render still signals that
+     * fence with an error and the blit wait would succeed vacuously. */
+    CHECK(wait_syncobjs(fd, &syncobjs[2], 1), "wait second render syncobj");
+    if ((frag_core &&
+         (framebuffer_count(&second, expected_pixel) != 60 ||
+          framebuffer_count(&second, alternate_pixel) != 0)) ||
+        (!frag_core &&
+         *(uint32_t *)((uint8_t *)second.map + second.pitch + 4) !=
+             expected_pixel)) {
+        errno = EIO;
+        perror("OPENGPU USERSPACE DRM FAIL second texture result");
+        return 1;
+    }
     memset(second.map, 0x5a, second.size);
     errno = 0;
     if (submit_blit(fd, context_id, &first, &second, 4, 0, 64,

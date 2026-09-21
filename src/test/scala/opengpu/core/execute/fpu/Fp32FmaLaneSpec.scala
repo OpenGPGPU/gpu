@@ -102,6 +102,30 @@ class Fp32FmaLaneSpec extends AnyFlatSpec {
     }
   }
 
+  it should "keep back-to-back subtraction state independent" in {
+    simulate(new Fp32FmaLane()) { dut =>
+      initialize(dut)
+      val rng = new scala.util.Random(0x15ab)
+      def randomFloat(): Float = {
+        val sign = if (rng.nextBoolean()) -1.0f else 1.0f
+        sign * (0.25f + rng.nextFloat() * 3.75f)
+      }
+      def bits(value: Float): BigInt =
+        BigInt(java.lang.Float.floatToRawIntBits(value) & 0xffffffffL)
+      var tag = 0
+      for (batch <- 0 until 4) {
+        val a = randomFloat()
+        val b = randomFloat()
+        val c = randomFloat()
+        send(dut, Fp32Operation.fmadd, false, bits(a), bits(b), bits(c), tag)
+        send(dut, Fp32Operation.fmadd, true, bits(a), bits(b), bits(c), tag + 1)
+        expectResult(dut, bits(Math.fma(a, b, c)), tag)
+        expectResult(dut, bits(Math.fma(a, b, -c)), tag + 1)
+        tag += 2
+      }
+    }
+  }
+
   it should "match a software FMA reference across back-to-back mixed operands" in {
     simulate(new Fp32FmaLane()) { dut =>
       initialize(dut)

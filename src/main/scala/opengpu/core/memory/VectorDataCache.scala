@@ -75,10 +75,12 @@ class VectorDataCache(
   private val requestCacheable = CachePolicy.isCacheable(request.cachePolicy)
 
   private object State extends ChiselEnum {
-    val idle, lookup, lower, respond, invalidateLookup, invalidateRespond = Value
+    val idle, lookup, lower, respond = Value
   }
   private val state = RegInit(State.idle)
   private val invalidateAddress = Reg(UInt(config.xLen.W))
+  private val invalidatePending = RegInit(false.B)
+  private val requestInvalidated = RegInit(false.B)
 
   private val requestIndex =
     request.lineAddress(offsetWidth + indexWidth - 1, offsetWidth)
@@ -116,8 +118,8 @@ class VectorDataCache(
   }
   private val mergedStoreData = mergedStoreBytes.asUInt
 
-  // Give coherence probes priority so a normal request and an invalidation
-  // can never both consume the single tag-array access in one cycle.
+  // Give probes priority over demand admission and lookup. A pending lower
+  // transaction may still finish; its refill is ordered against probes below.
   io.in.ready := state === State.idle && !io.invalidate.valid
   io.out.valid := state === State.respond
   io.out.bits := output
@@ -129,8 +131,10 @@ class VectorDataCache(
   io.lowerRequest.bits.cacheResident := cacheHit
   io.lowerRequest.bits.cachePolicy := request.cachePolicy
   io.lowerResponse.ready := state === State.lower
-  io.invalidate.ready := state === State.idle
-  io.invalidateDone.valid := state === State.invalidateRespond
+  // L2 may need to evict one of our old lines before servicing our miss.
+  // Probes must therefore progress independently of the demand-request FSM.
+  io.invalidate.ready := !invalidatePending || io.invalidateDone.ready
+  io.invalidateDone.valid := invalidatePending
   io.invalidateDone.bits.lineAddress := invalidateAddress
 
   private val invalidateIndex =
@@ -140,6 +144,7 @@ class VectorDataCache(
 
   when(io.in.fire) {
     request := io.in.bits
+    requestInvalidated := false.B
     state := State.lookup
     assert(
       io.in.bits.lineAddress(offsetWidth - 1, 0) === 0.U,
@@ -147,18 +152,7 @@ class VectorDataCache(
     )
   }
 
-  when(io.invalidate.fire) {
-    invalidateAddress := io.invalidate.bits.lineAddress
-    for (way <- 0 until ways) {
-      when(valid(way)(invalidateIndex) &&
-        tags(way)(invalidateIndex) === invalidateTag) {
-        valid(way)(invalidateIndex) := false.B
-      }
-    }
-    state := State.invalidateRespond
-  }
-
-  when(state === State.lookup) {
+  when(state === State.lookup && !io.invalidate.fire) {
     when(!request.isStore && cacheHit && requestCacheable) {
       output.readData := cachedData
       output.fault := false.B
@@ -175,7 +169,9 @@ class VectorDataCache(
     output.pageFault := false.B
     output.readData :=
       Mux(request.isStore, 0.U, io.lowerResponse.bits.readData)
-    when(!io.lowerResponse.bits.fault) {
+    val invalidatingRequest = io.invalidate.fire &&
+      io.invalidate.bits.lineAddress === request.lineAddress
+    when(!io.lowerResponse.bits.fault && !requestInvalidated && !invalidatingRequest) {
       when(!request.isStore && requestCacheable) {
         for (way <- 0 until ways) {
           when(victimWay === way.U) {
@@ -200,5 +196,19 @@ class VectorDataCache(
   when(io.out.fire) {
     state := State.idle
   }
-  when(io.invalidateDone.fire) { state := State.idle }
+  when(io.invalidateDone.fire) { invalidatePending := false.B }
+  // Invalidation wins over a simultaneous refill of the probed line. Do not
+  // reinstall an older response after acknowledging a probe for that request.
+  when(io.invalidate.fire) {
+    invalidatePending := true.B
+    invalidateAddress := io.invalidate.bits.lineAddress
+    when(state === State.lower && io.invalidate.bits.lineAddress === request.lineAddress) {
+      requestInvalidated := true.B
+    }
+    for (way <- 0 until ways) {
+      when(valid(way)(invalidateIndex) && tags(way)(invalidateIndex) === invalidateTag) {
+        valid(way)(invalidateIndex) := false.B
+      }
+    }
+  }
 }

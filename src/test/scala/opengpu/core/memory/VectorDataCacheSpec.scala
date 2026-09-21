@@ -8,6 +8,58 @@ import org.scalatest.flatspec.AnyFlatSpec
 class VectorDataCacheSpec extends AnyFlatSpec {
   behavior of "VectorDataCache"
 
+  for (sameLine <- Seq(false, true); concurrentRefill <- Seq(false, true)) {
+    it should s"acknowledge a probe during a miss (same line=$sameLine, concurrent refill=$concurrentRefill)" in {
+      simulate(new VectorDataCache(GpuConfig(lanes = 4, warps = 2), sets = 4)) { dut =>
+        dut.io.in.valid.poke(false.B)
+        dut.io.out.ready.poke(true.B)
+        dut.io.lowerRequest.ready.poke(true.B)
+        dut.io.lowerResponse.valid.poke(false.B)
+        dut.io.lowerResponse.bits.fault.poke(false.B)
+        dut.io.invalidate.valid.poke(false.B)
+        dut.io.invalidateDone.ready.poke(false.B)
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        def load(address: Int): Unit = {
+          dut.io.in.valid.poke(true.B)
+          dut.io.in.bits.poke(0.U.asTypeOf(dut.io.in.bits))
+          dut.io.in.bits.lineAddress.poke(address.U)
+          dut.io.in.ready.expect(true.B)
+          dut.clock.step()
+          dut.io.in.valid.poke(false.B)
+          dut.clock.step()
+          dut.io.lowerRequest.valid.expect(true.B)
+        }
+        def refill(): Unit = {
+          dut.io.lowerResponse.valid.poke(true.B)
+          dut.io.lowerResponse.bits.readData.poke(42.U)
+          dut.io.lowerResponse.ready.expect(true.B)
+          dut.clock.step()
+          dut.io.lowerResponse.valid.poke(false.B)
+        }
+        load(0x1000); refill(); dut.clock.step()
+        load(0x2000)
+        val probe = if (sameLine) 0x2000 else 0x1000
+        dut.io.invalidate.valid.poke(true.B)
+        dut.io.invalidate.bits.lineAddress.poke(probe.U)
+        dut.io.invalidate.ready.expect(true.B)
+        if (concurrentRefill) refill() else dut.clock.step()
+        dut.io.invalidate.valid.poke(false.B)
+        for (_ <- 0 until 4) {
+          dut.io.invalidateDone.valid.expect(true.B)
+          dut.io.invalidateDone.bits.lineAddress.expect(probe.U)
+          dut.clock.step()
+        }
+        dut.io.invalidateDone.ready.poke(true.B)
+        dut.clock.step()
+        if (!concurrentRefill) { refill(); dut.clock.step() }
+        // An invalidated resident line and an invalidated in-flight fill both
+        // require a fresh lower request; neither may survive as a stale hit.
+        load(probe)
+        refill(); dut.clock.step()
+      }
+    }
+  }
+
   it should "refill a load miss and serve the next access as a hit" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     val lineBytes = 16
