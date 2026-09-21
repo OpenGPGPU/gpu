@@ -4,18 +4,18 @@ import chisel3._
 import chisel3.util._
 import yunsuan.fpu.FloatFMA
 
-/** Elastic GPU wrapper around YunSuan's three-cycle FP32 FMA pipeline.
+/** Elastic GPU wrapper around YunSuan's four-cycle FP32 FMA pipeline.
   *
   * YunSuan accepts one operation per cycle but has no downstream backpressure.
   * Credits cover both the three in-flight pipeline slots and the result queue,
   * so accepting a request always reserves storage for its eventual result.
   */
-class Fp32FmaLane(tagWidth: Int = 16, pipeRegs: Int = 3) extends Module {
+class Fp32FmaLane(tagWidth: Int = 16, pipeRegs: Int = 4) extends Module {
   require(tagWidth > 0)
-  require(pipeRegs == 3, "YunSuan FloatFMA has three fixed arithmetic stages")
+  require(pipeRegs == 4, "YunSuan FloatFMA has four fixed arithmetic stages")
 
   private val resultEntries = 4
-  private val latency = 3
+  private val latency = 4
 
   val io = IO(new Bundle {
     val in = Flipped(Decoupled(new Fp32Request(tagWidth)))

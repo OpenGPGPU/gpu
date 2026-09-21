@@ -58,6 +58,117 @@ class Fp32FmaLaneSpec extends AnyFlatSpec {
     dut.io.out.ready.poke(false.B)
   }
 
+  private def expectResult(
+    dut: Fp32FmaLane,
+    result: BigInt,
+    tag: Int
+  ): Unit = {
+    var cycles = 0
+    while (!dut.io.out.valid.peek().litToBoolean && cycles < 32) {
+      dut.clock.step()
+      cycles += 1
+    }
+    assert(dut.io.out.valid.peek().litToBoolean)
+    dut.io.out.bits.result.expect(result.U)
+    dut.io.out.bits.tag.expect(tag.U)
+    dut.io.out.ready.poke(true.B)
+    dut.clock.step()
+    dut.io.out.ready.poke(false.B)
+  }
+
+  it should "keep back-to-back mixed-sign operations independent" in {
+    simulate(new Fp32FmaLane()) { dut =>
+      initialize(dut)
+      val plusOnePointFive = BigInt("3fc00000", 16)
+      val minusOnePointFive = BigInt("bfc00000", 16)
+      val two = BigInt("40000000", 16)
+      send(dut, Fp32Operation.mul, false, plusOnePointFive, two, 0, 1)
+      send(dut, Fp32Operation.mul, false, minusOnePointFive, two, 0, 2)
+      expect(dut, BigInt("40400000", 16), 1) // +3
+      expect(dut, BigInt("c0400000", 16), 2) // -3
+    }
+  }
+
+  it should "keep zero and non-zero results independent across back-to-back operations" in {
+    simulate(new Fp32FmaLane()) { dut =>
+      initialize(dut)
+      val onePointFive = BigInt("3fc00000", 16)
+      val two = BigInt("40000000", 16)
+      val minusThree = BigInt("c0400000", 16)
+      send(dut, Fp32Operation.fmadd, false, onePointFive, two, minusThree, 1)
+      send(dut, Fp32Operation.fmadd, false, onePointFive, two, two, 2)
+      expect(dut, BigInt("00000000", 16), 1) // 1.5*2 - 3 = +0
+      expect(dut, BigInt("40a00000", 16), 2) // 1.5*2 + 2 = 5
+    }
+  }
+
+  it should "match a software FMA reference across back-to-back mixed operands" in {
+    simulate(new Fp32FmaLane()) { dut =>
+      initialize(dut)
+      val rng = new scala.util.Random(0x5eed)
+      def randomFloat(): Float = {
+        val sign = if (rng.nextBoolean()) -1.0f else 1.0f
+        val magnitude = 0.25f + rng.nextFloat() * 3.75f
+        sign * magnitude
+      }
+      def bits(value: Float): BigInt =
+        BigInt(java.lang.Float.floatToRawIntBits(value) & 0xffffffffL)
+      var tag = 0
+      for (batch <- 0 until 3) {
+        val a = randomFloat()
+        val b = randomFloat()
+        val c = randomFloat()
+        val d = randomFloat()
+        val e = randomFloat()
+        val f = randomFloat()
+        val h = randomFloat()
+        val i = randomFloat()
+        val k = randomFloat()
+        val l = randomFloat()
+        send(dut, Fp32Operation.fmadd, false, bits(a), bits(b), bits(c), tag + 0)
+        send(dut, Fp32Operation.fmadd, true, bits(d), bits(e), bits(f), tag + 1)
+        send(dut, Fp32Operation.add, false, 0, bits(h), bits(i), tag + 2)
+        send(dut, Fp32Operation.add, true, 0, bits(k), bits(l), tag + 3)
+        expectResult(dut, bits(Math.fma(a, b, c)), tag + 0)
+        expectResult(dut, bits(Math.fma(d, e, -f)), tag + 1)
+        expectResult(dut, bits(Math.fma(1.0f, h, i)), tag + 2)
+        expectResult(dut, bits(Math.fma(1.0f, k, -l)), tag + 3)
+        tag += 4
+      }
+    }
+  }
+
+  it should "keep special and normal results independent across back-to-back operations" in {
+    simulate(new Fp32FmaLane()) { dut =>
+      initialize(dut)
+      val infinity = BigInt("7f800000", 16)
+      val onePointFive = BigInt("3fc00000", 16)
+      val two = BigInt("40000000", 16)
+      send(dut, Fp32Operation.mul, false, 0, infinity, 0, 1)
+      send(dut, Fp32Operation.add, false, 0, onePointFive, two, 2)
+      send(dut, Fp32Operation.mul, false, infinity, 0, 0, 3)
+      send(dut, Fp32Operation.add, false, 0, two, onePointFive, 4)
+      var cycles = 0
+      while (!dut.io.out.valid.peek().litToBoolean && cycles < 16) {
+        dut.clock.step(); cycles += 1
+      }
+      assert(dut.io.out.valid.peek().litToBoolean)
+      dut.io.out.bits.status.expect("h10".U)
+      dut.io.out.bits.tag.expect(1.U)
+      dut.io.out.ready.poke(true.B); dut.clock.step(); dut.io.out.ready.poke(false.B)
+      expect(dut, BigInt("40600000", 16), 2) // 3.5
+      var cycles2 = 0
+      while (!dut.io.out.valid.peek().litToBoolean && cycles2 < 16) {
+        dut.clock.step(); cycles2 += 1
+      }
+      assert(dut.io.out.valid.peek().litToBoolean)
+      dut.io.out.bits.status.expect("h10".U)
+      dut.io.out.bits.tag.expect(3.U)
+      dut.io.out.ready.poke(true.B); dut.clock.step(); dut.io.out.ready.poke(false.B)
+      expect(dut, BigInt("40600000", 16), 4) // 3.5
+    }
+  }
+
   it should "map all fast RISC-V sign combinations onto YunSuan" in {
     simulate(new Fp32FmaLane()) { dut =>
       initialize(dut)
