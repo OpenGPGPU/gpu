@@ -194,7 +194,14 @@ fi
 echo "Linux source: $LINUX_SRC (valid)"
 
 echo "=== 1/4 Emit GpuHostSystemAxi RTL ==="
-if [ "$GPU_VERT_CORE" = "1" ]; then
+if [ "${SKIP_RTL_EMIT:-0}" = "1" ]; then
+    echo "Skipping RTL emit (SKIP_RTL_EMIT=1); reusing generated/host"
+    if [ "$GPU_VERT_CORE" = "1" ] || [ "$GPU_FRAG_CORE" = "1" ]; then
+        TIMEOUT="${TIMEOUT:-900}"
+    else
+        TIMEOUT="${TIMEOUT:-300}"
+    fi
+elif [ "$GPU_VERT_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
         sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --frag-core --vert-core --width $GPU_WIDTH --height $GPU_HEIGHT")
     TIMEOUT="${TIMEOUT:-900}"

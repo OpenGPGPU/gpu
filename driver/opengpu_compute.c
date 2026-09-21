@@ -752,12 +752,16 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
         goto out_file;
     /* A compute kernarg is mapped privately into the context's VM and reached
      * through a virtual address, so contexts with different physical kernargs
-     * are isolated at the same VA.  Fall back to the global uncached mapping
-     * when the private mapping is unavailable.  Textures, vertex buffers and
-     * the render descriptor/command snapshot are mapped privately too; other
-     * kernarg bindings and textures requesting OPENGPU_RESOURCE_UNCACHED take
-     * the global uncached path. Shaders are snapshotted. */
-    if (args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG &&
+     * are isolated at the same VA.  Fragment and vertex kernargs use the same
+     * window planner: staging and shader data loads both translate under
+     * VECTOR_SATP.  Fall back to the global uncached mapping when the private
+     * mapping is unavailable.  Textures, vertex buffers and the render
+     * descriptor/command snapshot are mapped privately too; textures requesting
+     * OPENGPU_RESOURCE_UNCACHED take the global uncached path. Shaders are
+     * snapshotted. */
+    if ((args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG ||
+         args->type == OPENGPU_RESOURCE_KERNARG ||
+         args->type == OPENGPU_RESOURCE_VERTEX_KERNARG) &&
         context->vm.enabled) {
         ret = opengpu_binding_map_kernarg(gpu, context, binding, args->slot);
         if (ret)
@@ -785,23 +789,26 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
             goto out_file;
     } else if (args->type == OPENGPU_RESOURCE_VERTEX_BUFFER &&
                context->vm.enabled) {
-        /* The vertex shader reads the buffer through the context VM; keep the
-         * bind-time invalidate for the CPU-written upload. */
-        opengpu_binding_map_vertex(gpu, context, binding, args->slot);
+        /* Vertex-buffer staging shares VECTOR_SATP with shader data loads;
+         * keep the bind-time invalidate for the CPU upload. Fall back to the
+         * DMA address when the private VA window cannot be installed. */
+        ret = opengpu_binding_map_vertex(gpu, context, binding, args->slot);
+        if (ret)
+            binding->va = 0;
         ret = opengpu_binding_invalidate(gpu, binding);
         if (ret)
             goto out_file;
-    } else if (args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG ||
-               args->type == OPENGPU_RESOURCE_KERNARG ||
-               args->type == OPENGPU_RESOURCE_VERTEX_KERNARG ||
-               (args->type == OPENGPU_RESOURCE_TEXTURE &&
-                (args->flags & OPENGPU_RESOURCE_UNCACHED))) {
+    } else if (args->type == OPENGPU_RESOURCE_TEXTURE &&
+                (args->flags & OPENGPU_RESOURCE_UNCACHED)) {
         ret = opengpu_binding_map_uncached(gpu, binding);
         if (ret)
             goto out_file;
     } else if (args->type != OPENGPU_RESOURCE_SHADER &&
                args->type != OPENGPU_RESOURCE_VERTEX_SHADER &&
-               args->type != OPENGPU_RESOURCE_COMPUTE_SHADER) {
+               args->type != OPENGPU_RESOURCE_COMPUTE_SHADER &&
+               args->type != OPENGPU_RESOURCE_KERNARG &&
+               args->type != OPENGPU_RESOURCE_VERTEX_KERNARG &&
+               args->type != OPENGPU_RESOURCE_COMPUTE_KERNARG) {
         ret = opengpu_binding_invalidate(gpu, binding);
         if (ret)
             goto out_file;
@@ -1107,7 +1114,9 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
                 record->kernarg_bank_stride, 9, false, texture != NULL))
             return -EINVAL;
         record->shader_pc += lower_32_bits(shader->dma);
-        record->kernarg += lower_32_bits(kernarg->dma);
+        /* Staging and shader data loads translate under VECTOR_SATP. */
+        record->kernarg += lower_32_bits(kernarg->va ?
+            kernarg->va : kernarg->dma);
     }
     return 0;
 }
@@ -1220,12 +1229,16 @@ static int opengpu_validate_vertex_commands(
                 record->frag_kernarg_bank_stride, 9, false,
                 texture != NULL))
             return -EINVAL;
+        /* Vertex-buffer and kernarg staging share VECTOR_SATP with shader
+         * data loads. Prefer the private VA when the bind mapped one. */
         record->vert_buffer_base += lower_32_bits(vertex_buffer->va ?
             vertex_buffer->va : vertex_buffer->dma);
         record->vert_shader_pc += lower_32_bits(vertex_shader->dma);
-        record->vert_kernarg += lower_32_bits(vertex_kernarg->dma);
+        record->vert_kernarg += lower_32_bits(vertex_kernarg->va ?
+            vertex_kernarg->va : vertex_kernarg->dma);
         record->frag_shader_pc += lower_32_bits(fragment_shader->dma);
-        record->frag_kernarg += lower_32_bits(fragment_kernarg->dma);
+        record->frag_kernarg += lower_32_bits(fragment_kernarg->va ?
+            fragment_kernarg->va : fragment_kernarg->dma);
     }
     return 0;
 }

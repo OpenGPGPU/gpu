@@ -132,8 +132,9 @@ leaves are read/write and never executable. Compute, fragment and vertex code
 use private executable windows. The shared graphics shader core consumes
 UCMD_INSTRUCTION_SATP and UCMD_TLB_FLUSH; Bare mode still fetches physical
 instructions. Shader instruction faults fail render completion with a memory
-fault after draining. Shader kernarg/data accesses remain physical, so this
-is not yet complete process memory isolation.
+fault after draining. Shader kernarg, vertex-buffer staging and scalar/vector
+data accesses translate under VECTOR_SATP alongside the graphics word clients
+(Bare mode keeps physical addressing).
 
 The command client remains uncached. Texture/framebuffer clients use the
 PTE cache policy. CPU writes still require the appropriate CPU cache/DMA

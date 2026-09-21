@@ -390,12 +390,17 @@ static void convert_to_vertex_command(struct command_buffer *commands)
         OPENGPU_DRAW_STATE_TEX_ENABLE |
         OPENGPU_DRAW_STATE_TEX_CLAMP |
         (2u << OPENGPU_DRAW_STATE_MAX_MIP_SHIFT);
+    /* Match the fixed-function record: pass-through blend must not alter the
+     * sampled texel colours the DRM checks assert on. */
+    draw->blend_config = OPENGPU_DRAW_BLEND_PRESENT |
+        (TEST_BLEND_FACTOR_ONE << OPENGPU_DRAW_BLEND_SRC_SHIFT);
 }
 
 /* Three-record command buffer that proves the D24S8 stencil path: record 0
  * stamps stencil 0x5a over the triangle, record 1 passes EQUAL 0x5a and
  * blends the covered pixels to zero (REV_SUB of identical src/dst), and
- * record 2 (EQUAL 0x33) must be blocked by the stored stencil byte. */
+ * record 2 (EQUAL 0x33) must be blocked by the stored stencil byte.
+ * Both 40-word record forms share state/blend/stencil word indices. */
 static int create_stencil_command_buffer(
     int fd, const struct command_buffer *base, struct command_buffer *commands)
 {
@@ -405,16 +410,17 @@ static int create_stencil_command_buffer(
         .bpp = 32,
     };
     struct drm_mode_map_dumb map = { 0 };
-    struct drm_opengpu_draw *draws;
-    const struct drm_opengpu_draw *src = base->map;
-    /* All three draws use identical depth.  LESS would reject the second
-     * and third draws after the stamp writes depth, hiding stencil results. */
+    const uint32_t *src = (const uint32_t *)base->map;
+    uint32_t *draws;
+    uint32_t base_state = src[DRAW_RECORD_STATE_WORD];
     uint32_t stencil_state =
-        (src->state & ~OPENGPU_DRAW_STATE_DEPTH_FUNC_MASK) |
+        (base_state & ~OPENGPU_DRAW_STATE_DEPTH_FUNC_MASK) |
         (TEST_DEPTH_FUNC_LEQUAL << OPENGPU_DRAW_STATE_DEPTH_FUNC_SHIFT) |
         OPENGPU_DRAW_STATE_STENCIL_TEST;
     uint32_t masks = OPENGPU_DRAW_STENCIL_RMASK_MASK |
                      OPENGPU_DRAW_STENCIL_WMASK_MASK;
+    uint32_t record_words = (uint32_t)(sizeof(struct drm_opengpu_draw) / 4);
+    uint32_t i;
 
     if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0)
         return -1;
@@ -428,28 +434,29 @@ static int create_stencil_command_buffer(
     if (commands->map == MAP_FAILED)
         return -1;
 
-    draws = commands->map;
+    draws = (uint32_t *)commands->map;
+    for (i = 0; i < 3; i++)
+        memcpy(draws + i * record_words, src,
+               sizeof(struct drm_opengpu_draw));
     /* Stamp: func ALWAYS, z-pass REPLACE 0x5a. */
-    draws[0] = *src;
-    draws[0].state = stencil_state;
-    draws[0].stencil_config = TEST_STENCIL_FUNC_ALWAYS |
+    draws[0 * record_words + DRAW_RECORD_STATE_WORD] = stencil_state;
+    draws[0 * record_words + 36] = TEST_STENCIL_FUNC_ALWAYS |
         (TEST_STENCIL_OP_REPLACE << OPENGPU_DRAW_STENCIL_ZPASS_SHIFT);
-    draws[0].stencil_ref = 0x5au | masks;
+    draws[0 * record_words + 37] = 0x5au | masks;
     /* Pass: func EQUAL 0x5a; the blend subtracts the destination from
      * itself, so a passing fragment visibly zeroes the covered pixels. */
-    draws[1] = *src;
-    draws[1].state = stencil_state;
-    draws[1].stencil_config = TEST_STENCIL_FUNC_EQUAL;
-    draws[1].stencil_ref = 0x5au | masks;
-    draws[1].blend_config = OPENGPU_DRAW_BLEND_PRESENT |
+    draws[1 * record_words + DRAW_RECORD_STATE_WORD] = stencil_state;
+    draws[1 * record_words + 36] = TEST_STENCIL_FUNC_EQUAL;
+    draws[1 * record_words + 37] = 0x5au | masks;
+    draws[1 * record_words + DRAW_RECORD_BLEND_WORD] =
+        OPENGPU_DRAW_BLEND_PRESENT |
         (TEST_BLEND_FACTOR_ONE << OPENGPU_DRAW_BLEND_SRC_SHIFT) |
         (TEST_BLEND_FACTOR_ONE << OPENGPU_DRAW_BLEND_DST_SHIFT) |
         (TEST_BLEND_EQ_REV_SUB << OPENGPU_DRAW_BLEND_EQ_SHIFT);
     /* Block: func EQUAL 0x33 never matches the stamped byte. */
-    draws[2] = *src;
-    draws[2].state = stencil_state;
-    draws[2].stencil_config = TEST_STENCIL_FUNC_EQUAL;
-    draws[2].stencil_ref = 0x33u | masks;
+    draws[2 * record_words + DRAW_RECORD_STATE_WORD] = stencil_state;
+    draws[2 * record_words + 36] = TEST_STENCIL_FUNC_EQUAL;
+    draws[2 * record_words + 37] = 0x33u | masks;
     return 0;
 }
 
@@ -1593,7 +1600,13 @@ int main(void)
         (!frag_core &&
          *(uint32_t *)((uint8_t *)first.map + first.pitch + 4) !=
              expected_pixel)) {
-        if (!frag_core)
+        if (frag_core)
+            fprintf(stderr,
+                    "texture counts expected=0x%08x:%u alternate=0x%08x:%u clear=0x000000ff:%u\n",
+                    expected_pixel, framebuffer_count(&first, expected_pixel),
+                    alternate_pixel, framebuffer_count(&first, alternate_pixel),
+                    framebuffer_count(&first, 0x000000ffu));
+        else
             fprintf(stderr, "texture pixel got=0x%08x expected=0x%08x\n",
                     *(uint32_t *)((uint8_t *)first.map + first.pitch + 4),
                     expected_pixel);
@@ -1977,9 +1990,13 @@ int main(void)
      * both the stencil pass and fail paths. */
     CHECK(create_stencil_command_buffer(fd, &commands, &stencil_commands),
           "stencil command buffer");
-    CHECK(submit_render_count(fd, context_id, &stencil_commands, &first, 3,
-                              texture_slot, shader_slot, kernarg_slot, 0,
-                              0, syncobjs[7]),
+    /* Vertex-core builds reject fixed-function submits; use the same depth
+     * helper that already carries OPENGPU_SUBMIT_VERTEX_CORE when needed. */
+    CHECK(submit_depth_render(fd, vert_core, context_id, &stencil_commands,
+                              &first, 3, texture_slot, shader_slot,
+                              kernarg_slot, vertex_buffer_slot,
+                              vertex_shader_slot, vertex_kernarg_slot, 0,
+                              0, 0, 0, 0, syncobjs[7]),
           "queue stencil-gated render");
     CHECK(wait_syncobjs(fd, &syncobjs[7], 1), "wait stencil render syncobj");
     if ((frag_core &&

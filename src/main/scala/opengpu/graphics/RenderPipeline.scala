@@ -86,6 +86,8 @@ class RenderPipeline(
     val kernelGlobalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(gpuConfig)))
     val instructionSatp = Input(UInt(32.W))
     val instructionTlbFlush = Flipped(Valid(new opengpu.core.memory.VectorTlbFlush(gpuConfig)))
+    val vectorSatp = Input(UInt(32.W))
+    val vectorTlbFlush = Flipped(Valid(new opengpu.core.memory.VectorTlbFlush(gpuConfig)))
     val shaderFault = Output(Bool())
     val colorBase = Input(UInt(32.W))
     val depthBase = Input(UInt(32.W))
@@ -399,6 +401,8 @@ class RenderPipeline(
     val kernelShader = Module(new KernelShaderStage(gpuConfig))
     kernelShader.io.instructionSatp := io.instructionSatp
     kernelShader.io.instructionTlbFlush := io.instructionTlbFlush
+    kernelShader.io.vectorSatp := io.vectorSatp
+    kernelShader.io.vectorTlbFlush := io.vectorTlbFlush
     io.shaderFault := kernelShader.io.trap.fire
 
     // A vertex draw is fully transformed before it enters rasterization, so a
@@ -593,31 +597,35 @@ class RenderPipeline(
     expander.io.out.ready := om.io.fragIn.ready
     textured.io.out.ready := om.io.fragIn.ready
 
-    // Preserve each bridge's four local IDs by prefixing vertex requests with
-    // one.  The resulting eight-ID port allows both bridges to sustain their
-    // normal outstanding depth, while the response tag selects its owner.
+    // Pack both staging bridges into translated IDs [0,4): frag owns [0,2),
+    // vert owns [2,4). DMA fill/blit/strided keep physical IDs [4,8).
     val wordArb = Module(new RRArbiter(
       new ComputeMemoryRequest(gpuConfig, 64, kernelWordOutstanding), 2))
     wordArb.io.in(0).valid := kernelFrag.io.wordMemReq.valid
     wordArb.io.in(0).bits := kernelFrag.io.wordMemReq.bits
-    wordArb.io.in(0).bits.transactionId := Cat(0.U(1.W), kernelFrag.io.wordMemReq.bits.transactionId)
+    wordArb.io.in(0).bits.transactionId := Cat(0.U(1.W),
+      kernelFrag.io.wordMemReq.bits.transactionId(0))
     kernelFrag.io.wordMemReq.ready := wordArb.io.in(0).ready
     wordArb.io.in(1).valid := kernelVert.map(_.io.wordMemReq.valid).getOrElse(false.B)
     wordArb.io.in(1).bits := kernelVert.map(_.io.wordMemReq.bits)
       .getOrElse(0.U.asTypeOf(wordArb.io.in(1).bits))
     wordArb.io.in(1).bits.transactionId := Cat(1.U(1.W),
-      kernelVert.map(_.io.wordMemReq.bits.transactionId).getOrElse(0.U(2.W)))
+      kernelVert.map(_.io.wordMemReq.bits.transactionId(0)).getOrElse(0.U(1.W)))
     kernelVert.foreach { vert =>
       vert.io.wordMemReq.ready := wordArb.io.in(1).ready
-      vert.io.wordMemResp.valid := io.kernelWordMemResp.valid && io.kernelWordMemResp.bits.transactionId(2)
+      vert.io.wordMemResp.valid := io.kernelWordMemResp.valid &&
+        io.kernelWordMemResp.bits.transactionId(1)
       vert.io.wordMemResp.bits := io.kernelWordMemResp.bits
-      vert.io.wordMemResp.bits.transactionId := io.kernelWordMemResp.bits.transactionId(1, 0)
+      vert.io.wordMemResp.bits.transactionId :=
+        io.kernelWordMemResp.bits.transactionId(0)
     }
     io.kernelWordMemReq <> wordArb.io.out
-    kernelFrag.io.wordMemResp.valid := io.kernelWordMemResp.valid && !io.kernelWordMemResp.bits.transactionId(2)
+    kernelFrag.io.wordMemResp.valid := io.kernelWordMemResp.valid &&
+      !io.kernelWordMemResp.bits.transactionId(1)
     kernelFrag.io.wordMemResp.bits := io.kernelWordMemResp.bits
-    kernelFrag.io.wordMemResp.bits.transactionId := io.kernelWordMemResp.bits.transactionId(1, 0)
-    io.kernelWordMemResp.ready := Mux(io.kernelWordMemResp.bits.transactionId(2),
+    kernelFrag.io.wordMemResp.bits.transactionId :=
+      io.kernelWordMemResp.bits.transactionId(0)
+    io.kernelWordMemResp.ready := Mux(io.kernelWordMemResp.bits.transactionId(1),
       kernelVert.map(_.io.wordMemResp.ready).getOrElse(false.B),
       kernelFrag.io.wordMemResp.ready)
     textured.io.fragIn.valid := false.B // texture path only on fixed-func branch

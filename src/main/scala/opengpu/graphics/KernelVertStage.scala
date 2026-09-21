@@ -120,8 +120,8 @@ class KernelVertStage(
     val vertOut = Decoupled(new SceneTriangle(gfxConfig))
     val memReq = Decoupled(new ComputeMemoryRequest(config))
     val memResp = Flipped(Decoupled(new ComputeMemoryResponse()))
-    val wordMemReq = Decoupled(new ComputeMemoryRequest(config))
-    val wordMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
+    val wordMemReq = Decoupled(new ComputeMemoryRequest(config, 64, 2))
+    val wordMemResp = Flipped(Decoupled(new ComputeMemoryResponse(64, 2)))
     val l1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(config)))
     val l1InvalidateDone = Decoupled(new CacheLineInvalidate(config))
     val globalAtomicRequest = Decoupled(new SharedAtomicRequest(config))
@@ -148,7 +148,9 @@ class KernelVertStage(
   })
 
   // Vertex kernarg staging is CPU-written; bypass L1/L2.
-  private val bridge = Module(new OmWordToLinePort(config, uncached = true))
+  // Two slots; packs into translated staging IDs [2,4) via the owner bit.
+  private val bridge = Module(new OmWordToLinePort(
+    config, uncached = true, maxOutstanding = 2))
   private val internalKernel = if (standaloneKernel) Some(Module(new KernelShaderStage(config))) else None
   private val kernelLaunchReady = WireDefault(io.kernelLaunch.ready)
   private val kernelCompletionValid = WireDefault(io.kernelCompletion.valid)
@@ -185,6 +187,8 @@ class KernelVertStage(
   internalKernel.foreach { kernel =>
     kernel.io.instructionSatp := 0.U
     kernel.io.instructionTlbFlush := 0.U.asTypeOf(kernel.io.instructionTlbFlush)
+    kernel.io.vectorSatp := 0.U
+    kernel.io.vectorTlbFlush := 0.U.asTypeOf(kernel.io.vectorTlbFlush)
     kernel.io.launch.valid := io.kernelLaunch.valid
     kernel.io.launch.kernelPc := io.kernelLaunch.kernelPc
     kernel.io.launch.kernargAddress := io.kernelLaunch.kernargAddress

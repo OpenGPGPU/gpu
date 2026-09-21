@@ -209,6 +209,8 @@ class GpuHostAxi(
       0.U.asTypeOf(io.tlbFlush))
     host.io.instructionSatp := io.instructionSatp
     host.io.instructionTlbFlush := io.tlbFlush
+    host.io.vectorSatp := io.vectorSatp
+    host.io.vectorTlbFlush := io.tlbFlush
     host.io.externalCompletion := io.externalCompletion.getOrElse(false.B) ||
       unified.map(_.io.completionEvent).getOrElse(false.B)
     io.m_irq := host.io.irq

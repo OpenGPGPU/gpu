@@ -17,13 +17,19 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
       "instruction VPN flush", "instruction ASID flush",
       "instruction divergent fragment",
       "instruction guest-sized fragment",
-      "instruction vertex translation", "instruction vertex non-executable fault")) {
+      "instruction vertex translation", "instruction vertex non-executable fault",
+      // Guest DRM vertex shader: lane-aware SoA copy (x8 base, vl=4) plus the
+      // divergent fragment program used by opengpu_drm_test on 16x16.
+      "instruction vertex guest shader",
+      "instruction vertex guest-sized fragment")) {
     it should s"complete programmable texture rendering with $scenario and recover" in {
-      val side = if (scenario == "instruction guest-sized fragment") 16 else 4
+      val side = if (scenario.contains("guest-sized")) 16 else 4
       val framebufferBytes = side * side * 4
       val gfx = GraphicsConfig(screenWidth = side, screenHeight = side, subPixelBits = 8)
       val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
       val vertexShader = scenario.startsWith("instruction vertex")
+      val guestVertexShader = scenario.contains("guest shader") ||
+        scenario == "instruction vertex guest-sized fragment"
       simulate(new GpuHostSystemAxi(gfx, gpu, fragCore = true, vertCore = vertexShader)) { dut =>
         initialize(dut)
         val words = mutable.LongMap.empty[BigInt]
@@ -75,7 +81,8 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
           0x30500073L))
         // The guest's shader crosses a cache line and retires warp zero early;
         // the surviving warp samples texture and writes derivative depth.
-        val divergentFragment = scenario.endsWith("fragment")
+        val divergentFragment = scenario.endsWith("fragment") ||
+          scenario == "instruction vertex guest shader"
         if (divergentFragment) store(program, Seq(
           0x00241293L, 0x005082b3L, 0xc1027057L, 0x08028313L,
           0x02036087L, 0x0a028313L, 0x02036107L, 0x0620812bL,
@@ -98,12 +105,21 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
             store(0x5000 + v * 32, vertices.slice(v * 4, v * 4 + 4) ++
               Seq(0xffffffffL, 16L, 0L, 0L))
           }
-          store(vertexPa, Seq(0xc1007057L | 3L << 15) ++ (0 until 8).flatMap { f =>
-            Seq((f * 32L) << 20 | 1L << 15 | 5L << 7 | 0x13L,
-              0x02006007L | 5L << 15 | 1L << 7,
-              ((8 + f) * 32L) << 20 | 1L << 15 | 5L << 7 | 0x13L,
-              0x02006027L | 5L << 15 | 1L << 7)
-          } ++ Seq(0x30500073L))
+          if (guestVertexShader) {
+            // Mirror driver/tests/opengpu_drm_test.c::write_vertex_shader.
+            store(vertexPa, Seq(0x00241293L, 0x005082b3L, 0xc1027057L) ++
+              (0 until 8).flatMap { f =>
+                Seq((f * 32L) << 20 | 0x00028313L, 0x02036087L,
+                  ((8 + f) * 32L) << 20 | 0x00028313L, 0x020360a7L)
+              } ++ Seq(0x30500073L))
+          } else {
+            store(vertexPa, Seq(0xc1007057L | 3L << 15) ++ (0 until 8).flatMap { f =>
+              Seq((f * 32L) << 20 | 1L << 15 | 5L << 7 | 0x13L,
+                0x02006007L | 5L << 15 | 1L << 7,
+                ((8 + f) * 32L) << 20 | 1L << 15 | 5L << 7 | 0x13L,
+                0x02006027L | 5L << 15 | 1L << 7)
+            } ++ Seq(0x30500073L))
+          }
         }
 
         def readLine(addr: BigInt): BigInt = {

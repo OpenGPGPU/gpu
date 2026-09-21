@@ -3,7 +3,10 @@ package opengpu.system
 import chisel3._
 import chisel3.util._
 import opengpu.config.GpuConfig
-import opengpu.core.memory.{ComputeMemoryRequest, ComputeMemoryResponse, TranslatedWordClient}
+import opengpu.core.memory.{
+  ComputeMemoryRequest, ComputeMemoryResponse, TranslatedLineClient,
+  TranslatedWordClient
+}
 import opengpu.graphics.GraphicsConfig
 
 /** Optional simulation counters; the default product port list is unchanged. */
@@ -16,9 +19,9 @@ class GpuHostPerformanceCounters extends Bundle {
   val stagingWriteBytes = UInt(64.W)
   val lowerReadBytes = UInt(64.W)
   val lowerWriteBytes = UInt(64.W)
-  val translationStallCycles = Vec(3, UInt(64.W))
-  val translationMisses = Vec(3, UInt(64.W))
-  val walkCycles = Vec(3, UInt(64.W))
+  val translationStallCycles = Vec(4, UInt(64.W))
+  val translationMisses = Vec(4, UInt(64.W))
+  val walkCycles = Vec(4, UInt(64.W))
 }
 
 /** AXI-controlled graphics host attached to the GPU-internal shared L2.
@@ -58,34 +61,33 @@ class GpuHostSystemAxi(
   require(!vertCore || fragCore,
     "vertex-core graphics requires fragment-core graphics")
 
-  // Eight direct graphics line transactions plus one range per translated word
-  // client (command, framebuffer, texture) and one per client's PTE reads.
-  // Word-port depth tracks the output-merger in-flight table so OM slots are
-  // not starved by the word-to-line bridge. Round the host ID budget up to a
-  // power of two for simple local-ID range checking.
-  private val translatedClients = Seq("command", "framebuffer", "texture")
+  // Kernel-word port IDs [0,8): frag+vert staging share translated [0,4);
+  // fill/blit/strided DMA keeps physical [4,8). Command, framebuffer and
+  // texture word clients each own a translated range plus a PTE-walk range.
+  // Staging walks sit with the other TLB clients.
+  private val translatedWordClients = Seq("command", "framebuffer", "texture")
   private val wordPortTransactions = math.max(4, graphicsConfig.omInflight)
-  private val lineClientTransactions = 8
+  private val kernelWordTransactions = 8
+  private val stagingTransactions = 4
   private val usedExact =
-    lineClientTransactions + wordPortTransactions * translatedClients.size * 2
+    kernelWordTransactions +
+      wordPortTransactions * translatedWordClients.size * 2 +
+      stagingTransactions
   private val graphicsHostTransactions = 1 << log2Ceil(usedExact)
-  // The translated word clients, in ID order. Each takes a client range and a
-  // PTE-read range; a new client is one entry here plus its wiring, and the
-  // require below rejects a layout that overflows the budget.
-  private val clientBases: Seq[Int] = translatedClients.indices
-    .scanLeft(lineClientTransactions)((base, _) => base + wordPortTransactions)
+  private val clientBases: Seq[Int] = translatedWordClients.indices
+    .scanLeft(kernelWordTransactions)((base, _) => base + wordPortTransactions)
   private val cbBase = clientBases(0)
   private val fbBase = clientBases(1)
   private val texBase = clientBases(2)
   private val usedGraphicsTransactions = clientBases.last
-  private val tlbBases: Seq[Int] = translatedClients.indices
-    .scanLeft(usedGraphicsTransactions)((base, _) => base + wordPortTransactions)
+  private val stagingTlbBase = usedGraphicsTransactions
+  private val tlbBases: Seq[Int] = translatedWordClients.indices
+    .scanLeft(stagingTlbBase + stagingTransactions)(
+      (base, _) => base + wordPortTransactions)
   private val graphicsTlbBase = tlbBases(0)
   private val cbTlbBase = tlbBases(1)
   private val fbTlbBase = tlbBases(2)
   private val usedGraphicsTransactionsWithTlb = tlbBases.last
-  // The graphics host exposes one local ID space; a new client must not
-  // silently overflow it (which would alias another client's responses).
   require(usedGraphicsTransactionsWithTlb <= graphicsHostTransactions,
     s"graphics host ID budget $graphicsHostTransactions < used " +
       s"$usedGraphicsTransactionsWithTlb")
@@ -232,9 +234,11 @@ class GpuHostSystemAxi(
       host.io.kernelGlobalAtomicRequest
     host.io.kernelGlobalAtomicResponse <>
       system.io.graphicsShaderAtomicResponse
-    // Command-draw, framebuffer and texture word clients, each with its own
-    // Sv32 translation TLB. Command records bypass L2 (uncached) and keep that
-    // policy; framebuffer and texture adopt the page's cache policy.
+    // Staging (kernarg/VB) line traffic is Sv32-translated; fill/blit/strided
+    // DMA on the same port (IDs >= 4) stays physical. Command, framebuffer and
+    // texture word clients each keep their own TLB.
+    val stagingClient = Module(new TranslatedLineClient(
+      gpuConfig, graphicsHostTransactions))
     val cbClient = Module(new TranslatedWordClient(
       gpuConfig, wordPortTransactions, graphicsHostTransactions,
       uncached = true, preserveCachePolicy = true))
@@ -242,19 +246,32 @@ class GpuHostSystemAxi(
       gpuConfig, wordPortTransactions, graphicsHostTransactions))
     val texClient = Module(new TranslatedWordClient(
       gpuConfig, wordPortTransactions, graphicsHostTransactions))
+    val stagingSelect =
+      host.io.kernelWordMemReq.bits.transactionId < stagingTransactions.U
+    stagingClient.io.in.valid :=
+      host.io.kernelWordMemReq.valid && stagingSelect
+    stagingClient.io.in.bits := host.io.kernelWordMemReq.bits
+    val dmaReq = Wire(Decoupled(
+      new ComputeMemoryRequest(gpuConfig, 64, graphicsHostTransactions)))
+    dmaReq.valid := host.io.kernelWordMemReq.valid && !stagingSelect
+    dmaReq.bits := host.io.kernelWordMemReq.bits
+    host.io.kernelWordMemReq.ready := Mux(stagingSelect,
+      stagingClient.io.in.ready, dmaReq.ready)
     cbClient.io.in <> host.io.cbMem.req
     host.io.cbMem.resp <> cbClient.io.out
     fbClient.io.in <> host.io.fbMem.req
     host.io.fbMem.resp <> fbClient.io.out
     texClient.io.in <> host.io.texMem.req
     host.io.texMem.resp <> texClient.io.out
+    stagingClient.io.satp := host.io.vectorSatp
+    stagingClient.io.flush := host.io.tlbFlush
     for (client <- Seq(cbClient, fbClient, texClient)) {
       client.io.satp := host.io.vectorSatp
       client.io.flush := host.io.tlbFlush
     }
 
     val graphicsRequestArbiter = Module(new RRArbiter(
-      new ComputeMemoryRequest(gpuConfig, 64, graphicsHostTransactions), 7))
+      new ComputeMemoryRequest(gpuConfig, 64, graphicsHostTransactions), 9))
     def attachGraphicsRequest(
       index: Int,
       request: DecoupledIO[ComputeMemoryRequest],
@@ -266,21 +283,27 @@ class GpuHostSystemAxi(
         base.U + request.bits.transactionId
       request.ready := graphicsRequestArbiter.io.in(index).ready
     }
-    attachGraphicsRequest(0, host.io.kernelWordMemReq, 0)
-    attachGraphicsRequest(1, cbClient.io.memReq, cbBase)
-    attachGraphicsRequest(2, fbClient.io.memReq, fbBase)
-    attachGraphicsRequest(3, texClient.io.memReq, texBase)
-    attachGraphicsRequest(4, texClient.io.pageWalk, graphicsTlbBase)
-    attachGraphicsRequest(5, cbClient.io.pageWalk, cbTlbBase)
-    attachGraphicsRequest(6, fbClient.io.pageWalk, fbTlbBase)
+    attachGraphicsRequest(0, stagingClient.io.memReq, 0)
+    attachGraphicsRequest(1, dmaReq, 0)
+    attachGraphicsRequest(2, cbClient.io.memReq, cbBase)
+    attachGraphicsRequest(3, fbClient.io.memReq, fbBase)
+    attachGraphicsRequest(4, texClient.io.memReq, texBase)
+    attachGraphicsRequest(5, stagingClient.io.pageWalk, stagingTlbBase)
+    attachGraphicsRequest(6, texClient.io.pageWalk, graphicsTlbBase)
+    attachGraphicsRequest(7, cbClient.io.pageWalk, cbTlbBase)
+    attachGraphicsRequest(8, fbClient.io.pageWalk, fbTlbBase)
     system.io.graphicsHostRequest <> graphicsRequestArbiter.io.out
 
     val graphicsResponse = system.io.graphicsHostResponse
     val responseId = graphicsResponse.bits.transactionId
-    val responseForKernelWord = responseId < cbBase.U
+    val responseForStaging = responseId < stagingTransactions.U
+    val responseForDma = responseId >= stagingTransactions.U &&
+      responseId < cbBase.U
     val responseForCb = responseId >= cbBase.U && responseId < fbBase.U
     val responseForFb = responseId >= fbBase.U && responseId < texBase.U
     val responseForTex = responseId >= texBase.U &&
+      responseId < stagingTlbBase.U
+    val responseForStagingTlb = responseId >= stagingTlbBase.U &&
       responseId < graphicsTlbBase.U
     val responseForTlb = responseId >= graphicsTlbBase.U &&
       responseId < cbTlbBase.U
@@ -299,14 +322,29 @@ class GpuHostSystemAxi(
       response.bits.transactionId := responseId - base.U
     }
     attachGraphicsResponse(
-      host.io.kernelWordMemResp, responseForKernelWord, 0)
+      stagingClient.io.memResp, responseForStaging, 0)
+    val dmaResp = Wire(Decoupled(
+      new ComputeMemoryResponse(64, graphicsHostTransactions)))
+    attachGraphicsResponse(dmaResp, responseForDma, 0)
     attachGraphicsResponse(cbClient.io.memResp, responseForCb, cbBase)
     attachGraphicsResponse(fbClient.io.memResp, responseForFb, fbBase)
     attachGraphicsResponse(texClient.io.memResp, responseForTex, texBase)
-    // The word port has no fault bit. Preserve the failure alongside the
-    // consumed response so RenderHost can fail the owning job after draining.
+    // Merge translated staging completions (including local faults) with DMA
+    // responses back onto the shared kernel-word response port.
+    val kernelWordRespArb = Module(new RRArbiter(
+      new ComputeMemoryResponse(64, graphicsHostTransactions), 2))
+    kernelWordRespArb.io.in(0) <> stagingClient.io.out
+    kernelWordRespArb.io.in(1) <> dmaResp
+    host.io.kernelWordMemResp <> kernelWordRespArb.io.out
     host.io.textureFault.get :=
-      cbClient.io.fault || fbClient.io.fault || texClient.io.fault
+      stagingClient.io.fault || cbClient.io.fault || fbClient.io.fault ||
+        texClient.io.fault
+    stagingClient.io.pageWalkResp.valid :=
+      graphicsResponse.valid && responseForStagingTlb
+    stagingClient.io.pageWalkResp.bits.readData := graphicsResponse.bits.readData
+    stagingClient.io.pageWalkResp.bits.fault := graphicsResponse.bits.fault
+    stagingClient.io.pageWalkResp.bits.transactionId :=
+      responseId - stagingTlbBase.U
     texClient.io.pageWalkResp.valid := graphicsResponse.valid && responseForTlb
     texClient.io.pageWalkResp.bits.readData := graphicsResponse.bits.readData
     texClient.io.pageWalkResp.bits.fault := graphicsResponse.bits.fault
@@ -323,17 +361,19 @@ class GpuHostSystemAxi(
     fbClient.io.pageWalkResp.bits.fault := graphicsResponse.bits.fault
     fbClient.io.pageWalkResp.bits.transactionId := responseId - fbTlbBase.U
     graphicsResponse.ready := MuxCase(false.B, Seq(
-      responseForKernelWord -> host.io.kernelWordMemResp.ready,
+      responseForStaging -> stagingClient.io.memResp.ready,
+      responseForDma -> dmaResp.ready,
       responseForCb -> cbClient.io.memResp.ready,
       responseForFb -> fbClient.io.memResp.ready,
       responseForTex -> texClient.io.memResp.ready,
+      responseForStagingTlb -> stagingClient.io.pageWalkResp.ready,
       responseForTlb -> texClient.io.pageWalkResp.ready,
       responseForCbTlb -> cbClient.io.pageWalkResp.ready,
       responseForFbTlb -> fbClient.io.pageWalkResp.ready))
     when(graphicsResponse.valid) {
-      assert(responseForKernelWord || responseForCb ||
-        responseForFb || responseForTex || responseForTlb ||
-        responseForCbTlb || responseForFbTlb,
+      assert(responseForStaging || responseForDma || responseForCb ||
+        responseForFb || responseForTex || responseForStagingTlb ||
+        responseForTlb || responseForCbTlb || responseForFbTlb,
         "graphics response must target an attached line, word or TLB client")
     }
 
@@ -406,10 +446,19 @@ class GpuHostSystemAxi(
       perf.rasterStallCycles := count(host.io.performance.rasterStall.asUInt)
       perf.stagingReadBytes := count(host.io.performance.stagingReadBytes)
       perf.stagingWriteBytes := count(host.io.performance.stagingWriteBytes)
-      for ((client, index) <- Seq(cbClient, fbClient, texClient).zipWithIndex) {
-        perf.translationStallCycles(index) := count(client.io.translationStall.asUInt)
-        perf.translationMisses(index) := count(client.io.translationMiss.asUInt)
-        perf.walkCycles(index) := count(client.io.walkActive.asUInt)
+      perf.translationStallCycles(0) :=
+        count(stagingClient.io.translationStall.asUInt)
+      perf.translationMisses(0) :=
+        count(stagingClient.io.translationMiss.asUInt)
+      perf.walkCycles(0) := count(stagingClient.io.walkActive.asUInt)
+      for ((client, index) <-
+          Seq(cbClient, fbClient, texClient).zipWithIndex) {
+        val slot = index + 1
+        perf.translationStallCycles(slot) :=
+          count(client.io.translationStall.asUInt)
+        perf.translationMisses(slot) :=
+          count(client.io.translationMiss.asUInt)
+        perf.walkCycles(slot) := count(client.io.walkActive.asUInt)
       }
       val request = system.io.memoryRequest
       val bytes = 1.U(8.W) << request.bits.sizeLog2
@@ -422,9 +471,9 @@ class GpuHostSystemAxi(
     system.io.invalidateInstructionCache := host.io.tlbFlush.valid
     system.io.instructionSatp := host.io.instructionSatp
     system.io.vectorSatp := host.io.vectorSatp
-    // `TLB_FLUSH` forwards its scope to both CU MMUs and the three graphics
-    // word clients, so an ASID- or VPN-scoped shootdown leaves other entries
-    // warm everywhere.
+    // `TLB_FLUSH` forwards its scope to both CU MMUs and the graphics
+    // word/line clients, so an ASID- or VPN-scoped shootdown leaves other
+    // entries warm everywhere.
     system.io.vectorTlbFlush := host.io.tlbFlush
     system.io.instructionTlbFlush := host.io.tlbFlush
 

@@ -23,7 +23,7 @@ window at run time (`kernel_pc`), so compute instruction fetch translates
 under the context ASID instead of the shared identity map. Fragment and
 vertex snapshots occupy separate private code windows, and the shared graphics
 shader core uses the same instruction SATP and scoped TLB flushes. Shader
-kernarg staging and scalar/vector data accesses retain their physical ABI;
+kernarg and vertex-buffer staging share VECTOR_SATP with CU data loads;
 texture and other graphics word clients translate independently. Shader traps
 retire the faulting warp, fail the kernel and report a render memory fault;
 failed batches do not emit pixels or vertex outputs. Faults are not resumable.

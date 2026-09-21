@@ -102,7 +102,7 @@ class GpuWorkloadSpec extends AnyFlatSpec with GpuHostTestSupport {
             "l2_load_misses" -> p.system.l2.loadMisses.peek().litValue,
             "l2_load_hits" -> p.system.l2.loadHits.peek().litValue,
             "l2_mshr_merges" -> p.system.l2.mshrMerges.peek().litValue) ++
-            Seq("command", "framebuffer", "texture").zipWithIndex.flatMap { case (client, i) =>
+            Seq("staging", "command", "framebuffer", "texture").zipWithIndex.flatMap { case (client, i) =>
               Seq(s"${client}_tlb_misses" -> p.translationMisses(i).peek().litValue,
                 s"${client}_translation_stall_cycles" -> p.translationStallCycles(i).peek().litValue,
                 s"${client}_walk_cycles" -> p.walkCycles(i).peek().litValue)

@@ -21,12 +21,13 @@ A passing sim is not silicon; a completed tool run is not timing closure.
   system router; one completion slot/IRQ serves both.
 - Driver scheduler owns GEM references, dependencies and fences. Display
   consumes GEM framebuffers; it does not own execution lifetime.
-- Sv32 private VA windows and ASIDs. Command, framebuffer, texture and the
-  programmable `vtex.sample` path translate with CU accesses. Global identity
-  mappings remain but are read/write, non-executable; compute, fragment and
-  vertex code use private executable windows. Host vertex→fragment translation
-  and instruction-fault recovery are covered. Shader
-  kernarg/data accesses remain physical. This is not yet full VM isolation.
+- Sv32 private VA windows and ASIDs. Command, framebuffer, texture,
+  kernarg/VB staging, shader data loads and the programmable `vtex.sample`
+  path translate with CU accesses. Global identity mappings remain but are
+  read/write, non-executable; compute, fragment and vertex code use private
+  executable windows. Host vertex→fragment translation and instruction-fault
+  recovery are covered. Fill/blit/strided DMA on the shared kernel-word port
+  remain physical. This is not yet full VM isolation.
 - External display hardware owns scanout and signal generation.
 
 ## Capability status
@@ -121,24 +122,25 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
    vertex→fragment reuse and vertex instruction-fault recovery are now covered:
    L1 probes progress while a demand miss waits for an L2 eviction, avoiding
    the circular wait exposed by vector-heavy vertex kernels.
-   Remaining isolation work is translating shader data
-   and removing or bounding the identity mappings.
+  Remaining isolation work is removing or bounding the identity mappings and
+  translating fill/blit/strided DMA off the shared kernel-word port.
 
 ## Known limits
 
-- Guest ARTI/QEMU: the default and fragment-core end-to-end DRM tests pass and
-  power off cleanly on the follow-up tree above. The programmable
-  `vtex.sample` texture path routes through the translated texture client (a
-  VM virtual address), while the kernarg staging port stays physical.
+- Guest ARTI/QEMU: the default, fragment-core, and vertex+fragment-core
+  end-to-end DRM tests pass and power off cleanly on the follow-up tree
+  above. Programmable `vtex.sample`, kernarg/VB staging and shader data loads
+  all translate under the context ASID (`VECTOR_SATP`); fill/blit/strided DMA
+  on the shared kernel-word port remains physical.
 - Qualification gate is boundary suites + workload sweep, not the full Scala
   suite.
 - No parent-level per-interface timing budgets.
 - Display/scanout is simulation-only.
-- Shared identity mappings remain (read/write, non-executable), and shader
-  kernarg/data accesses remain physical. Fragment instruction faults fail the
-  render and allow a later draw to recover; vertex instruction faults and
-  subsequent shared-CU reuse are also covered. No resumable page faults or
-  full VM isolation.
+- Shared identity mappings remain (read/write, non-executable) as a fallback
+  when a private VA window cannot be installed. Fragment instruction faults
+  fail the render and allow a later draw to recover; vertex instruction faults
+  and subsequent shared-CU reuse are also covered. No resumable page faults or
+  full removal of identity maps yet.
 - Shader ISA growth is validation-profile driven, not a real compiler corpus.
 
 ## Later / out of scope

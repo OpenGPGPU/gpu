@@ -111,6 +111,8 @@ class RenderCoreL2(
   // Standalone renderer has no host VM control; preserve Bare addressing.
   core.io.instructionSatp := 0.U
   core.io.instructionTlbFlush := 0.U.asTypeOf(core.io.instructionTlbFlush)
+  core.io.vectorSatp := 0.U
+  core.io.vectorTlbFlush := 0.U.asTypeOf(core.io.vectorTlbFlush)
   private val l2 = Module(new SharedL2Cache(
     gpuConfig, sets, ways, lineBytes, maxOutstanding = totalOutstanding,
     numComputeUnits = cuSlots, transactionsPerCu = perClientOutstanding,

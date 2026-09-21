@@ -61,6 +61,8 @@ class KernelFragStageWithKernel(
   private val kernel = Module(new KernelShaderStage(config))
   kernel.io.instructionSatp := 0.U
   kernel.io.instructionTlbFlush := 0.U.asTypeOf(kernel.io.instructionTlbFlush)
+  kernel.io.vectorSatp := 0.U
+  kernel.io.vectorTlbFlush := 0.U.asTypeOf(kernel.io.vectorTlbFlush)
 
   // Connect wrapper IO to frag stage's non-kernel ports
   io.fragIn <> frag.io.fragIn

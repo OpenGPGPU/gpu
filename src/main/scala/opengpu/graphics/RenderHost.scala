@@ -136,6 +136,8 @@ class RenderHost(
     val externalCompletion = Input(Bool())
     val instructionSatp = Input(UInt(32.W))
     val instructionTlbFlush = Flipped(Valid(new opengpu.core.memory.VectorTlbFlush(gpuConfig)))
+    val vectorSatp = Input(UInt(32.W))
+    val vectorTlbFlush = Flipped(Valid(new opengpu.core.memory.VectorTlbFlush(gpuConfig)))
     /** Pulse when a failed texture response is consumed by the renderer. */
     val textureFault = if (textureFaultReporting) Some(Input(Bool())) else None
 
@@ -174,6 +176,8 @@ class RenderHost(
   private val core = Module(new RenderCore(config, gpuConfig, fragCore, vertCore))
   core.io.instructionSatp := io.instructionSatp
   core.io.instructionTlbFlush := io.instructionTlbFlush
+  core.io.vectorSatp := io.vectorSatp
+  core.io.vectorTlbFlush := io.vectorTlbFlush
   io.performance := core.io.performance
 
   // The DMA engines share the kernelWordMem line port with the core's

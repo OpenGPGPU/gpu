@@ -488,7 +488,7 @@ struct gpu_draw_record {
  * 40 32-bit words, little-endian.  Replaces the legacy triangle record when
  * the GPU_CAP_VERTEX_CORE capability is present and the driver opts in.
  *                                                                   word idx
- *   vertex buffer base address                                         [0]
+ *   vertex buffer base address (VA under VECTOR_SATP, or physical Bare)   [0]
  *   vertex count (must be multiple of 3)                               [1]
  *   vertex stride in bytes (initially fixed at 32)                     [2]
  *   vertex shader entry PC                                             [3]

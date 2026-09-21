@@ -60,6 +60,8 @@ class RenderCore(
     val kernelGlobalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(gpuConfig)))
     val instructionSatp = Input(UInt(32.W))
     val instructionTlbFlush = Flipped(Valid(new opengpu.core.memory.VectorTlbFlush(gpuConfig)))
+    val vectorSatp = Input(UInt(32.W))
+    val vectorTlbFlush = Flipped(Valid(new opengpu.core.memory.VectorTlbFlush(gpuConfig)))
     val shaderFault = Output(Bool())
     val colorBase = Input(UInt(32.W))
     val depthBase = Input(UInt(32.W))
@@ -118,6 +120,8 @@ class RenderCore(
   cb.io.draw <> rp.io.draw
   rp.io.instructionSatp := io.instructionSatp
   rp.io.instructionTlbFlush := io.instructionTlbFlush
+  rp.io.vectorSatp := io.vectorSatp
+  rp.io.vectorTlbFlush := io.vectorTlbFlush
   io.shaderFault := rp.io.shaderFault
 
   rp.io.colorBase := io.colorBase

@@ -38,6 +38,8 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   val io = IO(new Bundle {
     val instructionSatp = Input(UInt(32.W))
     val instructionTlbFlush = Flipped(Valid(new opengpu.core.memory.VectorTlbFlush(config)))
+    val vectorSatp = Input(UInt(32.W))
+    val vectorTlbFlush = Flipped(Valid(new opengpu.core.memory.VectorTlbFlush(config)))
     val launch = new Bundle {
       val valid = Input(Bool())
       val ready = Output(Bool())
@@ -104,11 +106,10 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   cu.io.invalidateInstructionCache := io.instructionTlbFlush.valid
   cu.io.instructionSatp := io.instructionSatp
   cu.io.instructionTlbFlush := io.instructionTlbFlush
-  // Staged shader inputs/outputs retain the physical kernarg ABI. Instruction
-  // translation is independent of the vector/scalar data address space.
-  cu.io.vectorSatp := 0.U
-  cu.io.vectorTlbFlush.valid := false.B
-  cu.io.vectorTlbFlush.bits := 0.U.asTypeOf(cu.io.vectorTlbFlush.bits)
+  // Staging word-bridge and shader kernarg/data loads share VECTOR_SATP so
+  // draw-record addresses can be private VAs under the context ASID.
+  cu.io.vectorSatp := io.vectorSatp
+  cu.io.vectorTlbFlush := io.vectorTlbFlush
   // Unsupported execution handoffs have no completion service here. Do not
   // consume and silently discard them: ready alone neither traps nor releases
   // their reservations. Shader validation must exclude these operations;

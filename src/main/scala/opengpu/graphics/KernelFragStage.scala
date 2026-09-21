@@ -169,10 +169,10 @@ class KernelFragStage(
     val drawRetire = Decoupled(Bool())
     val memReq = Decoupled(new ComputeMemoryRequest(config))
     val memResp = Flipped(Decoupled(new ComputeMemoryResponse()))
-    val wordMemReq = Decoupled(new ComputeMemoryRequest(config))
-    val wordMemResp = Flipped(Decoupled(new ComputeMemoryResponse()))
+    val wordMemReq = Decoupled(new ComputeMemoryRequest(config, 64, 2))
+    val wordMemResp = Flipped(Decoupled(new ComputeMemoryResponse(64, 2)))
     /** Texture-unit word memory.  Routed through the translated texture client
-      * (a VM virtual address), unlike the physical kernarg staging port. */
+      * (VA under VECTOR_SATP), same translation domain as kernarg staging. */
     val texMem = new Bundle {
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
@@ -210,7 +210,10 @@ class KernelFragStage(
 
   // Kernarg staging is CPU-written; bypass L1/L2. Texture samples stay cached
   // and leave through `io.texMem` so the caller can translate the texture VA.
-  private val bridge = Module(new OmWordToLinePort(config, uncached = true))
+  // Two slots share the translated staging ID window [0,4) with the vertex
+  // bridge (owner bit selects half); the FSM is already one-at-a-time.
+  private val bridge = Module(new OmWordToLinePort(
+    config, uncached = true, maxOutstanding = 2))
   private val texUnit = Module(new TexSampleUnit(config, gfxConfig))
 
   texUnit.io.in.valid := io.kernelTexSample.valid
@@ -919,16 +922,16 @@ class KernelFragStage(
     }
   }
 
-  // The kernarg staging FSM (write/read phases) drives the physical word
-  // port; texture sampling leaves through `io.texMem` instead, so the two
-  // never share a port and the staging port carries only physical addresses.
+  // The kernarg staging FSM (write/read phases) drives the word port;
+  // texture sampling leaves through `io.texMem`.  Staging addresses are VAs
+  // under VECTOR_SATP (Bare keeps physical identity).
   // The producer never touches the word port: its fragments stage into
   // registers and stream through sWrite only after the slot is swapped in.
   // Register the wide line request at the block boundary.  Besides providing
   // one entry of elastic backpressure, this prevents the 512-bit write-data
   // cone from becoming a top-level output path.
   private val wordMemReqPipe = Module(
-    new Queue(new ComputeMemoryRequest(config), 1, pipe = false, flow = false))
+    new Queue(new ComputeMemoryRequest(config, 64, 2), 1, pipe = false, flow = false))
   wordMemReqPipe.io.enq.valid := bridge.io.memoryRequest.valid
   wordMemReqPipe.io.enq.bits := bridge.io.memoryRequest.bits
   bridge.io.memoryRequest.ready := wordMemReqPipe.io.enq.ready
