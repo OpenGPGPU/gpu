@@ -479,6 +479,8 @@ class KernelFragStage(
   private val qTail = qHead ^ qCount(0)
   private val execCarries = RegInit(false.B)
   private val execEntryIdx = Reg(UInt(1.W))
+  private val outputRetirePending = RegInit(false.B)
+  private val outputRetireEntry = Reg(UInt(1.W))
 
   private val prevFlush = RegInit(true.B)
   prevFlush := io.flush
@@ -486,7 +488,10 @@ class KernelFragStage(
 
   private val prodNonEmpty = prodCount =/= 0.U
   private val commitFull = io.fragIn.fire && prodCount === (batchCap - 4).U
-  private val commitFlush = flushRise && prodNonEmpty
+  // A parked full batch still owns prodSlot/prodCount. It was already
+  // committed and must bind to this draw's retire entry below, not attempt
+  // a second commit (which pendingValid would suppress).
+  private val commitFlush = flushRise && prodNonEmpty && !pendingValid
   private val commitAny = (commitFull || commitFlush) && !pendingValid
 
   when(flushRise) { assert(qCount =/= 2.U, "retire queue overflow") }
@@ -591,15 +596,12 @@ class KernelFragStage(
   }
   when(commitAny && commitFlush) { pushEntry(false.B) }
 
-  // Empty-accumulation flush: the flushing draw produced no new batch.  Bind
-  // the most recent unbound batch (pending, else executing) as the draw's
-  // last; otherwise the draw retires as an empty entry.
+  // Flush without a new commit: accumulation is empty or already parked.
+  // Bind the most recent unbound batch (pending, else executing) as the
+  // draw's last; otherwise the draw retires as an empty entry.
   private val bindPending = pendingValid && !pendingCarries
   private val bindExec = !pendingValid && state =/= sIdle && !execCarries
   when(flushRise && !commitFlush) {
-    when(prodNonEmpty && pendingValid) {
-      assert(false.B, "producer must be stalled while a batch is parked")
-    }
     when(bindPending) {
       pendingCarries := true.B
       pendingEntryIdx := qTail
@@ -614,6 +616,13 @@ class KernelFragStage(
   }
 
   // Retire handshake: present completed entries in order.
+  // A covered last lane completes only when its output register drains.
+  // Keep this tied to its own entry so a later draw cannot suppress an
+  // already-presented retirement under backpressure.
+  when(io.out.fire && outputRetirePending) {
+    qDone(outputRetireEntry) := true.B
+    outputRetirePending := false.B
+  }
   io.drawRetire.valid := qCount =/= 0.U && qDone(qHead)
   io.drawRetire.bits := true.B
   when(io.drawRetire.fire) {
@@ -872,7 +881,14 @@ class KernelFragStage(
     is(sEmit) {
       when(emitAdvance) {
         when(index === execCount - 1.U) {
-          when(execCarries) { qDone(execEntryIdx) := true.B }
+          when(execCarries) {
+            when(emitHitQ(laneIdx)) {
+              outputRetirePending := true.B
+              outputRetireEntry := execEntryIdx
+            }.otherwise {
+              qDone(execEntryIdx) := true.B
+            }
+          }
           execCarries := false.B
           slotCount(execSlot) := 0.U
           when(pendingValid) {

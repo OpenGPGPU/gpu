@@ -1153,6 +1153,35 @@ class KernelFragStageSpec extends AnyFlatSpec {
     }
   }
 
+  it should "retain the draw context while the last registered fragment is backpressured" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelFragStageWithKernel(config)) { dut =>
+      val mem = new MemModel
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.shaderPc.poke(0x1000.U)
+      dut.io.kernargBase.poke(0x8000.U)
+      dut.io.kernargBankStride.poke(0.U)
+      dut.io.out.ready.poke(false.B)
+      mem.putWord(0x1000L, 0, sw(0, 1, 204))
+      mem.putWord(0x1000L, 1, cease)
+      fireQuad(dut, Seq.fill(3)(Frag(0, 0, 0, covered = false, coverageMask = 0)) :+
+        Frag(1, 1, 0x20))
+      dut.io.flush.poke(true.B); dut.clock.step(); dut.io.flush.poke(false.B)
+      assert(pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean))
+      for (_ <- 0 until 8) {
+        dut.io.out.valid.expect(true.B)
+        dut.io.drawRetire.valid.expect(false.B)
+        dut.clock.step()
+      }
+      dut.io.out.ready.poke(true.B)
+      dut.clock.step()
+      dut.io.drawRetire.valid.expect(true.B)
+      dut.clock.step()
+      dut.io.drawRetire.valid.expect(false.B)
+    }
+  }
+
   it should "retire exactly one event per draw boundary, including empty draws" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new KernelFragStageWithKernel(config)) { dut =>

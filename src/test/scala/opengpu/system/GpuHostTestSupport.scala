@@ -180,13 +180,18 @@ trait GpuHostTestSupport {
   /** Services the 64-bit AXI memory master until `until` holds, accepting any
     * mix of full-line and narrow reads and full-line writes. `readLine` supplies the 64-byte line
     * for a read address; `onWrite` receives every completed write burst as
-    * (address, data, byte strobe). */
+    * (address, data, byte strobe). `onReadAccepted` runs after the AR handshake
+    * with memory handshakes paused, allowing control-MMIO traffic while the
+    * burst remains outstanding. Use a positive `readResponseDelay` to invoke
+    * it before any R beat has been presented. */
   protected def serviceMemoryMaster(
     dut: GpuHostSystemAxi,
     readLine: BigInt => BigInt,
     readFault: BigInt => Boolean = _ => false,
     writeAckDelay: Int = 0,
-    maxCycles: Int = 20000
+    maxCycles: Int = 20000,
+    readResponseDelay: Int = 0,
+    onReadAccepted: BigInt => Unit = _ => ()
   )(onWrite: (BigInt, BigInt, BigInt) => Unit)(until: => Boolean): Unit = {
     val mask64 = (BigInt(1) << 64) - 1
     var arDone = false
@@ -196,6 +201,7 @@ trait GpuHostTestSupport {
     var rLine = BigInt(0)
     var rBeats = 8
     var rFault = false
+    var rDelay = 0
     var awDone = false
     var awAddr = BigInt(0)
     var awId = BigInt(0)
@@ -207,6 +213,7 @@ trait GpuHostTestSupport {
     var bDelay = 0
     var guard = 0
     while (!until && guard < maxCycles) {
+      var acceptedRead = false
       // Read address channel.
       dut.io.m_axi_arready.poke((!arDone && rBeat == 0).B)
       if (!arDone && dut.io.m_axi_arvalid.peek().litToBoolean &&
@@ -218,9 +225,11 @@ trait GpuHostTestSupport {
         rFault = readFault(arAddr)
         arDone = true
         rBeat = 0
+        rDelay = readResponseDelay
+        acceptedRead = true
       }
       // Read data channel: narrow PTE reads use one lane-aligned beat.
-      if (arDone) {
+      if (arDone && rDelay == 0) {
         dut.io.m_axi_rvalid.poke(true.B)
         dut.io.m_axi_rid.poke(arId.U)
         dut.io.m_axi_rdata.poke(((rLine >> (rBeat * 64)) & mask64).U)
@@ -232,6 +241,7 @@ trait GpuHostTestSupport {
       } else {
         dut.io.m_axi_rvalid.poke(false.B)
         dut.io.m_axi_rlast.poke(false.B)
+        if (rDelay > 0) rDelay -= 1
       }
       // Write address channel.
       dut.io.m_axi_awready.poke((!awDone && !wDone).B)
@@ -269,6 +279,16 @@ trait GpuHostTestSupport {
         wStrb = BigInt(0)
       }
       dut.io.s_axi_aclk.step()
+      if (acceptedRead) {
+        // Pause memory handshakes while the hook drives control MMIO. Local
+        // burst state survives, including an accepted AR awaiting its R data.
+        dut.io.m_axi_arready.poke(false.B)
+        dut.io.m_axi_rvalid.poke(false.B)
+        dut.io.m_axi_awready.poke(false.B)
+        dut.io.m_axi_wready.poke(false.B)
+        dut.io.m_axi_bvalid.poke(false.B)
+        onReadAccepted(arAddr)
+      }
       guard += 1
     }
     assert(guard < maxCycles, "AXI memory master service timed out")
