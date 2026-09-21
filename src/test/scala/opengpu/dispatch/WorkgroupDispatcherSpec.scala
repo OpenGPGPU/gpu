@@ -23,6 +23,13 @@ class WorkgroupDispatcherSpec extends AnyFlatSpec {
 
   behavior of "WorkgroupDispatcher"
 
+  private def awaitWarp(dut: WorkgroupDispatcher, cycles: Int = 8): Unit = {
+    var remaining = cycles
+    while (!dut.io.warp.valid.peek().litToBoolean && remaining > 0) {
+      dut.clock.step(); remaining -= 1
+    }
+  }
+
   it should "produce full warps and an exact tail mask" in {
     simulate(new WorkgroupDispatcher(config)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
@@ -31,6 +38,7 @@ class WorkgroupDispatcherSpec extends AnyFlatSpec {
       dut.io.warpCompletion.valid.poke(false.B)
       dut.io.completion.ready.poke(true.B)
       sendWorkgroup(dut, Seq(17, 1, 1))
+      awaitWarp(dut)
 
       Seq((0, 0xff, true, false), (8, 0xff, false, false),
         (16, 0x01, false, true)).foreach { case (base, mask, first, last) =>
@@ -62,7 +70,7 @@ class WorkgroupDispatcherSpec extends AnyFlatSpec {
       dut.io.completion.ready.poke(false.B)
       sendWorkgroup(dut, Seq(24, 1, 1))
 
-      dut.clock.step(3)
+      dut.clock.step(4)
       dut.io.warp.valid.expect(false.B)
       dut.io.completion.valid.expect(false.B)
       (0 until 2).foreach { _ =>
@@ -84,6 +92,7 @@ class WorkgroupDispatcherSpec extends AnyFlatSpec {
       dut.io.warpCompletion.valid.poke(false.B)
       dut.io.completion.ready.poke(false.B)
       sendWorkgroup(dut, Seq(0, 1, 1))
+      dut.clock.step()
       dut.io.warp.valid.expect(false.B)
       dut.io.completion.valid.expect(true.B)
       dut.io.completion.bits.success.expect(false.B)
@@ -97,6 +106,7 @@ class WorkgroupDispatcherSpec extends AnyFlatSpec {
       dut.io.warpCompletion.valid.poke(false.B)
       dut.io.completion.ready.poke(false.B)
       sendWorkgroup(dut, Seq(config.lanes * config.warps + 1, 1, 1))
+      dut.clock.step()
       dut.io.warp.valid.expect(false.B)
       dut.io.completion.valid.expect(true.B)
       dut.io.completion.bits.success.expect(false.B)

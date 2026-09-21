@@ -17,22 +17,18 @@ class WorkgroupDispatcher(config: GpuConfig = GpuConfig()) extends Module {
     val completion = Decoupled(new WorkgroupCompletion)
   })
 
-  private val idle :: active :: finish :: Nil = Enum(3)
+  private val idle :: prepare :: active :: finish :: Nil = Enum(4)
   private val state = RegInit(idle)
   private val task = Reg(new WorkgroupTask(config))
+  private val partialProduct = Reg(UInt(32.W))
+  private val taskLocalSize2 = Reg(UInt(16.W))
+  private val taskCount = RegInit(0.U(48.W))
   private val totalWarps = RegInit(0.U(48.W))
   private val issuedWarps = RegInit(0.U(48.W))
   private val completedWarps = RegInit(0.U(48.W))
   private val accumulatedSuccess = RegInit(true.B)
 
-  private val incomingCount =
-    io.workgroup.bits.localSize(0) * io.workgroup.bits.localSize(1) *
-      io.workgroup.bits.localSize(2)
-  private val incomingWarps =
-    (incomingCount + (config.lanes - 1).U) / config.lanes.U
-  private val fitsComputeUnit = incomingWarps <= config.warps.U
   private val linearBase = issuedWarps * config.lanes.U
-  private val taskCount = task.localSize(0) * task.localSize(1) * task.localSize(2)
   private val remaining = taskCount - linearBase
   private val fullMask = Fill(config.lanes, 1.U(1.W))
   private val tailCountWidth = math.max(1, log2Ceil(config.lanes + 1))
@@ -55,13 +51,26 @@ class WorkgroupDispatcher(config: GpuConfig = GpuConfig()) extends Module {
   io.completion.valid := state === finish
   io.completion.bits.success := accumulatedSuccess
 
+  // Split the two 16x16 multiplies feeding the workgroup count across the
+  // accept and prepare cycles so the dispatch cone does not run through both.
   when(io.workgroup.fire) {
     task := io.workgroup.bits
-    totalWarps := incomingWarps
+    partialProduct := io.workgroup.bits.localSize(0) *
+      io.workgroup.bits.localSize(1)
+    taskLocalSize2 := io.workgroup.bits.localSize(2)
+    state := prepare
+  }
+
+  when(state === prepare) {
+    val count = partialProduct * taskLocalSize2
+    val warps = (count + (config.lanes - 1).U) / config.lanes.U
+    val fits = warps <= config.warps.U
+    taskCount := count
+    totalWarps := warps
     issuedWarps := 0.U
     completedWarps := 0.U
-    accumulatedSuccess := incomingCount =/= 0.U && fitsComputeUnit
-    state := Mux(incomingCount === 0.U || !fitsComputeUnit, finish, active)
+    accumulatedSuccess := count =/= 0.U && fits
+    state := Mux(count === 0.U || !fits, finish, active)
   }
 
   when(io.warp.fire) {
