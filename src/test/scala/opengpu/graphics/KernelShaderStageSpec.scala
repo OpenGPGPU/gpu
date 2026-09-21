@@ -12,6 +12,9 @@ class KernelShaderStageSpec extends AnyFlatSpec {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new KernelShaderStage(config)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      dut.io.instructionSatp.poke(0.U)
+      dut.io.instructionTlbFlush.valid.poke(false.B)
+      dut.io.instructionTlbFlush.bits.poke(0.U.asTypeOf(dut.io.instructionTlbFlush.bits))
       dut.io.launch.valid.poke(false.B)
       dut.io.launch.kernelPc.poke(0.U)
       dut.io.launch.kernargAddress.poke(0.U)

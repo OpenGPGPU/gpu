@@ -207,6 +207,8 @@ class GpuHostAxi(
     io.instructionSatp := unified.map(_.io.instructionSatp).getOrElse(0.U)
     io.tlbFlush := unified.map(_.io.tlbFlush).getOrElse(
       0.U.asTypeOf(io.tlbFlush))
+    host.io.instructionSatp := io.instructionSatp
+    host.io.instructionTlbFlush := io.tlbFlush
     host.io.externalCompletion := io.externalCompletion.getOrElse(false.B) ||
       unified.map(_.io.completionEvent).getOrElse(false.B)
     io.m_irq := host.io.irq

@@ -8,10 +8,13 @@ import opengpu.graphics.{GpuCommandMmioRegs, GraphicsConfig, RenderHostRegs}
 import org.scalatest.flatspec.AnyFlatSpec
 import scala.collection.mutable
 
-/** Exercise vtex.sample all the way through the host's translated AXI client. */
+/** Exercise shader instruction fetch and vtex.sample through the host's AXI clients. */
 class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
   for (scenario <- Seq("translation", "invalid PTE", "page-table bus fault",
-      "texture bus fault", "reset during texture read")) {
+      "texture bus fault", "reset during texture read", "instruction translation",
+      "instruction non-executable fault", "instruction invalid PTE fault", "instruction page-table bus fault",
+      "instruction code bus fault", "instruction ASID switch",
+      "instruction VPN flush", "instruction ASID flush")) {
     it should s"complete programmable texture rendering with $scenario and recover" in {
       val gfx = GraphicsConfig(screenWidth = 4, screenHeight = 4, subPixelBits = 8)
       val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
@@ -22,7 +25,10 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
         val writes = mutable.ArrayBuffer.empty[BigInt]
         val descriptor = 0x1000
         val commands = 0x2000
-        val program = 0x3000
+        val translatedInstructions = scenario.startsWith("instruction")
+        val program = if (translatedInstructions) 0x1000000 else 0x3000
+        val programVa = if (translatedInstructions) 0xc00000 else program
+        val instructionRoot = 0x31000
         val kernarg = 0x4000
         val color = 0x10000
         val root = 0x30000
@@ -39,7 +45,7 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
         // The 4x4 draw fills both eight-lane batches, exercising retirement
         // when the final full batch is parked behind the executing shader.
         val record = vertices ++ Seq.fill(9)(255L) ++ Seq.fill(3)(16L) ++
-          Seq(program.toLong, kernarg.toLong) ++ Seq.fill(8)(0L) ++
+          Seq(programVa.toLong, kernarg.toLong) ++ Seq.fill(8)(0L) ++
           Seq(320L) ++ Seq.fill(5)(0L)
         assert(record.size == 40)
         store(commands, record)
@@ -47,6 +53,7 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
           16L, 0x81L, textureVa.toLong, 0x10001L, 0x101L) ++ Seq.fill(7)(0L))
         store(0x20000, Seq.fill(16)(0x00ffffffL))
         store(program, Seq(
+          0x0080006fL, 0L, // jal +8: relative control flow must retain the virtual PC
           2L << 20 | 8L << 15 | 1L << 12 | 5L << 7 | 0x13L, // slli t0,s0,2
           5L << 20 | 1L << 15 | 5L << 7 | 0x33L, // add t0,ra,t0
           0xc1007057L | 4L << 15, // vsetivli 4
@@ -61,6 +68,9 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
         store(texturePa, Seq(texel))
         store(textureVa, Seq(0x00ff00ffL)) // poison physical VA alias
         store(root, Seq(0xcfL, if (scenario == "invalid PTE") 0L else (0x800L << 10) | 0x43L))
+        store(instructionRoot + 12, Seq(if (scenario == "instruction invalid PTE fault") 0L else
+          (0x1000L << 10) | (if (scenario == "instruction non-executable fault") 0x43L else 0x49L)))
+
         def readLine(addr: BigInt): BigInt = {
           reads += addr
           val base = addr.toLong & ~63L
@@ -85,6 +95,10 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
           axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
         }
         axiWrite(dut, GpuCommandMmioRegs.VECTOR_SATP, 0x80400000 | (root >> 12))
+        if (translatedInstructions) {
+          axiWrite(dut, GpuCommandMmioRegs.INSTRUCTION_SATP,
+            0x80400000 | (instructionRoot >> 12))
+        }
         axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
         axiWrite(dut, RenderHostRegs.IRQ, 1)
         val fault = scenario.contains("fault") || scenario == "invalid PTE"
@@ -93,8 +107,10 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
         submit(17)
         serviceMemoryMaster(dut, readLine,
           a => (scenario == "page-table bus fault" && a == root + 4) ||
-            (scenario == "texture bus fault" && a == texturePa),
-          writeAckDelay = 12, maxCycles = 40000, readResponseDelay = 2,
+            (scenario == "texture bus fault" && a == texturePa) ||
+            (scenario == "instruction page-table bus fault" && a == instructionRoot + 12) ||
+            (scenario == "instruction code bus fault" && a == program),
+          writeAckDelay = 12, maxCycles = 80000, readResponseDelay = 2,
           onReadAccepted = a => if (resetting && a == texturePa && !resetIssued) {
             resetIssued = true
             axiWrite(dut, GpuCommandMmioRegs.RESET, 1)
@@ -104,10 +120,26 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
               dut.io.m_irq.expect(false.B)
             }
           })(writeLine) { dut.io.m_irq.peek().litToBoolean }
-        assert(reads.contains(BigInt(root + 4)), "vtex.sample must walk the texture mapping")
+        val instructionFault = translatedInstructions && fault
+        if (!instructionFault) {
+          assert(reads.contains(BigInt(root + 4)), "vtex.sample must walk the texture mapping")
+        }
+        if (translatedInstructions) {
+          assert(reads.contains(BigInt(instructionRoot + 12)),
+            "shader must walk its code mapping")
+          assert(!reads.exists(a => a >= programVa && a < programVa + 4096),
+            "instruction VA escaped onto physical AXI")
+          if (instructionFault) {
+            assert(!writes.exists(a => a >= color && a < color + 64),
+              "failed shader must not emit framebuffer pixels")
+            if (scenario != "instruction code bus fault") {
+              assert(!reads.contains(BigInt(program)), "failed translation must suppress the code fetch")
+            }
+          }
+        }
         assert(!reads.exists(a => a >= textureVa && a < textureVa + 4096),
           "texture VA escaped onto physical AXI")
-        if (scenario == "invalid PTE" || scenario == "page-table bus fault") {
+        if (scenario == "invalid PTE" || scenario == "page-table bus fault" || instructionFault) {
           assert(!reads.contains(BigInt(texturePa)), "failed walk must suppress the texel read")
         } else {
           assert(reads.contains(BigInt(texturePa)), "texture must be fetched from the translated PA")
@@ -125,12 +157,31 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
           val completion = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
           assert((completion & 255) == 17)
           assert(((completion >> 15) & 1) == (if (fault) 0 else 1))
+          assert(((completion >> 11) & 15) == (if (fault) 1 else 0))
           axiWrite(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
         }
         // Repair and flush, then reuse the ID. A fresh framebuffer detects a
         // stale completion, and clearing observations proves this job did work.
         store(root + 4, Seq((0x800L << 10) | 0x43L))
-        axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
+        store(instructionRoot + 24, Seq((0x1c00L << 10) | 0x49L))
+        val remapping = scenario == "instruction ASID switch" || scenario.endsWith("flush")
+        val recoveryProgram = if (remapping) 0x1400000 else program
+        if (translatedInstructions) {
+          for (i <- 0 until 16) words(recoveryProgram + i * 4L) =
+            words.getOrElse(program + i * 4L, BigInt(0))
+          val recoveryRoot = if (scenario == "instruction ASID switch") 0x32000 else instructionRoot
+          store(recoveryRoot + 12, Seq(((recoveryProgram.toLong >> 12) << 10) | 0x49L))
+          if (scenario == "instruction ASID switch") {
+            axiWrite(dut, GpuCommandMmioRegs.INSTRUCTION_SATP, 0x80800000 | (recoveryRoot >> 12))
+          }
+        }
+        if (scenario == "instruction VPN flush") {
+          axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, programVa | 4)
+        } else if (scenario == "instruction ASID flush") {
+          axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, (1 << 3) | 2)
+        } else if (scenario != "instruction ASID switch") {
+          axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
+        }
         axiWrite(dut, RenderHostRegs.IRQ, 3)
         val recoveryColor = color + 0x1000
         store(descriptor + 8, Seq(recoveryColor.toLong, 0x21000L))
@@ -138,13 +189,18 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
         store(0x21000, Seq.fill(16)(0x00ffffffL))
         reads.clear(); writes.clear()
         submit(17)
-        serviceMemoryMaster(dut, readLine, writeAckDelay = 12, maxCycles = 40000)(writeLine) {
+        serviceMemoryMaster(dut, readLine, writeAckDelay = 12, maxCycles = 80000)(writeLine) {
           dut.io.m_irq.peek().litToBoolean
         }
         assert((axiRead(dut, RenderHostRegs.STATUS) & 7) == 2)
         val completion = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
         assert((completion & 255) == 17 && ((completion >> 15) & 1) == 1)
-        assert(reads.contains(BigInt(root + 4)), "recovery must walk the repaired mapping")
+        if (!remapping || scenario == "instruction ASID flush") {
+          assert(reads.contains(BigInt(root + 4)), "recovery must walk the repaired mapping")
+        }
+        if (remapping) {
+          assert(reads.contains(BigInt(recoveryProgram)), "relaunch must fetch the new physical code page")
+        }
         assert(!reads.exists(a => a >= textureVa && a < textureVa + 4096))
         assert(writes.exists(a => a >= recoveryColor && a < recoveryColor + 64))
         assert(words(recoveryColor + 1 * 16L + 1 * 4) == texel,

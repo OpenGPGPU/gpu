@@ -134,6 +134,8 @@ class RenderHost(
     val irq = Output(Bool())
     /** Completion event from an integrated compute/command subsystem. */
     val externalCompletion = Input(Bool())
+    val instructionSatp = Input(UInt(32.W))
+    val instructionTlbFlush = Flipped(Valid(new opengpu.core.memory.VectorTlbFlush(gpuConfig)))
     /** Pulse when a failed texture response is consumed by the renderer. */
     val textureFault = if (textureFaultReporting) Some(Input(Bool())) else None
 
@@ -170,6 +172,8 @@ class RenderHost(
   })
 
   private val core = Module(new RenderCore(config, gpuConfig, fragCore, vertCore))
+  core.io.instructionSatp := io.instructionSatp
+  core.io.instructionTlbFlush := io.instructionTlbFlush
   io.performance := core.io.performance
 
   // The DMA engines share the kernelWordMem line port with the core's
@@ -293,7 +297,7 @@ class RenderHost(
   private val done = RegInit(false.B)
   private val error = RegInit(false.B)
   // Per-job state is separate from STATUS.ERROR, which software can clear.
-  private val textureFaulted = RegInit(false.B)
+  private val memoryFaulted = RegInit(false.B)
   private val irqEnable = RegInit(false.B)
   private val irqPending = RegInit(false.B)
   private val sawBusy = RegInit(false.B)
@@ -312,7 +316,7 @@ class RenderHost(
   private val renderLaunch = RegInit(false.B)
   private val renderAddr = RegInit(0.U(gpuConfig.xLen.W))
   private val invalidSampleMode = RegInit(false.B)
-  private val textureFaultNow = io.textureFault.getOrElse(false.B) &&
+  private val memoryFaultNow = (io.textureFault.getOrElse(false.B) || core.io.shaderFault) &&
     (busy || renderFetching || renderLaunch)
   private val validRenderMode = Msaa.validModeWord(renderWords(9), config.maxSampleCount)
   io.drained := !renderFetching && !renderLaunch && !busy &&
@@ -602,7 +606,7 @@ class RenderHost(
   io.renderCommand.ready := !renderFetching && !renderLaunch && !busy && !renderDonePending
   when(io.renderCommand.fire) {
     renderFetching := true.B
-    textureFaulted := false.B
+    memoryFaulted := false.B
     invalidSampleMode := false.B
     done := false.B
     error := false.B
@@ -616,7 +620,7 @@ class RenderHost(
   when(renderFetching && io.cbMem.resp.fire) {
     descOutstanding := false.B
     renderWords(renderWord) := io.cbMem.resp.bits.data
-    when(textureFaulted || textureFaultNow) {
+    when(memoryFaulted || memoryFaultNow) {
       renderFetching := false.B
       renderDonePending := true.B
       done := true.B
@@ -684,13 +688,13 @@ class RenderHost(
       irqPending := true.B
     }
   }
-  when(textureFaultNow) {
-    textureFaulted := true.B
+  when(memoryFaultNow) {
+    memoryFaulted := true.B
     error := true.B
   }
   // Preserve failure at completion even if STATUS.ERROR was acknowledged
   // while the failed draw was still draining.
-  when(busy && sawBusy && core.io.done && textureFaulted) { error := true.B }
+  when(busy && sawBusy && core.io.done && memoryFaulted) { error := true.B }
   // Integrated compute/DMA completions share the same sticky, AXI-visible
   // pending bit and W1C acknowledgement as graphics completions.
   when(io.externalCompletion) { irqPending := true.B }
@@ -700,9 +704,9 @@ class RenderHost(
   io.renderCompletion.valid := renderDonePending
   io.renderCompletion.bits.descriptorId := renderId
   io.renderCompletion.bits.status :=
-    Mux(textureFaulted, RenderStatus.memoryFault,
+    Mux(memoryFaulted, RenderStatus.memoryFault,
       Mux(invalidSampleMode, RenderStatus.invalidSampleMode, RenderStatus.success))
-  io.renderCompletion.bits.success := !textureFaulted && !invalidSampleMode
+  io.renderCompletion.bits.success := !memoryFaulted && !invalidSampleMode
   io.renderCompletion.bits.bytesProcessed := renderBytes
   when(io.renderCompletion.fire) { renderDonePending := false.B }
 

@@ -479,6 +479,7 @@ class KernelFragStage(
   private val qTail = qHead ^ qCount(0)
   private val execCarries = RegInit(false.B)
   private val execEntryIdx = Reg(UInt(1.W))
+  private val execFailed = RegInit(false.B)
   private val outputRetirePending = RegInit(false.B)
   private val outputRetireEntry = Reg(UInt(1.W))
 
@@ -821,6 +822,7 @@ class KernelFragStage(
     }
     is(sRun) {
       when(io.kernelCompletion.valid) {
+        execFailed := !io.kernelCompletion.bits.success
         index := 0.U
         // Reads start from the same bank base as the writes.
         wordBase := slotKernarg(execSlot)
@@ -853,7 +855,7 @@ class KernelFragStage(
           val ctrl = bridge.io.out.bits.data
           val abi1Exec = slotAbi1(execSlot)
           outValid(indexIdx) :=
-            FragmentShaderAbi.emits(ctrl, abi1Exec) && execCovered
+            FragmentShaderAbi.emits(ctrl, abi1Exec) && execCovered && !execFailed
           outOverride(indexIdx) := FragmentShaderAbi.overridesDepth(ctrl, abi1Exec)
           field := 0.U
           when(index === execCount - 1.U) {

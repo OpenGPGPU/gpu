@@ -23,8 +23,10 @@ A passing sim is not silicon; a completed tool run is not timing closure.
   consumes GEM framebuffers; it does not own execution lifetime.
 - Sv32 private VA windows and ASIDs. Command, framebuffer, texture and the
   programmable `vtex.sample` path translate with CU accesses. Global identity
-  mappings remain but are read/write, non-executable; compute code runs from a
-  private code window. This is not yet full VM isolation.
+  mappings remain but are read/write, non-executable; compute and fragment
+  code use private executable windows. Vertex instruction SATP is wired, but
+  host back-to-back vertex→fragment coverage is still deferred. Shader
+  kernarg/data accesses remain physical. This is not yet full VM isolation.
 - External display hardware owns scanout and signal generation.
 
 ## Capability status
@@ -39,8 +41,8 @@ Bits live in `GpuCapabilities.scala` and `driver/gpu_abi.h`
 | Unified reset (18) | `RenderHost` + router | functional |
 | Sample-mode admission (7, 17:16) | `RenderHost` + `Msaa` | functional |
 | Descriptor fetch-fault retention | `RenderHost` | functional |
-| Fragment / programmable shaders (0) | `KernelFragStage` | functional; physical FAIL |
-| Vertex core (2) | `KernelVertStage` | functional |
+| Fragment / programmable shaders (0) | `KernelFragStage` | functional; instr VA |
+| Vertex core (2) | `KernelVertStage` | functional; instr VA pending |
 | Clear / blit / strided (3–5) | DMA engines | functional; strided physical FAIL |
 | MSAA (7) | `Msaa` / `OutputMerger` | functional |
 | Persistent depth (19) | `OutputMerger` | functional |
@@ -61,7 +63,10 @@ readable/writable for compatibility but do not configure unified renders.
 Submission regressions that must stay green: reset with in-flight render and
 delayed writes; reject-while-drain; invalid sample-mode admission (1/2/4);
 descriptor-fetch fault retention; texture/page-fault reporting
-(`RenderHostSpec`, `GpuHostSystemAxiSpec`, `GpuSystemSpec`).
+(`RenderHostSpec`, `GpuHostSystemAxiSpec`, `ProgrammableTextureAxiSpec`,
+`GpuSystemSpec`). Programmable texture coverage runs `vtex.sample` with
+different texture VA/PA, invalid PTE and page-table/texel bus faults, recovery,
+and reset while an accepted texture read awaits data.
 
 Workload note (`scripts/benchmark_gpu.py`): flat draws are OM-bound
 (`om_stall` ≈ `raster_stall`, `om_conflict` = 0). Measured changes kept:
@@ -83,16 +88,20 @@ Numbers land in `generated/qualification/workloads/`.
    hit-path graphics translation (accept on response retire) are in after
    measured wins. Further flat gains likely need outstanding translated
    requests or a wider OM memory port (`om_conflict` remains 0).
-3. **Physical closure** — pipeline the strided-copy descriptor address cone
-   (~505 MHz today on both `gpu-system` and `strided-copy`; see
-   [../timing/README.md](../timing/README.md)). Derive real parent IO budgets;
-   1 GHz remains an objective.
+3. **Physical closure** — the strided-copy descriptor address cone and the
+   command-router dispatch cone are pipelined; the FP32 FMA lane now runs
+   four stages. The integrated top's binding path moved to the command-router
+   completion round-robin arbiter grant logic, so 1 GHz is not met yet. See
+   [../timing/README.md](../timing/README.md) for the per-run table (several
+   rows are dirty-tree measurements and need a clean-commit re-run). Derive
+   real parent IO budgets.
 4. **Software-driven growth** — grow the shader ISA from a small compiler
-   corpus. Compute kernel code runs from a private, executable code window and
-   the shared identity map is read/write but non-executable; the graphics
-   shader core still fetches physical code. The remaining isolation step is
-   enabling translation on that core and then removing or bounding the
-   identity mappings.
+   corpus. Compute and graphics fragment shader code use private executable
+   windows; the shared identity map is read/write but non-executable. Vertex
+   instruction translation is wired but host back-to-back vertex→fragment reuse
+   of the shared CU still hangs after vector-heavy vertex kernels, so that
+   coverage is deferred. Remaining isolation work is translating shader data
+   and removing or bounding the identity mappings.
 
 ## Known limits
 
@@ -104,9 +113,11 @@ Numbers land in `generated/qualification/workloads/`.
   suite.
 - No parent-level per-interface timing budgets.
 - Display/scanout is simulation-only.
-- Shared identity mappings remain (read/write, non-executable). The graphics
-  shader core is untranslated, so fragment/vertex code is not yet isolated; no
-  page-fault handling and not yet full VM isolation.
+- Shared identity mappings remain (read/write, non-executable), and shader
+  kernarg/data accesses remain physical. Fragment instruction faults fail the
+  render and allow a later draw to recover; vertex instruction translation is
+  wired but host vertex→fragment CU reuse still hangs after vector-heavy
+  vertex kernels. No resumable page faults or full VM isolation.
 - Shader ISA growth is validation-profile driven, not a real compiler corpus.
 
 ## Later / out of scope
@@ -126,6 +137,7 @@ sbt -batch 'set Test / parallelExecution := false' \
    opengpu.graphics.KernelFragStageSpec opengpu.graphics.RenderPipelineSpec \
    opengpu.core.memory.GraphicsAddressTranslatorSpec opengpu.system.GpuSystemSpec \
    opengpu.system.GpuHostAxiSpec opengpu.system.GpuHostSystemAxiSpec \
+   opengpu.system.ProgrammableTextureAxiSpec \
    opengpu.dma.StridedCopyEngineSpec'
 python3 scripts/test_driver.py
 python3 scripts/test_test_selection.py

@@ -152,6 +152,7 @@ class KernelVertStage(
   private val internalKernel = if (standaloneKernel) Some(Module(new KernelShaderStage(config))) else None
   private val kernelLaunchReady = WireDefault(io.kernelLaunch.ready)
   private val kernelCompletionValid = WireDefault(io.kernelCompletion.valid)
+  private val kernelCompletionSuccess = WireDefault(io.kernelCompletion.bits.success)
 
   io.kernelLaunch.valid := false.B
   io.kernelLaunch.kernelPc := 0.U
@@ -182,6 +183,8 @@ class KernelVertStage(
   io.memResp.ready := false.B
 
   internalKernel.foreach { kernel =>
+    kernel.io.instructionSatp := 0.U
+    kernel.io.instructionTlbFlush := 0.U.asTypeOf(kernel.io.instructionTlbFlush)
     kernel.io.launch.valid := io.kernelLaunch.valid
     kernel.io.launch.kernelPc := io.kernelLaunch.kernelPc
     kernel.io.launch.kernargAddress := io.kernelLaunch.kernargAddress
@@ -193,6 +196,7 @@ class KernelVertStage(
     kernel.io.launch.localZ := io.kernelLaunch.localZ
     kernelLaunchReady := kernel.io.launch.ready
     kernelCompletionValid := kernel.io.completion.valid
+    kernelCompletionSuccess := kernel.io.completion.bits.success
     kernel.io.completion.ready := true.B
     kernel.io.trap.ready := true.B
     kernel.io.simtBranch.valid := false.B
@@ -473,7 +477,7 @@ class KernelVertStage(
         vertIdx := 0.U
         field := 0.U
         wordPending := false.B
-        state := sReadback
+        state := Mux(kernelCompletionSuccess, sReadback, sIdle)
       }
     }
     is(sReadback) {

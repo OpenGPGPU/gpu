@@ -84,6 +84,9 @@ class RenderPipeline(
     val kernelL1InvalidateDone = Decoupled(new CacheLineInvalidate(gpuConfig))
     val kernelGlobalAtomicRequest = Decoupled(new SharedAtomicRequest(gpuConfig))
     val kernelGlobalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(gpuConfig)))
+    val instructionSatp = Input(UInt(32.W))
+    val instructionTlbFlush = Flipped(Valid(new opengpu.core.memory.VectorTlbFlush(gpuConfig)))
+    val shaderFault = Output(Bool())
     val colorBase = Input(UInt(32.W))
     val depthBase = Input(UInt(32.W))
     val stride = Input(UInt(32.W))
@@ -121,6 +124,7 @@ class RenderPipeline(
   })
 
   private val geo = Module(new GeometryStage(config))
+  io.shaderFault := false.B
   private val shader = Module(new RasterShader(config, quadMode = fragCore || vertCore))
   private val om = Module(new OutputMerger(config))
   private val textured =
@@ -393,6 +397,9 @@ class RenderPipeline(
   if (fragCore || vertCore) {
     val kernelFrag = Module(new KernelFragStage(gpuConfig, config))
     val kernelShader = Module(new KernelShaderStage(gpuConfig))
+    kernelShader.io.instructionSatp := io.instructionSatp
+    kernelShader.io.instructionTlbFlush := io.instructionTlbFlush
+    io.shaderFault := kernelShader.io.trap.fire
 
     // A vertex draw is fully transformed before it enters rasterization, so a
     // single SIMT CU can safely serve vertex and fragment launches in turn.
@@ -666,8 +673,12 @@ class RenderPipeline(
     // handed to the OM: the batch slots must be empty (drained) and every
     // admitted draw retired, so an in-flight batch or an unpresented retire
     // event is never mistaken for an idle pipeline at a draw boundary.
+    // Vertex draws also keep the pipeline busy until KernelVertStage returns
+    // to idle; otherwise a just-accepted vertex command looks drained before
+    // its shader has fetched a single instruction.
     io.done := !drawHoldValid && shader.io.done && kernelFrag.io.drained &&
-      expander.io.drained && om.io.drained && !ctxFifo.io.headValid
+      expander.io.drained && om.io.drained && !ctxFifo.io.headValid &&
+      kernelVert.map(_.io.done).getOrElse(true.B)
   } else {
     shader.io.draw.valid := drawHoldValid && !clipTriangleActive && clipper.io.done &&
       clipEmitIndex < clipper.io.outValid

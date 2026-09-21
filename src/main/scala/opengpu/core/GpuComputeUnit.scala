@@ -26,7 +26,8 @@ class GpuComputeUnit(
   instructionCacheWays: Int = 2,
   instructionCacheMissEntries: Int = 4,
   vectorCacheSets: Int = 64,
-  vectorCacheWays: Int = 2
+  vectorCacheWays: Int = 2,
+  finishOnTrap: Boolean = false
 ) extends Module {
   val io = IO(new Bundle {
     val kernel = Flipped(Decoupled(new KernelLaunch(config)))
@@ -187,6 +188,23 @@ class GpuComputeUnit(
   io.vector <> core.io.vector
   io.memory <> core.io.memory
   io.trap <> core.io.trap
+  if (finishOnTrap) {
+    // Graphics has no trap-resume service. Finish each faulting warp once,
+    // allow the other resident warps to drain, and fail the kernel result.
+    // A normal cease has priority because the finish interface is one-wide.
+    val failed = RegInit(false.B)
+    when(io.kernel.fire) { failed := false.B }
+    io.trap.valid := core.io.trap.valid && !system.io.finish.valid
+    core.io.trap.ready := io.trap.ready && !system.io.finish.valid
+    when(io.trap.fire) {
+      failed := true.B
+      core.io.finish.valid := true.B
+      core.io.finish.bits := io.trap.bits.warpId
+      controller.io.finish.valid := true.B
+      controller.io.finish.bits := io.trap.bits.warpId
+    }
+    io.completion.bits.success := controller.io.completion.bits.success && !failed
+  }
   core.io.simtBranch <> io.simtBranch
 
   io.committedWriteback := core.io.committedWriteback

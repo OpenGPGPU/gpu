@@ -20,10 +20,13 @@ buffers. All opcodes share one dependency/fence path and one-credit policy.
 Per-job VM remapping runs when the scheduler starts the job after its
 predecessor drains. Compute kernel code is remapped into a private code VA
 window at run time (`kernel_pc`), so compute instruction fetch translates
-under the context ASID instead of the shared identity map. The graphics
-shader core fetches instructions untranslated, so fragment/vertex shader
-code stays a physical address; its data still goes through the translated
-clients.
+under the context ASID instead of the shared identity map. Fragment and
+vertex snapshots occupy separate private code windows, and the shared graphics
+shader core uses the same instruction SATP and scoped TLB flushes. Shader
+kernarg staging and scalar/vector data accesses retain their physical ABI;
+texture and other graphics word clients translate independently. Shader traps
+retire the faulting warp, fail the kernel and report a render memory fault;
+failed batches do not emit pixels or vertex outputs. Faults are not resumable.
 
 DRM is allocated and registered from platform probe. KMS only configures
 display objects; it starts disabled and binds caller-owned GEM framebuffers.

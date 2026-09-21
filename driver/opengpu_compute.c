@@ -133,6 +133,8 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
         .cull_mode = GPU_CULL_NONE,
     };
     struct opengpu_buffer descriptor;
+    struct opengpu_vm vm;
+    bool vm_ready = false;
     struct dma_fence *fence = NULL;
     long timeout;
     int ret;
@@ -142,15 +144,36 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
     if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_RENDER))
         return -EOPNOTSUPP;
     opengpu_fill_test_command(gpu);
-    /* The probe self-test uses the same unified render command as a user draw.
-     * The graphics shader core fetches instructions untranslated, so its code
-     * stays a physical address (no VM); this matches a user render. */
+    /* The shared identity map is non-executable. Give the probe shader the
+     * same private executable code window used by scheduled render jobs. */
+    if (gpu->mmu.enabled && (gpu->hw.capabilities & GPU_CAP_FRAGMENT_CORE)) {
+        struct opengpu_kernarg_va_plan plan;
+        struct gpu_draw_record *record = gpu->compute.cmd.cpu;
+
+        ret = opengpu_mmu_vm_create(gpu, &vm);
+        if (ret)
+            return ret;
+        vm_ready = true;
+        ret = opengpu_code_va_plan(gpu->compute.shader.dma,
+                                   gpu->compute.shader.size, 1,
+                                   OPENGPU_MMU_PAGE_SIZE, &plan);
+        if (ret)
+            goto out_vm;
+        ret = opengpu_mmu_vm_map(gpu, &vm, (dma_addr_t)plan.va_page,
+                                 (dma_addr_t)plan.pa_page, (size_t)plan.span,
+                                 OPENGPU_MMU_POLICY_CACHED);
+        if (ret)
+            goto out_vm;
+        record->shader_pc += (u32)plan.va - lower_32_bits(gpu->compute.shader.dma);
+        dma_wmb();
+    }
     ret = opengpu_buffer_alloc(gpu, &descriptor, 64);
     if (ret)
-        return ret;
+        goto out_vm;
     ret = opengpu_hw_render_async(
         gpu, &job, descriptor.cpu, lower_32_bits(descriptor.dma),
-        (u32)descriptor.size, NULL, 0, false, 0, 0, 0, NULL, NULL, &fence);
+        (u32)descriptor.size, NULL, 0, false, 0, 0, 0, NULL,
+        vm_ready ? &vm : NULL, &fence);
     if (ret)
         goto out_descriptor;
     timeout = dma_fence_wait_timeout(
@@ -166,6 +189,11 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
     dma_fence_put(fence);
 out_descriptor:
     opengpu_buffer_free(gpu, &descriptor);
+out_vm:
+    if (vm_ready) {
+        opengpu_hw_activate_vm(gpu, NULL);
+        opengpu_mmu_vm_destroy(gpu, &vm);
+    }
     return ret;
 }
 
@@ -1348,9 +1376,44 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
         if (job->vertex_shader.cpu)
             snapshots[snapshot_count++] = &job->vertex_shader;
 
-        /* Shader code is not remapped through the VM: the graphics shader core
-         * fetches instructions untranslated, so the command records keep the
-         * snapshot's physical address.  Only the compute core translates. */
+        /* Bind snapshot code only after the preceding job has drained. The
+         * fragment and vertex stages share the instruction VM, while their
+         * kernarg addresses retain the physical staging ABI. */
+        if (vm && job->context) {
+            dma_addr_t code_va = 0, vertex_code_va = 0;
+            u32 shader_delta = 0, vertex_delta = 0;
+            u32 i;
+
+            if (job->shader.cpu) {
+                ret = opengpu_binding_map_code(job->gpu, job->context,
+                    job->shader.dma, job->shader.size, 1, &code_va);
+                if (ret)
+                    return ERR_PTR(ret);
+                shader_delta = (u32)code_va - (u32)job->shader.dma;
+            }
+            if (job->vertex_shader.cpu) {
+                ret = opengpu_binding_map_code(job->gpu, job->context,
+                    job->vertex_shader.dma, job->vertex_shader.size, 2,
+                    &vertex_code_va);
+                if (ret)
+                    return ERR_PTR(ret);
+                vertex_delta = (u32)vertex_code_va - (u32)job->vertex_shader.dma;
+            }
+            if (job->vertex_shader.cpu) {
+                struct gpu_vert_draw_record *records = job->commands.cpu;
+
+                for (i = 0; i < job->hw.cmd_count; i++) {
+                    records[i].vert_shader_pc += vertex_delta;
+                    records[i].frag_shader_pc += shader_delta;
+                }
+            } else if (job->shader.cpu) {
+                struct gpu_draw_record *records = job->commands.cpu;
+
+                for (i = 0; i < job->hw.cmd_count; i++)
+                    records[i].shader_pc += shader_delta;
+            }
+            dma_wmb();
+        }
 
         /* Reach the colour and depth planes through the context VM too, so the
          * output merger translates render-target traffic under this ASID.  The

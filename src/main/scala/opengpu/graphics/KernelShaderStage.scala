@@ -36,6 +36,8 @@ import opengpu.dispatch.KernelCompletion
   */
 class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   val io = IO(new Bundle {
+    val instructionSatp = Input(UInt(32.W))
+    val instructionTlbFlush = Flipped(Valid(new opengpu.core.memory.VectorTlbFlush(config)))
     val launch = new Bundle {
       val valid = Input(Bool())
       val ready = Output(Bool())
@@ -66,7 +68,7 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   })
 
   private val emit = Module(new KernelEmit(config))
-  private val cu = Module(new GpuComputeUnit(config))
+  private val cu = Module(new GpuComputeUnit(config, finishOnTrap = true))
 
   io.launch.ready := cu.io.kernel.ready
   cu.io.kernel.valid := io.launch.valid
@@ -98,14 +100,18 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   cu.io.vectorTexWriteback <> io.vectorTexWriteback
 
   cu.io.invalidateInstructionCache := false.B
-  cu.io.instructionSatp := 0.U
-  cu.io.instructionTlbFlush.valid := false.B
-  cu.io.instructionTlbFlush.bits := 0.U.asTypeOf(cu.io.instructionTlbFlush.bits)
+  cu.io.instructionSatp := io.instructionSatp
+  cu.io.instructionTlbFlush := io.instructionTlbFlush
+  // Staged shader inputs/outputs retain the physical kernarg ABI. Instruction
+  // translation is independent of the vector/scalar data address space.
   cu.io.vectorSatp := 0.U
   cu.io.vectorTlbFlush.valid := false.B
   cu.io.vectorTlbFlush.bits := 0.U.asTypeOf(cu.io.vectorTlbFlush.bits)
-  cu.io.fpu.ready := false.B
-  cu.io.vector.ready := false.B
-  cu.io.memory.ready := false.B
-  cu.io.unsupportedSystem.ready := false.B
+  // These are sink ports for ops the graphics CU does not implement. Hold them
+  // ready so a stray decode cannot wedge the pipeline; traps still report
+  // through io.trap.
+  cu.io.fpu.ready := true.B
+  cu.io.vector.ready := true.B
+  cu.io.memory.ready := true.B
+  cu.io.unsupportedSystem.ready := true.B
 }
