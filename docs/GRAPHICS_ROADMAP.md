@@ -77,6 +77,25 @@ word client backs up on downstream memory ready, not only on walks — further
 flat gains need outstanding translated requests or a wider OM memory port.
 Numbers land in `generated/qualification/workloads/`.
 
+## Qualification baseline
+
+Recorded from a clean checkout of `28eebd47634843842c3254ca70bcd842139cabbf`
+(instruction-translation commit; dirty-tree timing/command-processor work was
+not included).
+
+| Gate | Result |
+|---|---|
+| Boundary suites (roadmap Reproduce `testOnly` list) | 116/116 pass |
+| `scripts/test_driver.py` + `scripts/test_test_selection.py` | pass |
+| Workload sweep (`scripts/benchmark_gpu.py`, 10 cases) | pass; `manifest.json` commit matches above |
+| Guest DRM, default (`GPU_FRAG_CORE=0`) | pass; powers off (`OPENGPU USERSPACE DRM PASS`) |
+| Guest DRM, fragment-core (`GPU_FRAG_CORE=1`) | fail: QEMU exit 0 but userspace reports `strided blit result` after two `render scheduler timeout`s; probe/draw/DRM/fence passed first |
+
+Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0).
+`flat_16_1x` is 5271 cycles. Programmable `shader_16_1x` is staging-bound
+(`om_stall` = 0, `raster_stall` = 60469).
+
+
 ## Next work
 
 1. **Keep the submission contract covered** — every submission-path change
@@ -105,10 +124,12 @@ Numbers land in `generated/qualification/workloads/`.
 
 ## Known limits
 
-- Guest ARTI/QEMU: both the default and fragment-core end-to-end DRM tests
-  pass and power off cleanly. The programmable `vtex.sample` texture path
-  routes through the translated texture client (a VM virtual address), while
-  the kernarg staging port stays physical.
+- Guest ARTI/QEMU: the default end-to-end DRM test passes and powers off
+  cleanly at `28eebd4`. The fragment-core guest reaches probe, draw, DRM and
+  fence pass, then fails the userspace strided-blit step after render
+  scheduler timeouts (see Qualification baseline). The programmable
+  `vtex.sample` texture path routes through the translated texture client (a
+  VM virtual address), while the kernarg staging port stays physical.
 - Qualification gate is boundary suites + workload sweep, not the full Scala
   suite.
 - No parent-level per-interface timing budgets.
