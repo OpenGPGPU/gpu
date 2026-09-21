@@ -90,17 +90,43 @@ Recorded from a clean checkout of `28eebd47634843842c3254ca70bcd842139cabbf`
 not included). Follow-up on the dirty tree that closes shared-CU reuse and
 I-cache shootdown: fragment-core guest now also passes (see Known limits).
 
+Re-measured on `1194224f492d53b838a48c9d09841f6465cecf38` (submission-contract
+coverage; includes kernarg/VB `VECTOR_SATP` translation and shared-CU reuse
+fixes after `28eebd4`):
+
+| Workload | `28eebd4` cycles | `1194224` cycles | Δ |
+|---|---:|---:|---:|
+| `flat_16_1x` | 5271 | 5271 | 0 |
+| `flat_32_1x` | 19266 | 19266 | 0 |
+| `shader_16_1x` | 65237 | 60455 | −7.3% |
+| `shader_16_4x` | 75749 | 70772 | −6.6% |
+| `texture_16_1x` | 5743 | 5743 | 0 |
+| `overdraw_16_1x` | 7973 | 7973 | 0 |
+
+Flat still shows `om_conflict` = 0, `om_stall` ≈ `raster_stall`, and
+`framebuffer_translation_stall_cycles` ≈ 60% of `flat_16_1x` despite only two
+framebuffer TLB misses — the translator’s single respond slot backs up behind
+memory ready. Shader improvement tracks the staging/VA work landed after the
+instruction-translation baseline. Next flat lever remains outstanding
+translated requests (or a wider OM memory port). Next lever tried on this tree:
+a `maxOutstanding`-deep hit queue in `GraphicsAddressTranslator` collapses
+`framebuffer_translation_stall` (3160 → ~17 on `flat_16_1x`) but a non-flow
+queue adds a cycle of latency that only wins ~2% on `flat_16_1x` and regresses
+larger flats; a flow queue combos through the graphics request arbiter. Keep
+measuring before landing either outstanding translations (registered skid that
+does not combo with the arbiter) or a wider OM port.
+
 | Gate | Result |
 |---|---|
-| Boundary suites (roadmap Reproduce `testOnly` list) | 116/116 pass |
+| Boundary suites (roadmap Reproduce `testOnly` list + `GpuCommandMmioSpec`) | 131/131 pass on `1194224` |
 | `scripts/test_driver.py` + `scripts/test_test_selection.py` | pass |
-| Workload sweep (`scripts/benchmark_gpu.py`, 10 cases) | pass; `manifest.json` commit matches above |
+| Workload sweep (`scripts/benchmark_gpu.py`, 10 cases) | pass; `manifest.json` commit `1194224` |
 | Guest DRM, default (`GPU_FRAG_CORE=0`) | pass; powers off (`OPENGPU USERSPACE DRM PASS`) |
 | Guest DRM, fragment-core (`GPU_FRAG_CORE=1`) | pass on the follow-up tree (shared-CU L1 probe progress + I-cache invalidate on `TLB_FLUSH` + 5× frag-core draw watchdog); powers off (`OPENGPU USERSPACE DRM PASS`) |
 
 Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0).
 `flat_16_1x` is 5271 cycles. Programmable `shader_16_1x` is staging-bound
-(`om_stall` = 0, `raster_stall` = 60469).
+(`om_stall` = 0, `raster_stall` = 55985, `staging_read_bytes` = 49152).
 
 
 ## Next work
@@ -112,8 +138,9 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
 2. **Measure before optimizing** — compare with `scripts/benchmark_gpu.py`
    under the same source hash, scene and memory model. OM depth 8 and
    hit-path graphics translation (accept on response retire) are in after
-   measured wins. Further flat gains likely need outstanding translated
-   requests or a wider OM memory port (`om_conflict` remains 0).
+   measured wins. Flat counters on `1194224` still justify outstanding
+   translated requests or a wider OM memory port (`om_conflict` remains 0;
+   `framebuffer_translation_stall` stays high with only two TLB misses).
 3. **Physical closure** — the strided-copy descriptor address cone and the
    command-router dispatch cone are pipelined; the FP32 FMA lane now runs
    four stages. The integrated top's binding path moved to the command-router
