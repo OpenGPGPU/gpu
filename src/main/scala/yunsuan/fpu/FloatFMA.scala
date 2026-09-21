@@ -325,7 +325,18 @@ class FloatFMA() extends Module{
   // Narrow bypasses: low N bits of a+b depend only on the low N bits of a
   // and b, so these are bit-exact slices of the shared wide adds above while
   // settling through a 49/27/14-bit carry chain instead of the f64 width.
-  val adder_lowbit_f32n = csaSumReg(48,0) + csaCarReg(48,0)
+  val adder_lowbit_f32n = {
+    // Carry-select: the 49-bit completion add is the critical path, so split
+    // it into two halves and pick the high half by the low half's carry.
+    // Bit-exact with csaSumReg(48,0) + csaCarReg(48,0) (Chisel '+' keeps the
+    // wider operand width, so the 49-bit sum drops the final carry).
+    val split = 25
+    val lowSum: UInt = csaSumReg(split - 1, 0) +& csaCarReg(split - 1, 0)
+    val highSum0: UInt = csaSumReg(48, split) +& csaCarReg(48, split)
+    val highSum1: UInt = highSum0 +& 1.U
+    val highSum: UInt = Mux(lowSum(split), highSum1, highSum0)
+    Cat(highSum(23, 0), lowSum(split - 1, 0))
+  }
   val adder_lowbit_f32 = adder_lowbit_f32n
   val adder_lowbit_f16 = adder_lowbit_f32n(22,0)
 
