@@ -58,34 +58,45 @@ class GpuCommandProcessor(
   io.command.ready := commands.io.enq.ready && !incomingDuplicate
   io.duplicateCommandId := io.command.valid && incomingDuplicate
 
-  val head = commands.io.deq.bits
-  val pcAligned = head.launch.kernelPc(1, 0) === 0.U
-  val kernargAligned = head.launch.kernargAddress(1, 0) === 0.U
-  val gridValid = head.launch.gridSize.map(_.orR).reduce(_ && _)
-  val localValid = head.launch.localSize.map(_.orR).reduce(_ && _)
-  val localItems = head.launch.localSize(0) *
-    head.launch.localSize(1) * head.launch.localSize(2)
-  val residentCapacity = (config.lanes * config.warps).U
-  val localFits = localItems <= residentCapacity
-  val descriptorValid = pcAligned && kernargAligned &&
-    gridValid && localValid && localFits
-  val dependencySourceValid = head.dmaSource < DmaEventSource.count.U
-  val dependencySucceeded = dependencySourceValid &&
-    dmaSucceeded(head.dmaSource)(head.dmaDescriptorId)
-  val dependencyFailed = !dependencySourceValid ||
-    dmaFailed(head.dmaSource)(head.dmaDescriptorId)
-  val dependencyKnown = !head.waitForDma ||
-    dependencySucceeded || dependencyFailed
-  val invalidStatus = Mux(!pcAligned,
+  // Split the queue read from the deep descriptor/dependency decode: pop the
+  // command into hold0, run the checks from hold0, and dispatch from hold1.
+  // This keeps the dequeue-pointer cone off the multiply/DMA-lookup logic.
+  val hold0Cmd = Reg(new KernelCommand(config, commandIdWidth))
+  val hold0Valid = RegInit(false.B)
+  val h0 = hold0Cmd
+  val h0PcAligned = h0.launch.kernelPc(1, 0) === 0.U
+  val h0KernargAligned = h0.launch.kernargAddress(1, 0) === 0.U
+  val h0GridValid = h0.launch.gridSize.map(_.orR).reduce(_ && _)
+  val h0LocalValid = h0.launch.localSize.map(_.orR).reduce(_ && _)
+  val h0LocalItems = h0.launch.localSize(0) * h0.launch.localSize(1) *
+    h0.launch.localSize(2)
+  val h0ResidentCapacity = (config.lanes * config.warps).U
+  val h0LocalFits = h0LocalItems <= h0ResidentCapacity
+  val h0DescriptorValid = h0PcAligned && h0KernargAligned && h0GridValid &&
+    h0LocalValid && h0LocalFits
+  val h0DependencySourceValid = h0.dmaSource < DmaEventSource.count.U
+  val h0DependencySucceeded = h0DependencySourceValid &&
+    dmaSucceeded(h0.dmaSource)(h0.dmaDescriptorId)
+  val h0DependencyFailed = !h0DependencySourceValid ||
+    dmaFailed(h0.dmaSource)(h0.dmaDescriptorId)
+  val h0DependencyKnown = !h0.waitForDma || h0DependencySucceeded ||
+    h0DependencyFailed
+  val h0InvalidStatus = Mux(!h0PcAligned,
     KernelCommandStatus.invalidProgramCounter,
-    Mux(!gridValid, KernelCommandStatus.invalidGrid,
-      Mux(!localValid || !localFits, KernelCommandStatus.invalidLocalSize,
+    Mux(!h0GridValid, KernelCommandStatus.invalidGrid,
+      Mux(!h0LocalValid || !h0LocalFits, KernelCommandStatus.invalidLocalSize,
         KernelCommandStatus.misalignedKernarg)))
 
-  io.dispatch.valid := commands.io.deq.valid && descriptorValid &&
-    dependencyKnown && !dependencyFailed
-  io.dispatch.bits.commandId := head.commandId
-  io.dispatch.bits.launch := head.launch
+  val hold1Valid = RegInit(false.B)
+  val hold1Failed = RegInit(false.B)
+  val hold1DescriptorValid = RegInit(false.B)
+  val hold1Id = Reg(UInt(commandIdWidth.W))
+  val hold1Launch = Reg(new KernelLaunch(config))
+  val hold1Status = Reg(UInt(KernelCommandStatus.width.W))
+
+  io.dispatch.valid := hold1Valid && hold1DescriptorValid && !hold1Failed
+  io.dispatch.bits.commandId := hold1Id
+  io.dispatch.bits.launch := hold1Launch
 
   val completionEvents = Module(new RRArbiter(
     new KernelCommandResult(commandIdWidth), 2))
@@ -99,21 +110,35 @@ class GpuCommandProcessor(
     KernelCommandStatus.executionFailed)
   io.dispatchCompletion.ready := completionEvents.io.in(0).ready
 
-  completionEvents.io.in(1).valid := commands.io.deq.valid &&
-    dependencyKnown && (!descriptorValid || dependencyFailed)
-  completionEvents.io.in(1).bits.commandId := head.commandId
+  completionEvents.io.in(1).valid := hold1Valid &&
+    (!hold1DescriptorValid || hold1Failed)
+  completionEvents.io.in(1).bits.commandId := hold1Id
   completionEvents.io.in(1).bits.success := false.B
-  completionEvents.io.in(1).bits.status := Mux(dependencyFailed,
-    KernelCommandStatus.dmaDependencyFailed, invalidStatus)
+  completionEvents.io.in(1).bits.status := Mux(hold1Failed,
+    KernelCommandStatus.dmaDependencyFailed, hold1Status)
 
-  commands.io.deq.ready := dependencyKnown && Mux(
-    descriptorValid && !dependencyFailed,
-    io.dispatch.ready, completionEvents.io.in(1).ready)
+  val dispatchFire = io.dispatch.fire
+  val errorFire = completionEvents.io.in(1).fire
+  val consumeFire = dispatchFire || errorFire
+  val shiftFire = hold0Valid && h0DependencyKnown &&
+    (!hold1Valid || consumeFire)
+  commands.io.deq.ready := !hold0Valid || shiftFire
+  hold0Valid := (hold0Valid && !shiftFire) || commands.io.deq.fire
+  when(commands.io.deq.fire) { hold0Cmd := commands.io.deq.bits }
+  when(shiftFire) {
+    hold1Valid := true.B
+    hold1Failed := h0DependencyFailed
+    hold1DescriptorValid := h0DescriptorValid
+    hold1Id := h0.commandId
+    hold1Launch := h0.launch
+    hold1Status := h0InvalidStatus
+  }.elsewhen(consumeFire) {
+    hold1Valid := false.B
+  }
   completions.io.enq <> completionEvents.io.out
   io.completion <> completions.io.deq
 
   val inFlight = RegInit(0.U(log2Ceil(idCount + 1).W))
-  val dispatchFire = io.dispatch.fire
   val dispatchCompletionFire = io.dispatchCompletion.fire
   when(dispatchFire =/= dispatchCompletionFire) {
     inFlight := Mux(dispatchFire, inFlight + 1.U, inFlight - 1.U)
@@ -134,12 +159,12 @@ class GpuCommandProcessor(
     reservedIds := (reservedIds | reserveMask) & ~releaseMask
   }
 
-  val dependencyConsumed = commands.io.deq.fire && head.waitForDma
+  val dependencyConsumed = shiftFire && h0.waitForDma
   for (source <- 0 until DmaEventSource.count) {
     val event = io.dmaCompletion(source)
-    val sourceMatches = head.dmaSource === source.U
+    val sourceMatches = h0.dmaSource === source.U
     val clearMask = Mux(dependencyConsumed && sourceMatches,
-      UIntToOH(head.dmaDescriptorId, idCount), 0.U)
+      UIntToOH(h0.dmaDescriptorId, idCount), 0.U)
     val setSuccess = Mux(event.valid && event.bits.success,
       UIntToOH(event.bits.descriptorId, idCount), 0.U)
     val setFailure = Mux(event.valid && !event.bits.success,

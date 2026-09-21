@@ -34,16 +34,20 @@ clean commit before treating them as the baseline.
 | `strided-copy-pipe9` _(dirty)_ | post-route | 976.34 MHz | -24.24 ps | descriptor cone pipelined; `vclk` output -263.79 ps keeps verdict FAIL |
 | `gpu-system-routerpipe` _(dirty)_ | synthesis | 622.85 MHz | -605.53 ps | descriptor + router dispatch pipelined |
 | `fma-lane` _(dirty)_ | synthesis | 934.68 MHz | -69.89 ps | FMA lane, four stages, carry-select completion add |
-| `gpu-system-fma` _(dirty)_ | synthesis | 634.23 MHz | -576.72 ps | limiter now the fill-engine completion path |
+| `gpu-system-fma` _(dirty)_ | synthesis | 634.23 MHz | -576.72 ps | limiter the fill-engine completion path |
+| `gpu-system-dmabytes` _(dirty)_ | synthesis | 672.47 MHz | -487.05 ps | + registered DMA byte accumulator |
+| `gpu-system-cmdpipe` _(dirty)_ | synthesis | 694.39 MHz | -440.11 ps | + pipelined command-processor dispatch; limiter now L2 fill write data |
 
 `gpu-system` is the bounded integrated top (`GpuHostSystemAxi`).
 `strided-copy` routes cleanly (DRC/antenna 0, hold clean); its failing path
 is flop-to-flop descriptor address arithmetic, not routing.
 
-The descriptor address cone and the command-router dispatch cone are
-pipelined, and the FP32 FMA lane runs four stages with a carry-select
-completion adder (standalone 935 MHz). At the integrated top the binding
-path has moved to the fill-engine completion logic, so 1 GHz is not met.
+The descriptor, router-dispatch, command-processor dispatch and FP32 FMA
+cones are pipelined, and the DMA byte accumulator no longer sits behind the
+completion arbiter. At the integrated top the binding path has moved to the
+L2 fill write-data path, so 1 GHz is not met. `GpuCommandProcessor.queued`
+now reports queue occupancy only (commands held in the dispatch pipeline are
+not counted).
 
 The 25% IO budget is a placeholder until the enclosing SoC supplies real
 parent-interface budgets. Until then, internal `core_clock` is the only

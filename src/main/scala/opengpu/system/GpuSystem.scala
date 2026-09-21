@@ -415,6 +415,19 @@ class GpuSystem(
   private val lowerReadCount = RegInit(0.U(64.W))
   private val lowerWriteCount = RegInit(0.U(64.W))
   private val dmaByteCount = RegInit(0.U(64.W))
+  // Register each engine's completion bytes before accumulating so the 64-bit
+  // add chain does not sit behind the router's completion-arbiter ready path.
+  private val copyBytesFired = RegNext(copyEngine.io.completion.fire, false.B)
+  private val copyBytesValue = RegEnable(
+    copyEngine.io.completion.bits.bytesCopied, copyEngine.io.completion.fire)
+  private val fillBytesFired = RegNext(fillEngine.io.completion.fire, false.B)
+  private val fillBytesValue = RegEnable(
+    fillEngine.io.completion.bits.bytesFilled, fillEngine.io.completion.fire)
+  private val stridedBytesFired =
+    RegNext(stridedCopyEngine.io.completion.fire, false.B)
+  private val stridedBytesValue = RegEnable(
+    stridedCopyEngine.io.completion.bits.bytesCopied,
+    stridedCopyEngine.io.completion.fire)
   when(io.clearPerformanceCounters) {
     cycleCount := 0.U
     activeCuCycleCount := 0.U
@@ -431,12 +444,9 @@ class GpuSystem(
       lowerReadCount := lowerReadCount + 1.U
     }
     dmaByteCount := dmaByteCount +
-      Mux(copyEngine.io.completion.fire,
-        copyEngine.io.completion.bits.bytesCopied, 0.U) +
-      Mux(fillEngine.io.completion.fire,
-        fillEngine.io.completion.bits.bytesFilled, 0.U) +
-      Mux(stridedCopyEngine.io.completion.fire,
-        stridedCopyEngine.io.completion.bits.bytesCopied, 0.U)
+      Mux(copyBytesFired, copyBytesValue, 0.U) +
+      Mux(fillBytesFired, fillBytesValue, 0.U) +
+      Mux(stridedBytesFired, stridedBytesValue, 0.U)
   }
   io.performance.cycles := cycleCount
   io.performance.activeCuCycles := activeCuCycleCount
