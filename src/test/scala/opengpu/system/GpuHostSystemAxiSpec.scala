@@ -557,6 +557,91 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
     }
   }
 
+  it should "keep the MMIO completion slot stable while a follow-up render paints" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      val words = mutable.Map.empty[BigInt, BigInt]
+      def store(base: Int, data: Seq[Long]): Unit =
+        data.zipWithIndex.foreach { case (value, i) =>
+          words(BigInt(base + i * 4)) = BigInt(value & 0xffffffffL)
+        }
+      def readLine(address: BigInt): BigInt = {
+        val base = address & ~BigInt(63)
+        (0 until 16).foldLeft(BigInt(0)) { (line, i) =>
+          line | (words.getOrElse(base + i * 4, BigInt(0)) << (32 * i))
+        }
+      }
+      def writeLine(address: BigInt, data: BigInt, mask: BigInt): Unit = {
+        for (i <- 0 until 16 if ((mask >> (i * 4)) & 15) == 15)
+          words(address + i * 4) = (data >> (32 * i)) & 0xffffffffL
+      }
+      def submitRender(id: Int, descriptor: Int): Unit = {
+        axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, id)
+        axiWrite(dut, GpuCommandMmioRegs.OPCODE, GpuCommandOpcode.render.litValue.toInt)
+        axiWrite(dut, GpuCommandMmioRegs.SOURCE, descriptor)
+        axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+        axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      }
+      val vertices = Seq(-65536L, -65536L, 0L, 65536L,
+        65536L, -65536L, 0L, 65536L, -65536L, 65536L, 0L, 65536L)
+      store(0x5000, vertices ++ Seq.fill(3)(Seq(255L, 0L, 0L)).flatten ++
+        Seq.fill(3)(16L) ++ Seq.fill(16)(0L))
+      // First job: invalid sample mode fills the completion slot quickly.
+      store(0x3000, Seq(0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 3L) ++ Seq.fill(6)(0L))
+      // Follow-up: a real triangle may run, but must not replace the slot.
+      store(0x4000, Seq(1L << 16, 0x5000L, 0x8000L, 0x9000L, 64L, 0L) ++
+        Seq.fill(10)(0L))
+      store(0x8000, Seq.fill(64)(0x12345678L))
+
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+      submitRender(0x61, 0x3000)
+      serviceMemoryMaster(dut, readLine)(writeLine) {
+        dut.io.m_irq.peek().litToBoolean
+      }
+      assert((axiRead(dut, GpuCommandMmioRegs.STATUS) & 2) != 0)
+      assert((axiRead(dut, GpuCommandMmioRegs.COMPLETION) & 0xff) == 0x61)
+      assert(((axiRead(dut, GpuCommandMmioRegs.COMPLETION) >> 11) & 0xf) == 2)
+
+      // Do not axiRead inside until — that steps the control clock mid-burst.
+      // Wait through paint plus a drain so the follow-up reaches completion
+      // backpressure, not merely its first framebuffer write.
+      var painted = false
+      var drain = 0
+      axiWrite(dut, RenderHostRegs.IRQ, 3)
+      submitRender(0x62, 0x4000)
+      serviceMemoryMaster(dut, readLine, writeAckDelay = 4, maxCycles = 80000)(
+        (address, data, mask) => {
+          writeLine(address, data, mask)
+          if (words.getOrElse(BigInt(0x8000 + 5 * 64 + 5 * 4), BigInt(0)) == 0xff0000ffL)
+            painted = true
+        }
+      ) {
+        if (painted) drain += 1
+        painted && drain > 2048
+      }
+      assert(painted, "follow-up render must reach the framebuffer")
+      assert((axiRead(dut, GpuCommandMmioRegs.STATUS) & 2) != 0,
+        "completion slot must stay occupied while the follow-up is held")
+      assert((axiRead(dut, GpuCommandMmioRegs.COMPLETION) & 0xff) == 0x61,
+        "follow-up must not overwrite the visible completion")
+      assert(((axiRead(dut, GpuCommandMmioRegs.COMPLETION) >> 11) & 0xf) == 2)
+
+      axiWrite(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
+      var wait = 0
+      while ((axiRead(dut, GpuCommandMmioRegs.STATUS) & 2) == 0 && wait < 64) {
+        dut.io.s_axi_aclk.step()
+        wait += 1
+      }
+      assert((axiRead(dut, GpuCommandMmioRegs.STATUS) & 2) != 0,
+        "POP must make the held follow-up completion visible")
+      val second = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+      assert((second & 0xff) == 0x62, "POP must admit the held follow-up completion")
+      assert(((second >> 15) & 1) == 1)
+    }
+  }
+
   it should "run mixed sample modes in sequence through the AXI unified path" in {
     val gfx = GraphicsConfig(screenWidth = 4, screenHeight = 4)
     val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)

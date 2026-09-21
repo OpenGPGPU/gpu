@@ -183,6 +183,56 @@ class GpuCommandMmioSpec extends AnyFlatSpec {
     }
   }
 
+  it should "retain the visible completion while a second result is backpressured" in {
+    simulate(new GpuCommandMmio(
+      GpuConfig(lanes = 4, warps = 2), queueDepth = 2)) { dut =>
+      dut.io.reg.req.valid.poke(false.B)
+      dut.io.reg.resp.ready.poke(true.B)
+      dut.io.command.ready.poke(false.B)
+      dut.io.completion.valid.poke(false.B)
+      dut.io.completion.bits.poke(0.U.asTypeOf(dut.io.completion.bits))
+      dut.io.resetDone.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+
+      def offer(id: Int, status: Int, success: Boolean): Unit = {
+        dut.io.completion.bits.commandId.poke(id.U)
+        dut.io.completion.bits.opcode.poke(GpuCommandOpcode.render)
+        dut.io.completion.bits.status.poke(status.U)
+        dut.io.completion.bits.success.poke(success.B)
+        dut.io.completion.bits.bytesProcessed.poke(64.U)
+        dut.io.completion.valid.poke(true.B)
+      }
+
+      // First completion occupies the slot.
+      offer(0x21, status = 2, success = false)
+      dut.io.completion.ready.expect(true.B)
+      dut.clock.step()
+      assert((read(dut, GpuCommandMmioRegs.STATUS) & 0x2) != 0)
+      val first = read(dut, GpuCommandMmioRegs.COMPLETION)
+      assert((first & 0xff) == 0x21)
+      assert(((first >> 11) & 0xf) == 2)
+      assert(((first >> 15) & 1) == 0)
+
+      // A second result must stall; the visible payload stays the first job.
+      offer(0x31, status = 0, success = true)
+      dut.io.completion.ready.expect(false.B)
+      dut.clock.step(4)
+      dut.io.completion.ready.expect(false.B)
+      dut.io.completion.valid.expect(true.B)
+      assert((read(dut, GpuCommandMmioRegs.COMPLETION) & 0xff) == 0x21)
+      assert(((read(dut, GpuCommandMmioRegs.COMPLETION) >> 11) & 0xf) == 2)
+
+      // POP retires the first result and admits the held second on the same
+      // cycle the register write pulse is observed.
+      write(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
+      dut.io.completion.valid.poke(false.B)
+      assert((read(dut, GpuCommandMmioRegs.STATUS) & 0x2) != 0)
+      val second = read(dut, GpuCommandMmioRegs.COMPLETION)
+      assert((second & 0xff) == 0x31)
+      assert(((second >> 15) & 1) == 1)
+    }
+  }
+
   it should "drain staged commands, reject submissions and drop completions during reset" in {
     simulate(new GpuCommandMmio(
       GpuConfig(lanes = 4, warps = 2), queueDepth = 2)) { dut =>

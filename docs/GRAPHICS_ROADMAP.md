@@ -64,12 +64,13 @@ readable/writable for compatibility but do not configure unified renders.
 Submission regressions that must stay green: reset with in-flight render and
 delayed writes; reject-while-drain; invalid sample-mode admission (1/2/4);
 descriptor-fetch fault retention; texture/page-fault reporting; mixed sample
-modes in sequence; and STATUS.ERROR W1C leaving the owning completion intact
-(`RenderHostSpec`, `GpuHostSystemAxiSpec`, `ProgrammableTextureAxiSpec`,
-`GpuSystemSpec`). Invalid sample words, mixed 1x/2x/4x draws, descriptor bus
-faults and ERROR/completion retention are covered on the integrated AXI path;
-completion-slot backpressure until the consumer is ready remains covered at
-the render-host port. Programmable texture coverage runs `vtex.sample` with
+modes in sequence; STATUS.ERROR W1C leaving the owning completion intact; and
+completion-slot backpressure until POP (`RenderHostSpec`, `GpuCommandMmioSpec`,
+`GpuHostSystemAxiSpec`, `ProgrammableTextureAxiSpec`, `GpuSystemSpec`). Invalid
+sample words, mixed 1x/2x/4x draws, descriptor bus faults, ERROR/completion
+retention and a follow-up render held behind an unpopped completion are covered
+on the integrated AXI path; render-host port backpressure remains covered in
+`RenderHostSpec`. Programmable texture coverage runs `vtex.sample` with
 different texture VA/PA, invalid PTE and page-table/texel bus faults, recovery,
 and reset while an accepted texture read awaits data.
 
