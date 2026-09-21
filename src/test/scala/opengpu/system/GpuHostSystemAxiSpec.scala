@@ -470,4 +470,221 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
     }
   }
 
+  it should "reject invalid descriptor sample words through AXI, retain ERROR/completion, and recover" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      val words = mutable.Map.empty[BigInt, BigInt]
+      def store(base: Int, data: Seq[Long]): Unit =
+        data.zipWithIndex.foreach { case (value, i) =>
+          words(BigInt(base + i * 4)) = BigInt(value & 0xffffffffL)
+        }
+      def readLine(address: BigInt): BigInt = {
+        val base = address & ~BigInt(63)
+        (0 until 16).foldLeft(BigInt(0)) { (line, i) =>
+          line | (words.getOrElse(base + i * 4, BigInt(0)) << (32 * i))
+        }
+      }
+      def writeLine(address: BigInt, data: BigInt, mask: BigInt): Unit = {
+        for (i <- 0 until 16 if ((mask >> (i * 4)) & 15) == 15)
+          words(address + i * 4) = (data >> (32 * i)) & 0xffffffffL
+      }
+      def submitRender(id: Int, descriptor: Int): Unit = {
+        axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, id)
+        axiWrite(dut, GpuCommandMmioRegs.OPCODE, GpuCommandOpcode.render.litValue.toInt)
+        axiWrite(dut, GpuCommandMmioRegs.SOURCE, descriptor)
+        axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+        axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      }
+      def expectCompletion(id: Int, status: Int, success: Boolean): Unit = {
+        assert((axiRead(dut, GpuCommandMmioRegs.STATUS) & 2) != 0,
+          "unified completion must be visible")
+        val completion = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+        assert((completion & 0xff) == id)
+        assert(((completion >> 8) & 7) == GpuCommandOpcode.render.litValue)
+        assert(((completion >> 11) & 0xf) == status)
+        assert(((completion >> 15) & 1) == (if (success) 1 else 0))
+      }
+
+      // Reserved bits and mode 3 must complete with invalid-sample status
+      // without launching the renderer; ERROR W1C must leave the completion
+      // payload intact; a later draw recovers after POP.
+      val invalidModes = Seq(0x100L, 3L, 0x80000000L)
+      val recoveryDescriptor = 0x4000
+      val recoveryCmd = 0x5000
+      val recoveryColor = 0x8000
+      val vertices = Seq(-65536L, -65536L, 0L, 65536L,
+        65536L, -65536L, 0L, 65536L, -65536L, 65536L, 0L, 65536L)
+      store(recoveryCmd, vertices ++ Seq.fill(3)(Seq(255L, 0L, 0L)).flatten ++
+        Seq.fill(3)(16L) ++ Seq.fill(16)(0L))
+      store(recoveryDescriptor, Seq(1L << 16, recoveryCmd.toLong, recoveryColor.toLong,
+        0x9000L, 64L, 0L) ++ Seq.fill(10)(0L))
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+      for ((mode, idx) <- invalidModes.zipWithIndex) {
+        val descriptor = 0x3000 + idx * 0x40
+        store(descriptor, Seq(0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, mode) ++
+          Seq.fill(6)(0L))
+        submitRender(0x20 + idx, descriptor)
+        serviceMemoryMaster(dut, readLine)(writeLine) {
+          dut.io.m_irq.peek().litToBoolean
+        }
+        assert((axiRead(dut, RenderHostRegs.STATUS) & 7) == 6,
+          "invalid sample mode must complete DONE|ERROR without BUSY")
+        expectCompletion(0x20 + idx, status = 2, success = false)
+
+        // Clearing STATUS.ERROR must not rewrite the owning completion.
+        axiWrite(dut, RenderHostRegs.STATUS, 0x4)
+        assert((axiRead(dut, RenderHostRegs.STATUS) & 4) == 0)
+        expectCompletion(0x20 + idx, status = 2, success = false)
+
+        // Hold the completion across a few idle cycles, then POP and recover.
+        for (_ <- 0 until 8) dut.io.s_axi_aclk.step()
+        expectCompletion(0x20 + idx, status = 2, success = false)
+        axiWrite(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
+        axiWrite(dut, RenderHostRegs.IRQ, 3)
+
+        store(recoveryColor, Seq.fill(64)(0x12345678L))
+        submitRender(0x30 + idx, recoveryDescriptor)
+        serviceMemoryMaster(dut, readLine, writeAckDelay = 4, maxCycles = 80000)(writeLine) {
+          dut.io.m_irq.peek().litToBoolean
+        }
+        expectCompletion(0x30 + idx, status = 0, success = true)
+        assert(words.getOrElse(BigInt(recoveryColor + 5 * 64 + 5 * 4), BigInt(0)) == 0xff0000ffL)
+        axiWrite(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
+        axiWrite(dut, RenderHostRegs.IRQ, 3)
+      }
+    }
+  }
+
+  it should "run mixed sample modes in sequence through the AXI unified path" in {
+    val gfx = GraphicsConfig(screenWidth = 4, screenHeight = 4)
+    val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      val words = mutable.Map.empty[BigInt, BigInt]
+      def store(base: Int, data: Seq[Long]): Unit =
+        data.zipWithIndex.foreach { case (value, i) =>
+          words(BigInt(base + i * 4)) = BigInt(value & 0xffffffffL)
+        }
+      def readLine(address: BigInt): BigInt = {
+        val base = address & ~BigInt(63)
+        (0 until 16).foldLeft(BigInt(0)) { (line, i) =>
+          line | (words.getOrElse(base + i * 4, BigInt(0)) << (32 * i))
+        }
+      }
+      def writeLine(address: BigInt, data: BigInt, mask: BigInt): Unit = {
+        for (i <- 0 until 16 if ((mask >> (i * 4)) & 15) == 15)
+          words(address + i * 4) = (data >> (32 * i)) & 0xffffffffL
+      }
+      val vertices = Seq(-65536L, -65536L, 0L, 65536L,
+        65536L, -65536L, 0L, 65536L, -65536L, 65536L, 0L, 65536L)
+      // Distinct framebuffers prove each mode's draw really launched; one colour
+      // keeps the packing contract identical across 1x/2x/4x.
+      val draws = Seq(
+        (0, 0x2000, 0x8000, 0x9000),
+        (2, 0x2100, 0xa000, 0xb000),
+        (1, 0x2200, 0xc000, 0xd000))
+      val expected = 0xff0000ffL
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+      for (((mode, cmd, color, depth), id) <- draws.zipWithIndex) {
+        val samples = 1 << mode
+        val stride = 4 * samples * 4
+        store(cmd, vertices ++ Seq.fill(3)(Seq(255L, 0L, 0L)).flatten ++
+          Seq.fill(3)(16L) ++ Seq.fill(16)(0L))
+        store(0x1000, Seq(1L << 16, cmd.toLong, color.toLong, depth.toLong,
+          stride.toLong, 0x81L, 0L, 0L, 0L, mode.toLong) ++ Seq.fill(6)(0L))
+        for (i <- 0 until 4 * 4 * samples) {
+          store(color + i * 4, Seq(0x12345678L))
+          store(depth + i * 4, Seq(0x00ffffffL))
+        }
+        axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 0x40 + id)
+        axiWrite(dut, GpuCommandMmioRegs.OPCODE, GpuCommandOpcode.render.litValue.toInt)
+        axiWrite(dut, GpuCommandMmioRegs.SOURCE, 0x1000)
+        axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+        axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+        serviceMemoryMaster(dut, readLine, writeAckDelay = 4, maxCycles = 80000)(writeLine) {
+          dut.io.m_irq.peek().litToBoolean
+        }
+        val completion = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+        assert((completion & 0xff) == 0x40 + id)
+        assert(((completion >> 15) & 1) == 1, s"mode $mode must succeed")
+        val painted = (0 until 4 * 4 * samples).exists { i =>
+          words.getOrElse(BigInt(color + i * 4), BigInt(0)) == expected
+        }
+        assert(painted, f"mode=$mode must paint at least one sample 0x$expected%08x")
+        axiWrite(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
+        axiWrite(dut, RenderHostRegs.IRQ, 3)
+      }
+    }
+  }
+
+  it should "fail a descriptor fetch bus fault before launch, retain it until POP, and recover" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      val words = mutable.Map.empty[BigInt, BigInt]
+      def store(base: Int, data: Seq[Long]): Unit =
+        data.zipWithIndex.foreach { case (value, i) =>
+          words(BigInt(base + i * 4)) = BigInt(value & 0xffffffffL)
+        }
+      def readLine(address: BigInt): BigInt = {
+        val base = address & ~BigInt(63)
+        (0 until 16).foldLeft(BigInt(0)) { (line, i) =>
+          line | (words.getOrElse(base + i * 4, BigInt(0)) << (32 * i))
+        }
+      }
+      def writeLine(address: BigInt, data: BigInt, mask: BigInt): Unit = {
+        for (i <- 0 until 16 if ((mask >> (i * 4)) & 15) == 15)
+          words(address + i * 4) = (data >> (32 * i)) & 0xffffffffL
+      }
+      val vertices = Seq(-65536L, -65536L, 0L, 65536L,
+        65536L, -65536L, 0L, 65536L, -65536L, 65536L, 0L, 65536L)
+      store(0x2000, vertices ++ Seq.fill(3)(Seq(255L, 0L, 0L)).flatten ++
+        Seq.fill(3)(16L) ++ Seq.fill(16)(0L))
+      store(0x1000, Seq(1L << 16, 0x2000L, 0x8000L, 0x9000L,
+        64L, 0L) ++ Seq.fill(10)(0L))
+      store(0x8000, Seq.fill(16)(0x12345678L))
+
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 0x51)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE, GpuCommandOpcode.render.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.SOURCE, 0x1000)
+      axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      // Fault the descriptor line itself; the renderer must not launch.
+      serviceMemoryMaster(dut, readLine, address => address == 0x1000)(writeLine) {
+        dut.io.m_irq.peek().litToBoolean
+      }
+      assert((axiRead(dut, RenderHostRegs.STATUS) & 7) == 6, "DONE and ERROR, not BUSY")
+      val faulted = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+      assert((faulted & 0xff) == 0x51)
+      assert(((faulted >> 11) & 0xf) == 1, "descriptor fault status must be memory fault")
+      assert(((faulted >> 15) & 1) == 0)
+      assert(words.getOrElse(BigInt(0x8000), BigInt(0)) == 0x12345678L,
+        "failed descriptor fetch must not emit pixels")
+
+      // STATUS.ERROR W1C leaves the completion payload intact.
+      axiWrite(dut, RenderHostRegs.STATUS, 0x4)
+      assert((axiRead(dut, GpuCommandMmioRegs.COMPLETION) & 0xff) == 0x51)
+      assert(((axiRead(dut, GpuCommandMmioRegs.COMPLETION) >> 11) & 0xf) == 1)
+
+      axiWrite(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
+      axiWrite(dut, RenderHostRegs.IRQ, 3)
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 0x52)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE, GpuCommandOpcode.render.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.SOURCE, 0x1000)
+      axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      serviceMemoryMaster(dut, readLine, writeAckDelay = 4)(writeLine) {
+        dut.io.m_irq.peek().litToBoolean
+      }
+      val recovered = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+      assert((recovered & 0xff) == 0x52)
+      assert(((recovered >> 15) & 1) == 1)
+      assert(words.getOrElse(BigInt(0x8000 + 5 * 64 + 5 * 4), BigInt(0)) == 0xff0000ffL)
+    }
+  }
+
 }
