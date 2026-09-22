@@ -23,7 +23,7 @@ Remaining work:
 - [x] Cover DRM ioctl guest-path isolation for same-VA/different-PA fill,
   cross-window rebind and context teardown with ASID recycle
   (`opengpu_drm_test.c`).
-- [ ] Cover DRM ioctl guest-path bind-time private-map allocation failure,
+- [x] Cover DRM ioctl guest-path bind-time private-map allocation failure,
   including cleanup and a successful follow-up submission.
 - [x] Track and revoke temporary per-job mappings when their lifetime ends,
   without racing the next job's reuse of a fixed VA window.

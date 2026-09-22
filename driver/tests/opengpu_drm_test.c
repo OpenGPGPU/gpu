@@ -1283,6 +1283,21 @@ static int create_syncobj(int fd, uint32_t *handle)
     return 0;
 }
 
+static int set_mmu_fail_private_maps(unsigned int count)
+{
+    char value[16];
+    int fd = open("/sys/module/gpu_drv/parameters/mmu_fail_private_maps",
+                  O_WRONLY | O_CLOEXEC);
+    int length = snprintf(value, sizeof(value), "%u\n", count);
+    ssize_t written;
+
+    if (fd < 0)
+        return -1;
+    written = write(fd, value, length);
+    close(fd);
+    return written == length ? 0 : -1;
+}
+
 static int wait_syncobjs_timeout(int fd, uint32_t *handles, uint32_t count,
                                  int64_t timeout_nsec)
 {
@@ -2195,9 +2210,11 @@ int main(void)
      * ASID recycle. */
     {
         struct resource_buffer iso_fill_a, iso_fill_b, iso_kernarg;
+        struct resource_buffer iso_fail_kernarg;
         uint32_t iso_context_a = 0, iso_context_b = 0;
         uint32_t iso_recycled = 0;
         uint32_t iso_sync[7] = { 0 };
+        uint32_t iso_fail_sync[2] = { 0 };
         uint32_t lane;
 
         CHECK(create_resource_buffer(fd, 64, &iso_fill_a),
@@ -2222,6 +2239,12 @@ int main(void)
               "VM isolation recycled fill syncobj");
         CHECK(create_syncobj(fd, &iso_sync[6]),
               "VM isolation recycled compute syncobj");
+        CHECK(create_resource_buffer(fd, 64, &iso_fail_kernarg),
+              "VM isolation map-failure kernarg buffer");
+        CHECK(create_syncobj(fd, &iso_fail_sync[0]),
+              "VM isolation map-failure fill syncobj");
+        CHECK(create_syncobj(fd, &iso_fail_sync[1]),
+              "VM isolation map-failure compute syncobj");
 
         /* Both contexts use the same private DMA destination VA window. If
          * the two ASIDs were not isolated, the second fill would corrupt the
@@ -2278,6 +2301,54 @@ int main(void)
                         lane, ((uint32_t *)iso_kernarg.map)[lane], expected);
                 errno = EIO;
                 perror("OPENGPU USERSPACE DRM FAIL VM rebind compute result");
+                return 1;
+            }
+        }
+
+        /* Bind-time private-map allocation failure: the ioctl must reject the
+         * bind, leave no mapping behind, and a follow-up bind/submission must
+         * succeed through the same window. */
+        CHECK(set_mmu_fail_private_maps(1), "arm VM private-map failure");
+        errno = 0;
+        if (bind_resource(fd, iso_context_a, 8, &iso_fail_kernarg,
+                          OPENGPU_RESOURCE_COMPUTE_KERNARG, 64) != -1 ||
+            errno != ENOMEM) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL VM private-map failure");
+            return 1;
+        }
+        CHECK(set_mmu_fail_private_maps(0), "clear VM private-map failure");
+        CHECK(bind_resource(fd, iso_context_a, 7, &compute_shader,
+                            OPENGPU_RESOURCE_COMPUTE_SHADER, 128),
+              "VM isolation bind shader after map failure");
+        CHECK(bind_resource(fd, iso_context_a, 8, &iso_fail_kernarg,
+                            OPENGPU_RESOURCE_COMPUTE_KERNARG, 64),
+              "VM isolation bind kernarg after map failure");
+        CHECK(fill_resource(fd, iso_context_a, &iso_fail_kernarg, 0xcafe0001u,
+                            iso_fail_sync[0], OPENGPU_COMMAND_EVENT(16, 1)),
+              "VM isolation initialize map-failure kernarg");
+        CHECK(wait_syncobjs(fd, &iso_fail_sync[0], 1),
+              "wait VM isolation map-failure fill");
+        CHECK(submit_compute(
+                  fd, iso_context_a, 7, 8, 4, 0, iso_fail_sync[1],
+                  OPENGPU_COMMAND_WAIT_EVENT | OPENGPU_COMMAND_SIGNAL_EVENT,
+                  OPENGPU_COMMAND_EVENT(16, 1),
+                  OPENGPU_COMMAND_EVENT(17, 1)),
+              "VM isolation compute after map failure");
+        CHECK(wait_syncobjs(fd, &iso_fail_sync[1], 1),
+              "wait VM isolation map-failure compute");
+        for (lane = 0; lane < 4; lane++) {
+            uint32_t expected = lane < 2 ? 6u : lane;
+
+            if (((uint32_t *)iso_fail_kernarg.map)[lane] != expected) {
+                fprintf(stderr,
+                        "map-failure follow-up kernarg lane=%u output=0x%08x "
+                        "expected=%u\n",
+                        lane, ((uint32_t *)iso_fail_kernarg.map)[lane],
+                        expected);
+                errno = EIO;
+                perror("OPENGPU USERSPACE DRM FAIL VM map-failure follow-up "
+                       "compute result");
                 return 1;
             }
         }
@@ -2354,7 +2425,7 @@ int main(void)
            "ordered colour "
            "blit/fill/strided blit + "
            "persistent-depth cross-submission pass + "
-           "VM fill/rebind/recycle isolation + "
+           "VM fill/rebind/map-failure/recycle isolation + "
            "fault-query ABI + vblank flip event sequence=%u\n",
            vert_core ? "vertex+fragment-core-backed" :
            frag_core ? "core-backed" : "texture",

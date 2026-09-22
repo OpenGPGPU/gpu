@@ -10,6 +10,10 @@
  * that page's PTE changes.  Page tables live in coherent DMA memory and are
  * fetched uncached by the hardware walker, so CPU writes to them are visible.
  */
+#ifdef __KERNEL__
+#include <linux/module.h>
+#include <linux/moduleparam.h>
+#endif
 #include <linux/mutex.h>
 #include <linux/overflow.h>
 
@@ -36,6 +40,17 @@
 #define MMU_PTE_LEAF_FLAGS (MMU_PTE_V | MMU_PTE_R | MMU_PTE_W | \
                             MMU_PTE_G | MMU_PTE_A | MMU_PTE_D)
 #define MMU_PTE_POLICY_SHIFT 8u
+
+/* Test hook: fail the next N valid VM-private map calls with -ENOMEM before
+ * any page-table work. The guest DRM test uses this through sysfs to prove
+ * bind-time private-map allocation failure cleans up and a follow-up bind
+ * succeeds. */
+static unsigned int mmu_fail_private_maps;
+#ifdef __KERNEL__
+module_param(mmu_fail_private_maps, uint, 0644);
+MODULE_PARM_DESC(mmu_fail_private_maps,
+    "Number of valid VM-private map calls to fail with -ENOMEM");
+#endif
 
 static u32 mmu_leaf_pte(dma_addr_t phys, u32 policy)
 {
@@ -390,6 +405,10 @@ int opengpu_mmu_vm_map(struct opengpu_device *gpu, struct opengpu_vm *vm,
         check_add_overflow((u64)pa, (u64)size, &pa_end) ||
         va_end > (1ull << 32) || pa_end > (1ull << 32))
         return -ERANGE;
+    if (mmu_fail_private_maps) {
+        mmu_fail_private_maps--;
+        return -ENOMEM;
+    }
 
     mutex_lock(&gpu->hw.submit_lock);
     ret = opengpu_hw_wait_idle_locked(gpu);
