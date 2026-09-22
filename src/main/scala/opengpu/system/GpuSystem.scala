@@ -15,6 +15,7 @@ import opengpu.core.trap.CoreTrapEvent
 import opengpu.dispatch._
 import opengpu.dma._
 import opengpu.graphics.{MsaaResolveEngine, OmWordToLinePort}
+import opengpu.util.{CarrySaveAccumulator, CarrySaveEventCounter}
 
 class GpuPerformanceCounters extends Bundle {
   val cycles = UInt(64.W)
@@ -153,8 +154,6 @@ class GpuSystem(
       Decoupled(new VectorIssuedInstruction(config)))
     val scalarMemory = Vec(numComputeUnits,
       Decoupled(new ScalarIssuedInstruction(config)))
-    val unsupportedSystem = Vec(numComputeUnits,
-      Decoupled(new ScalarIssuedInstruction(config)))
     val trap = Vec(numComputeUnits, Decoupled(new CoreTrapEvent(config)))
     val simtBranch = Vec(numComputeUnits,
       Flipped(Decoupled(new SimtBranchRequest(config))))
@@ -223,7 +222,8 @@ class GpuSystem(
         instructionCacheWays,
         instructionCacheMissEntries,
         vectorCacheSets,
-        vectorCacheWays))
+        vectorCacheWays,
+        finishOnTrap = true))
   }
   // The generic compute system has no graphics sampler. Keep the optional
   // texture-instruction sideband quiescent; graphics top levels connect it to
@@ -435,13 +435,13 @@ class GpuSystem(
   } else {
     io.commandResetDone := false.B
   }
-  private val cycleCount = RegInit(0.U(64.W))
-  private val activeCuCycleCount = RegInit(0.U(64.W))
-  private val lowerReadCount = RegInit(0.U(64.W))
-  private val lowerWriteCount = RegInit(0.U(64.W))
-  private val dmaByteCount = RegInit(0.U(64.W))
-  // Register each engine's completion bytes before accumulating so the 64-bit
-  // add chain does not sit behind the router's completion-arbiter ready path.
+  private val cycleCounter = Module(new CarrySaveEventCounter())
+  private val activeCuCycleCounter = Module(new CarrySaveAccumulator())
+  private val lowerReadCounter = Module(new CarrySaveEventCounter())
+  private val lowerWriteCounter = Module(new CarrySaveEventCounter())
+  private val dmaByteCounter = Module(new CarrySaveAccumulator())
+  // Register each engine's completion bytes before accumulating so the addend
+  // mux does not sit behind the router's completion-arbiter ready path.
   private val copyBytesFired = RegNext(copyEngine.io.completion.fire, false.B)
   private val copyBytesValue = RegEnable(
     copyEngine.io.completion.bits.bytesCopied, copyEngine.io.completion.fire)
@@ -453,37 +453,35 @@ class GpuSystem(
   private val stridedBytesValue = RegEnable(
     stridedCopyEngine.io.completion.bits.bytesCopied,
     stridedCopyEngine.io.completion.fire)
-  // One more register on the summed increment so the 64-bit accumulator add
-  // does not share a cycle with the three-way mux (secondary setup path on
-  // the 20d0732 clean STA).
+  // Registered three-way sum feeds the carry-save DMA accumulator so the
+  // 64-bit CPA stays off the core-clock register-to-register path.
   private val dmaBytesDelta = RegInit(0.U(64.W))
-  when(io.clearPerformanceCounters) {
-    cycleCount := 0.U
-    activeCuCycleCount := 0.U
-    lowerReadCount := 0.U
-    lowerWriteCount := 0.U
-    dmaByteCount := 0.U
+  private val clearPerf = io.clearPerformanceCounters
+  when(clearPerf) {
     dmaBytesDelta := 0.U
   }.otherwise {
-    cycleCount := cycleCount + 1.U
-    activeCuCycleCount := activeCuCycleCount + PopCount(dispatcher.io.busy)
-    when(io.memoryRequest.fire && io.memoryRequest.bits.isWrite) {
-      lowerWriteCount := lowerWriteCount + 1.U
-    }
-    when(io.memoryRequest.fire && !io.memoryRequest.bits.isWrite) {
-      lowerReadCount := lowerReadCount + 1.U
-    }
     dmaBytesDelta :=
       Mux(copyBytesFired, copyBytesValue, 0.U) +
         Mux(fillBytesFired, fillBytesValue, 0.U) +
         Mux(stridedBytesFired, stridedBytesValue, 0.U)
-    dmaByteCount := dmaByteCount + dmaBytesDelta
   }
-  io.performance.cycles := cycleCount
-  io.performance.activeCuCycles := activeCuCycleCount
-  io.performance.lowerReadRequests := lowerReadCount
-  io.performance.lowerWriteRequests := lowerWriteCount
-  io.performance.dmaBytesCompleted := dmaByteCount
+  cycleCounter.io.clear := clearPerf
+  cycleCounter.io.increment := !clearPerf
+  activeCuCycleCounter.io.clear := clearPerf
+  activeCuCycleCounter.io.addend := Mux(clearPerf, 0.U, PopCount(dispatcher.io.busy))
+  lowerReadCounter.io.clear := clearPerf
+  lowerReadCounter.io.increment := !clearPerf &&
+    io.memoryRequest.fire && !io.memoryRequest.bits.isWrite
+  lowerWriteCounter.io.clear := clearPerf
+  lowerWriteCounter.io.increment := !clearPerf &&
+    io.memoryRequest.fire && io.memoryRequest.bits.isWrite
+  dmaByteCounter.io.clear := clearPerf
+  dmaByteCounter.io.addend := Mux(clearPerf, 0.U, dmaBytesDelta)
+  io.performance.cycles := cycleCounter.io.value
+  io.performance.activeCuCycles := activeCuCycleCounter.io.value
+  io.performance.lowerReadRequests := lowerReadCounter.io.value
+  io.performance.lowerWriteRequests := lowerWriteCounter.io.value
+  io.performance.dmaBytesCompleted := dmaByteCounter.io.value
   io.performance.l2 := l2.io.performance
 
   driverInvalidate.io.request <> commandRouter.io.invalidate
@@ -761,7 +759,6 @@ class GpuSystem(
     io.fpu(cu) <> unit.io.fpu
     io.vector(cu) <> unit.io.vector
     io.scalarMemory(cu) <> unit.io.memory
-    io.unsupportedSystem(cu) <> unit.io.unsupportedSystem
     io.trap(cu) <> unit.io.trap
     unit.io.simtBranch <> io.simtBranch(cu)
 

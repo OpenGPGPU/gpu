@@ -22,11 +22,34 @@ class CarrySaveEventCounter(
     val value = Output(UInt(width.W))
   })
 
+  private val accumulator = Module(new CarrySaveAccumulator(width))
+  accumulator.io.clear := io.clear
+  accumulator.io.addend := io.increment.asUInt
+  io.value := accumulator.io.value
+}
+
+/** Exact wide accumulator with carry-save state.
+  *
+  * Same rationale as [[CarrySaveEventCounter]], but accepts an arbitrary
+  * addend each cycle (use 0.U when idle). `sum + carry` is unchanged when the
+  * addend is zero, so observation stays bit-exact.
+  */
+class CarrySaveAccumulator(
+  width: Int = 64
+) extends Module {
+  require(width > 0)
+
+  val io = IO(new Bundle {
+    val clear = Input(Bool())
+    val addend = Input(UInt(width.W))
+    val value = Output(UInt(width.W))
+  })
+
   private val sum = RegInit(0.U(width.W))
   private val carry = RegInit(0.U(width.W))
-  private val event = io.increment.asUInt
-  private val nextSum = sum ^ carry ^ event
-  private val carryGenerate = (sum & carry) | (sum & event) | (carry & event)
+  private val addend = io.addend
+  private val nextSum = sum ^ carry ^ addend
+  private val carryGenerate = (sum & carry) | (sum & addend) | (carry & addend)
   private val nextCarry = (carryGenerate << 1)(width - 1, 0)
 
   when(io.clear) {

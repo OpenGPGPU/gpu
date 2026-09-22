@@ -65,7 +65,6 @@ class GpuSystemSpec extends AnyFlatSpec {
       dut.io.fpu(cu).ready.poke(false.B)
       dut.io.vector(cu).ready.poke(false.B)
       dut.io.scalarMemory(cu).ready.poke(false.B)
-      dut.io.unsupportedSystem(cu).ready.poke(false.B)
       dut.io.trap(cu).ready.poke(false.B)
       dut.io.simtBranch(cu).valid.poke(false.B)
       dut.io.simtBranch(cu).bits.poke(

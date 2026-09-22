@@ -44,7 +44,6 @@ class GpuComputeUnit(
     val fpu = Decoupled(new FpuDecodeResponse(config))
     val vector = Decoupled(new VectorIssuedInstruction(config))
     val memory = Decoupled(new ScalarIssuedInstruction(config))
-    val unsupportedSystem = Decoupled(new ScalarIssuedInstruction(config))
     val trap = Decoupled(new CoreTrapEvent(config))
     val simtBranch = Flipped(Decoupled(new SimtBranchRequest(config)))
 
@@ -111,7 +110,6 @@ class GpuComputeUnit(
   resumeArbiter.io.in(0) <> system.io.resume
   resumeArbiter.io.in(1) <> barrier.io.release
   core.io.faultResume <> resumeArbiter.io.out
-  io.unsupportedSystem <> system.io.unsupported
   core.io.finish := system.io.finish
   controller.io.finish := system.io.finish
 
@@ -187,7 +185,26 @@ class GpuComputeUnit(
   core.io.fpuInitialize.bits := 0.U.asTypeOf(core.io.fpuInitialize.bits)
   io.vector <> core.io.vector
   io.memory <> core.io.memory
-  io.trap <> core.io.trap
+  // CSR, ECALL and EBREAK are decoded system instructions, but this GPU does
+  // not implement a privileged/CSR execution service.  Report them through
+  // the architectural trap path instead of leaving the warp permanently
+  // backpressured at an unserviced extension port.
+  private val trapArbiter = Module(new RRArbiter(new CoreTrapEvent(config), 2))
+  trapArbiter.io.in(0) <> core.io.trap
+  trapArbiter.io.in(1).valid := system.io.unsupported.valid
+  trapArbiter.io.in(1).bits.warpId :=
+    system.io.unsupported.bits.decode.warpId
+  trapArbiter.io.in(1).bits.pc := system.io.unsupported.bits.decode.pc
+  trapArbiter.io.in(1).bits.activeMask :=
+    system.io.unsupported.bits.decode.activeMask
+  trapArbiter.io.in(1).bits.cause :=
+    opengpu.core.trap.TrapCause.illegalInstruction.U
+  trapArbiter.io.in(1).bits.tval :=
+    system.io.unsupported.bits.decode.instruction
+  trapArbiter.io.in(1).bits.laneFaultMask :=
+    system.io.unsupported.bits.decode.activeMask
+  system.io.unsupported.ready := trapArbiter.io.in(1).ready
+  io.trap <> trapArbiter.io.out
   if (finishOnTrap) {
     // Graphics has no trap-resume service. Finish each faulting warp once,
     // allow the other resident warps to drain, and fail the kernel result.

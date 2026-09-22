@@ -496,8 +496,10 @@ class GpuHostSystemAxi(
       system.io.fpu(cu).ready := false.B
       system.io.vector(cu).ready := false.B
       system.io.scalarMemory(cu).ready := false.B
-      system.io.unsupportedSystem(cu).ready := false.B
-      system.io.trap(cu).ready := false.B
+      // Product software has no resumable trap service.  Each CU converts a
+      // consumed trap into a failed kernel completion and retires its faulting
+      // warp, so accepting the diagnostic event guarantees forward progress.
+      system.io.trap(cu).ready := true.B
       system.io.simtBranch(cu).valid := false.B
       system.io.simtBranch(cu).bits :=
         0.U.asTypeOf(system.io.simtBranch(cu).bits)

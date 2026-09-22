@@ -110,12 +110,10 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   // draw-record addresses can be private VAs under the context ASID.
   cu.io.vectorSatp := io.vectorSatp
   cu.io.vectorTlbFlush := io.vectorTlbFlush
-  // Unsupported execution handoffs have no completion service here. Do not
-  // consume and silently discard them: ready alone neither traps nor releases
-  // their reservations. Shader validation must exclude these operations;
-  // decode/access faults use the separate trap-to-failed-completion path.
+  // Unsupported execution handoffs have no completion service here. Shader
+  // validation excludes them; any system instruction that reaches the CU is
+  // converted to an illegal-instruction trap and failed completion there.
   cu.io.fpu.ready := false.B
   cu.io.vector.ready := false.B
   cu.io.memory.ready := false.B
-  cu.io.unsupportedSystem.ready := false.B
 }
