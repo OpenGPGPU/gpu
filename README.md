@@ -18,6 +18,7 @@ package that is incrementally verifiable.
 - `src/test/scala/` — tests
 - `build.sbt` — Scala and Chisel dependency configuration
 - `docs/GRAPHICS_ROADMAP.md` — implemented surface, capability status, remaining work
+- `docs/FUNCTIONAL_BACKLOG.md` — authoritative non-PPA task list and completion criteria
 - `docs/HOST_INTERFACE.md` — AXI registers and shared-memory layouts
 - `docs/DRIVER_ARCHITECTURE.md` — Linux driver ownership split
 - `docs/MSAA_DESIGN.md`, `docs/STENCIL_BLEND_DESIGN.md` — feature contracts

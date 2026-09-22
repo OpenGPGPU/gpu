@@ -2,6 +2,7 @@
 
 What the graphics path implements today, and what remains. Contracts:
 [HOST_INTERFACE.md](HOST_INTERFACE.md), [DRIVER_ARCHITECTURE.md](DRIVER_ARCHITECTURE.md).
+Non-PPA tasks: [FUNCTIONAL_BACKLOG.md](FUNCTIONAL_BACKLOG.md).
 Physical numbers: [../timing/README.md](../timing/README.md).
 
 **functional** = behavioral coverage on the unified path. **physical** = PPA.
@@ -27,8 +28,8 @@ A passing sim is not silicon; a completed tool run is not timing closure.
   mappings remain but are read/write, non-executable; compute, fragment and
   vertex code use private executable windows. Host vertex→fragment translation
   and instruction-fault recovery are covered. This is not yet full VM isolation:
-  identity maps still cover the full PA space as a fallback for Bare mode and
-  mapping failures, but context DMA jobs use private DMA VAs.
+  identity maps still cover the full PA space for Bare mode and unresolved
+  physical paths, while VM-enabled mapping failures abort the operation.
 - External display hardware owns scanout and signal generation.
 
 ## Capability status
@@ -177,16 +178,16 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
   `vtex.sample`, kernarg/VB staging, fill/blit/strided DMA and shader data
   loads all translate under the context ASID (`VECTOR_SATP`). Context
   fill/blit/strided jobs map buffers into a private DMA VA window at run time
-  so they no longer depend on VA==PA through the global identity table; Bare /
-  mapping-failure paths still fall back to physical addresses. Resolve and
+  so they no longer depend on VA==PA through the global identity table;
+  VM-enabled mapping failures abort. Bare jobs, resolve and
   line-invalidate stay physical because L2 invalidate is PA-tagged. Shared
   identity maps remain as a broader fallback until they can be bounded further.
 - Qualification gate is boundary suites + workload sweep, not the full Scala
   suite.
 - No parent-level per-interface timing budgets.
 - Display/scanout is simulation-only.
-- Shared identity mappings remain (read/write, non-executable) as a fallback
-  when a private VA window cannot be installed. Fragment instruction faults
+- Shared identity mappings remain read/write and non-executable for Bare and
+  unresolved physical paths. Fragment instruction faults
   fail the render and allow a later draw to recover; vertex instruction faults
   and subsequent shared-CU reuse are also covered. No resumable page faults or
   full removal of identity maps yet.

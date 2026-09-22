@@ -298,6 +298,51 @@ int main(void)
         /* Only the global split table stays allocated. */
         assert(live_allocations == live_before + 1);
     }
+
+    /* Two contexts may use the same private VA without sharing translations.
+     * Revoking one context's leaf must not change the other context's mapping. */
+    {
+        struct opengpu_vm first, second, recycled;
+        dma_addr_t va = 0x24000000;
+        int live_before = live_allocations;
+        unsigned asid_before = asid_flushes;
+        u32 recycled_asid;
+        u32 *first_table, *second_table;
+
+        assert(!opengpu_mmu_vm_create(&gpu, &first));
+        assert(!opengpu_mmu_vm_create(&gpu, &second));
+        assert(first.asid != second.asid);
+        assert(!opengpu_mmu_vm_map(
+            &gpu, &first, va, 0x11111000, MMU_PAGE_SIZE, 0));
+        assert(!opengpu_mmu_vm_map(
+            &gpu, &second, va, 0x22222000, MMU_PAGE_SIZE, 0));
+        first_table = first.l1[0].cpu;
+        second_table = second.l1[0].cpu;
+        assert((first_table[0] >> 10) == 0x11111);
+        assert((second_table[0] >> 10) == 0x22222);
+        assert(!opengpu_mmu_vm_unmap(
+            &gpu, &first, va, MMU_PAGE_SIZE));
+        assert(first_table[0] == 0);
+        assert((second_table[0] >> 10) == 0x22222);
+        assert(asid_flushes == asid_before + 1);
+        recycled_asid = first.asid;
+        opengpu_mmu_vm_destroy(&gpu, &first);
+        opengpu_mmu_vm_destroy(&gpu, &second);
+        assert(asid_flushes == asid_before + 3);
+
+        /* Force the allocator cursor to the released ID. Destroy already
+         * flushed it, so the new owner starts from a fresh root and cannot
+         * observe either prior translation. */
+        gpu.mmu.asids.next = recycled_asid;
+        assert(!opengpu_mmu_vm_create(&gpu, &recycled));
+        assert(recycled.asid == recycled_asid);
+        assert(!opengpu_mmu_vm_map(
+            &gpu, &recycled, va, 0x33333000, MMU_PAGE_SIZE, 0));
+        assert((((u32 *)recycled.l1[0].cpu)[0] >> 10) == 0x33333);
+        opengpu_mmu_vm_destroy(&gpu, &recycled);
+        assert(asid_flushes == asid_before + 4);
+        assert(live_allocations == live_before);
+    }
     assert(!gpu.hw.submit_lock.held && !gpu.mmu.lock.held);
     opengpu_mmu_fini(&gpu);
     assert(!live_allocations);
