@@ -22,12 +22,12 @@ A passing sim is not silicon; a completed tool run is not timing closure.
 - Driver scheduler owns GEM references, dependencies and fences. Display
   consumes GEM framebuffers; it does not own execution lifetime.
 - Sv32 private VA windows and ASIDs. Command, framebuffer, texture,
-  kernarg/VB staging, shader data loads and the programmable `vtex.sample`
-  path translate with CU accesses. Global identity mappings remain but are
-  read/write, non-executable; compute, fragment and vertex code use private
-  executable windows. Host vertex→fragment translation and instruction-fault
-  recovery are covered. Fill/blit/strided DMA on the shared kernel-word port
-  remain physical. This is not yet full VM isolation.
+  kernarg/VB staging, fill/blit/strided DMA, shader data loads and the
+  programmable `vtex.sample` path translate with CU accesses. Global identity
+  mappings remain but are read/write, non-executable; compute, fragment and
+  vertex code use private executable windows. Host vertex→fragment translation
+  and instruction-fault recovery are covered. This is not yet full VM isolation:
+  identity maps still cover the full PA space as a fallback.
 - External display hardware owns scanout and signal generation.
 
 ## Capability status
@@ -164,17 +164,18 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
    windows; the shared identity map is read/write but non-executable. Shared-CU
    vertex→fragment reuse and vertex instruction-fault recovery are now covered:
    L1 probes progress while a demand miss waits for an L2 eviction, avoiding
-   the circular wait exposed by vector-heavy vertex kernels.
-  Remaining isolation work is removing or bounding the identity mappings and
-  translating fill/blit/strided DMA off the shared kernel-word port.
+   the circular wait exposed by vector-heavy vertex kernels. Fill/blit/strided
+   DMA now translate under `VECTOR_SATP` (legacy kernel-word and unified
+   engines). Remaining isolation work is removing or bounding the identity
+   mappings once the driver submits private DMA VAs instead of relying on
+   VA==PA through the global identity table.
 
 ## Known limits
 
 - Guest ARTI/QEMU: the default, fragment-core, and vertex+fragment-core
   end-to-end DRM tests pass and power off cleanly on `e2e155e`. Programmable
-  `vtex.sample`, kernarg/VB staging and shader data loads all translate under
-  the context ASID (`VECTOR_SATP`); fill/blit/strided DMA on the shared
-  kernel-word port remains physical.
+  `vtex.sample`, kernarg/VB staging, fill/blit/strided DMA and shader data
+  loads all translate under the context ASID (`VECTOR_SATP`).
 - Qualification gate is boundary suites + workload sweep, not the full Scala
   suite.
 - No parent-level per-interface timing budgets.

@@ -44,6 +44,132 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
     }
   }
 
+  it should "translate a legacy clear VA through VECTOR_SATP onto physical AXI" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      val words = mutable.LongMap.empty[BigInt]
+      val writes = mutable.ArrayBuffer.empty[BigInt]
+      val root = 0x30000
+      val clearVa = 0x400000
+      val clearPa = 0x800000
+      val pattern = BigInt("a5a5a5a5", 16)
+      val expectedLine = BigInt(List.fill(16)("a5a5a5a5").mkString, 16)
+      def store(base: Int, data: Seq[Long]): Unit = data.zipWithIndex.foreach {
+        case (v, i) => words(base.toLong + i * 4) = BigInt(v & 0xffffffffL)
+      }
+      store(root, Seq(0xcfL, (clearPa.toLong >> 12) << 10 | 0xcfL))
+      def readLine(addr: BigInt): BigInt = {
+        val base = addr.toLong & ~63L
+        (0 until 16).foldLeft(BigInt(0))((line, i) =>
+          line | (words.getOrElse(base + i * 4, BigInt(0)) << (32 * i)))
+      }
+      def writeLine(addr: BigInt, data: BigInt, mask: BigInt): Unit = {
+        writes += addr
+        val base = addr.toLong & ~63L
+        for (b <- 0 until 64 if mask.testBit(b)) {
+          val a = base + (b / 4) * 4
+          val shift = (b % 4) * 8
+          words(a) = (words.getOrElse(a, BigInt(0)) & ~(BigInt(255) << shift)) |
+            (((data >> (b * 8)) & 255) << shift)
+        }
+      }
+      axiWrite(dut, GpuCommandMmioRegs.VECTOR_SATP, 0x80000000 | (root >> 12))
+      axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
+      axiWrite(dut, RenderHostRegs.CLEAR_BASE, clearVa)
+      axiWrite(dut, RenderHostRegs.CLEAR_BYTES, 64)
+      axiWrite(dut, RenderHostRegs.CLEAR_PATTERN, pattern.toInt)
+      axiWrite(dut, RenderHostRegs.CLEAR_START, 1)
+      var postWrite = 0
+      serviceMemoryMaster(dut, readLine, writeAckDelay = 4, maxCycles = 20000)(writeLine) {
+        if (writes.contains(BigInt(clearPa))) {
+          postWrite += 1
+          postWrite > 64
+        } else {
+          false
+        }
+      }
+      assert(!writes.exists(a => a >= clearVa && a < clearVa + 4096),
+        "clear VA escaped onto physical AXI")
+      assert(writes.contains(BigInt(clearPa)),
+        "clear must write the translated physical line")
+      assert(readLine(clearPa) == expectedLine,
+        "translated clear must commit the fill pattern")
+      assert((axiRead(dut, RenderHostRegs.STATUS) & 0xcL) == 0L,
+        "translated clear must finish without BUSY or ERROR")
+    }
+  }
+
+  it should "fail a unified fill against an invalid DMA PTE and recover" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      val words = mutable.LongMap.empty[BigInt]
+      val reads = mutable.ArrayBuffer.empty[BigInt]
+      val writes = mutable.ArrayBuffer.empty[BigInt]
+      val root = 0x30000
+      val fillVa = 0x400000
+      val fillPa = 0x800000
+      def store(base: Int, data: Seq[Long]): Unit = data.zipWithIndex.foreach {
+        case (v, i) => words(base.toLong + i * 4) = BigInt(v & 0xffffffffL)
+      }
+      store(root, Seq(0xcfL, 0L))
+      def readLine(addr: BigInt): BigInt = {
+        reads += addr
+        val base = addr.toLong & ~63L
+        (0 until 16).foldLeft(BigInt(0))((line, i) =>
+          line | (words.getOrElse(base + i * 4, BigInt(0)) << (32 * i)))
+      }
+      def writeLine(addr: BigInt, data: BigInt, mask: BigInt): Unit = {
+        writes += addr
+        val base = addr.toLong & ~63L
+        for (b <- 0 until 64 if mask.testBit(b)) {
+          val a = base + (b / 4) * 4
+          val shift = (b % 4) * 8
+          words(a) = (words.getOrElse(a, BigInt(0)) & ~(BigInt(255) << shift)) |
+            (((data >> (b * 8)) & 255) << shift)
+        }
+      }
+      axiWrite(dut, GpuCommandMmioRegs.VECTOR_SATP, 0x80000000 | (root >> 12))
+      axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 31)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE, GpuCommandOpcode.fill.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, fillVa)
+      axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+      axiWrite(dut, GpuCommandMmioRegs.PATTERN, 0x11111111)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      serviceMemoryMaster(dut, readLine, writeAckDelay = 4, maxCycles = 20000)(writeLine) {
+        dut.io.m_irq.peek().litToBoolean
+      }
+      assert(reads.contains(BigInt(root + 4)), "fill must walk the DMA mapping")
+      assert(!writes.exists(a => a >= fillPa && a < fillPa + 4096),
+        "invalid PTE must suppress the fill write")
+      val completion = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+      assert((completion & 255) == 31)
+      assert(((completion >> 15) & 1) == 0, "invalid DMA PTE must fail the fill")
+      axiWrite(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
+      axiWrite(dut, RenderHostRegs.IRQ, 3)
+      store(root + 4, Seq((fillPa.toLong >> 12) << 10 | 0xcfL))
+      axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
+      reads.clear(); writes.clear()
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 32)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE, GpuCommandOpcode.fill.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, fillVa)
+      axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+      axiWrite(dut, GpuCommandMmioRegs.PATTERN, 0x22222222)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      serviceMemoryMaster(dut, readLine, writeAckDelay = 4, maxCycles = 20000)(writeLine) {
+        dut.io.m_irq.peek().litToBoolean
+      }
+      assert(writes.contains(BigInt(fillPa)), "repaired mapping must fill the PA")
+      val recovery = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+      assert((recovery & 255) == 32 && ((recovery >> 15) & 1) == 1)
+    }
+  }
+
   it should "program the Sv32 page-table base and flush the TLBs over AXI" in {
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
     val gpu = GpuConfig(l2Sets = 8, l2Ways = 2)
