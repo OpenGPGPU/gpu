@@ -623,6 +623,29 @@ static int opengpu_binding_map_code(struct opengpu_device *gpu,
     return 0;
 }
 
+/* Map a fill/blit/strided/resolve/invalidate buffer into the context VM so DMA
+ * engines translate under VECTOR_SATP instead of relying on VA==PA through the
+ * shared identity map. Slot 0 is source; slot 1 is destination. */
+static int opengpu_binding_map_dma(struct opengpu_device *gpu,
+                                   struct opengpu_render_context *context,
+                                   dma_addr_t dma, size_t size, u32 slot,
+                                   dma_addr_t *out_va)
+{
+    struct opengpu_kernarg_va_plan plan;
+    int ret;
+
+    ret = opengpu_dma_va_plan(dma, size, slot, OPENGPU_MMU_PAGE_SIZE, &plan);
+    if (ret)
+        return ret;
+    ret = opengpu_mmu_vm_map(gpu, &context->vm, (dma_addr_t)plan.va_page,
+                             (dma_addr_t)plan.pa_page, (size_t)plan.span,
+                             OPENGPU_MMU_POLICY_CACHED);
+    if (ret)
+        return ret;
+    *out_va = (dma_addr_t)plan.va;
+    return 0;
+}
+
 /* Global (identity) uncached mapping, the fallback when a private VM mapping
  * is not possible; directly-read bindings are also invalidated here when the
  * MMU cannot take a policy split (no MMU, or table capacity). */
@@ -637,6 +660,22 @@ static int opengpu_binding_map_uncached(
     if (ret == -EOPNOTSUPP || ret == -ENOSPC || ret == -ENOMEM)
         ret = opengpu_binding_invalidate(gpu, binding);
     return ret;
+}
+
+/* Translate a contiguous DMA range into the context VM when possible. On
+ * failure keep the physical address so Bare / identity still works. */
+static dma_addr_t opengpu_job_map_dma_range(struct opengpu_sched_job *job,
+                                            dma_addr_t dma, size_t size,
+                                            u32 slot)
+{
+    dma_addr_t va = 0;
+
+    if (!job->vm || !job->context || !dma || !size)
+        return dma;
+    if (opengpu_binding_map_dma(job->gpu, job->context, dma, size, slot,
+                                &va))
+        return dma;
+    return va;
 }
 
 int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
@@ -1295,6 +1334,9 @@ static int opengpu_wait_reservation(struct drm_gem_object *object,
     return wait ? 0 : -ETIMEDOUT;
 }
 
+static bool opengpu_strided_range_end(u64 start, u32 width, u32 height,
+                                      u32 stride, u64 *end);
+
 struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
 {
     /* The submitting context's address space; NULL for bring-up self-tests. */
@@ -1322,39 +1364,88 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_BLIT) {
+        dma_addr_t source = opengpu_job_map_dma_range(
+            job, job->dma_source, job->dma_bytes, 0);
+        dma_addr_t destination = opengpu_job_map_dma_range(
+            job, job->dma_destination, job->dma_bytes, 1);
+
         ret = opengpu_hw_blit_async(job->gpu,
-                                    lower_32_bits(job->dma_source),
-                                    lower_32_bits(job->dma_destination),
+                                    lower_32_bits(source),
+                                    lower_32_bits(destination),
                                     job->dma_bytes, &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_FILL) {
+        dma_addr_t destination = opengpu_job_map_dma_range(
+            job, job->dma_destination, job->dma_bytes, 1);
+
         ret = opengpu_hw_clear_async(job->gpu,
-                                     lower_32_bits(job->dma_destination),
+                                     lower_32_bits(destination),
                                      job->dma_bytes, job->fill_pattern,
                                      &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_STRIDED_BLIT) {
+        u64 source_end = 0, destination_end = 0;
+        size_t source_span = job->dma_bytes;
+        size_t destination_span = job->dma_bytes;
+        dma_addr_t source, destination;
+
+        if (!opengpu_strided_range_end(job->dma_source, job->dma_bytes,
+                                       job->dma_height, job->dma_source_stride,
+                                       &source_end) &&
+            source_end > job->dma_source)
+            source_span = (size_t)(source_end - job->dma_source);
+        if (!opengpu_strided_range_end(job->dma_destination, job->dma_bytes,
+                                       job->dma_height,
+                                       job->dma_destination_stride,
+                                       &destination_end) &&
+            destination_end > job->dma_destination)
+            destination_span = (size_t)(destination_end - job->dma_destination);
+        source = opengpu_job_map_dma_range(job, job->dma_source, source_span, 0);
+        destination = opengpu_job_map_dma_range(
+            job, job->dma_destination, destination_span, 1);
         ret = opengpu_hw_strided_blit_async(
-            job->gpu, lower_32_bits(job->dma_source),
-            lower_32_bits(job->dma_destination), job->dma_bytes,
+            job->gpu, lower_32_bits(source),
+            lower_32_bits(destination), job->dma_bytes,
             job->dma_height, job->dma_source_stride,
             job->dma_destination_stride, &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_RESOLVE) {
+        u64 source_end = 0, destination_end = 0;
+        size_t source_span = job->dma_bytes;
+        size_t destination_span = job->dma_bytes;
+        dma_addr_t source, destination;
+
+        if (!opengpu_strided_range_end(job->dma_source, job->dma_bytes,
+                                       job->dma_height, job->dma_source_stride,
+                                       &source_end) &&
+            source_end > job->dma_source)
+            source_span = (size_t)(source_end - job->dma_source);
+        if (!opengpu_strided_range_end(job->dma_destination, job->dma_bytes,
+                                       job->dma_height,
+                                       job->dma_destination_stride,
+                                       &destination_end) &&
+            destination_end > job->dma_destination)
+            destination_span = (size_t)(destination_end - job->dma_destination);
+        source = opengpu_job_map_dma_range(job, job->dma_source, source_span, 0);
+        destination = opengpu_job_map_dma_range(
+            job, job->dma_destination, destination_span, 1);
         ret = opengpu_hw_resolve_async(
-            job->gpu, lower_32_bits(job->dma_source),
-            lower_32_bits(job->dma_destination), job->dma_bytes,
+            job->gpu, lower_32_bits(source),
+            lower_32_bits(destination), job->dma_bytes,
             job->dma_height, job->dma_source_stride,
             job->dma_destination_stride, job->dma_sample_mode,
             &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_INVALIDATE) {
+        dma_addr_t source = opengpu_job_map_dma_range(
+            job, job->dma_source, job->dma_bytes, 0);
+
         ret = opengpu_hw_invalidate_async(
-            job->gpu, lower_32_bits(job->dma_source), job->dma_bytes,
+            job->gpu, lower_32_bits(source), job->dma_bytes,
             &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }

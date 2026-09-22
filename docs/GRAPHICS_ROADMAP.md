@@ -27,7 +27,8 @@ A passing sim is not silicon; a completed tool run is not timing closure.
   mappings remain but are read/write, non-executable; compute, fragment and
   vertex code use private executable windows. Host vertex→fragment translation
   and instruction-fault recovery are covered. This is not yet full VM isolation:
-  identity maps still cover the full PA space as a fallback.
+  identity maps still cover the full PA space as a fallback for Bare mode and
+  mapping failures, but context DMA jobs use private DMA VAs.
 - External display hardware owns scanout and signal generation.
 
 ## Capability status
@@ -166,16 +167,21 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
    L1 probes progress while a demand miss waits for an L2 eviction, avoiding
    the circular wait exposed by vector-heavy vertex kernels. Fill/blit/strided
    DMA now translate under `VECTOR_SATP` (legacy kernel-word and unified
-   engines). Remaining isolation work is removing or bounding the identity
-   mappings once the driver submits private DMA VAs instead of relying on
-   VA==PA through the global identity table.
+   engines). Context fill/blit/strided/resolve/invalidate jobs map into a
+   private DMA VA window at run time. Remaining isolation work is shrinking
+   or dropping the global identity table once Bare bring-up and fallback
+   paths no longer need it.
 
 ## Known limits
 
 - Guest ARTI/QEMU: the default, fragment-core, and vertex+fragment-core
   end-to-end DRM tests pass and power off cleanly on `e2e155e`. Programmable
   `vtex.sample`, kernarg/VB staging, fill/blit/strided DMA and shader data
-  loads all translate under the context ASID (`VECTOR_SATP`).
+  loads all translate under the context ASID (`VECTOR_SATP`). Context DMA
+  jobs map buffers into a private DMA VA window at run time so they no longer
+  depend on VA==PA through the global identity table; Bare / mapping-failure
+  paths still fall back to physical addresses. Shared identity maps remain as
+  a broader fallback until they can be bounded further.
 - Qualification gate is boundary suites + workload sweep, not the full Scala
   suite.
 - No parent-level per-interface timing budgets.

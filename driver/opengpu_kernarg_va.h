@@ -45,6 +45,10 @@ typedef uint32_t opengpu_kernarg_u32;
  * fetch never runs from the shared identity map. */
 #define OPENGPU_CODE_VA_BASE      0xc0000000ull
 #define OPENGPU_CODE_VA_STRIDE    (4ull * 1024ull * 1024ull)
+/* Fill/blit/strided/resolve/invalidate buffers. Slot 0 is source, slot 1 is
+ * destination; fill and invalidate use slot 1 / slot 0 alone. */
+#define OPENGPU_DMA_VA_BASE       0xc4000000ull
+#define OPENGPU_DMA_VA_STRIDE     (4ull * 1024ull * 1024ull)
 
 enum opengpu_kernarg_va_status {
 	OPENGPU_KERNARG_VA_OK = 0,
@@ -158,6 +162,17 @@ static inline int opengpu_code_va_plan(opengpu_kernarg_u64 dma,
 	return opengpu_resource_va_plan(dma, size, slot, page_size,
 					OPENGPU_CODE_VA_BASE,
 					OPENGPU_CODE_VA_STRIDE, out);
+}
+
+static inline int opengpu_dma_va_plan(opengpu_kernarg_u64 dma,
+				      opengpu_kernarg_u64 size,
+				      opengpu_kernarg_u32 slot,
+				      opengpu_kernarg_u32 page_size,
+				      struct opengpu_kernarg_va_plan *out)
+{
+	return opengpu_resource_va_plan(dma, size, slot, page_size,
+					OPENGPU_DMA_VA_BASE,
+					OPENGPU_DMA_VA_STRIDE, out);
 }
 
 #endif /* OPENGPU_KERNARG_VA_H */

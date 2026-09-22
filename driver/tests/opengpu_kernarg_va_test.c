@@ -135,6 +135,19 @@ int main(void)
 	assert(opengpu_code_va_plan(0, OPENGPU_CODE_VA_STRIDE + 1, 1, PAGE,
 				    &plan) == OPENGPU_KERNARG_VA_E_RANGE);
 
+	/* DMA windows sit above code so fill/blit/strided targets map privately
+	 * instead of relying on VA==PA through the shared identity map. */
+	assert(opengpu_dma_va_plan(0xbbbbb000, 0x1000, 0, PAGE, &plan) ==
+	       OPENGPU_KERNARG_VA_OK);
+	assert(plan.va_page == OPENGPU_DMA_VA_BASE);
+	assert(plan.pa_page == 0xbbbbb000);
+	assert(opengpu_dma_va_plan(0xccccc000, 0x2000, 1, PAGE, &other) ==
+	       OPENGPU_KERNARG_VA_OK);
+	assert(other.va_page == OPENGPU_DMA_VA_BASE + OPENGPU_DMA_VA_STRIDE);
+	assert(other.va_page >= OPENGPU_CODE_VA_BASE + OPENGPU_CODE_VA_STRIDE);
+	assert(opengpu_dma_va_plan(0, OPENGPU_DMA_VA_STRIDE + 1, 0, PAGE,
+				   &plan) == OPENGPU_KERNARG_VA_E_RANGE);
+
 	puts("kernarg VA planner tests passed");
 	return 0;
 }
