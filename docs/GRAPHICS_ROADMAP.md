@@ -153,10 +153,9 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
    regression to claw back by re-caching.
 3. **Physical closure** — the strided-copy descriptor address cone and the
    command-router dispatch cone are pipelined; the FP32 FMA lane now runs
-   four stages. Clean-commit synthesis STA on `20d0732` reaches **701.98 MHz**
-   (−424.55 ps setup) and still misses 1 GHz; hierarchical nets bind the
-   limiter on `fmaAlu` `csaSumReg` → `lshift_mask_valid_reg` (not L2 fill —
-   hold paths still name `fillWriteData` → SRAM). See
+   five stages (completion add cut from invert/LZD-mask/mask-valid). Integrated
+   synthesis STA reaches **755.96 MHz** (−322.83 ps); the limiter moved from
+   the FMA completion-add cone to the DMA byte-counter 64-bit add. See
    [../timing/README.md](../timing/README.md). Derive real parent IO budgets.
 4. **Software-driven growth** — grow the shader ISA from a small compiler
    corpus. Compute and graphics fragment shader code use private executable
