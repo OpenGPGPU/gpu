@@ -29,6 +29,13 @@ static void opengpu_sched_free_job(struct drm_sched_job *base)
     struct opengpu_sched_job *job = opengpu_sched_job_from_base(base);
     u32 i;
 
+    /* Revoke run-time private windows while the ordered free-job worker is
+     * still ahead of the next run-job worker, so no live job can still be
+     * translating through a VA the next job is about to reuse. */
+    for (i = 0; i < job->temporary_mapping_count; i++)
+        opengpu_mmu_vm_unmap(job->gpu, &job->context->vm,
+                             job->temporary_mappings[i].va,
+                             job->temporary_mappings[i].size);
     drm_sched_job_cleanup(base);
     for (i = 0; i < job->object_count; i++)
         drm_gem_object_put(job->objects[i]);

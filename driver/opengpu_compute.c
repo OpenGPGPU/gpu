@@ -250,8 +250,10 @@ static void opengpu_context_free(struct opengpu_file *render_file,
 
     drm_sched_entity_destroy(&context->entity);
     opengpu_wait_fence(render_file->gpu, &context->last_fence, false);
-    /* Jobs are drained (entity destroyed, last fence waited), so the ASID can
-     * be evicted and returned. */
+    /* The finished fence only means run_job has signalled; the ordered free-job
+     * worker can still be holding job->context to revoke run-time mappings.
+     * Drain it before the VM (and context) are torn down. */
+    flush_workqueue(render_file->gpu->compute.scheduler.submit_wq);
     opengpu_mmu_vm_destroy(render_file->gpu, &context->vm);
     for (i = 0; i < ARRAY_SIZE(context->bindings); i++) {
         if (!context->bindings[i])
@@ -1355,6 +1357,25 @@ static int opengpu_wait_reservation(struct drm_gem_object *object,
 static bool opengpu_strided_range_end(u64 start, u32 width, u32 height,
                                       u32 stride, u64 *end);
 
+/* Record a run-time private VM mapping so the scheduler can revoke it when the
+ * job retires. Mapping happens under submit_lock after the previous job
+ * drained, and the ordered free-job worker revokes it before the next run-job
+ * worker maps the same fixed window. */
+static int opengpu_job_track_mapping(struct opengpu_sched_job *job,
+                                     dma_addr_t va, size_t size)
+{
+    if (!job->vm || !job->context || !va || !size)
+        return 0;
+    if (job->temporary_mapping_count >= OPENGPU_MAX_TEMP_MAPPINGS) {
+        opengpu_mmu_vm_unmap(job->gpu, &job->context->vm, va, size);
+        return -ENOSPC;
+    }
+    job->temporary_mappings[job->temporary_mapping_count].va = va;
+    job->temporary_mappings[job->temporary_mapping_count].size = size;
+    job->temporary_mapping_count++;
+    return 0;
+}
+
 struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
 {
     /* The submitting context's address space; NULL for bring-up self-tests. */
@@ -1374,6 +1395,9 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
                     job->shader.dma, job->shader.size, 1, &code_va);
             if (ret)
                 return ERR_PTR(ret);
+            ret = opengpu_job_track_mapping(job, code_va, job->shader.size);
+            if (ret)
+                return ERR_PTR(ret);
             job->kernel.kernel_pc = code_va +
                 (job->kernel.kernel_pc - job->shader.dma);
         }
@@ -1388,8 +1412,14 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
             job, job->dma_source, job->dma_bytes, 0, &source);
         if (ret)
             return ERR_PTR(ret);
+        ret = opengpu_job_track_mapping(job, source, job->dma_bytes);
+        if (ret)
+            return ERR_PTR(ret);
         ret = opengpu_job_map_dma_range(
             job, job->dma_destination, job->dma_bytes, 1, &destination);
+        if (ret)
+            return ERR_PTR(ret);
+        ret = opengpu_job_track_mapping(job, destination, job->dma_bytes);
         if (ret)
             return ERR_PTR(ret);
 
@@ -1404,6 +1434,9 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
 
         ret = opengpu_job_map_dma_range(
             job, job->dma_destination, job->dma_bytes, 1, &destination);
+        if (ret)
+            return ERR_PTR(ret);
+        ret = opengpu_job_track_mapping(job, destination, job->dma_bytes);
         if (ret)
             return ERR_PTR(ret);
 
@@ -1434,8 +1467,14 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
             job, job->dma_source, source_span, 0, &source);
         if (ret)
             return ERR_PTR(ret);
+        ret = opengpu_job_track_mapping(job, source, source_span);
+        if (ret)
+            return ERR_PTR(ret);
         ret = opengpu_job_map_dma_range(
             job, job->dma_destination, destination_span, 1, &destination);
+        if (ret)
+            return ERR_PTR(ret);
+        ret = opengpu_job_track_mapping(job, destination, destination_span);
         if (ret)
             return ERR_PTR(ret);
         ret = opengpu_hw_strided_blit_async(
@@ -1487,6 +1526,10 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
                                               &command_va);
             if (ret)
                 return ERR_PTR(ret);
+            ret = opengpu_job_track_mapping(job, command_va,
+                                            job->commands.size);
+            if (ret)
+                return ERR_PTR(ret);
             job->hw.cmd = (u32)command_va;
         }
 
@@ -1508,12 +1551,20 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
                     job->shader.dma, job->shader.size, 1, &code_va);
                 if (ret)
                     return ERR_PTR(ret);
+                ret = opengpu_job_track_mapping(job, code_va,
+                                                job->shader.size);
+                if (ret)
+                    return ERR_PTR(ret);
                 shader_delta = (u32)code_va - (u32)job->shader.dma;
             }
             if (job->vertex_shader.cpu) {
                 ret = opengpu_binding_map_code(job->gpu, job->context,
                     job->vertex_shader.dma, job->vertex_shader.size, 2,
                     &vertex_code_va);
+                if (ret)
+                    return ERR_PTR(ret);
+                ret = opengpu_job_track_mapping(job, vertex_code_va,
+                                                job->vertex_shader.size);
                 if (ret)
                     return ERR_PTR(ret);
                 vertex_delta = (u32)vertex_code_va - (u32)job->vertex_shader.dma;
@@ -1546,11 +1597,17 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
                     job->hw.color, fb_bytes, 1, &color_va);
                 if (ret)
                     return ERR_PTR(ret);
+                ret = opengpu_job_track_mapping(job, color_va, fb_bytes);
+                if (ret)
+                    return ERR_PTR(ret);
                 job->hw.color = (u32)color_va;
             }
             if (job->hw.depth && fb_bytes) {
                 ret = opengpu_binding_map_framebuffer(job->gpu, job->context,
                     job->hw.depth, fb_bytes, 2, &depth_va);
+                if (ret)
+                    return ERR_PTR(ret);
+                ret = opengpu_job_track_mapping(job, depth_va, fb_bytes);
                 if (ret)
                     return ERR_PTR(ret);
                 job->hw.depth = (u32)depth_va;
@@ -1562,22 +1619,27 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
         dma_addr_t descriptor_va = 0;
 
         if (vm && job->context && job->render_desc.dma &&
-            (job->gpu->hw.capabilities & GPU_CAP_UNIFIED_RENDER) &&
-            opengpu_binding_map_render(job->gpu, job->context,
-                                       job->render_desc.dma,
-                                       job->render_desc.size,
-                                       &descriptor_va) == 0) {
-            ret = opengpu_hw_render_async(
-                job->gpu, &job->hw, job->render_desc.cpu,
-                (u32)descriptor_va, (u32)job->render_desc.size,
-                snapshots, snapshot_count, clear_depth,
-                lower_32_bits(job->depth_clear_dma), job->depth_clear_bytes,
-                0x00ffffffu, &job->events, vm, &fence);
+            (job->gpu->hw.capabilities & GPU_CAP_UNIFIED_RENDER)) {
+            ret = opengpu_binding_map_render(job->gpu, job->context,
+                                             job->render_desc.dma,
+                                             job->render_desc.size,
+                                             &descriptor_va);
+            if (!ret)
+                ret = opengpu_job_track_mapping(job, descriptor_va,
+                                                job->render_desc.size);
         } else {
             dev_err(job->gpu->dev,
                     "render job requires a unified render command and a VM\n");
             ret = -EIO;
         }
+        if (ret)
+            return ERR_PTR(ret);
+        ret = opengpu_hw_render_async(
+            job->gpu, &job->hw, job->render_desc.cpu,
+            (u32)descriptor_va, (u32)job->render_desc.size,
+            snapshots, snapshot_count, clear_depth,
+            lower_32_bits(job->depth_clear_dma), job->depth_clear_bytes,
+            0x00ffffffu, &job->events, vm, &fence);
     }
     if (ret)
         return ERR_PTR(ret);

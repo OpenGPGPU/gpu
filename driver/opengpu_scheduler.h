@@ -43,6 +43,17 @@ enum opengpu_sched_job_type {
     OPENGPU_SCHED_INVALIDATE,
 };
 
+/* A render job maps command, code, framebuffer and descriptor windows; a DMA
+ * job maps source and destination windows. The scheduler's ordered free-job
+ * worker drains all of them before the next run-job worker reuses the same
+ * fixed VA. */
+#define OPENGPU_MAX_TEMP_MAPPINGS 8
+
+struct opengpu_job_temporary_mapping {
+    dma_addr_t va;
+    size_t size;
+};
+
 struct opengpu_sched_job {
     struct drm_sched_job base;
     struct opengpu_device *gpu;
@@ -81,6 +92,11 @@ struct opengpu_sched_job {
     u8 *depth_clear_cpu;
     struct drm_gem_object *objects[6];
     u32 object_count;
+    /* Private VM windows mapped at run time for this job only; revoked when
+     * the scheduler retires the job, before the next job reuses the window. */
+    struct opengpu_job_temporary_mapping
+        temporary_mappings[OPENGPU_MAX_TEMP_MAPPINGS];
+    u32 temporary_mapping_count;
 };
 
 struct opengpu_file {
