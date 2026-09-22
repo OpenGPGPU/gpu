@@ -987,6 +987,12 @@ static int opengpu_resolve_bindings(
         (vertex_submit &&
          (!*vertex_buffer || !*vertex_shader || !*vertex_kernarg)))
         return -EINVAL;
+    if (context->vm.enabled &&
+        ((*kernarg && !(*kernarg)->va) ||
+         (*texture && !(*texture)->va) ||
+         (*vertex_buffer && !(*vertex_buffer)->va) ||
+         (*vertex_kernarg && !(*vertex_kernarg)->va)))
+        return -EIO;
     return 0;
 }
 
@@ -2683,6 +2689,10 @@ int opengpu_compute_launch_ioctl(struct drm_device *drm, void *data,
         args->shader_offset >= shader->size ||
         args->kernarg_offset >= kernarg->size) {
         ret = -EINVAL;
+        goto out_file;
+    }
+    if (context->vm.enabled && !kernarg->va) {
+        ret = -EIO;
         goto out_file;
     }
     shader_dma = to_drm_gem_dma_obj(shader->object);

@@ -33,7 +33,9 @@ fall back to the resource's physical address. Bare bring-up jobs still use the
 ASID-0 identity map. Resource unbind revokes its private leaves and performs an
 ASID-scoped TLB invalidation before releasing the GEM object. Rebinding a slot
 to a resource in a different VA window revokes the old window as part of the
-same quiesced update.
+same quiesced update. Render and compute submission also reject any VM-enabled
+binding that lacks its required private VA, making the rule an invariant at
+both bind and execution boundaries.
 
 DRM is allocated and registered from platform probe. KMS only configures
 display objects; it starts disabled and binds caller-owned GEM framebuffers.
