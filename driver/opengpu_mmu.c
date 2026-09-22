@@ -440,6 +440,61 @@ out_submit:
     return ret;
 }
 
+int opengpu_mmu_vm_unmap(struct opengpu_device *gpu, struct opengpu_vm *vm,
+                         dma_addr_t va, size_t size)
+{
+    struct opengpu_mmu *mmu = &gpu->mmu;
+    u64 start, end, p;
+    int ret = 0;
+
+    if (!vm || !vm->enabled)
+        return -EINVAL;
+    if (!mmu->enabled)
+        return -EOPNOTSUPP;
+    if (!size)
+        return -EINVAL;
+    if (check_add_overflow((u64)va, (u64)size, &end) ||
+        end > (1ull << 32))
+        return -ERANGE;
+    start = (u64)va & ~(u64)(MMU_PAGE_SIZE - 1);
+    end = (end + MMU_PAGE_SIZE - 1) & ~(u64)(MMU_PAGE_SIZE - 1);
+
+    mutex_lock(&gpu->hw.submit_lock);
+    ret = opengpu_hw_wait_idle_locked(gpu);
+    if (ret)
+        goto out_submit;
+    mutex_lock(&mmu->lock);
+
+    /* Validate the whole range before revoking any leaf. A private mapping
+     * always owns an L1 table for each covered region. */
+    for (p = start; p < end;) {
+        u32 region = (u32)(p / MMU_SUPERPAGE_SIZE);
+
+        if (!vm_l1_find(vm, region)) {
+            ret = -ENOENT;
+            goto out_mmu;
+        }
+        p = ((u64)region + 1) * MMU_SUPERPAGE_SIZE;
+    }
+    for (p = start; p < end; p += MMU_PAGE_SIZE) {
+        u32 region = (u32)(p / MMU_SUPERPAGE_SIZE);
+        u32 page = (u32)((p % MMU_SUPERPAGE_SIZE) / MMU_PAGE_SIZE);
+        struct opengpu_buffer *l1 = vm_l1_find(vm, region);
+
+        ((u32 *)l1->cpu)[page] = 0;
+    }
+    dma_wmb();
+    /* The revoked leaves are private, so retaining unrelated global entries
+     * is safe and avoids a device-wide flush. */
+    ret = opengpu_hw_flush_tlb_asid(gpu, vm->asid);
+
+out_mmu:
+    mutex_unlock(&mmu->lock);
+out_submit:
+    mutex_unlock(&gpu->hw.submit_lock);
+    return ret;
+}
+
 void opengpu_mmu_vm_destroy(struct opengpu_device *gpu, struct opengpu_vm *vm)
 {
     struct opengpu_mmu *mmu = &gpu->mmu;

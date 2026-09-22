@@ -30,7 +30,8 @@ failed batches do not emit pixels or vertex outputs. Faults are not resumable.
 For a context with an enabled VM, resource binding and per-job command, DMA,
 framebuffer and snapshot mapping failures abort the operation; they never
 fall back to the resource's physical address. Bare bring-up jobs still use the
-ASID-0 identity map.
+ASID-0 identity map. Resource unbind revokes its private leaves and performs an
+ASID-scoped TLB invalidation before releasing the GEM object.
 
 DRM is allocated and registered from platform probe. KMS only configures
 display objects; it starts disabled and binds caller-owned GEM framebuffers.

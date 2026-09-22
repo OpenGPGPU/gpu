@@ -280,6 +280,20 @@ int main(void)
             &gpu, (dma_addr_t)region * MMU_SUPERPAGE_SIZE, MMU_PAGE_SIZE, 0));
         assert((((u32 *)vm.root.cpu)[region] >> 10) ==
                (u32)(vm.l1[0].dma >> 12));
+        /* Unbind revokes the private leaf and uses an ASID-scoped flush. The
+         * unaligned user-visible subrange still revokes its containing page,
+         * while an untouched sibling remains available. */
+        asid_before = asid_flushes;
+        assert(!opengpu_mmu_vm_unmap(&gpu, &vm, va + 123, 100));
+        assert(table[0] == 0);
+        assert((table[1] & MMU_PTE_V) != 0);
+        assert(asid_flushes == asid_before + 1);
+        assert(opengpu_mmu_vm_unmap(
+                   &gpu, &vm, 0x30000000, MMU_PAGE_SIZE) == -ENOENT);
+        assert(asid_flushes == asid_before + 1);
+        assert(opengpu_mmu_vm_unmap(&gpu, &vm, va, 0) == -EINVAL);
+        assert(opengpu_mmu_vm_unmap(
+                   &gpu, &vm, 0xfffff000, 0x2000) == -ERANGE);
         opengpu_mmu_vm_destroy(&gpu, &vm);
         /* Only the global split table stays allocated. */
         assert(live_allocations == live_before + 1);

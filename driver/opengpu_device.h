@@ -336,6 +336,8 @@ int opengpu_mmu_vm_activate(struct opengpu_device *gpu,
  * the shared global identity mapping. */
 int opengpu_mmu_vm_map(struct opengpu_device *gpu, struct opengpu_vm *vm,
                        dma_addr_t va, dma_addr_t pa, size_t size, u32 policy);
+int opengpu_mmu_vm_unmap(struct opengpu_device *gpu, struct opengpu_vm *vm,
+                         dma_addr_t va, size_t size);
 void opengpu_mmu_vm_destroy(struct opengpu_device *gpu, struct opengpu_vm *vm);
 int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              const struct opengpu_kernel_launch *launch,

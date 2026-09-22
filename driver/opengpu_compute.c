@@ -890,6 +890,12 @@ int opengpu_compute_resource_unbind_ioctl(struct drm_device *drm, void *data,
     ret = opengpu_context_quiesce(render_file, context);
     if (ret)
         goto out_file;
+    if (context->vm.enabled && binding->va) {
+        ret = opengpu_mmu_vm_unmap(render_file->gpu, &context->vm,
+                                   binding->va, binding->size);
+        if (ret)
+            goto out_file;
+    }
     context->bindings[args->slot - 1] = NULL;
     mutex_unlock(&render_file->lock);
     drm_gem_object_put(binding->object);
