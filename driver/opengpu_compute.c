@@ -789,6 +789,7 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
     ret = opengpu_context_quiesce(render_file, context);
     if (ret)
         goto out_file;
+    old = context->bindings[args->slot - 1];
     /* A compute kernarg is mapped privately into the context's VM and reached
      * through a virtual address, so contexts with different physical kernargs
      * are isolated at the same VA.  Fragment and vertex kernargs use the same
@@ -809,25 +810,25 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
         u32 policy = (args->flags & OPENGPU_RESOURCE_UNCACHED) ?
             OPENGPU_MMU_POLICY_UNCACHED : OPENGPU_MMU_POLICY_CACHED;
 
+        if (!(args->flags & OPENGPU_RESOURCE_UNCACHED)) {
+            /* Drop CPU-written cache lines before publishing the new PTEs, so
+             * a failed invalidate cannot leave an unowned mapping behind. */
+            ret = opengpu_binding_invalidate(gpu, binding);
+            if (ret)
+                goto out_file;
+        }
         ret = opengpu_binding_map_texture(gpu, context, binding, args->slot,
                                           policy);
-        if (ret)
-            goto out_file;
-        if (!(args->flags & OPENGPU_RESOURCE_UNCACHED)) {
-            /* A cached private texture still needs CPU-written lines dropped
-             * at the upload boundary. */
-            ret = opengpu_binding_invalidate(gpu, binding);
-        }
         if (ret)
             goto out_file;
     } else if (args->type == OPENGPU_RESOURCE_VERTEX_BUFFER &&
                context->vm.enabled) {
         /* Vertex-buffer staging shares VECTOR_SATP with shader data loads;
          * keep the bind-time invalidate for the CPU upload. */
-        ret = opengpu_binding_map_vertex(gpu, context, binding, args->slot);
+        ret = opengpu_binding_invalidate(gpu, binding);
         if (ret)
             goto out_file;
-        ret = opengpu_binding_invalidate(gpu, binding);
+        ret = opengpu_binding_map_vertex(gpu, context, binding, args->slot);
         if (ret)
             goto out_file;
     } else if (args->type == OPENGPU_RESOURCE_TEXTURE &&
@@ -845,7 +846,19 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
         if (ret)
             goto out_file;
     }
-    old = context->bindings[args->slot - 1];
+    /* A different resource class may use a different private VA window, or no
+     * private mapping at all (snapshotted shaders). Revoke the old window
+     * before dropping its GEM reference. If both bindings use the same fixed
+     * VA, the new map has already replaced the old leaves. */
+    if (old && context->vm.enabled && old->va && old->va != binding->va) {
+        ret = opengpu_mmu_vm_unmap(gpu, &context->vm, old->va, old->size);
+        if (ret) {
+            if (binding->va)
+                opengpu_mmu_vm_unmap(gpu, &context->vm, binding->va,
+                                     binding->size);
+            goto out_file;
+        }
+    }
     context->bindings[args->slot - 1] = binding;
     mutex_unlock(&render_file->lock);
     if (old) {
