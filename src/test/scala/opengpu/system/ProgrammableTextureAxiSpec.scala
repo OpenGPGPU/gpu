@@ -18,6 +18,8 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
       "instruction divergent fragment",
       "instruction guest-sized fragment",
       "instruction vertex translation", "instruction vertex non-executable fault",
+      "staging translation", "staging invalid PTE fault",
+      "instruction vertex staging translation",
       // Guest DRM vertex shader: lane-aware SoA copy (x8 base, vl=4) plus the
       // divergent fragment program used by opengpu_drm_test on 16x16.
       "instruction vertex guest shader",
@@ -43,7 +45,15 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
         val instructionRoot = 0x31000
         val vertexVa = 0x1800000
         val vertexPa = 0x1c00000
-        val kernarg = 0x4000
+        val translatedStaging = scenario.startsWith("staging") ||
+          scenario == "instruction vertex staging translation"
+        val stagingFault = scenario == "staging invalid PTE fault"
+        val kernarg = if (translatedStaging) 0x2000000 else 0x4000
+        val kernargPa = 0x2400000
+        val vertexBuffer = if (translatedStaging) 0x2800000 else 0x5000
+        val vertexBufferPa = 0x2c00000
+        val vertexKernarg = if (translatedStaging) 0x3000000 else 0x6000
+        val vertexKernargPa = 0x3400000
         val color = 0x10000
         val root = 0x30000
         val textureVa = 0x400000
@@ -93,16 +103,26 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
         store(texturePa, Seq(texel))
         store(textureVa, Seq(0x00ff00ffL)) // poison physical VA alias
         store(root, Seq(0xcfL, if (scenario == "invalid PTE") 0L else (0x800L << 10) | 0x43L))
+        if (translatedStaging) {
+          store(root + 32, Seq(if (stagingFault) 0L else
+            (kernargPa.toLong >> 12) << 10 | 0xcfL))
+          if (vertexShader) {
+            store(root + 40, Seq((vertexBufferPa.toLong >> 12) << 10 | 0xcfL))
+            store(root + 48, Seq((vertexKernargPa.toLong >> 12) << 10 | 0xcfL))
+          }
+        }
         store(instructionRoot + 12, Seq(if (scenario == "instruction invalid PTE fault") 0L else
           (0x1000L << 10) | (if (scenario == "instruction non-executable fault") 0x43L else 0x49L)))
         if (vertexShader) {
           store(instructionRoot + 24, Seq((0x1c00L << 10) |
             (if (scenario.contains("fault")) 0x43L else 0x49L)))
-          store(commands, Seq(0x5000L, 3L, 32L, vertexVa.toLong, 0x6000L, 0L, 0L) ++
+          store(commands, Seq(vertexBuffer.toLong, 3L, 32L, vertexVa.toLong,
+            vertexKernarg.toLong, 0L, 0L) ++
             Seq.fill(17)(0L) ++ Seq(programVa.toLong, kernarg.toLong) ++ Seq.fill(8)(0L) ++
             Seq(320L) ++ Seq.fill(5)(0L))
           for (v <- 0 until 3) {
-            store(0x5000 + v * 32, vertices.slice(v * 4, v * 4 + 4) ++
+            store((if (translatedStaging) vertexBufferPa else 0x5000) + v * 32,
+              vertices.slice(v * 4, v * 4 + 4) ++
               Seq(0xffffffffL, 16L, 0L, 0L))
           }
           if (guestVertexShader) {
@@ -172,7 +192,7 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
             }
           })(writeLine) { dut.io.m_irq.peek().litToBoolean }
         val instructionFault = translatedInstructions && fault
-        if (!instructionFault) {
+        if (!instructionFault && !stagingFault) {
           assert(reads.contains(BigInt(root + 4)), "vtex.sample must walk the texture mapping")
         }
         if (translatedInstructions) {
@@ -190,9 +210,32 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
             }
           }
         }
+        if (translatedStaging) {
+          assert(!reads.exists(a => a >= kernarg && a < kernarg + 4096),
+            "fragment kernarg VA escaped onto physical AXI")
+          assert(!writes.exists(a => a >= kernarg && a < kernarg + 4096),
+            "fragment kernarg VA write escaped onto physical AXI")
+          if (!stagingFault) {
+            assert(writes.exists(a => a >= kernargPa && a < kernargPa + 4096),
+              "fragment staging must write the translated kernarg PA")
+          }
+          if (vertexShader) {
+            assert(!reads.exists(a => a >= vertexBuffer && a < vertexBuffer + 4096),
+              "vertex-buffer VA escaped onto physical AXI")
+            assert(!reads.exists(a => a >= vertexKernarg && a < vertexKernarg + 4096),
+              "vertex kernarg VA escaped onto physical AXI")
+            assert(!writes.exists(a => a >= vertexKernarg && a < vertexKernarg + 4096),
+              "vertex kernarg VA write escaped onto physical AXI")
+            assert(reads.exists(a => a >= vertexBufferPa && a < vertexBufferPa + 4096),
+              "vertex staging must read the translated vertex-buffer PA")
+            assert(writes.exists(a => a >= vertexKernargPa && a < vertexKernargPa + 4096),
+              "vertex staging must write the translated kernarg PA")
+          }
+        }
         assert(!reads.exists(a => a >= textureVa && a < textureVa + 4096),
           "texture VA escaped onto physical AXI")
-        if (scenario == "invalid PTE" || scenario == "page-table bus fault" || instructionFault) {
+        if (scenario == "invalid PTE" || scenario == "page-table bus fault" ||
+            instructionFault || stagingFault) {
           assert(!reads.contains(BigInt(texturePa)), "failed walk must suppress the texel read")
         } else {
           assert(reads.contains(BigInt(texturePa)), "texture must be fetched from the translated PA")
@@ -218,6 +261,9 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
         // Repair and flush, then reuse the ID. A fresh framebuffer detects a
         // stale completion, and clearing observations proves this job did work.
         store(root + 4, Seq((0x800L << 10) | 0x43L))
+        if (stagingFault) {
+          store(root + 32, Seq((kernargPa.toLong >> 12) << 10 | 0xcfL))
+        }
         store(instructionRoot + 24, Seq((0x1c00L << 10) | 0x49L))
         val remapping = scenario == "instruction ASID switch" || scenario.endsWith("flush")
         val recoveryProgram = if (remapping) 0x1400000 else program

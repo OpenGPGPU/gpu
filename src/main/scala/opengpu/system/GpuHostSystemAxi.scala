@@ -238,7 +238,7 @@ class GpuHostSystemAxi(
     // DMA on the same port (IDs >= 4) stays physical. Command, framebuffer and
     // texture word clients each keep their own TLB.
     val stagingClient = Module(new TranslatedLineClient(
-      gpuConfig, graphicsHostTransactions))
+      gpuConfig, graphicsHostTransactions, preserveCachePolicy = true))
     val cbClient = Module(new TranslatedWordClient(
       gpuConfig, wordPortTransactions, graphicsHostTransactions,
       uncached = true, preserveCachePolicy = true))
