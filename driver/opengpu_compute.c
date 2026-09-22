@@ -455,9 +455,7 @@ static int opengpu_binding_invalidate(
 /* Map a binding's physical range into a context VM's private address space
  * and cache the resulting virtual address on the binding.  The VA is a fixed
  * window keyed by binding slot, so two contexts can map different physical
- * kernargs at the same virtual address and are isolated by their ASID.  Falls
- * back to a global uncached mapping when the MMU is absent or the range is
- * too large for the window. */
+ * kernargs at the same virtual address and are isolated by their ASID. */
 static int opengpu_binding_map_kernarg(struct opengpu_device *gpu,
                                        struct opengpu_render_context *context,
                                        struct opengpu_resource_binding *binding,
@@ -483,8 +481,7 @@ static int opengpu_binding_map_kernarg(struct opengpu_device *gpu,
  * space, so two contexts can sample different physical textures at the same
  * virtual window and stay isolated by their ASID.  The fixed-function texture
  * client already translates through the shared page tables; this only picks
- * the VA.  Falls back to the global path when the MMU is absent or the range
- * does not fit the window. */
+ * the VA. */
 static int opengpu_binding_map_texture(struct opengpu_device *gpu,
                                        struct opengpu_render_context *context,
                                        struct opengpu_resource_binding *binding,
@@ -662,20 +659,23 @@ static int opengpu_binding_map_uncached(
     return ret;
 }
 
-/* Translate a contiguous DMA range into the context VM when possible. On
- * failure keep the physical address so Bare / identity still works. */
-static dma_addr_t opengpu_job_map_dma_range(struct opengpu_sched_job *job,
-                                            dma_addr_t dma, size_t size,
-                                            u32 slot)
+/* Translate a contiguous DMA range into the context VM. Bare jobs retain the
+ * physical address, while an enabled VM must never fall back to identity. */
+static int opengpu_job_map_dma_range(struct opengpu_sched_job *job,
+                                     dma_addr_t dma, size_t size, u32 slot,
+                                     dma_addr_t *out)
 {
-    dma_addr_t va = 0;
+    if (!out)
+        return -EINVAL;
+    if (!job->vm) {
+        *out = dma;
+        return 0;
+    }
+    if (!job->context || !dma || !size)
+        return -EINVAL;
 
-    if (!job->vm || !job->context || !dma || !size)
-        return dma;
-    if (opengpu_binding_map_dma(job->gpu, job->context, dma, size, slot,
-                                &va))
-        return dma;
-    return va;
+    return opengpu_binding_map_dma(job->gpu, job->context, dma, size, slot,
+                                   out);
 }
 
 int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
@@ -793,18 +793,15 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
      * through a virtual address, so contexts with different physical kernargs
      * are isolated at the same VA.  Fragment and vertex kernargs use the same
      * window planner: staging and shader data loads both translate under
-     * VECTOR_SATP.  Fall back to the global uncached mapping when the private
-     * mapping is unavailable.  Textures, vertex buffers and the render
-     * descriptor/command snapshot are mapped privately too; textures requesting
-     * OPENGPU_RESOURCE_UNCACHED take the global uncached path. Shaders are
-     * snapshotted. */
+     * VECTOR_SATP. Textures, vertex buffers and the render descriptor/command
+     * snapshot are mapped privately too. A VM mapping failure rejects the bind
+     * instead of exposing the physical address through the identity map.
+     * Shaders are snapshotted. */
     if ((args->type == OPENGPU_RESOURCE_COMPUTE_KERNARG ||
          args->type == OPENGPU_RESOURCE_KERNARG ||
          args->type == OPENGPU_RESOURCE_VERTEX_KERNARG) &&
         context->vm.enabled) {
         ret = opengpu_binding_map_kernarg(gpu, context, binding, args->slot);
-        if (ret)
-            ret = opengpu_binding_map_uncached(gpu, binding);
         if (ret)
             goto out_file;
     } else if (args->type == OPENGPU_RESOURCE_TEXTURE &&
@@ -814,12 +811,9 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
 
         ret = opengpu_binding_map_texture(gpu, context, binding, args->slot,
                                           policy);
-        if (ret) {
-            if (args->flags & OPENGPU_RESOURCE_UNCACHED)
-                ret = opengpu_binding_map_uncached(gpu, binding);
-            else
-                ret = opengpu_binding_invalidate(gpu, binding);
-        } else if (!(args->flags & OPENGPU_RESOURCE_UNCACHED)) {
+        if (ret)
+            goto out_file;
+        if (!(args->flags & OPENGPU_RESOURCE_UNCACHED)) {
             /* A cached private texture still needs CPU-written lines dropped
              * at the upload boundary. */
             ret = opengpu_binding_invalidate(gpu, binding);
@@ -829,11 +823,10 @@ int opengpu_compute_resource_bind_ioctl(struct drm_device *drm, void *data,
     } else if (args->type == OPENGPU_RESOURCE_VERTEX_BUFFER &&
                context->vm.enabled) {
         /* Vertex-buffer staging shares VECTOR_SATP with shader data loads;
-         * keep the bind-time invalidate for the CPU upload. Fall back to the
-         * DMA address when the private VA window cannot be installed. */
+         * keep the bind-time invalidate for the CPU upload. */
         ret = opengpu_binding_map_vertex(gpu, context, binding, args->slot);
         if (ret)
-            binding->va = 0;
+            goto out_file;
         ret = opengpu_binding_invalidate(gpu, binding);
         if (ret)
             goto out_file;
@@ -1364,10 +1357,16 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_BLIT) {
-        dma_addr_t source = opengpu_job_map_dma_range(
-            job, job->dma_source, job->dma_bytes, 0);
-        dma_addr_t destination = opengpu_job_map_dma_range(
-            job, job->dma_destination, job->dma_bytes, 1);
+        dma_addr_t source, destination;
+
+        ret = opengpu_job_map_dma_range(
+            job, job->dma_source, job->dma_bytes, 0, &source);
+        if (ret)
+            return ERR_PTR(ret);
+        ret = opengpu_job_map_dma_range(
+            job, job->dma_destination, job->dma_bytes, 1, &destination);
+        if (ret)
+            return ERR_PTR(ret);
 
         ret = opengpu_hw_blit_async(job->gpu,
                                     lower_32_bits(source),
@@ -1376,8 +1375,12 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_FILL) {
-        dma_addr_t destination = opengpu_job_map_dma_range(
-            job, job->dma_destination, job->dma_bytes, 1);
+        dma_addr_t destination;
+
+        ret = opengpu_job_map_dma_range(
+            job, job->dma_destination, job->dma_bytes, 1, &destination);
+        if (ret)
+            return ERR_PTR(ret);
 
         ret = opengpu_hw_clear_async(job->gpu,
                                      lower_32_bits(destination),
@@ -1402,9 +1405,14 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
                                        &destination_end) &&
             destination_end > job->dma_destination)
             destination_span = (size_t)(destination_end - job->dma_destination);
-        source = opengpu_job_map_dma_range(job, job->dma_source, source_span, 0);
-        destination = opengpu_job_map_dma_range(
-            job, job->dma_destination, destination_span, 1);
+        ret = opengpu_job_map_dma_range(
+            job, job->dma_source, source_span, 0, &source);
+        if (ret)
+            return ERR_PTR(ret);
+        ret = opengpu_job_map_dma_range(
+            job, job->dma_destination, destination_span, 1, &destination);
+        if (ret)
+            return ERR_PTR(ret);
         ret = opengpu_hw_strided_blit_async(
             job->gpu, lower_32_bits(source),
             lower_32_bits(destination), job->dma_bytes,
@@ -1444,16 +1452,17 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
         /* Reach this job's command snapshot through the context's VM.  The
          * mapping is overwritten per job, so it must happen here, after the
          * scheduler's one-credit policy has let the previous job drain; the
-         * command client then resolves it under this context's ASID.  Fall
-         * back to the physical address when the VM is absent or too small. */
+         * command client then resolves it under this context's ASID. */
         if (vm && job->context && job->commands.dma) {
             dma_addr_t command_va = 0;
 
-            if (opengpu_binding_map_command(job->gpu, job->context,
-                                            job->commands.dma,
-                                            job->commands.size,
-                                            &command_va) == 0)
-                job->hw.cmd = (u32)command_va;
+            ret = opengpu_binding_map_command(job->gpu, job->context,
+                                              job->commands.dma,
+                                              job->commands.size,
+                                              &command_va);
+            if (ret)
+                return ERR_PTR(ret);
+            job->hw.cmd = (u32)command_va;
         }
 
         if (job->shader.cpu)
@@ -1507,14 +1516,20 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
             size_t fb_bytes = (size_t)job->hw.stride * job->gpu->height;
             dma_addr_t color_va = 0, depth_va = 0;
 
-            if (job->hw.color && fb_bytes &&
-                opengpu_binding_map_framebuffer(job->gpu, job->context,
-                    job->hw.color, fb_bytes, 1, &color_va) == 0)
+            if (job->hw.color && fb_bytes) {
+                ret = opengpu_binding_map_framebuffer(job->gpu, job->context,
+                    job->hw.color, fb_bytes, 1, &color_va);
+                if (ret)
+                    return ERR_PTR(ret);
                 job->hw.color = (u32)color_va;
-            if (job->hw.depth && fb_bytes &&
-                opengpu_binding_map_framebuffer(job->gpu, job->context,
-                    job->hw.depth, fb_bytes, 2, &depth_va) == 0)
+            }
+            if (job->hw.depth && fb_bytes) {
+                ret = opengpu_binding_map_framebuffer(job->gpu, job->context,
+                    job->hw.depth, fb_bytes, 2, &depth_va);
+                if (ret)
+                    return ERR_PTR(ret);
                 job->hw.depth = (u32)depth_va;
+            }
         }
 
         /* A draw is always a unified render command; the legacy START path was
