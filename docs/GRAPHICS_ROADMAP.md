@@ -167,21 +167,23 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
    L1 probes progress while a demand miss waits for an L2 eviction, avoiding
    the circular wait exposed by vector-heavy vertex kernels. Fill/blit/strided
    DMA now translate under `VECTOR_SATP` (legacy kernel-word and unified
-   engines). Context fill/blit/strided/resolve/invalidate jobs map into a
-   private DMA VA window at run time. Remaining isolation work is shrinking
-   or dropping the global identity table once Bare bring-up and fallback
-   paths no longer need it.
+   engines). Context fill/blit/strided jobs map into a private DMA VA window
+   at run time. Resolve/invalidate remain physical (L2 invalidate is
+   PA-tagged). Remaining isolation work is shrinking or dropping the global
+   identity table once Bare bring-up and those leftover physical paths no
+   longer need it.
 
 ## Known limits
 
 - Guest ARTI/QEMU: the default, fragment-core, and vertex+fragment-core
   end-to-end DRM tests pass and power off cleanly on `e2e155e`. Programmable
   `vtex.sample`, kernarg/VB staging, fill/blit/strided DMA and shader data
-  loads all translate under the context ASID (`VECTOR_SATP`). Context DMA
-  jobs map buffers into a private DMA VA window at run time so they no longer
-  depend on VA==PA through the global identity table; Bare / mapping-failure
-  paths still fall back to physical addresses. Shared identity maps remain as
-  a broader fallback until they can be bounded further.
+  loads all translate under the context ASID (`VECTOR_SATP`). Context
+  fill/blit/strided jobs map buffers into a private DMA VA window at run time
+  so they no longer depend on VA==PA through the global identity table; Bare /
+  mapping-failure paths still fall back to physical addresses. Resolve and
+  line-invalidate stay physical because L2 invalidate is PA-tagged. Shared
+  identity maps remain as a broader fallback until they can be bounded further.
 - Qualification gate is boundary suites + workload sweep, not the full Scala
   suite.
 - No parent-level per-interface timing budgets.

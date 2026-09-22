@@ -1413,39 +1413,20 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_RESOLVE) {
-        u64 source_end = 0, destination_end = 0;
-        size_t source_span = job->dma_bytes;
-        size_t destination_span = job->dma_bytes;
-        dma_addr_t source, destination;
-
-        if (!opengpu_strided_range_end(job->dma_source, job->dma_bytes,
-                                       job->dma_height, job->dma_source_stride,
-                                       &source_end) &&
-            source_end > job->dma_source)
-            source_span = (size_t)(source_end - job->dma_source);
-        if (!opengpu_strided_range_end(job->dma_destination, job->dma_bytes,
-                                       job->dma_height,
-                                       job->dma_destination_stride,
-                                       &destination_end) &&
-            destination_end > job->dma_destination)
-            destination_span = (size_t)(destination_end - job->dma_destination);
-        source = opengpu_job_map_dma_range(job, job->dma_source, source_span, 0);
-        destination = opengpu_job_map_dma_range(
-            job, job->dma_destination, destination_span, 1);
+        /* Resolve still issues physical line traffic today; keep PA until the
+         * resolve port is wrapped like fill/blit/strided. */
         ret = opengpu_hw_resolve_async(
-            job->gpu, lower_32_bits(source),
-            lower_32_bits(destination), job->dma_bytes,
+            job->gpu, lower_32_bits(job->dma_source),
+            lower_32_bits(job->dma_destination), job->dma_bytes,
             job->dma_height, job->dma_source_stride,
             job->dma_destination_stride, job->dma_sample_mode,
             &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_INVALIDATE) {
-        dma_addr_t source = opengpu_job_map_dma_range(
-            job, job->dma_source, job->dma_bytes, 0);
-
+        /* Line invalidate is physically tagged in L2; never remap to a VA. */
         ret = opengpu_hw_invalidate_async(
-            job->gpu, lower_32_bits(source), job->dma_bytes,
+            job->gpu, lower_32_bits(job->dma_source), job->dma_bytes,
             &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
