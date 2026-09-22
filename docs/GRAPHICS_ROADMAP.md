@@ -126,9 +126,9 @@ arbiter. Keep measuring before landing either outstanding translations
 | Boundary suites (roadmap Reproduce `testOnly` list + `GpuCommandMmioSpec`) | 136/136 pass on `e2e155e` |
 | `scripts/test_driver.py` + `scripts/test_test_selection.py` | pass |
 | Workload sweep (`scripts/benchmark_gpu.py`, 10 cases) | pass; `manifest.json` commit `e2e155e` |
-| Guest DRM, default (`GPU_FRAG_CORE=0`) | pass; powers off (`OPENGPU USERSPACE DRM PASS`) |
-| Guest DRM, fragment-core (`GPU_FRAG_CORE=1`) | pass; powers off (`OPENGPU USERSPACE DRM PASS`) |
-| Guest DRM, vertex+fragment (`GPU_FRAG_CORE=1` `GPU_VERT_CORE=1`) | pass; powers off (`OPENGPU USERSPACE DRM PASS`) |
+| Guest DRM, default (`GPU_FRAG_CORE=0`) | pass on `cfc045a` (private fill/blit/strided DMA VAs); powers off |
+| Guest DRM, fragment-core (`GPU_FRAG_CORE=1`) | pass on `cfc045a`; powers off |
+| Guest DRM, vertex+fragment (`GPU_FRAG_CORE=1` `GPU_VERT_CORE=1`) | pass on `cfc045a`; powers off |
 
 Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0).
 `flat_16_1x` is 5271 cycles. Programmable `shader_16_1x` is staging-bound
@@ -176,7 +176,7 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
 ## Known limits
 
 - Guest ARTI/QEMU: the default, fragment-core, and vertex+fragment-core
-  end-to-end DRM tests pass and power off cleanly on `e2e155e`. Programmable
+  end-to-end DRM tests pass and power off cleanly on `cfc045a`. Programmable
   `vtex.sample`, kernarg/VB staging, fill/blit/strided DMA and shader data
   loads all translate under the context ASID (`VECTOR_SATP`). Context
   fill/blit/strided jobs map buffers into a private DMA VA window at run time
