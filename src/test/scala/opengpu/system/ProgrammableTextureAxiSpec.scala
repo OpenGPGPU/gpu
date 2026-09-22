@@ -20,6 +20,7 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
       "instruction vertex translation", "instruction vertex non-executable fault",
       "staging translation", "staging invalid PTE fault",
       "staging page-table bus fault",
+      "staging ASID switch", "staging VPN flush", "staging ASID flush",
       "instruction vertex staging translation",
       // Guest DRM vertex shader: lane-aware SoA copy (x8 base, vl=4) plus the
       // divergent fragment program used by opengpu_drm_test on 16x16.
@@ -268,22 +269,42 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
           store(root + 32, Seq((kernargPa.toLong >> 12) << 10 | 0xcfL))
         }
         store(instructionRoot + 24, Seq((0x1c00L << 10) | 0x49L))
-        val remapping = scenario == "instruction ASID switch" || scenario.endsWith("flush")
-        val recoveryProgram = if (remapping) 0x1400000 else program
+        val remapping = scenario == "instruction ASID switch" ||
+          scenario == "staging ASID switch" || scenario.endsWith("flush")
+        val stagingRemapping = scenario.startsWith("staging") && remapping
+        val recoveryProgram = if (remapping && translatedInstructions) 0x1400000 else program
+        val recoveryRoot = if (scenario == "instruction ASID switch" ||
+            scenario == "staging ASID switch") 0x32000 else
+          if (translatedInstructions) instructionRoot else root
+        val recoveryKernargRoot = if (scenario == "staging ASID switch") recoveryRoot else root
         if (translatedInstructions) {
           for (i <- 0 until 16) words(recoveryProgram + i * 4L) =
             words.getOrElse(program + i * 4L, BigInt(0))
-          val recoveryRoot = if (scenario == "instruction ASID switch") 0x32000 else instructionRoot
           store(recoveryRoot + 12, Seq(((recoveryProgram.toLong >> 12) << 10) | 0x49L))
           if (scenario == "instruction ASID switch") {
             axiWrite(dut, GpuCommandMmioRegs.INSTRUCTION_SATP, 0x80800000 | (recoveryRoot >> 12))
+          }
+        }
+        if (stagingRemapping) {
+          // Keep texture + kernarg reachable under the recovery ASID/root so a
+          // staging TLB shootdown cannot leave the relaunch unmapped.
+          store(recoveryKernargRoot, Seq(0xcfL, (0x800L << 10) | 0x43L))
+          store(recoveryKernargRoot + 32, Seq((kernargPa.toLong >> 12) << 10 | 0xcfL))
+          if (scenario == "staging ASID switch") {
+            axiWrite(dut, GpuCommandMmioRegs.VECTOR_SATP,
+              0x80800000 | (recoveryKernargRoot >> 12))
           }
         }
         if (scenario == "instruction VPN flush") {
           axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, programVa | 4)
         } else if (scenario == "instruction ASID flush") {
           axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, (1 << 3) | 2)
-        } else if (scenario != "instruction ASID switch") {
+        } else if (scenario == "staging VPN flush") {
+          axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, kernarg | 4)
+        } else if (scenario == "staging ASID flush") {
+          axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, (1 << 3) | 2)
+        } else if (scenario != "instruction ASID switch" &&
+            scenario != "staging ASID switch") {
           axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
         }
         axiWrite(dut, RenderHostRegs.IRQ, 3)
@@ -299,10 +320,18 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
         assert((axiRead(dut, RenderHostRegs.STATUS) & 7) == 2)
         val completion = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
         assert((completion & 255) == 17 && ((completion >> 15) & 1) == 1)
-        if (!remapping || scenario == "instruction ASID flush") {
-          assert(reads.contains(BigInt(root + 4)), "recovery must walk the repaired mapping")
+        if (!remapping || scenario == "instruction ASID flush" ||
+            scenario == "staging ASID flush") {
+          assert(reads.contains(BigInt(recoveryKernargRoot + 4)),
+            "recovery must walk the repaired texture mapping")
         }
-        if (remapping) {
+        if (stagingRemapping) {
+          assert(reads.contains(BigInt(recoveryKernargRoot + 32)),
+            "staging relaunch must re-walk the kernarg mapping")
+          assert(writes.exists(a => a >= kernargPa && a < kernargPa + 4096),
+            "staging relaunch must write the translated kernarg PA")
+        }
+        if (remapping && translatedInstructions) {
           assert(reads.contains(BigInt(recoveryProgram)), "relaunch must fetch the new physical code page")
         }
         assert(!reads.exists(a => a >= textureVa && a < textureVa + 4096))

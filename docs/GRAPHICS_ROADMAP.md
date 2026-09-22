@@ -75,8 +75,9 @@ on the integrated AXI path; render-host port backpressure remains covered in
 different texture VA/PA, invalid PTE and page-table/texel bus faults, recovery,
 and reset while an accepted texture read awaits data. Kernarg/VB staging
 covers non-identity VA→PA, invalid PTE and page-table bus faults with
-recovery, plus a CPU rewrite of the translated vertex-buffer PA across draws
-(uncached staging must observe it without an L2 invalidate).
+recovery, ASID switch / scoped flush shootdowns, plus a CPU rewrite of the
+translated vertex-buffer PA across draws (uncached staging must observe it
+without an L2 invalidate).
 
 Workload note (`scripts/benchmark_gpu.py`): flat draws are OM-bound
 (`om_stall` ≈ `raster_stall`, `om_conflict` = 0). Measured changes kept:
