@@ -44,10 +44,10 @@ is flop-to-flop descriptor address arithmetic, not routing.
 
 The descriptor, router-dispatch, command-processor dispatch and FP32 FMA
 cones are pipelined, and the DMA byte accumulator no longer sits behind the
-completion arbiter. At the integrated top the binding path has moved to the
-L2 fill write-data path, so 1 GHz is not met. `GpuCommandProcessor.queued`
-now reports queue occupancy only (commands held in the dispatch pipeline are
-not counted).
+completion arbiter. At the integrated top the latest dirty measurement
+(`gpu-system-cmdpipe`) binds on the L2 fill write-data path, so 1 GHz is
+not met. `GpuCommandProcessor.queued` now reports queue occupancy only
+(commands held in the dispatch pipeline are not counted).
 
 The 25% IO budget is a placeholder until the enclosing SoC supplies real
 parent-interface budgets. Until then, internal `core_clock` is the only
@@ -55,6 +55,8 @@ transferable claim — and it is not met at 1 GHz.
 
 ## Next
 
-1 GHz is an objective, not a milestone. Next RTL lever: the command-router
-completion arbiter grant path (`completionEvents`), which currently binds
-the integrated top. Derive real parent IO budgets in parallel.
+1 GHz is an objective, not a milestone. Next RTL lever: the L2 fill
+write-data path that currently binds the integrated top on the dirty
+`cmdpipe` measurement. Re-run that configuration from a clean commit
+before treating it as the baseline, and derive real parent IO budgets in
+parallel.

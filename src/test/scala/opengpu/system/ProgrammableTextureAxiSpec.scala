@@ -19,6 +19,7 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
       "instruction guest-sized fragment",
       "instruction vertex translation", "instruction vertex non-executable fault",
       "staging translation", "staging invalid PTE fault",
+      "staging page-table bus fault",
       "instruction vertex staging translation",
       // Guest DRM vertex shader: lane-aware SoA copy (x8 base, vl=4) plus the
       // divergent fragment program used by opengpu_drm_test on 16x16.
@@ -47,7 +48,8 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
         val vertexPa = 0x1c00000
         val translatedStaging = scenario.startsWith("staging") ||
           scenario == "instruction vertex staging translation"
-        val stagingFault = scenario == "staging invalid PTE fault"
+        val stagingFault = scenario == "staging invalid PTE fault" ||
+          scenario == "staging page-table bus fault"
         val kernarg = if (translatedStaging) 0x2000000 else 0x4000
         val kernargPa = 0x2400000
         val vertexBuffer = if (translatedStaging) 0x2800000 else 0x5000
@@ -180,7 +182,8 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
           a => (scenario == "page-table bus fault" && a == root + 4) ||
             (scenario == "texture bus fault" && a == texturePa) ||
             (scenario == "instruction page-table bus fault" && a == instructionRoot + 12) ||
-            (scenario == "instruction code bus fault" && a == program),
+            (scenario == "instruction code bus fault" && a == program) ||
+            (scenario == "staging page-table bus fault" && a == root + 32),
           writeAckDelay = 12, maxCycles = 300000, readResponseDelay = 2,
           onReadAccepted = a => if (resetting && a == texturePa && !resetIssued) {
             resetIssued = true
@@ -308,6 +311,147 @@ class ProgrammableTextureAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
           else words(recoveryColor + 1 * 16L + 1 * 4) == texel,
           "framebuffer must contain the sampled physical texel")
       }
+    }
+  }
+
+  // Staging is uncached so a CPU rewrite of the translated PA is visible on the
+  // next draw without an L2 invalidate.  A stale cached read would keep the
+  // empty first-draw vertices and miss the sampled texel.
+  it should "observe a CPU update to translated uncached vertex staging across draws" in {
+    val side = 4
+    val gfx = GraphicsConfig(screenWidth = side, screenHeight = side, subPixelBits = 8)
+    val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu, fragCore = true, vertCore = true)) { dut =>
+      initialize(dut)
+      val words = mutable.LongMap.empty[BigInt]
+      val reads = mutable.ArrayBuffer.empty[BigInt]
+      val writes = mutable.ArrayBuffer.empty[BigInt]
+      val descriptor = 0x1000
+      val commands = 0x2000
+      val program = 0x1000000
+      val programVa = 0xc00000
+      val instructionRoot = 0x31000
+      val vertexVa = 0x1800000
+      val vertexPa = 0x1c00000
+      val kernarg = 0x2000000
+      val kernargPa = 0x2400000
+      val vertexBuffer = 0x2800000
+      val vertexBufferPa = 0x2c00000
+      val vertexKernarg = 0x3000000
+      val vertexKernargPa = 0x3400000
+      val color = 0x10000
+      val root = 0x30000
+      val textureVa = 0x400000
+      val texturePa = 0x800000
+      val texel = 0xff00ffffL
+      val vertices = Seq(-65536L, -65536L, 0L, 65536L,
+        65536L, -65536L, 0L, 65536L, -65536L, 65536L, 0L, 65536L)
+      def store(base: Int, data: Seq[Long]): Unit = data.zipWithIndex.foreach {
+        case (v, i) => words(base.toLong + i * 4) = BigInt(v & 0xffffffffL)
+      }
+      def storeVertices(base: Int, data: Seq[Long]): Unit =
+        for (v <- 0 until 3) {
+          store(base + v * 32, data.slice(v * 4, v * 4 + 4) ++
+            Seq(0xffffffffL, 16L, 0L, 0L))
+        }
+      store(commands, Seq(vertexBuffer.toLong, 3L, 32L, vertexVa.toLong,
+        vertexKernarg.toLong, 0L, 0L) ++
+        Seq.fill(17)(0L) ++ Seq(programVa.toLong, kernarg.toLong) ++ Seq.fill(8)(0L) ++
+        Seq(320L) ++ Seq.fill(5)(0L))
+      store(descriptor, Seq(1L << 16, commands.toLong, color.toLong, 0x20000L,
+        side * 4L, 0x81L, textureVa.toLong, 0x10001L, 0x101L) ++ Seq.fill(7)(0L))
+      store(0x20000, Seq.fill(side * side)(0x00ffffffL))
+      store(color, Seq.fill(side * side)(0x12345678L))
+      store(program, Seq(
+        0x0080006fL, 0L,
+        2L << 20 | 8L << 15 | 1L << 12 | 5L << 7 | 0x13L,
+        5L << 20 | 1L << 15 | 5L << 7 | 0x33L,
+        0xc1007057L | 4L << 15,
+        128L << 20 | 5L << 15 | 6L << 7 | 0x13L,
+        0x02006007L | 6L << 15 | 1L << 7,
+        160L << 20 | 5L << 15 | 6L << 7 | 0x13L,
+        0x02006007L | 6L << 15 | 2L << 7,
+        1L << 26 | 1L << 25 | 2L << 20 | 1L << 15 | 3L << 7 | 0x2bL,
+        192L << 20 | 5L << 15 | 6L << 7 | 0x13L,
+        0x02006027L | 6L << 15 | 3L << 7,
+        0x30500073L))
+      store(vertexPa, Seq(0xc1007057L | 3L << 15) ++ (0 until 8).flatMap { f =>
+        Seq((f * 32L) << 20 | 1L << 15 | 5L << 7 | 0x13L,
+          0x02006007L | 5L << 15 | 1L << 7,
+          ((8 + f) * 32L) << 20 | 1L << 15 | 5L << 7 | 0x13L,
+          0x02006027L | 5L << 15 | 1L << 7)
+      } ++ Seq(0x30500073L))
+      // Empty first-draw VB so coverage is empty; a stale L2 hit would keep it.
+      storeVertices(vertexBufferPa, Seq.fill(12)(0L))
+      store(texturePa, Seq(texel))
+      store(textureVa, Seq(0x00ff00ffL))
+      store(root, Seq(0xcfL, (0x800L << 10) | 0x43L))
+      store(root + 32, Seq((kernargPa.toLong >> 12) << 10 | 0xcfL))
+      store(root + 40, Seq((vertexBufferPa.toLong >> 12) << 10 | 0xcfL))
+      store(root + 48, Seq((vertexKernargPa.toLong >> 12) << 10 | 0xcfL))
+      store(instructionRoot + 12, Seq((0x1000L << 10) | 0x49L))
+      store(instructionRoot + 24, Seq((0x1c00L << 10) | 0x49L))
+
+      def readLine(addr: BigInt): BigInt = {
+        reads += addr
+        val base = addr.toLong & ~63L
+        (0 until 16).foldLeft(BigInt(0))((line, i) =>
+          line | (words.getOrElse(base + i * 4, BigInt(0)) << (32 * i)))
+      }
+      def writeLine(addr: BigInt, data: BigInt, mask: BigInt): Unit = {
+        writes += addr
+        val base = addr.toLong & ~63L
+        for (b <- 0 until 64 if mask.testBit(b)) {
+          val a = base + (b / 4) * 4
+          val shift = (b % 4) * 8
+          words(a) = (words.getOrElse(a, BigInt(0)) & ~(BigInt(255) << shift)) |
+            (((data >> (b * 8)) & 255) << shift)
+        }
+      }
+      def submit(id: Int): Unit = {
+        axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, id)
+        axiWrite(dut, GpuCommandMmioRegs.OPCODE, GpuCommandOpcode.render.litValue.toInt)
+        axiWrite(dut, GpuCommandMmioRegs.SOURCE, descriptor)
+        axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+        axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      }
+      def expectCompletion(id: Int): Unit = {
+        assert((axiRead(dut, RenderHostRegs.STATUS) & 7) == 2)
+        val completion = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+        assert((completion & 255) == id && ((completion >> 15) & 1) == 1)
+        axiWrite(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
+        axiWrite(dut, RenderHostRegs.IRQ, 3)
+      }
+
+      axiWrite(dut, GpuCommandMmioRegs.VECTOR_SATP, 0x80400000 | (root >> 12))
+      axiWrite(dut, GpuCommandMmioRegs.INSTRUCTION_SATP,
+        0x80400000 | (instructionRoot >> 12))
+      axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+      submit(21)
+      serviceMemoryMaster(dut, readLine, writeAckDelay = 12, maxCycles = 300000)(writeLine) {
+        dut.io.m_irq.peek().litToBoolean
+      }
+      assert(reads.exists(a => a >= vertexBufferPa && a < vertexBufferPa + 4096),
+        "first draw must read the translated vertex-buffer PA")
+      assert(!(0 until side * side).exists(i =>
+        words.getOrElse(color + i * 4L, BigInt(0)) == texel),
+        "empty vertex buffer must not produce the sampled texel")
+      expectCompletion(21)
+
+      // CPU rewrites the physical VB; no flush. Uncached staging must observe it.
+      storeVertices(vertexBufferPa, vertices)
+      store(color, Seq.fill(side * side)(0x12345678L))
+      reads.clear(); writes.clear()
+      submit(22)
+      serviceMemoryMaster(dut, readLine, writeAckDelay = 12, maxCycles = 300000)(writeLine) {
+        dut.io.m_irq.peek().litToBoolean
+      }
+      assert(reads.exists(a => a >= vertexBufferPa && a < vertexBufferPa + 4096),
+        "second draw must re-read the translated vertex-buffer PA")
+      assert(words.getOrElse(color + 1 * 16L + 1 * 4, BigInt(0)) == texel,
+        "CPU-updated vertex buffer must be visible without an L2 invalidate")
+      expectCompletion(22)
     }
   }
 }

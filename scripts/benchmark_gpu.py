@@ -30,7 +30,7 @@ def main():
     (args.output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     results = []
     with (args.output / 'simulation.log').open('w') as log:
-        process = subprocess.Popen(['sbt', '-batch', 'set Test / parallelExecution := false',
+        process = subprocess.Popen(['sbt', '-batch',
             'testOnly opengpu.system.GpuWorkloadSpec'], cwd=ROOT, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for line in process.stdout:
