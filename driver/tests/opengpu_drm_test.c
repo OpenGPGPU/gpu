@@ -2188,6 +2188,151 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL destroyed context accepted");
         return 1;
     }
+    /* VM isolation through the DRM ioctl path: the driver maps each context's
+     * fill, texture, kernarg and DMA buffers at the same fixed virtual
+     * windows, so this exercises same-VA/different-PA separation, cross-window
+     * rebind revocation, and context teardown with queued work followed by an
+     * ASID recycle. */
+    {
+        struct resource_buffer iso_fill_a, iso_fill_b, iso_kernarg;
+        uint32_t iso_context_a = 0, iso_context_b = 0;
+        uint32_t iso_recycled = 0;
+        uint32_t iso_sync[7] = { 0 };
+        uint32_t lane;
+
+        CHECK(create_resource_buffer(fd, 64, &iso_fill_a),
+              "VM isolation fill A buffer");
+        CHECK(create_resource_buffer(fd, 64, &iso_fill_b),
+              "VM isolation fill B buffer");
+        CHECK(create_resource_buffer(fd, 64, &iso_kernarg),
+              "VM isolation kernarg buffer");
+        CHECK(create_context(fd, &iso_context_a), "VM isolation context A");
+        CHECK(create_context(fd, &iso_context_b), "VM isolation context B");
+        CHECK(create_syncobj(fd, &iso_sync[0]),
+              "VM isolation fill A syncobj");
+        CHECK(create_syncobj(fd, &iso_sync[1]),
+              "VM isolation fill B syncobj");
+        CHECK(create_syncobj(fd, &iso_sync[2]),
+              "VM isolation rebind fill syncobj");
+        CHECK(create_syncobj(fd, &iso_sync[3]),
+              "VM isolation rebind compute syncobj");
+        CHECK(create_syncobj(fd, &iso_sync[4]),
+              "VM isolation teardown fill syncobj");
+        CHECK(create_syncobj(fd, &iso_sync[5]),
+              "VM isolation recycled fill syncobj");
+        CHECK(create_syncobj(fd, &iso_sync[6]),
+              "VM isolation recycled compute syncobj");
+
+        /* Both contexts use the same private DMA destination VA window. If
+         * the two ASIDs were not isolated, the second fill would corrupt the
+         * first buffer (or vice versa). */
+        CHECK(fill_resource(fd, iso_context_a, &iso_fill_a, 0xaaaaaaaau,
+                            iso_sync[0], OPENGPU_COMMAND_EVENT(9, 1)),
+              "VM isolation fill A");
+        CHECK(wait_syncobjs(fd, &iso_sync[0], 1), "wait VM isolation fill A");
+        CHECK(fill_resource(fd, iso_context_b, &iso_fill_b, 0xbbbbbbbbu,
+                            iso_sync[1], OPENGPU_COMMAND_EVENT(10, 1)),
+              "VM isolation fill B");
+        CHECK(wait_syncobjs(fd, &iso_sync[1], 1), "wait VM isolation fill B");
+        if (((uint32_t *)iso_fill_a.map)[0] != 0xaaaaaaaau ||
+            ((uint32_t *)iso_fill_b.map)[0] != 0xbbbbbbbbu) {
+            fprintf(stderr, "VM fill isolation a=0x%08x b=0x%08x\n",
+                    ((uint32_t *)iso_fill_a.map)[0],
+                    ((uint32_t *)iso_fill_b.map)[0]);
+            errno = EIO;
+            perror("OPENGPU USERSPACE DRM FAIL VM fill isolation");
+            return 1;
+        }
+
+        /* Cross-window rebind: slot 1 moves from a texture private window to
+         * a compute-kernarg private window. The old texture window must be
+         * revoked before the new mapping is published, or bind fails. */
+        CHECK(bind_texture(fd, iso_context_b, 1, &texture),
+              "VM isolation bind texture slot 1");
+        CHECK(bind_resource(fd, iso_context_b, 1, &iso_kernarg,
+                            OPENGPU_RESOURCE_COMPUTE_KERNARG, 64),
+              "VM isolation rebind slot 1 to compute kernarg");
+        CHECK(bind_resource(fd, iso_context_b, 7, &compute_shader,
+                            OPENGPU_RESOURCE_COMPUTE_SHADER, 128),
+              "VM isolation bind compute shader slot 7");
+        CHECK(fill_resource(fd, iso_context_b, &iso_kernarg, 0xcafe0001u,
+                            iso_sync[2], OPENGPU_COMMAND_EVENT(11, 1)),
+              "VM isolation initialize rebound kernarg");
+        CHECK(wait_syncobjs(fd, &iso_sync[2], 1),
+              "wait VM isolation rebound kernarg fill");
+        CHECK(submit_compute(
+                  fd, iso_context_b, 7, 1, 4, 0, iso_sync[3],
+                  OPENGPU_COMMAND_WAIT_EVENT | OPENGPU_COMMAND_SIGNAL_EVENT,
+                  OPENGPU_COMMAND_EVENT(11, 1),
+                  OPENGPU_COMMAND_EVENT(12, 1)),
+              "VM isolation compute through rebound slot");
+        CHECK(wait_syncobjs(fd, &iso_sync[3], 1),
+              "wait VM isolation rebound compute");
+        for (lane = 0; lane < 4; lane++) {
+            uint32_t expected = lane < 2 ? 6u : lane;
+
+            if (((uint32_t *)iso_kernarg.map)[lane] != expected) {
+                fprintf(stderr,
+                        "rebound compute kernarg lane=%u output=0x%08x "
+                        "expected=%u\n",
+                        lane, ((uint32_t *)iso_kernarg.map)[lane], expected);
+                errno = EIO;
+                perror("OPENGPU USERSPACE DRM FAIL VM rebind compute result");
+                return 1;
+            }
+        }
+
+        /* Context teardown with queued work, then ASID recycle. A recycled
+         * ASID must start from a fresh root and compute in the new context
+         * without observing the destroyed context's private leaves. */
+        CHECK(fill_resource(fd, iso_context_b, &iso_fill_b, 0x5a5a5a5au,
+                            iso_sync[4], OPENGPU_COMMAND_EVENT(13, 1)),
+              "VM isolation queue teardown fill");
+        CHECK(destroy_context(fd, iso_context_b),
+              "VM isolation destroy context with queued work");
+        CHECK(wait_syncobjs(fd, &iso_sync[4], 1),
+              "wait VM isolation teardown fill");
+        CHECK(create_context(fd, &iso_recycled),
+              "VM isolation recycle context");
+        CHECK(bind_resource(fd, iso_recycled, 7, &compute_shader,
+                            OPENGPU_RESOURCE_COMPUTE_SHADER, 128),
+              "VM isolation bind recycled shader");
+        CHECK(bind_resource(fd, iso_recycled, 8, &iso_kernarg,
+                            OPENGPU_RESOURCE_COMPUTE_KERNARG, 64),
+              "VM isolation bind recycled kernarg");
+        CHECK(fill_resource(fd, iso_recycled, &iso_kernarg, 0xcafe0001u,
+                            iso_sync[5], OPENGPU_COMMAND_EVENT(14, 1)),
+              "VM isolation initialize recycled kernarg");
+        CHECK(wait_syncobjs(fd, &iso_sync[5], 1),
+              "wait VM isolation recycled kernarg fill");
+        CHECK(submit_compute(
+                  fd, iso_recycled, 7, 8, 4, 0, iso_sync[6],
+                  OPENGPU_COMMAND_WAIT_EVENT | OPENGPU_COMMAND_SIGNAL_EVENT,
+                  OPENGPU_COMMAND_EVENT(14, 1),
+                  OPENGPU_COMMAND_EVENT(15, 1)),
+              "VM isolation recycled compute");
+        CHECK(wait_syncobjs(fd, &iso_sync[6], 1),
+              "wait VM isolation recycled compute");
+        for (lane = 0; lane < 4; lane++) {
+            uint32_t expected = lane < 2 ? 6u : lane;
+
+            if (((uint32_t *)iso_kernarg.map)[lane] != expected) {
+                fprintf(stderr,
+                        "recycled compute kernarg lane=%u output=0x%08x "
+                        "expected=%u\n",
+                        lane, ((uint32_t *)iso_kernarg.map)[lane], expected);
+                errno = EIO;
+                perror("OPENGPU USERSPACE DRM FAIL VM recycled compute "
+                       "result");
+                return 1;
+            }
+        }
+
+        CHECK(destroy_context(fd, iso_recycled),
+              "VM isolation destroy recycled context");
+        CHECK(destroy_context(fd, iso_context_a),
+              "VM isolation destroy context A");
+    }
     CHECK(get_last_fault(fd, &final_fault), "query final GPU fault");
     if (final_fault.sequence != initial_fault.sequence) {
         fprintf(stderr,
@@ -2209,6 +2354,7 @@ int main(void)
            "ordered colour "
            "blit/fill/strided blit + "
            "persistent-depth cross-submission pass + "
+           "VM fill/rebind/recycle isolation + "
            "fault-query ABI + vblank flip event sequence=%u\n",
            vert_core ? "vertex+fragment-core-backed" :
            frag_core ? "core-backed" : "texture",

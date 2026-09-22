@@ -20,8 +20,11 @@ Remaining work:
 
 - [x] Add MMU tests proving that the same VA resolves to different physical
   pages, revocation is context-local and a recycled ASID gets a fresh root.
-- [ ] Extend isolation coverage through the DRM ioctl and guest paths for
-  unbind/rebind, mapping failure and context teardown.
+- [x] Cover DRM ioctl guest-path isolation for same-VA/different-PA fill,
+  cross-window rebind and context teardown with ASID recycle
+  (`opengpu_drm_test.c`).
+- [ ] Cover DRM ioctl guest-path bind-time private-map allocation failure,
+  including cleanup and a successful follow-up submission.
 - [ ] Track and revoke temporary per-job mappings when their lifetime ends,
   without racing the next job's reuse of a fixed VA window.
 - [ ] Separate resolve and PA-tagged line-invalidate requirements from the
@@ -36,8 +39,9 @@ unbound storage, and no validated VM job depends on VA equal to PA.
 
 - [ ] Cover private-map allocation failure through render and compute ioctls,
   including cleanup and a successful follow-up submission.
-- [ ] Cover context destruction with queued work, reset during page walks or
-  delayed writes, completion backpressure and ASID reuse.
+- [ ] Cover context destruction reset during page walks or delayed writes and
+  completion backpressure; queued-work teardown and ASID reuse are now covered
+  in the guest path.
 - [ ] Add randomized legal command sequences with memory backpressure and
   injected descriptor, translation and bus faults.
 - [ ] Promote the full Scala suite, host driver tests and selected guest paths
