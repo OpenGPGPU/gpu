@@ -453,12 +453,17 @@ class GpuSystem(
   private val stridedBytesValue = RegEnable(
     stridedCopyEngine.io.completion.bits.bytesCopied,
     stridedCopyEngine.io.completion.fire)
+  // One more register on the summed increment so the 64-bit accumulator add
+  // does not share a cycle with the three-way mux (secondary setup path on
+  // the 20d0732 clean STA).
+  private val dmaBytesDelta = RegInit(0.U(64.W))
   when(io.clearPerformanceCounters) {
     cycleCount := 0.U
     activeCuCycleCount := 0.U
     lowerReadCount := 0.U
     lowerWriteCount := 0.U
     dmaByteCount := 0.U
+    dmaBytesDelta := 0.U
   }.otherwise {
     cycleCount := cycleCount + 1.U
     activeCuCycleCount := activeCuCycleCount + PopCount(dispatcher.io.busy)
@@ -468,10 +473,11 @@ class GpuSystem(
     when(io.memoryRequest.fire && !io.memoryRequest.bits.isWrite) {
       lowerReadCount := lowerReadCount + 1.U
     }
-    dmaByteCount := dmaByteCount +
+    dmaBytesDelta :=
       Mux(copyBytesFired, copyBytesValue, 0.U) +
-      Mux(fillBytesFired, fillBytesValue, 0.U) +
-      Mux(stridedBytesFired, stridedBytesValue, 0.U)
+        Mux(fillBytesFired, fillBytesValue, 0.U) +
+        Mux(stridedBytesFired, stridedBytesValue, 0.U)
+    dmaByteCount := dmaByteCount + dmaBytesDelta
   }
   io.performance.cycles := cycleCount
   io.performance.activeCuCycles := activeCuCycleCount

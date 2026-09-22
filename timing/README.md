@@ -29,14 +29,15 @@ clean commit before treating them as the baseline.
 
 | Run | Scope | Core Fmax | Worst setup | Note |
 |---|---|---:|---:|---|
-| `gpu-system` | synthesis | 505.13 MHz | -979.70 ps | committed baseline |
+| `gpu-system-20d0732` | synthesis | 701.98 MHz | -424.55 ps | clean-commit baseline (RTL at `20d0732`) |
+| `gpu-system` | synthesis | 505.13 MHz | -979.70 ps | older committed baseline |
 | `strided-copy` | post-route | 505.06 MHz | -979.97 ps | committed baseline |
 | `strided-copy-pipe9` _(dirty)_ | post-route | 976.34 MHz | -24.24 ps | descriptor cone pipelined; `vclk` output -263.79 ps keeps verdict FAIL |
 | `gpu-system-routerpipe` _(dirty)_ | synthesis | 622.85 MHz | -605.53 ps | descriptor + router dispatch pipelined |
 | `fma-lane` _(dirty)_ | synthesis | 934.68 MHz | -69.89 ps | FMA lane, four stages, carry-select completion add |
 | `gpu-system-fma` _(dirty)_ | synthesis | 634.23 MHz | -576.72 ps | limiter the fill-engine completion path |
 | `gpu-system-dmabytes` _(dirty)_ | synthesis | 672.47 MHz | -487.05 ps | + registered DMA byte accumulator |
-| `gpu-system-cmdpipe` _(dirty)_ | synthesis | 694.39 MHz | -440.11 ps | + pipelined command-processor dispatch; limiter now L2 fill write data |
+| `gpu-system-cmdpipe` _(dirty)_ | synthesis | 694.39 MHz | -440.11 ps | + pipelined command-processor dispatch |
 
 `gpu-system` is the bounded integrated top (`GpuHostSystemAxi`).
 `strided-copy` routes cleanly (DRC/antenna 0, hold clean); its failing path
@@ -44,10 +45,14 @@ is flop-to-flop descriptor address arithmetic, not routing.
 
 The descriptor, router-dispatch, command-processor dispatch and FP32 FMA
 cones are pipelined, and the DMA byte accumulator no longer sits behind the
-completion arbiter. At the integrated top the latest dirty measurement
-(`gpu-system-cmdpipe`) binds on the L2 fill write-data path, so 1 GHz is
-not met. `GpuCommandProcessor.queued` now reports queue occupancy only
-(commands held in the dispatch pipeline are not counted).
+completion arbiter. Clean synthesis STA on `20d0732` reaches **701.98 MHz**
+(−424.55 ps setup) — slightly ahead of the dirty `cmdpipe` row. Hierarchical
+nets bind the core-clock limiter on the FP32 FMA lane:
+`fmaAlu.lanes_0.core.csaSumReg` → `lshift_mask_valid_reg` (completion-add /
+mask-valid cone). Hold paths still name `l2.slices_*.fillWriteData` into the
+data SRAM write port. Secondary setup paths include the DMA byte accumulator.
+`GpuCommandProcessor.queued` reports queue occupancy only (commands held in
+the dispatch pipeline are not counted).
 
 The 25% IO budget is a placeholder until the enclosing SoC supplies real
 parent-interface budgets. Until then, internal `core_clock` is the only
@@ -55,8 +60,7 @@ transferable claim — and it is not met at 1 GHz.
 
 ## Next
 
-1 GHz is an objective, not a milestone. Next RTL lever: the L2 fill
-write-data path that currently binds the integrated top on the dirty
-`cmdpipe` measurement. Re-run that configuration from a clean commit
-before treating it as the baseline, and derive real parent IO budgets in
-parallel.
+1 GHz is an objective, not a milestone. Next RTL lever: insert another
+FloatFMA stage after the completion add so `csaSumReg` → mask-valid / LZD-mask
+no longer share a cycle (standalone lane is ~935 MHz; the integrated top still
+binds there at ~702 MHz). Derive real parent IO budgets in parallel.

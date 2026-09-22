@@ -153,14 +153,11 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
    regression to claw back by re-caching.
 3. **Physical closure** — the strided-copy descriptor address cone and the
    command-router dispatch cone are pipelined; the FP32 FMA lane now runs
-   four stages. On the latest dirty `gpu-system-cmdpipe` synthesis run the
-   integrated top's binding path moved to the L2 fill write-data path, so
-   1 GHz is not met yet. Earlier dirty rows still mention the completion
-   arbiter; treat the L2 fill path as the current measured limiter and
-   re-measure from a clean commit before optimizing further. See
-   [../timing/README.md](../timing/README.md) for the per-run table (several
-   rows are dirty-tree measurements and need a clean-commit re-run). Derive
-   real parent IO budgets.
+   four stages. Clean-commit synthesis STA on `20d0732` reaches **701.98 MHz**
+   (−424.55 ps setup) and still misses 1 GHz; hierarchical nets bind the
+   limiter on `fmaAlu` `csaSumReg` → `lshift_mask_valid_reg` (not L2 fill —
+   hold paths still name `fillWriteData` → SRAM). See
+   [../timing/README.md](../timing/README.md). Derive real parent IO budgets.
 4. **Software-driven growth** — grow the shader ISA from a small compiler
    corpus. Compute and graphics fragment shader code use private executable
    windows; the shared identity map is read/write but non-executable. Shared-CU
