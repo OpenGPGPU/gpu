@@ -1138,6 +1138,7 @@ int opengpu_hw_strided_blit_async(struct opengpu_device *gpu, u32 source,
 int opengpu_hw_invalidate_async(struct opengpu_device *gpu, u32 address,
                                 u32 bytes,
                                 const struct opengpu_command_events *events,
+                                const struct opengpu_vm *vm,
                                 struct dma_fence **out_fence)
 {
     int ret;
@@ -1147,7 +1148,9 @@ int opengpu_hw_invalidate_async(struct opengpu_device *gpu, u32 address,
     *out_fence = NULL;
     if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
         return -EOPNOTSUPP;
-    /* The L2 line is 64 bytes; the walker rounds the extent up. */
+    /* The L2 line is 64 bytes; the walker rounds the extent up. Addresses are
+     * always physical: the host-invalidate port ignores VECTOR_SATP, so a
+     * context VM may stay active without programming the ASID-0 identity map. */
     if ((address & 63u) || !bytes || (bytes & 63u) ||
         (u64)address + bytes > (1ull << 32))
         return -ERANGE;
@@ -1156,7 +1159,7 @@ int opengpu_hw_invalidate_async(struct opengpu_device *gpu, u32 address,
     ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
         opengpu_hw_unified_submit_locked(
             gpu, NULL, events, GPU_UCMD_OP_INVALIDATE, address, 0, bytes, 0,
-            0, 0, 0, 0, bytes, NULL, out_fence);
+            0, 0, 0, 0, bytes, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }

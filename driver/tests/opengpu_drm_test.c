@@ -1836,7 +1836,9 @@ int main(void)
         }
     }
     /* L2 line invalidate: a validated 64-byte-aligned GEM range completes and
-     * malformed ranges are rejected.  It carries no memory traffic and lets a
+     * malformed ranges are rejected.  Addresses are physical and the engine
+     * ignores satp, so a VM-enabled context keeps its ASID rather than falling
+     * back to the ASID-0 identity map.  It carries no memory traffic and lets a
      * driver make CPU-written memory visible to a later GPU read. */
     if (capabilities & OPENGPU_CAP_UNIFIED_COMMANDS) {
         uint32_t invalidate_sync = 0;

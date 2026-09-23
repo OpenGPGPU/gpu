@@ -8,8 +8,9 @@ import opengpu.config.GpuConfig
 /** Walks a byte range and invalidates one 64-byte L2 line per step.
   *
   * Used by the driver-visible invalidate command and by the resolve adapter's
-  * implicit source invalidate.  It issues exactly one host invalidate at a time
-  * and waits for the L2 acknowledgement before advancing, so it needs no
+  * implicit source invalidate.  Addresses are physical: the L2 host-invalidate
+  * port does not consult VECTOR_SATP.  It issues exactly one host invalidate at
+  * a time and waits for the L2 acknowledgement before advancing, so it needs no
   * tagging and never blocks an unrelated L2 client.
   */
 class LineInvalidateEngine(

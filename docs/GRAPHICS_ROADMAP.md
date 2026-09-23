@@ -26,7 +26,7 @@ A passing sim is not silicon; a completed tool run is not timing closure.
   kernarg/VB staging, fill/blit/strided/resolve DMA, shader data loads and the
   programmable `vtex.sample` path translate with CU accesses. Context roots
   start empty and only explicit private mappings grant access. ASID-0 identity
-  mappings remain read/write and non-executable for Bare and line-invalidate;
+  mappings remain read/write and non-executable for Bare bring-up;
   compute, fragment and vertex code use private executable windows. Host
   vertex→fragment translation and instruction-fault recovery are covered.
   VM-enabled mapping failures abort the operation.
@@ -180,9 +180,10 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    engines). Context fill/blit/strided/resolve jobs map into a private DMA VA
    window at run time; resolve still invalidates L2 with the physical source
    base (`UCMD_PATTERN`) because host invalidate is PA-tagged. Line-invalidate
-   remains physical. The symbolic corpus now also validates fixed-profile
-   `vsext`/`vzext`/`vnclip`/`vsmul` (`userspace/shaders/fixed_width.S`). Remaining
-   ASID-0 identity use is Bare bring-up and explicit line-invalidate.
+   also submits physical addresses but keeps the context ASID (satp unused).
+   The symbolic corpus now also validates fixed-profile
+   `vsext`/`vzext`/`vnclip`/`vsmul` (`userspace/shaders/fixed_width.S`).
+   Remaining ASID-0 identity use is Bare bring-up (`opengpu_hw_enable_mmu`).
 5. **Workload-driven ISA** — add remaining VFUNARY1 (and any further
    widening/narrowing beyond the fixed SEW=32 profile already in the corpus)
    when a shader in the validated corpus or a target workload needs them.
@@ -222,17 +223,19 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
   loads all translate under the context ASID (`VECTOR_SATP`). Context
   fill/blit/strided/resolve jobs map buffers into a private DMA VA window at
   run time so they no longer depend on VA==PA; resolve still invalidates with
-  the physical source base. VM-enabled mapping failures abort. Bare jobs and
-  line-invalidate stay physical because L2 invalidate is PA-tagged. Context
-  roots expose no identity fallback.
+  the physical source base. VM-enabled mapping failures abort. Line-invalidate
+  submits physical addresses under the context ASID (engine ignores satp). Bare
+  bring-up still uses the ASID-0 identity map. Context roots expose no identity
+  fallback.
 - Qualification gate is boundary suites + workload sweep, not the full Scala
   suite.
 - No parent-level per-interface timing budgets.
 - Display/scanout is simulation-only.
-- ASID-0 identity mappings remain read/write and non-executable for Bare and
-  explicit line-invalidate. Resolve engine traffic uses private DMA VAs under
-  the context ASID; the pre-resolve L2 invalidate still names the physical
-  source. No resumable page faults or full removal of identity maps yet.
+- ASID-0 identity mappings remain read/write and non-executable for Bare
+  bring-up (`opengpu_hw_enable_mmu`). Resolve and line-invalidate submit
+  physical invalidate addresses; engine/resolve traffic uses private DMA VAs
+  under the context ASID where applicable. No resumable page faults or full
+  removal of the Bare identity table yet.
 - Shader ISA growth is validation-profile driven, not a real compiler corpus.
 
 ## Later / out of scope

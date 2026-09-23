@@ -31,10 +31,11 @@ For a context with an enabled VM, resource binding and per-job command, DMA
 (fill/blit/strided/resolve), framebuffer and snapshot mapping failures abort
 the operation; they never fall back to the resource's physical address. Resolve
 still invalidates L2 lines with the physical source base (UCMD_PATTERN) because
-host invalidate is PA-tagged. Line-invalidate jobs remain physically addressed.
-Bare bring-up jobs still use the ASID-0 identity map; context roots start empty
-and expose only explicit private mappings. Identity PTEs are ASID-tagged, so
-they cannot be reused by a context.
+host invalidate is PA-tagged. Line-invalidate jobs likewise submit physical
+addresses but keep the context VM active (satp is unused by that engine). Bare
+bring-up jobs still use the ASID-0 identity map; context roots start empty and
+expose only explicit private mappings. Identity PTEs are ASID-tagged, so they
+cannot be reused by a context.
 Resource unbind revokes its private leaves and performs an
 ASID-scoped TLB invalidation before releasing the GEM object. Rebinding a slot
 to a resource in a different VA window revokes the old window as part of the

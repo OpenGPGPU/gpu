@@ -447,7 +447,8 @@ static int opengpu_binding_invalidate(
     bytes = (u32)(end - start);
     if (!bytes)
         return 0;
-    ret = opengpu_hw_invalidate_async(gpu, (u32)start, bytes, NULL, &fence);
+    ret = opengpu_hw_invalidate_async(gpu, (u32)start, bytes, NULL, NULL,
+                                      &fence);
     if (ret)
         return ret;
     return opengpu_wait_fence(gpu, &fence, true);
@@ -624,8 +625,9 @@ static int opengpu_binding_map_code(struct opengpu_device *gpu,
 /* Map a fill/blit/strided/resolve buffer into the context VM so those DMA
  * engines translate under VECTOR_SATP instead of relying on VA==PA through the
  * shared identity map. Slot 0 is source; slot 1 is destination. Line-invalidate
- * stays physical because L2 invalidate is PA-tagged; resolve keeps a separate
- * physical invalidate base in UCMD_PATTERN. */
+ * submits physical addresses (L2 host-invalidate ignores satp) under the
+ * context ASID; resolve keeps a separate physical invalidate base in
+ * UCMD_PATTERN. */
 static int opengpu_binding_map_dma(struct opengpu_device *gpu,
                                    struct opengpu_render_context *context,
                                    dma_addr_t dma, size_t size, u32 slot,
@@ -1529,10 +1531,11 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_INVALIDATE) {
-        /* Line invalidate is physically tagged in L2; never remap to a VA. */
+        /* Line invalidate is physically tagged in L2 and ignores satp; keep
+         * the submitting context's VM active rather than restoring ASID-0. */
         ret = opengpu_hw_invalidate_async(
             job->gpu, lower_32_bits(job->dma_source), job->dma_bytes,
-            &job->events, &fence);
+            &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     /* Command-buffer fetches bypass the shared L2 in RTL, so the CPU-written
@@ -2696,8 +2699,9 @@ int opengpu_compute_invalidate_ioctl(struct drm_device *drm, void *data,
         goto out_exec;
     }
     sched_job->gpu = gpu;
-    /* Line invalidate is PA-tagged and runs under the ASID-0 identity map. */
-    sched_job->vm = NULL;
+    /* Addresses stay physical; satp is unused by the invalidate engine, so
+     * keep the context VM rather than forcing the ASID-0 identity map. */
+    sched_job->vm = context->vm.enabled ? &context->vm : NULL;
     sched_job->type = OPENGPU_SCHED_INVALIDATE;
     sched_job->dma_source = address;
     sched_job->dma_bytes = args->bytes;

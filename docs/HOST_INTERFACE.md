@@ -137,9 +137,10 @@ data accesses translate under VECTOR_SATP alongside the graphics word clients
 (Bare mode keeps physical addressing). Resolve engine traffic translates under
 VECTOR_SATP through the private DMA VA window when the context VM is enabled;
 UCMD_PATTERN carries the physical source base for the pre-resolve L2
-invalidate. Line-invalidate commands remain physically addressed because the
-L2 host-invalidate path is PA-tagged. Fill/blit/strided DMA likewise translate
-under VECTOR_SATP.
+invalidate. Line-invalidate commands also use physical addresses (the L2
+host-invalidate port ignores satp) but keep the submitting context's VM active
+rather than restoring ASID-0. Fill/blit/strided DMA translate under
+VECTOR_SATP.
 
 The command client remains uncached. Texture/framebuffer clients use the
 PTE cache policy. CPU writes still require the appropriate CPU cache/DMA
