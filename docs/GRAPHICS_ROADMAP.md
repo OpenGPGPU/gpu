@@ -181,7 +181,7 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    window at run time; resolve still invalidates L2 with the physical source
    base (`UCMD_PATTERN`) because host invalidate is PA-tagged. Line-invalidate
    remains physical. The symbolic corpus now also validates fixed-profile
-   `vsext`/`vzext`/`vnclip` (`userspace/shaders/fixed_width.S`). Remaining
+   `vsext`/`vzext`/`vnclip`/`vsmul` (`userspace/shaders/fixed_width.S`). Remaining
    ASID-0 identity use is Bare bring-up and explicit line-invalidate.
 5. **Workload-driven ISA** — add remaining VFUNARY1 (and any further
    widening/narrowing beyond the fixed SEW=32 profile already in the corpus)

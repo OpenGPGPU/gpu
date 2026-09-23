@@ -11,10 +11,14 @@ shader:
     vzext.vf2 v5, v2
     csrwi vxrm, 0
     vnclip.wi v6, v2, 1
+    lw t1, 20(x1)
+    vsmul.vx v7, v2, t1
     addi t0, x1, 8
     vse32.v v4, (t0)
     addi t0, x1, 12
     vse32.v v5, (t0)
     addi t0, x1, 16
     vse32.v v6, (t0)
+    addi t0, x1, 24
+    vse32.v v7, (t0)
     .insn i 0x73, 0, zero, zero, 0x305
