@@ -191,15 +191,19 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    the observed quality or bandwidth gap, expected benefit and verification
    scene; retain current center interpolation and uncompressed storage until
    a workload demonstrates a need. The sweep covers flat scenes at 1x/2x/4x,
-   shader and overdraw at 1x/4x, and texture at 1x, but contains no varying
-   UV at a partially covered sample or representative compressible frame.
+   shader and overdraw at 1x/4x, and texture at 1x. The shared-L2 4x image
+   scene now measures its varying texture at partially covered samples:
+   all 106 such samples differ from a quarter-pixel per-sample UV reference,
+   with 752 summed RGB-channel levels of difference and a maximum single
+   channel difference of 35. This shows a measurable edge-quality difference;
+   its value still needs a target workload and quality criterion.
    On the same worktree, `flat_16_4x` takes 20,058 cycles and transfers
    14,224 read / 67,328 write bytes below L2; the new `overdraw_16_4x`
    takes 25,414 cycles and transfers 29,904 read / 67,328 write bytes.
    Depth rejection keeps writes equal in this scene, while read traffic
    doubles. This establishes a traffic stress case, not a measured
-   compression win. Next add an edge-texture quality scene and a
-   representative compressible frame before making either feature call.
+   compression win. Next add a representative compressible frame and a
+   target edge-quality criterion before making either feature call.
 7. **Platform integration** — replace virtual vblank/scanout after choosing
    display hardware and its interface. Evaluate a small Mesa/Gallium path
    against the stable userspace ABI, private-VM isolation and full functional

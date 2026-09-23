@@ -351,6 +351,10 @@ class RenderCoreL2Spec extends AnyFlatSpec {
 
         def scale(c: Int, factor: Int): Int = (c * factor + 127) / 255
         def channel(word: Int, shift: Int): Int = (word >>> shift) & 0xff
+        var partialSamples = 0
+        var differingSamples = 0
+        var edgeChannelDifference = 0
+        var largestChannelDifference = 0
         // Texture sampling uses the pixel-centre UV for every covered sample.
         // Coverage itself uses the quarter-pixel sample position.
         for (y <- 0 until 16; x <- 0 until 16;
@@ -359,6 +363,31 @@ class RenderCoreL2Spec extends AnyFlatSpec {
             4 * (x + y) + sx + sy <= 64
           val passStencil = (x + y + s) % 3 != 0
           val t = texel(x, y)
+          if (sampleMode == 2 && inside) {
+            val covered = Msaa.positions(sampleMode).count { case (px, py) =>
+              4 * x + px > 0 && 4 * y + py > 0 &&
+                4 * (x + y) + px + py <= 64
+            }
+            if (covered < samples) {
+              partialSamples += 1
+              val nx = (x + (if (sx < 0) 15 else 1)) % 16
+              val ny = (y + (if (sy < 0) 15 else 1)) % 16
+              // The UV gradient is one texel per pixel. A quarter-pixel
+              // sample shifts the bilinear footprint 1/4 texel on each axis.
+              val shifts = Seq(24, 16, 8)
+              val differences = shifts.map { shift =>
+                val perSample = (9 * channel(t, shift) +
+                  3 * channel(texel(nx, y), shift) +
+                  3 * channel(texel(x, ny), shift) +
+                  channel(texel(nx, ny), shift) + 8) / 16
+                math.abs(perSample - channel(t, shift))
+              }
+              val difference = differences.sum
+              if (difference > 0) differingSamples += 1
+              edgeChannelDifference += difference
+              largestChannelDifference = largestChannelDifference.max(differences.max)
+            }
+          }
           val src = Seq(24, 16, 8).map(shift => channel(t, shift) * 255 >>> 8)
           val expectedColor = if (sampleMode == 0) {
             if (inside) (src(0).toLong << 24) | (src(1).toLong << 16) |
@@ -382,6 +411,14 @@ class RenderCoreL2Spec extends AnyFlatSpec {
             f"mode $sampleMode sample $s color ($x,$y): got 0x$actualColor%08x expected 0x$expectedColor%08x")
           assert(actualDepth == expectedDepth,
             f"mode $sampleMode sample $s depth ($x,$y): got 0x$actualDepth%08x expected 0x$expectedDepth%08x")
+        }
+        if (sampleMode == 2) {
+          assert(partialSamples > 0 && differingSamples > 0,
+            "edge-texture scene must expose a per-sample colour difference")
+          println(s"EDGE_TEXTURE_4X partial_samples=$partialSamples " +
+            s"differing_samples=$differingSamples " +
+            s"channel_difference_sum=$edgeChannelDifference " +
+            s"max_channel_difference=$largestChannelDifference")
         }
       }
     }
