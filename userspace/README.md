@@ -39,24 +39,35 @@ the DRM node and optional shader binary path (default
 `pipe_opengpu.h` / `pipe_opengpu.c` is the Gallium-shaped winsys spike
 (`docs/GALLIUM_SPIKE.md`). `examples/pipe_clear_draw` clears via
 `opengpu_fill`, then draws one triangle through `pipe_opengpu_draw_vbo`
-(fixed-function or fragment-tint by capability).
+(fixed-function or fragment-tint by capability). `examples/pipe_compute`
+covers `launch_grid`. `examples/pipe_blit` clears a source GEM and copies it
+with `pipe_opengpu_blit`. `examples/pipe_strided_blit` invalidates a
+CPU-filled source then copies with `pipe_opengpu_strided_blit`.
+`examples/pipe_depth_pass` continues a FF render across submissions with a
+bound depth GEM and `OPENGPU_SUBMIT_DEPTH_LOAD`.
+`examples/pipe_resolve` averages a CPU-filled 2x
+MSAA buffer. `examples/pipe_texture_draw` binds a mip chain and draws a
+textured triangle on the fixed-function path. `examples/pipe_vertex_draw`
+exercises vertex+fragment cores (`GPU_VERT_CORE=1`).
 
-To run fixed-function examples in the ARTI guest and require a pass marker:
+**ARTI as a GPU** (preferred programmable path):
+
+```sh
+GPU_FRAG_CORE=1 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
+  scripts/run_arti_gpu.sh
+```
+
+Fixed-function smoke:
 
 ```sh
 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
   scripts/run_arti_gpu.sh
 ```
 
-Fragment-core pipe spike only:
-
-```sh
-GPU_FRAG_CORE=1 GPU_PIPE_SPIKE=1 GPU_PIPE_SPIKE_ONLY=1 \
-  scripts/run_arti_gpu.sh
-```
-
-Omit `*_ONLY=1` to run the existing DRM guest regression before the
-examples. The full release gate remains `scripts/qualify_functional.sh`.
+See the platform-integration section of
+[docs/GRAPHICS_ROADMAP.md](../docs/GRAPHICS_ROADMAP.md). Omit `*_ONLY=1` to
+run the DRM guest regression before the apps. The full release gate remains
+`scripts/qualify_functional.sh`.
 
 ## Shader corpus
 

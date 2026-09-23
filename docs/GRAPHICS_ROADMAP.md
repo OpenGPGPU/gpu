@@ -145,6 +145,10 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
 
 ## Next work
 
+Priority is **functional**: a usable DRM GPU under ARTI/QEMU (open card0,
+submit, fence, read back). Cycle / PPA work stays secondary unless a guest
+path is blocked.
+
 The functional baseline includes private Sv32 mappings with context-local
 revocation and ASID reuse, failure cleanup across compute/render ioctls,
 reset and completion-backpressure recovery, seeded AXI fault sequences,
@@ -156,11 +160,40 @@ jobs must not rely on VA equal to PA. Keep these properties in the
 seeded AXI sequence with `OPENGPU_AXI_SEED=0x5eed2026 sbt -batch 'testOnly
 opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
 
-1. **Keep the submission contract covered** — every submission-path change
+1. **ARTI as a usable GPU** — `scripts/qualify_functional.sh` already boots
+   fixed-function and vertex+fragment guests with `opengpu_drm_test`.
+   Userspace apps on top of that API:
+   - Fixed-function (`GPU_FRAG_CORE=0`): compute, triangle, `pipe_clear_draw`,
+     `pipe_compute`, `pipe_blit`, `pipe_strided_blit`, `pipe_resolve`,
+     `pipe_texture_draw`, `pipe_depth_pass`.
+   - Fragment core (`GPU_FRAG_CORE=1`): `fragment_tint`, `pipe_clear_draw`,
+     `pipe_resolve`, `pipe_vertex_draw` (no-ops skip without
+     `GPU_VERT_CORE=1`; corpus tint binary staged as
+     `/opengpu_fragment_tint.bin`).
+   Preferred programmable bring-up:
+   ```sh
+   GPU_FRAG_CORE=1 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
+     scripts/run_arti_gpu.sh
+   ```
+   Vertex+fragment:
+   ```sh
+   GPU_FRAG_CORE=1 GPU_VERT_CORE=1 GPU_USERSPACE_EXAMPLES=1 \
+     GPU_USERSPACE_EXAMPLES_ONLY=1 scripts/run_arti_gpu.sh
+   ```
+   Expect `OPENGPU USERSPACE EXAMPLES PASS`. `GPU_PIPE_SPIKE=1` is a
+   compatibility alias for the fragment-core userspace path. Pipe DMA/draw
+   surfaces for the spike are in; next guest work is Debian interactive
+   (`run_arti_debian.sh`) or Mesa only if NIR stays small. See
+   [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md).
+   Scanout remains simulation-only — apps validate by reading colour GEMs.
+   Debian interactive guest: `scripts/run_arti_debian.sh` with the same
+   `/dev/dri/card0` ABI. Replace virtual vblank/scanout after choosing
+   display hardware.
+2. **Keep the submission contract covered** — every submission-path change
    must exercise descriptor errors, reset-during-work, delayed writes,
    completion backpressure, recovery and mixed sample modes. Boundary edits
    must pull system integration tests.
-2. **Measure before optimizing** — compare with `scripts/benchmark_gpu.py`
+3. **Measure before optimizing** — compare with `scripts/benchmark_gpu.py`
    under the same source hash, scene and memory model. OM depth 16,
    hit-path graphics translation (accept on response retire), and a
    registered non-flow outstanding-hit pending queue (`pendingDepth` 16)
@@ -173,14 +206,14 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    staging stays intentionally uncached for CPU coherence; treat the
    `e2e155e` shader cycle rise vs `1194224` as the coherent baseline, not a
    regression to claw back by re-caching.
-3. **Physical closure** — the strided-copy descriptor address cone and the
+4. **Physical closure** — the strided-copy descriptor address cone and the
    command-router dispatch cone are pipelined; the FP32 FMA lane now runs
    five stages (completion add cut from invert/LZD-mask/mask-valid).
    Carry-save performance counters, divide finalize, and MSAA resolve
    scanline row bases reach **781.65 MHz** (−279.34 ps), with the limiter
    back on the FMA `csaSumReg` cone. See
    [../timing/README.md](../timing/README.md). Derive real parent IO budgets.
-4. **Software-driven growth** — grow the shader ISA from a small compiler
+5. **Software-driven growth** — grow the shader ISA from a small compiler
    corpus. Compute and graphics fragment shader code use private executable
    windows; the ASID-0 identity map is read/write but non-executable. Shared-CU
    vertex→fragment reuse and vertex instruction-fault recovery are now covered:
@@ -195,13 +228,13 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    `vsext`/`vzext`/`vnclip`/`vsmul` (`fixed_width.S`) and
    `vwadd`/`vwsub`/`vwmul` (`widen_alu.S`).
    Remaining ASID-0 identity use is Bare bring-up (`opengpu_hw_enable_mmu`).
-5. **Workload-driven ISA** — FP32 VFUNARY1 (`vfsqrt`/`vfrec7`/`vfrsqrt7`/`vfclass`)
+6. **Workload-driven ISA** — FP32 VFUNARY1 (`vfsqrt`/`vfrec7`/`vfrsqrt7`/`vfclass`)
    is complete in RTL; grow the **validator + corpus** when a shader needs those
    ops (vector FP is not yet admitted on opcode `0x57`). Integer widening
    (`vwadd`/`vwsub`/`vwmul`) is covered by `userspace/shaders/widen_alu.S`.
    Add further VFUNARY0 / widening beyond the fixed SEW=32 profile only with a
    motivating shader, validator rules and execution/guest coverage together.
-6. **Graphics feature decision** — measure target scenes before adding
+7. **Graphics feature decision** — measure target scenes before adding
    centroid or per-sample interpolation or framebuffer compression. Record
    the observed quality or bandwidth gap, expected benefit and verification
    scene; retain current center interpolation and uncompressed storage until
@@ -222,12 +255,6 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    storage while a representative frame stays under 50% uniform colour lines
    (solid flats are not predictive). Revisit only with a product quality bar
    or a frame that fails these thresholds.
-7. **Platform integration** — replace virtual vblank/scanout after choosing
-   display hardware and its interface. Scoped Gallium evaluation:
-   [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md). First drop landed:
-   `userspace/pipe_opengpu.*` plus `examples/pipe_clear_draw` (clear +
-   `draw_vbo`); fragment-core guest via `GPU_PIPE_SPIKE=1`.
-   `userspace/examples/fragment_tint` remains the raw ioctl reference.
 
 ## Known limits
 

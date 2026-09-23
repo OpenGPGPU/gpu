@@ -5,5 +5,11 @@ examples/triangle
 examples/fragment_tint
 examples/pipe_clear_draw
 examples/pipe_compute
+examples/pipe_blit
+examples/pipe_resolve
+examples/pipe_texture_draw
+examples/pipe_vertex_draw
+examples/pipe_strided_blit
+examples/pipe_depth_pass
 shaders/*.o
 shaders/*.bin

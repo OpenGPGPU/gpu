@@ -15,21 +15,31 @@ Out-of-tree winsys in-tree under `userspace/`:
 | `opengpu_fill` | Clear maps to `DRM_IOCTL_OPENGPU_FILL` |
 | `examples/pipe_clear_draw` | `clear` + `draw_vbo` smoke (fixed or fragment-tint) |
 | `examples/pipe_compute` | `bind_cs` + `launch_grid` smoke (`round_modes`) |
+| `examples/pipe_blit` | `clear` + `blit` smoke (1024-byte GEM copy) |
+| `examples/pipe_strided_blit` | `invalidate` + 2D strided blit (64×4) |
+| `examples/pipe_depth_pass` | persistent depth clear + `DEPTH_LOAD` continuation (FF) |
+| `examples/pipe_resolve` | CPU-fill 2x MSAA GEM + `resolve` average check |
+| `examples/pipe_texture_draw` | `bind_texture` + textured `draw_vbo` (fixed-function) |
+| `examples/pipe_vertex_draw` | VS/VB bind + `draw_vertex` (vertex+fragment cores) |
 
-Fixed-function guest (with other userspace examples):
+Fixed-function guest apps:
 
 ```sh
 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
   scripts/run_arti_gpu.sh
 ```
 
-Fragment-core spike only (corpus `fragment_tint` binary staged as
-`/opengpu_fragment_tint.bin`):
+Fragment-core guest apps (tint + pipe clear/draw — preferred “use the GPU”
+path under ARTI):
 
 ```sh
-GPU_FRAG_CORE=1 GPU_PIPE_SPIKE=1 GPU_PIPE_SPIKE_ONLY=1 \
+GPU_FRAG_CORE=1 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
   scripts/run_arti_gpu.sh
 ```
+
+`GPU_PIPE_SPIKE=1` is a compatibility alias for the fragment-core userspace
+path. ARTI bring-up commands live in [GRAPHICS_ROADMAP.md](GRAPHICS_ROADMAP.md)
+(platform integration).
 
 Emit a single corpus binary without a full corpus validate:
 
@@ -75,12 +85,13 @@ Capability bits: `driver/gpu_abi.h` (`GpuAbiLayoutSpec` guards drift).
 ## Next
 
 1. Keep the pipe path on the same ioctl + validator rules as
-   `examples/triangle` / `fragment_tint`.
+   `examples/triangle` / `fragment_tint` / `opengpu_drm_test`.
 2. Optional: real Mesa `pipe_opengpu` that calls this winsys (or inlines it)
    only if NIR/winsys bootstrap stays smaller than growing
    `userspace/examples/`.
 3. Gate: guest draw succeeds; `scripts/qualify_functional.sh` still green
-   (pipe spike is opt-in via `GPU_PIPE_SPIKE`, not on the default qualify path).
+   (userspace apps are opt-in via `GPU_USERSPACE_EXAMPLES`, not on the
+   default qualify path).
 
 ## Stop / continue
 

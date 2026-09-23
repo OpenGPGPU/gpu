@@ -116,6 +116,30 @@ int opengpu_fill(int fd, struct drm_opengpu_fill *command)
     return ioctl(fd, DRM_IOCTL_OPENGPU_FILL, command);
 }
 
+int opengpu_blit(int fd, struct drm_opengpu_blit *command)
+{
+    if (!command) { errno = EINVAL; return -1; }
+    return ioctl(fd, DRM_IOCTL_OPENGPU_BLIT, command);
+}
+
+int opengpu_strided_blit(int fd, struct drm_opengpu_strided_blit *command)
+{
+    if (!command) { errno = EINVAL; return -1; }
+    return ioctl(fd, DRM_IOCTL_OPENGPU_STRIDED_BLIT, command);
+}
+
+int opengpu_resolve(int fd, struct drm_opengpu_resolve *command)
+{
+    if (!command) { errno = EINVAL; return -1; }
+    return ioctl(fd, DRM_IOCTL_OPENGPU_RESOLVE, command);
+}
+
+int opengpu_invalidate(int fd, struct drm_opengpu_invalidate *command)
+{
+    if (!command) { errno = EINVAL; return -1; }
+    return ioctl(fd, DRM_IOCTL_OPENGPU_INVALIDATE, command);
+}
+
 int opengpu_sync_create(int fd, uint32_t *handle)
 {
     struct drm_syncobj_create create = { 0 };
