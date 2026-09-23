@@ -179,13 +179,15 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    DMA now translate under `VECTOR_SATP` (legacy kernel-word and unified
    engines). Context fill/blit/strided jobs map into a private DMA VA window
    at run time. Resolve/invalidate remain physical (L2 invalidate is
-   PA-tagged). Remaining platform work is shrinking or dropping the ASID-0
-   identity table once Bare bring-up and those leftover physical paths no
-   longer need it.
-5. **Workload-driven ISA** — add fixed-profile RVV widening/narrowing and
-   VFUNARY1 operations when a shader in the validated corpus or a target
-   workload needs them. Capture the motivating shader, validator rules and
-   execution/guest coverage with each addition.
+   PA-tagged). The symbolic corpus now also validates fixed-profile
+   `vsext`/`vzext`/`vnclip` (`userspace/shaders/fixed_width.S`). Remaining
+   platform work is shrinking or dropping the ASID-0 identity table once Bare
+   bring-up and those leftover physical paths no longer need it.
+5. **Workload-driven ISA** — add remaining VFUNARY1 (and any further
+   widening/narrowing beyond the fixed SEW=32 profile already in the corpus)
+   when a shader in the validated corpus or a target workload needs them.
+   Capture the motivating shader, validator rules and execution/guest coverage
+   with each addition.
 6. **Graphics feature decision** — measure target scenes before adding
    centroid or per-sample interpolation or framebuffer compression. Record
    the observed quality or bandwidth gap, expected benefit and verification

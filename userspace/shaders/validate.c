@@ -45,11 +45,14 @@ static int validate(const char *path, int profile)
 
 int main(int argc, char **argv)
 {
-    if (argc != 7) {
-        fprintf(stderr, "usage: %s copy round masked compute fragment vertex\n", argv[0]);
+    if (argc != 8) {
+        fprintf(stderr,
+                "usage: %s copy round masked fixed compute fragment vertex\n",
+                argv[0]);
         return 2;
     }
     return validate(argv[1], 0) || validate(argv[2], 0) ||
            validate(argv[3], 0) || validate(argv[4], 0) ||
-           validate(argv[5], 1) || validate(argv[6], 2);
+           validate(argv[5], 0) || validate(argv[6], 1) ||
+           validate(argv[7], 2);
 }

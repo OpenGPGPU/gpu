@@ -45,10 +45,12 @@ before the examples. The full release gate remains
 ## Shader corpus
 
 Run `python3 scripts/validate_shader_corpus.py` from the repository root. It
-assembles `compute_copy.S` and `round_modes.S`, and compiles three small C shaders with
-`riscv64-unknown-elf-gcc`, adapts the C argument base to OpenGPU's direct
-`x1` kernarg convention, and replaces the C return with the OpenGPU cease
-instruction. The script checks every binary with the production compute,
-fragment or vertex shader validator. It rejects compiler output with labels
-or indirect memory operands, rather than assuming arbitrary C is a valid
-shader. Set `RISCV_GCC` and `RISCV_OBJCOPY` for another RISC-V toolchain.
+assembles `compute_copy.S`, `round_modes.S`, `masked_ops.S` and
+`fixed_width.S` (lane-local `vsext`/`vzext`/`vnclip` with `vxrm`), and
+compiles three small C shaders with `riscv64-unknown-elf-gcc`, adapts the C
+argument base to OpenGPU's direct `x1` kernarg convention, and replaces the C
+return with the OpenGPU cease instruction. The script checks every binary with
+the production compute, fragment or vertex shader validator. It rejects
+compiler output with labels or indirect memory operands, rather than assuming
+arbitrary C is a valid shader. Set `RISCV_GCC` and `RISCV_OBJCOPY` for another
+RISC-V toolchain.
