@@ -689,6 +689,99 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
     }
   }
 
+  it should "resolve through private DMA VAs while invalidating the physical source" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      val words = mutable.LongMap[BigInt]()
+      val reads = mutable.ArrayBuffer[BigInt]()
+      val writes = mutable.ArrayBuffer[BigInt]()
+      val root = 0x30000
+      val srcVa = 0x400000L
+      val dstVa = 0x800000L
+      // 4 MiB-aligned PAs so Sv32 root leaves are valid megapages.
+      val srcPa = 0x800000L
+      val dstPa = 0xc00000L
+      val srcStride = 64L
+      val dstStride = 64L
+      val width = 4
+      val height = 2
+      val samples = Seq(BigInt(0), BigInt("ffffffff", 16),
+        BigInt("ff00ff00", 16), BigInt("00ff00ff", 16))
+      def store(base: Long, data: Seq[Long]): Unit = data.zipWithIndex.foreach {
+        case (v, i) => words(base + i * 4) = BigInt(v & 0xffffffffL)
+      }
+      // Root leaf 1 maps srcVa → srcPa; leaf 2 maps dstVa → dstPa.
+      store(root, Seq(0xcfL,
+        (srcPa >> 12) << 10 | 0xcfL,
+        (dstPa >> 12) << 10 | 0xcfL))
+      for (y <- 0 until height; x <- 0 until width; s <- 0 until 4)
+        words(srcPa + y * srcStride + (x * 4 + s) * 4L) = samples(s)
+      def readLine(addr: BigInt): BigInt = {
+        reads += addr
+        val base = addr.toLong & ~63L
+        (0 until 16)
+          .map(i => words.getOrElse(base + i * 4L, BigInt(0)) << (32 * i))
+          .reduce(_ | _)
+      }
+      def writeLine(addr: BigInt, data: BigInt, strb: BigInt): Unit = {
+        writes += addr
+        val base = addr.toLong & ~63L
+        for (i <- 0 until 16) {
+          var w = words.getOrElse(base + i * 4L, BigInt(0))
+          for (b <- 0 until 4) {
+            val byte = i * 4 + b
+            if (((strb >> byte) & 1) != 0)
+              w = (w & ~(BigInt(0xff) << (b * 8))) |
+                (((data >> (byte * 8)) & 0xff) << (b * 8))
+          }
+          words(base + i * 4L) = w
+        }
+      }
+
+      axiWrite(dut, GpuCommandMmioRegs.VECTOR_SATP, 0x80000000 | (root >> 12))
+      axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 8)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE,
+        GpuCommandOpcode.resolve.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.SOURCE, srcVa.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, dstVa.toInt)
+      // Physical invalidate base; engine traffic uses the private VAs above.
+      axiWrite(dut, GpuCommandMmioRegs.PATTERN, srcPa.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.WIDTH, width)
+      axiWrite(dut, GpuCommandMmioRegs.HEIGHT, height)
+      axiWrite(dut, GpuCommandMmioRegs.SOURCE_STRIDE, srcStride.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION_STRIDE, dstStride.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.SAMPLE_MODE, 2)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+
+      serviceMemoryMaster(dut, readLine)(writeLine) {
+        dut.io.m_irq.peek().litToBoolean
+      }
+
+      dut.io.m_irq.expect(true.B)
+      val completion = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+      assert((completion & 0xffL) == 8L, s"completion id was $completion")
+      assert(((completion >> 8) & 0x7L) ==
+        GpuCommandOpcode.resolve.litValue)
+      assert(((completion >> 15) & 1L) == 1L)
+      assert(!reads.exists(a => a >= srcVa && a < srcVa + 0x100000) &&
+        !writes.exists(a => a >= dstVa && a < dstVa + 0x100000),
+        "resolve VA escaped onto physical AXI")
+      assert(reads.exists(a => a >= srcPa && a < srcPa + srcStride * height),
+        "resolve must read the translated source PA")
+      assert(writes.exists(a => a >= dstPa && a < dstPa + dstStride * height),
+        "resolve must write the translated destination PA")
+      for (y <- 0 until height; x <- 0 until width) {
+        val got = words.getOrElse(dstPa + y * dstStride + x * 4L, BigInt(0))
+        assert(got == BigInt(0x80808080L),
+          s"dst($x,$y)=0x${got.toString(16)} expected 0x80808080")
+      }
+    }
+  }
+
   for ((busFault, textureBusFault) <- Seq(
     (false, false), (true, false), (false, true))) {
     it should s"report texture faults to the host and recover (pageBusFault=$busFault, textureBusFault=$textureBusFault)" in {
