@@ -134,7 +134,10 @@ UCMD_INSTRUCTION_SATP and UCMD_TLB_FLUSH; Bare mode still fetches physical
 instructions. Shader instruction faults fail render completion with a memory
 fault after draining. Shader kernarg, vertex-buffer staging and scalar/vector
 data accesses translate under VECTOR_SATP alongside the graphics word clients
-(Bare mode keeps physical addressing).
+(Bare mode keeps physical addressing). Resolve and line-invalidate commands
+keep physical addresses because the L2 host-invalidate path is PA-tagged;
+fill/blit/strided DMA translate under VECTOR_SATP through a private DMA VA
+window when the context VM is enabled.
 
 The command client remains uncached. Texture/framebuffer clients use the
 PTE cache policy. CPU writes still require the appropriate CPU cache/DMA

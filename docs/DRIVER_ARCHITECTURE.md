@@ -27,11 +27,13 @@ kernarg and vertex-buffer staging share VECTOR_SATP with CU data loads;
 texture and other graphics word clients translate independently. Shader traps
 retire the faulting warp, fail the kernel and report a render memory fault;
 failed batches do not emit pixels or vertex outputs. Faults are not resumable.
-For a context with an enabled VM, resource binding and per-job command, DMA,
-framebuffer and snapshot mapping failures abort the operation; they never
-fall back to the resource's physical address. Bare bring-up jobs still use the
-ASID-0 identity map; context roots start empty and expose only explicit private
-mappings. Identity PTEs are ASID-tagged, so they cannot be reused by a context.
+For a context with an enabled VM, resource binding and per-job command, DMA
+(fill/blit/strided), framebuffer and snapshot mapping failures abort the
+operation; they never fall back to the resource's physical address. Resolve
+and line-invalidate remain physically addressed because L2 invalidate is
+PA-tagged. Bare bring-up jobs still use the ASID-0 identity map; context
+roots start empty and expose only explicit private mappings. Identity PTEs
+are ASID-tagged, so they cannot be reused by a context.
 Resource unbind revokes its private leaves and performs an
 ASID-scoped TLB invalidation before releasing the GEM object. Rebinding a slot
 to a resource in a different VA window revokes the old window as part of the

@@ -621,9 +621,10 @@ static int opengpu_binding_map_code(struct opengpu_device *gpu,
     return 0;
 }
 
-/* Map a fill/blit/strided/resolve/invalidate buffer into the context VM so DMA
- * engines translate under VECTOR_SATP instead of relying on VA==PA through the
- * shared identity map. Slot 0 is source; slot 1 is destination. */
+/* Map a fill/blit/strided buffer into the context VM so those DMA engines
+ * translate under VECTOR_SATP instead of relying on VA==PA through the
+ * shared identity map. Slot 0 is source; slot 1 is destination. Resolve and
+ * line-invalidate stay physical because L2 invalidate is PA-tagged. */
 static int opengpu_binding_map_dma(struct opengpu_device *gpu,
                                    struct opengpu_render_context *context,
                                    dma_addr_t dma, size_t size, u32 slot,
