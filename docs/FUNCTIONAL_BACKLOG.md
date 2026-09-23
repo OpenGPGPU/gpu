@@ -37,8 +37,9 @@ unbound storage, and no validated VM job depends on VA equal to PA.
 
 ## Submission and recovery verification
 
-- [ ] Cover private-map allocation failure through render and compute ioctls,
-  including cleanup and a successful follow-up submission.
+- [x] Cover private-map allocation failure through render and compute ioctls,
+  including failed-fence status, untouched output and a successful follow-up
+  submission in the guest DRM path.
 - [ ] Cover context destruction reset during page walks or delayed writes and
   completion backpressure; queued-work teardown and ASID reuse are now covered
   in the guest path.

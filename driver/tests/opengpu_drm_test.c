@@ -4,6 +4,7 @@
 #include <drm/drm_fourcc.h>
 #include <drm/drm_mode.h>
 #include <linux/dma-buf.h>
+#include <linux/sync_file.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1323,6 +1324,32 @@ static int wait_syncobjs(int fd, uint32_t *handles, uint32_t count)
                                  now.tv_nsec + 300000000000ll);
 }
 
+static int expect_syncobj_status(int fd, uint32_t handle, int expected)
+{
+    struct drm_syncobj_handle export = {
+        .handle = handle,
+        .flags = DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE,
+    };
+    struct sync_file_info info = { 0 };
+    int ret;
+
+    if (wait_syncobjs(fd, &handle, 1) < 0)
+        return -1;
+    if (ioctl(fd, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &export) < 0)
+        return -1;
+    ret = ioctl(export.fd, SYNC_IOC_FILE_INFO, &info);
+    close(export.fd);
+    if (ret < 0)
+        return -1;
+    if (info.status != expected) {
+        fprintf(stderr, "syncobj %u status=%d expected=%d\n",
+                handle, info.status, expected);
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
+}
+
 int main(void)
 {
     struct kms_ids ids = { 0 };
@@ -1338,6 +1365,7 @@ int main(void)
     struct drm_event_vblank event = { 0 };
     struct drm_opengpu_fault initial_fault = { 0 }, final_fault = { 0 };
     uint32_t syncobjs[8] = { 0 };
+    uint32_t failure_syncobjs[2] = { 0 };
     uint32_t output_syncobjs[2];
     uint64_t capabilities;
     uint32_t batch_capacity;
@@ -1519,6 +1547,10 @@ int main(void)
           "create compute output syncobj");
     CHECK(create_syncobj(fd, &syncobjs[7]),
           "create stencil output syncobj");
+    CHECK(create_syncobj(fd, &failure_syncobjs[0]),
+          "create compute mapping-failure syncobj");
+    CHECK(create_syncobj(fd, &failure_syncobjs[1]),
+          "create render mapping-failure syncobj");
     CHECK(fill_resource(fd, context_id, &compute_kernarg, 0xcafe0001u,
                         syncobjs[4], OPENGPU_COMMAND_EVENT(7, 1)),
           "initialize compute kernarg and signal hardware event");
@@ -1536,6 +1568,24 @@ int main(void)
         errno != EINVAL) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL oversized workgroup accepted");
+        return 1;
+    }
+    /* The ioctl queues successfully; run_job then fails to map its private
+     * code snapshot. The finished fence must carry ENOMEM, and the failed
+     * kernel must leave the kernarg untouched for the next submission. */
+    CHECK(set_mmu_fail_private_maps(1),
+          "arm compute submission mapping failure");
+    CHECK(submit_compute(fd, context_id, 7, 8, 4, 0,
+                         failure_syncobjs[0], OPENGPU_COMMAND_WAIT_EVENT,
+                         OPENGPU_COMMAND_EVENT(7, 1), 0),
+          "queue compute with mapping failure");
+    CHECK(expect_syncobj_status(fd, failure_syncobjs[0], -ENOMEM),
+          "compute mapping-failure fence status");
+    CHECK(set_mmu_fail_private_maps(0),
+          "clear compute submission mapping failure");
+    if (((uint32_t *)compute_kernarg.map)[0] != 0xcafe0001u) {
+        errno = EIO;
+        perror("OPENGPU USERSPACE DRM FAIL failed compute wrote kernarg");
         return 1;
     }
     CHECK(submit_compute(
@@ -1578,6 +1628,30 @@ int main(void)
                     lane, ((uint32_t *)compute_kernarg.map)[lane], expected);
             errno = EIO;
             perror("OPENGPU USERSPACE DRM FAIL second reduction compute");
+            return 1;
+        }
+    }
+    /* Fail the first private command-snapshot mapping. The next render uses
+     * the same context and buffers, proving the failed job was retired. */
+    {
+        uint32_t before = *(uint32_t *)((uint8_t *)first.map +
+                                        first.pitch + 4);
+
+        CHECK(set_mmu_fail_private_maps(1),
+              "arm render submission mapping failure");
+        CHECK(submit_selected_render(
+                  fd, vert_core, context_id, &commands, &first, texture_slot,
+                  shader_slot, kernarg_slot, vertex_buffer_slot,
+                  vertex_shader_slot, vertex_kernarg_slot, 0, 0,
+                  failure_syncobjs[1]),
+              "queue render with mapping failure");
+        CHECK(expect_syncobj_status(fd, failure_syncobjs[1], -ENOMEM),
+              "render mapping-failure fence status");
+        CHECK(set_mmu_fail_private_maps(0),
+              "clear render submission mapping failure");
+        if (*(uint32_t *)((uint8_t *)first.map + first.pitch + 4) != before) {
+            errno = EIO;
+            perror("OPENGPU USERSPACE DRM FAIL failed render wrote colour");
             return 1;
         }
     }
@@ -2426,6 +2500,7 @@ int main(void)
            "blit/fill/strided blit + "
            "persistent-depth cross-submission pass + "
            "VM fill/rebind/map-failure/recycle isolation + "
+           "render/compute mapping-failure recovery + "
            "fault-query ABI + vblank flip event sequence=%u\n",
            vert_core ? "vertex+fragment-core-backed" :
            frag_core ? "core-backed" : "texture",
