@@ -110,6 +110,12 @@ int opengpu_render(int fd, struct drm_opengpu_submit *command)
     return ioctl(fd, DRM_IOCTL_OPENGPU_SUBMIT, command);
 }
 
+int opengpu_fill(int fd, struct drm_opengpu_fill *command)
+{
+    if (!command) { errno = EINVAL; return -1; }
+    return ioctl(fd, DRM_IOCTL_OPENGPU_FILL, command);
+}
+
 int opengpu_sync_create(int fd, uint32_t *handle)
 {
     struct drm_syncobj_create create = { 0 };

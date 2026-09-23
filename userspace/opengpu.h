@@ -24,6 +24,7 @@ int opengpu_bind(int fd, const struct drm_opengpu_resource *resource);
 int opengpu_unbind(int fd, uint32_t context_id, uint32_t slot);
 int opengpu_compute(int fd, struct drm_opengpu_compute *command);
 int opengpu_render(int fd, struct drm_opengpu_submit *command);
+int opengpu_fill(int fd, struct drm_opengpu_fill *command);
 int opengpu_sync_create(int fd, uint32_t *handle);
 int opengpu_sync_destroy(int fd, uint32_t handle);
 int opengpu_sync_wait(int fd, uint32_t handle, int64_t timeout_ms);

@@ -103,16 +103,23 @@ int main(void)
     if (load_dependencies() < 0 ||
         load_module("/arti_driver.ko", "arti_driver") < 0) {
         putstr("OPENGPU USERSPACE DRM FAIL: module load\r\n");
-#ifdef OPENGPU_RUN_USERSPACE_EXAMPLES
+#ifdef OPENGPU_RUN_PIPE_SPIKE
+    } else if (run_program("/opengpu_pipe_clear_draw") < 0) {
+        putstr("OPENGPU PIPE SPIKE FAIL\r\n");
+#elif defined(OPENGPU_RUN_USERSPACE_EXAMPLES)
     } else if (run_program("/opengpu_compute_example") < 0 ||
-               run_program("/opengpu_triangle_example") < 0) {
+               run_program("/opengpu_triangle_example") < 0 ||
+               run_program("/opengpu_pipe_clear_draw") < 0) {
         putstr("OPENGPU USERSPACE EXAMPLES FAIL\r\n");
 #endif
 #ifndef OPENGPU_USERSPACE_EXAMPLES_ONLY
     } else if (run_program("/opengpu_drm_test") < 0) {
         putstr("OPENGPU USERSPACE DRM FAIL: test process\r\n");
 #endif
-#ifdef OPENGPU_RUN_USERSPACE_EXAMPLES
+#ifdef OPENGPU_RUN_PIPE_SPIKE
+    } else {
+        putstr("OPENGPU PIPE SPIKE PASS\r\n");
+#elif defined(OPENGPU_RUN_USERSPACE_EXAMPLES)
     } else {
         putstr("OPENGPU USERSPACE EXAMPLES PASS\r\n");
 #endif

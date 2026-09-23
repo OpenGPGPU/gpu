@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Build symbolic and GCC-generated RV32 shader examples; check driver profiles."""
+import argparse
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +13,10 @@ OBJCOPY = os.environ.get("RISCV_OBJCOPY", "riscv64-unknown-elf-objcopy")
 HOST_CC = os.environ.get("CC", "cc")
 FLAGS = ["-march=rv32im_zicsr", "-mabi=ilp32", "-O2", "-ffreestanding",
          "-fno-pic", "-fno-asynchronous-unwind-tables"]
+
+ASSEMBLY = ("compute_copy", "round_modes", "masked_ops", "fixed_width", "widen_alu")
+COMPILED = ("compute_increment", "fragment_tint", "vertex_offset")
+ALL = ASSEMBLY + COMPILED
 
 
 def run(args):
@@ -50,27 +55,44 @@ def compiler_assembly(source, destination):
                            "    .insn i 0x73, 0, zero, zero, 0x305\n")
 
 
+def emit_shader(name, destination, work):
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if name in ASSEMBLY:
+        binary(SHADERS / f"{name}.S", destination)
+    elif name in COMPILED:
+        assembly = work / f"{name}.s"
+        compiler_assembly(SHADERS / f"{name}.c", assembly)
+        binary(assembly, destination)
+    else:
+        raise SystemExit(f"unknown shader {name!r}; choose from {', '.join(ALL)}")
+
+
+def validate_all(out):
+    paths = [out / f"{name}.bin" for name in ALL]
+    for name, path in zip(ASSEMBLY, paths[:len(ASSEMBLY)]):
+        binary(SHADERS / f"{name}.S", path)
+    for name, path in zip(COMPILED, paths[len(ASSEMBLY):]):
+        assembly = out / f"{name}.s"
+        compiler_assembly(SHADERS / f"{name}.c", assembly)
+        binary(assembly, path)
+    validator = out / "validate"
+    run([HOST_CC, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+         str(SHADERS / "validate.c"), "-o", str(validator)])
+    run([str(validator), *map(str, paths)])
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--emit", nargs=2, metavar=("NAME", "DEST"),
+                        help="write one corpus shader binary and exit")
+    args = parser.parse_args()
+    if args.emit:
+        with tempfile.TemporaryDirectory(prefix="opengpu-shader-emit-") as temp:
+            emit_shader(args.emit[0], args.emit[1], Path(temp))
+        return
     with tempfile.TemporaryDirectory(prefix="opengpu-shader-corpus-") as temp:
-        out = Path(temp)
-        paths = [out / f"{name}.bin" for name in
-                 ("compute_copy", "round_modes", "masked_ops", "fixed_width",
-                  "widen_alu", "compute_increment", "fragment_tint",
-                  "vertex_offset")]
-        binary(SHADERS / "compute_copy.S", paths[0])
-        binary(SHADERS / "round_modes.S", paths[1])
-        binary(SHADERS / "masked_ops.S", paths[2])
-        binary(SHADERS / "fixed_width.S", paths[3])
-        binary(SHADERS / "widen_alu.S", paths[4])
-        for name, path in zip(("compute_increment", "fragment_tint", "vertex_offset"),
-                              paths[5:]):
-            assembly = out / f"{name}.s"
-            compiler_assembly(SHADERS / f"{name}.c", assembly)
-            binary(assembly, path)
-        validator = out / "validate"
-        run([HOST_CC, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
-             str(SHADERS / "validate.c"), "-o", str(validator)])
-        run([str(validator), *map(str, paths)])
+        validate_all(Path(temp))
 
 
 if __name__ == "__main__":

@@ -34,19 +34,29 @@ argument, or use the default `/dev/dri/card0`.
 `examples/fragment_tint` is the programmable counterpart: it binds the
 corpus `fragment_tint` shader and expects `OPENGPU_CAP_FRAGMENT_CORE`. Pass
 the DRM node and optional shader binary path (default
-`/opengpu_fragment_tint.bin`). It is the userspace path a Gallium
-`draw_vbo` spike would call; see [docs/GALLIUM_SPIKE.md](../docs/GALLIUM_SPIKE.md).
+`/opengpu_fragment_tint.bin`).
 
-To run both examples in the fixed-function ARTI guest and require a pass marker:
+`pipe_opengpu.h` / `pipe_opengpu.c` is the Gallium-shaped winsys spike
+(`docs/GALLIUM_SPIKE.md`). `examples/pipe_clear_draw` clears via
+`opengpu_fill`, then draws one triangle through `pipe_opengpu_draw_vbo`
+(fixed-function or fragment-tint by capability).
+
+To run fixed-function examples in the ARTI guest and require a pass marker:
 
 ```sh
 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
   scripts/run_arti_gpu.sh
 ```
 
-Omit `GPU_USERSPACE_EXAMPLES_ONLY=1` to run the existing DRM guest regression
-before the examples. The full release gate remains
-`scripts/qualify_functional.sh`.
+Fragment-core pipe spike only:
+
+```sh
+GPU_FRAG_CORE=1 GPU_PIPE_SPIKE=1 GPU_PIPE_SPIKE_ONLY=1 \
+  scripts/run_arti_gpu.sh
+```
+
+Omit `*_ONLY=1` to run the existing DRM guest regression before the
+examples. The full release gate remains `scripts/qualify_functional.sh`.
 
 ## Shader corpus
 

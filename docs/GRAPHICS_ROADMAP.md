@@ -214,8 +214,10 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    or a frame that fails these thresholds.
 7. **Platform integration** — replace virtual vblank/scanout after choosing
    display hardware and its interface. Scoped Gallium evaluation:
-   [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md); `userspace/examples/fragment_tint`
-   is the programmable ioctl path a `pipe_context::draw_vbo` would call.
+   [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md). First drop landed:
+   `userspace/pipe_opengpu.*` plus `examples/pipe_clear_draw` (clear +
+   `draw_vbo`); fragment-core guest via `GPU_PIPE_SPIKE=1`.
+   `userspace/examples/fragment_tint` remains the raw ioctl reference.
 
 ## Known limits
 

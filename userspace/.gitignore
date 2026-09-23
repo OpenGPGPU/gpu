@@ -1,5 +1,8 @@
 opengpu.o
+pipe_opengpu.o
 examples/compute
 examples/triangle
+examples/fragment_tint
+examples/pipe_clear_draw
 shaders/*.o
 shaders/*.bin

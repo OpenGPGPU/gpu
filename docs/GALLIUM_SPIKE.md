@@ -5,6 +5,37 @@ Evaluate a thin `pipe_opengpu` against the stable DRM ABI already used by
 and a representative draw path first, then wire a Mesa submodule only if that
 path stays green under `scripts/qualify_functional.sh`.
 
+## First code drop (landed)
+
+Out-of-tree winsys in-tree under `userspace/`:
+
+| Piece | Role |
+|---|---|
+| `pipe_opengpu.h` / `pipe_opengpu.c` | Gallium-shaped `screen` / `context` / `resource` / `fence`; links only `opengpu.c` |
+| `opengpu_fill` | Clear maps to `DRM_IOCTL_OPENGPU_FILL` |
+| `examples/pipe_clear_draw` | `clear` + `draw_vbo` smoke (fixed or fragment-tint) |
+
+Fixed-function guest (with other userspace examples):
+
+```sh
+GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
+  scripts/run_arti_gpu.sh
+```
+
+Fragment-core spike only (corpus `fragment_tint` binary staged as
+`/opengpu_fragment_tint.bin`):
+
+```sh
+GPU_FRAG_CORE=1 GPU_PIPE_SPIKE=1 GPU_PIPE_SPIKE_ONLY=1 \
+  scripts/run_arti_gpu.sh
+```
+
+Emit a single corpus binary without a full corpus validate:
+
+```sh
+python3 scripts/validate_shader_corpus.py --emit fragment_tint /tmp/tint.bin
+```
+
 ## Goals
 
 1. One `pipe_screen` / `pipe_context` that can clear and draw one triangle.
@@ -40,15 +71,15 @@ Draw-record and kernarg layouts: [HOST_INTERFACE.md](HOST_INTERFACE.md).
 Scheduler / GEM ownership: [DRIVER_ARCHITECTURE.md](DRIVER_ARCHITECTURE.md).
 Capability bits: `driver/gpu_abi.h` (`GpuAbiLayoutSpec` guards drift).
 
-## Suggested first code drop
+## Next
 
-1. Out-of-tree `pipe_opengpu` that links against `userspace/opengpu.c` only
-   (no kernel changes).
-2. Hard-code one validated fragment binary from `userspace/shaders/` (or the
-   guest DRM vector shader) — no NIR yet.
-3. Run under ARTI with `OPENGPU_CAP_FRAGMENT_CORE` (extend
-   `scripts/run_arti_gpu.sh` userspace examples beyond the fixed-function gate).
-4. Gate: guest draw succeeds; `scripts/qualify_functional.sh` still green.
+1. Keep the pipe path on the same ioctl + validator rules as
+   `examples/triangle` / `fragment_tint`.
+2. Optional: real Mesa `pipe_opengpu` that calls this winsys (or inlines it)
+   only if NIR/winsys bootstrap stays smaller than growing
+   `userspace/examples/`.
+3. Gate: guest draw succeeds; `scripts/qualify_functional.sh` still green
+   (pipe spike is opt-in via `GPU_PIPE_SPIKE`, not on the default qualify path).
 
 ## Stop / continue
 
