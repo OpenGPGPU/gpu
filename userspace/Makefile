@@ -6,7 +6,7 @@ CPPFLAGS += -I. -I../driver -I$(DRM_HEADERS)
 RISCV_GCC ?= riscv64-unknown-elf-gcc
 RISCV_OBJCOPY ?= riscv64-unknown-elf-objcopy
 
-all: examples/compute examples/triangle shaders/round_modes.bin
+all: examples/compute examples/triangle examples/fragment_tint shaders/round_modes.bin
 
 opengpu.o: opengpu.c opengpu.h ../driver/opengpu_drm.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
@@ -20,6 +20,7 @@ shaders/round_modes.bin: shaders/round_modes.S
 	rm -f shaders/round_modes.o
 
 clean:
-	rm -f opengpu.o examples/compute examples/triangle shaders/round_modes.o shaders/round_modes.bin
+	rm -f opengpu.o examples/compute examples/triangle examples/fragment_tint \
+		shaders/round_modes.o shaders/round_modes.bin
 
 .PHONY: all clean

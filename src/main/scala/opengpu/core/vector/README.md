@@ -59,8 +59,11 @@ estimates with the standard mantissa lookup tables. It handles infinities,
 zeros, NaNs, and subnormal normalization, reports DZ/NV, and raises OF/NX when
 a `vfrec7` subnormal reciprocal overflows.
 
-Remaining RVV families (most widening/narrowing and the remaining VFUNARY1
-forms) remain separate migration steps. The fixed SEW=32 profile implements
+Remaining RVV families (most widening/narrowing beyond the fixed SEW=32
+profile, and VFUNARY0 forms such as `vfcvt.f.f.v`) remain separate migration
+steps. FP32 VFUNARY1 (`vfsqrt.v`, `vfrec7.v`, `vfrsqrt7.v`, `vfclass.v`) is
+implemented in RTL; driver admission for vector FP on opcode `0x57` is still
+required before corpus shaders can use those ops. The fixed SEW=32 profile implements
 `vsext.vf2/vf4/vf8` and `vzext.vf2/vf4/vf8` as lane-local integer widening
 operations: the low 16, 8, or 4 bits of each source lane are sign- or
 zero-extended to 32 bits. Both masked and unmasked forms are supported;

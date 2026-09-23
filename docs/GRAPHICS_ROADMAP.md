@@ -181,14 +181,16 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    window at run time; resolve still invalidates L2 with the physical source
    base (`UCMD_PATTERN`) because host invalidate is PA-tagged. Line-invalidate
    also submits physical addresses but keeps the context ASID (satp unused).
-   The symbolic corpus now also validates fixed-profile
-   `vsext`/`vzext`/`vnclip`/`vsmul` (`userspace/shaders/fixed_width.S`).
+   The symbolic corpus also validates fixed-profile
+   `vsext`/`vzext`/`vnclip`/`vsmul` (`fixed_width.S`) and
+   `vwadd`/`vwsub`/`vwmul` (`widen_alu.S`).
    Remaining ASID-0 identity use is Bare bring-up (`opengpu_hw_enable_mmu`).
-5. **Workload-driven ISA** — add remaining VFUNARY1 (and any further
-   widening/narrowing beyond the fixed SEW=32 profile already in the corpus)
-   when a shader in the validated corpus or a target workload needs them.
-   Capture the motivating shader, validator rules and execution/guest coverage
-   with each addition.
+5. **Workload-driven ISA** — FP32 VFUNARY1 (`vfsqrt`/`vfrec7`/`vfrsqrt7`/`vfclass`)
+   is complete in RTL; grow the **validator + corpus** when a shader needs those
+   ops (vector FP is not yet admitted on opcode `0x57`). Integer widening
+   (`vwadd`/`vwsub`/`vwmul`) is covered by `userspace/shaders/widen_alu.S`.
+   Add further VFUNARY0 / widening beyond the fixed SEW=32 profile only with a
+   motivating shader, validator rules and execution/guest coverage together.
 6. **Graphics feature decision** — measure target scenes before adding
    centroid or per-sample interpolation or framebuffer compression. Record
    the observed quality or bandwidth gap, expected benefit and verification
@@ -211,9 +213,9 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    (solid flats are not predictive). Revisit only with a product quality bar
    or a frame that fails these thresholds.
 7. **Platform integration** — replace virtual vblank/scanout after choosing
-   display hardware and its interface. Evaluate a small Mesa/Gallium path
-   against the stable userspace ABI, private-VM isolation and full functional
-   qualification gate; scope it to a representative shader and draw first.
+   display hardware and its interface. Scoped Gallium evaluation:
+   [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md); `userspace/examples/fragment_tint`
+   is the programmable ioctl path a `pipe_context::draw_vbo` would call.
 
 ## Known limits
 

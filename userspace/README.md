@@ -31,6 +31,12 @@ as the second argument when running outside the guest.
 build. It requires a device configured for 16x16 pixels, with no fragment or vertex core. Pass a DRM node path as the first
 argument, or use the default `/dev/dri/card0`.
 
+`examples/fragment_tint` is the programmable counterpart: it binds the
+corpus `fragment_tint` shader and expects `OPENGPU_CAP_FRAGMENT_CORE`. Pass
+the DRM node and optional shader binary path (default
+`/opengpu_fragment_tint.bin`). It is the userspace path a Gallium
+`draw_vbo` spike would call; see [docs/GALLIUM_SPIKE.md](../docs/GALLIUM_SPIKE.md).
+
 To run both examples in the fixed-function ARTI guest and require a pass marker:
 
 ```sh
@@ -45,8 +51,9 @@ before the examples. The full release gate remains
 ## Shader corpus
 
 Run `python3 scripts/validate_shader_corpus.py` from the repository root. It
-assembles `compute_copy.S`, `round_modes.S`, `masked_ops.S` and
-`fixed_width.S` (lane-local `vsext`/`vzext`/`vnclip`/`vsmul` with `vxrm`), and
+assembles `compute_copy.S`, `round_modes.S`, `masked_ops.S`, `fixed_width.S`
+(lane-local `vsext`/`vzext`/`vnclip`/`vsmul` with `vxrm`) and `widen_alu.S`
+(lane-local `vwadd`/`vwsub`/`vwmul`), and
 compiles three small C shaders with `riscv64-unknown-elf-gcc`, adapts the C
 argument base to OpenGPU's direct `x1` kernarg convention, and replaces the C
 return with the OpenGPU cease instruction. The script checks every binary with
