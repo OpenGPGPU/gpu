@@ -22,6 +22,7 @@ package that is incrementally verifiable.
 - `docs/FUNCTIONAL_QUALIFICATION.md` — full Scala, host driver and guest gate
 - `docs/HOST_INTERFACE.md` — AXI registers and shared-memory layouts
 - `docs/DRIVER_ARCHITECTURE.md` — Linux driver ownership split
+- `userspace/` — small DRM userspace library and compute/graphics examples
 - `docs/MSAA_DESIGN.md`, `docs/STENCIL_BLEND_DESIGN.md` — feature contracts
 - `timing/README.md` — current ASAP7 PPA status
 

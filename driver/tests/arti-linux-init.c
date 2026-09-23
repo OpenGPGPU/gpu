@@ -67,7 +67,7 @@ static int load_dependencies(void)
     return 0;
 }
 
-static int run_drm_test(void)
+static int run_program(const char *path)
 {
     pid_t child = fork();
     int status;
@@ -75,7 +75,7 @@ static int run_drm_test(void)
     if (child < 0)
         return -1;
     if (!child) {
-        char *const argv[] = { "/opengpu_drm_test", NULL };
+        char *const argv[] = { (char *)path, NULL };
         char *const envp[] = { NULL };
 
         execve(argv[0], argv, envp);
@@ -103,8 +103,19 @@ int main(void)
     if (load_dependencies() < 0 ||
         load_module("/arti_driver.ko", "arti_driver") < 0) {
         putstr("OPENGPU USERSPACE DRM FAIL: module load\r\n");
-    } else if (run_drm_test() < 0) {
+#ifdef OPENGPU_RUN_USERSPACE_EXAMPLES
+    } else if (run_program("/opengpu_compute_example") < 0 ||
+               run_program("/opengpu_triangle_example") < 0) {
+        putstr("OPENGPU USERSPACE EXAMPLES FAIL\r\n");
+#endif
+#ifndef OPENGPU_USERSPACE_EXAMPLES_ONLY
+    } else if (run_program("/opengpu_drm_test") < 0) {
         putstr("OPENGPU USERSPACE DRM FAIL: test process\r\n");
+#endif
+#ifdef OPENGPU_RUN_USERSPACE_EXAMPLES
+    } else {
+        putstr("OPENGPU USERSPACE EXAMPLES PASS\r\n");
+#endif
     }
 
     sync();

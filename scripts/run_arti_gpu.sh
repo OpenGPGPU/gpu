@@ -379,6 +379,20 @@ GUEST_DRM_TEST="$DRIVER_OUTPUT/opengpu_drm_test"
 WORK="${WORK:-$ARTI_WORK/linux-test}"
 mkdir -p "$WORK"
 cp "$GUEST_DRM_TEST" "$WORK/opengpu_drm_test"
+if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
+    [ "$GPU_FRAG_CORE" = "0" ] && [ "$GPU_VERT_CORE" = "0" ] || \
+        fail "userspace examples require the fixed-function build"
+    [ "$GPU_WIDTH" = "16" ] && [ "$GPU_HEIGHT" = "16" ] || \
+        fail "userspace triangle example requires 16x16"
+    "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+        -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" \
+        -o "$WORK/opengpu_compute_example" \
+        "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/compute.c"
+    "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+        -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" \
+        -o "$WORK/opengpu_triangle_example" \
+        "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/triangle.c"
+fi
 HARNESS_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/opengpu-harness.XXXXXX")"
 ln -s "$ARTI_DIR/examples/linux_arti_driver/run_linux_test.sh" \
     "$HARNESS_STAGE/run_linux_test.sh"
@@ -387,6 +401,21 @@ ln -s "$ARTI_DIR/examples/linux_arti_driver/integration_env.sh" \
 ln -s "$ARTI_DIR/examples/linux_arti_driver/driver_preflight.sh" \
     "$HARNESS_STAGE/driver_preflight.sh"
 cp "$GPU_DIR/driver/tests/arti-linux-init.c" "$HARNESS_STAGE/arti-linux-init.c"
+if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
+    sed -i.bak '1i\
+#define OPENGPU_RUN_USERSPACE_EXAMPLES 1
+' "$HARNESS_STAGE/arti-linux-init.c"
+    rm -f "$HARNESS_STAGE/arti-linux-init.c.bak"
+fi
+if [ "${GPU_USERSPACE_EXAMPLES_ONLY:-0}" = "1" ]; then
+    [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ] || \
+        fail "GPU_USERSPACE_EXAMPLES_ONLY requires GPU_USERSPACE_EXAMPLES=1"
+    sed -i.bak '1i\
+#define OPENGPU_USERSPACE_EXAMPLES_ONLY 1
+' "$HARNESS_STAGE/arti-linux-init.c"
+    rm -f "$HARNESS_STAGE/arti-linux-init.c.bak"
+    export DRIVER_MARKER="OPENGPU USERSPACE EXAMPLES PASS"
+fi
 
 export ARTI_DIR INTEGRATION_CONFIG LINUX_BUILD DRIVER_KO DRIVER_MANIFEST WORK
 export QEMU_DISPLAY HOLD_AFTER_TEST TIMEOUT
@@ -400,3 +429,7 @@ if [ -z "${QEMU_FW_DIR:-}" ]; then
 fi
 export QEMU_FW_DIR
 "$HARNESS_STAGE/run_linux_test.sh"
+if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
+    grep -qF "OPENGPU USERSPACE EXAMPLES PASS" "$WORK/serial.log" || \
+        fail "userspace examples did not pass in guest (see $WORK/serial.log)"
+fi
