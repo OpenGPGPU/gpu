@@ -221,133 +221,168 @@ class RenderCoreL2Spec extends AnyFlatSpec {
     }
   }
 
-  it should "match a textured image reference through the shared L2" in {
-    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
-    val cfg = GpuConfig(lanes = 4, warps = 2)
-    val stride = 16 * 4
-    val colorBase = 0x8000
-    val depthBase = 0x9000
-    val cmdBase = 0x4000
-    val texBase = 0xA000
-    val texelCentre = q(0.5 / 16.0)
-    val farCentre = q(1.0 + 0.5 / 16.0)
+  it should "match 1x texture and 4x texture blend stencil images through shared L2" in {
+    for (sampleMode <- Seq(0, 2)) {
+      val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+      val cfg = GpuConfig(lanes = 4, warps = 2)
+      val samples = 1 << sampleMode
+      val stride = 16 * samples * 4
+      val colorBase = 0x8000
+      val depthBase = 0x9000
+      val cmdBase = 0x4000
+      val texBase = 0xA000
+      val texelCentre = q(0.5 / 16.0)
+      val farCentre = q(1.0 + 0.5 / 16.0)
 
-    def tri(x: Int, y: Int, d: Int, u: Int, v: Int) =
-      ((x, y, 0, q(1.0)), (255, 255, 255), d, u, v)
-    val record = Seq(
-      tri(q(-1.0), q(-1.0), 0x10, texelCentre, texelCentre),
-      tri(q(1.0), q(-1.0), 0x10, farCentre, texelCentre),
-      tri(q(-1.0), q(1.0), 0x10, texelCentre, farCentre)
-    )
+      def tri(x: Int, y: Int, d: Int, u: Int, v: Int) =
+        ((x, y, 0, q(1.0)), (255, 255, 255), d, u, v)
+      val record = Seq(
+        tri(q(-1.0), q(-1.0), 0x10, texelCentre, texelCentre),
+        tri(q(1.0), q(-1.0), 0x10, farCentre, texelCentre),
+        tri(q(-1.0), q(1.0), 0x10, texelCentre, farCentre)
+      )
 
-    val m = new MemModel
-    // 32-word record: verts, colours, depth, descriptor, uv pairs.
-    val w = Seq.newBuilder[Int]
-    for (i <- 0 until 3) {
-      w += record(i)._1._1; w += record(i)._1._2; w += record(i)._1._3; w += record(i)._1._4
-    }
-    for (i <- 0 until 3) {
-      w += record(i)._2._1; w += record(i)._2._2; w += record(i)._2._3
-    }
-    for (i <- 0 until 3) { w += record(i)._3 }
-    w += 0; w += 0 // descriptor
-    for (i <- 0 until 3) { w += record(i)._4; w += record(i)._5 }
-    for (_ <- 0 until 8) { w += 0 } // state override + reserved
-    w.result().zipWithIndex.foreach { case (word, i) =>
-      m.wwrite(cmdBase + i * 4, word)
-    }
-    for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
-    def texel(x: Int, y: Int): Int = {
-      val r = x * 7 + y * 5 + 3
-      val g = x * 4 + y * 9 + 11
-      val b = x * 6 + y * 3 + 17
-      (r << 24) | (g << 16) | (b << 8) | 0xff
-    }
-    for (y <- 0 until 16; x <- 0 until 16)
-      m.wwrite(texBase + (y * 16 + x) * 4, texel(x, y))
+      val m = new MemModel
+      // 32-word record: verts, colours, depth, descriptor, uv pairs.
+      val w = Seq.newBuilder[Int]
+      for (i <- 0 until 3) {
+        w += record(i)._1._1; w += record(i)._1._2; w += record(i)._1._3; w += record(i)._1._4
+      }
+      for (i <- 0 until 3) {
+        w += record(i)._2._1; w += record(i)._2._2; w += record(i)._2._3
+      }
+      for (i <- 0 until 3) { w += record(i)._3 }
+      w += 0; w += 0 // descriptor
+      for (i <- 0 until 3) { w += record(i)._4; w += record(i)._5 }
+      if (sampleMode == 2) {
+        w += (1 | 2 | (1 << 7) | (1 << 10) | (1 << 17)) // override, depth, texture, stencil
+        w += 0; w += 0 // LOD and kernarg bank
+        w += (1 | (2 << 4) | (3 << 8)) // blend SRC_COLOR + ONE_MINUS_SRC_COLOR
+        w += 4 // stencil EQUAL, all ops KEEP
+        w += (0x5a | (0xff << 8) | (0xff << 16)) // reference and masks
+        w += 0; w += 0
+      } else for (_ <- 0 until 8) { w += 0 }
+      w.result().zipWithIndex.foreach { case (word, i) =>
+        m.wwrite(cmdBase + i * 4, word)
+      }
+      def sampleOffset(x: Int, y: Int, s: Int): Int =
+        (y * 16 * samples + x * samples + s) * 4
+      def destination(x: Int, y: Int): Int =
+        ((x * 7 + 13) << 24) | ((y * 9 + 21) << 16) |
+          (((x + y) * 4 + 33) << 8) | 0xff
+      for (y <- 0 until 16; x <- 0 until 16; s <- 0 until samples) {
+        val passStencil = (x + y + s) % 3 != 0
+        val stencil = if (passStencil) 0x5a else 0
+        m.wwrite(depthBase + sampleOffset(x, y, s),
+          if (sampleMode == 2) (stencil << 24) | 0x40 else 0x00ffffff)
+        if (sampleMode == 2)
+          m.wwrite(colorBase + sampleOffset(x, y, s), destination(x, y))
+      }
+      def texel(x: Int, y: Int): Int = {
+        val r = x * 7 + y * 5 + 3
+        val g = x * 4 + y * 9 + 11
+        val b = x * 6 + y * 3 + 17
+        (r << 24) | (g << 16) | (b << 8) | 0xff
+      }
+      for (y <- 0 until 16; x <- 0 until 16)
+        m.wwrite(texBase + (y * 16 + x) * 4, texel(x, y))
 
-    simulate(new RenderCoreL2(gfx, cfg, fragCore = false)) { dut =>
-      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-      dut.io.cmdBase.poke(cmdBase.U)
-      dut.io.cmdCount.poke(1.U)
-      dut.io.colorBase.poke(colorBase.U)
-      dut.io.depthBase.poke(depthBase.U)
-      dut.io.stride.poke(stride.U)
-      dut.io.depthTestEnable.poke(true.B)
-      dut.io.depthFunc.poke(0.U)
-      dut.io.depthWriteEnable.poke(true.B)
-      dut.io.cullMode.poke(0.U)
-      dut.io.sampleMode.poke(0.U)
-      dut.io.texEnable.poke(true.B)
-      dut.io.texBase.poke(texBase.U)
-      dut.io.texWidth.poke(16.U)
-      dut.io.texHeight.poke(16.U)
-      dut.io.texWrapClamp.poke(false.B)
-      dut.io.texMaxLevel.poke(0.U)
-      dut.io.memoryResponse.valid.poke(false.B)
-      dut.io.memoryResponse.bits.fault.poke(false.B)
-      dut.io.memoryResponse.bits.transactionId.poke(0.U)
-      dut.io.memoryResponse.bits.readData.poke(0.U)
-      dut.io.memoryRequest.ready.poke(true.B)
-      dut.io.clearPerformanceCounters.poke(false.B)
-
-      dut.io.start.poke(true.B)
-      dut.clock.step()
-      dut.io.start.poke(false.B)
-
-      val respQ = mutable.Queue.empty[(BigInt, BigInt)]
-      var guard = 0
-      var doneSeen = false
-      while (!doneSeen && guard < 400000) {
+      simulate(new RenderCoreL2(gfx, cfg, fragCore = false)) { dut =>
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        dut.io.cmdBase.poke(cmdBase.U)
+        dut.io.cmdCount.poke(1.U)
+        dut.io.colorBase.poke(colorBase.U)
+        dut.io.depthBase.poke(depthBase.U)
+        dut.io.stride.poke(stride.U)
+        dut.io.depthTestEnable.poke(true.B)
+        dut.io.depthFunc.poke(0.U)
+        dut.io.depthWriteEnable.poke(true.B)
+        dut.io.cullMode.poke(0.U)
+        dut.io.sampleMode.poke(sampleMode.U)
+        dut.io.texEnable.poke(true.B)
+        dut.io.texBase.poke(texBase.U)
+        dut.io.texWidth.poke(16.U)
+        dut.io.texHeight.poke(16.U)
+        dut.io.texWrapClamp.poke(false.B)
+        dut.io.texMaxLevel.poke(0.U)
+        dut.io.memoryResponse.valid.poke(false.B)
+        dut.io.memoryResponse.bits.fault.poke(false.B)
+        dut.io.memoryResponse.bits.transactionId.poke(0.U)
+        dut.io.memoryResponse.bits.readData.poke(0.U)
         dut.io.memoryRequest.ready.poke(true.B)
-        val hadPending = respQ.nonEmpty
-        if (dut.io.memoryRequest.valid.peek().litToBoolean &&
-            dut.io.memoryRequest.ready.peek().litToBoolean) {
-          val a = dut.io.memoryRequest.bits.address.peek().litValue.toLong
-          val id = dut.io.memoryRequest.bits.transactionId.peek().litValue
-          val isWrite = dut.io.memoryRequest.bits.isWrite.peek().litToBoolean
-          val data =
-            if (isWrite) {
-              m.lineWrite(a, dut.io.memoryRequest.bits.writeData.peek().litValue,
-                dut.io.memoryRequest.bits.byteMask.peek().litValue)
-              BigInt(0)
-            } else m.lineRead(a)
-          respQ.enqueue((id, data))
-        }
-        if (hadPending) {
-          val (id, data) = respQ.head
-          dut.io.memoryResponse.valid.poke(true.B)
-          dut.io.memoryResponse.bits.transactionId.poke(id.U)
-          dut.io.memoryResponse.bits.readData.poke(data.U)
-          dut.io.memoryResponse.bits.fault.poke(false.B)
-          if (dut.io.memoryResponse.ready.peek().litToBoolean) respQ.dequeue()
-        } else dut.io.memoryResponse.valid.poke(false.B)
-        if (dut.io.done.peek().litToBoolean) doneSeen = true
-        dut.clock.step()
-        guard += 1
-      }
-      assert(doneSeen, "textured renderer did not drain")
+        dut.io.clearPerformanceCounters.poke(false.B)
 
-      def rgb(x: Int, y: Int): (Int, Int, Int) = {
-        val c = m.word(colorBase + (y * 16 + x) * 4).toInt
-        (((c >> 24) & 0xff), ((c >> 16) & 0xff), ((c >> 8) & 0xff))
-      }
-      // UVs target each texel centre. Compare the full image after the
-      // fixed-function white-colour modulation (channel * 255 >> 8).
-      for (y <- 0 until 16; x <- 0 until 16) {
-        val inside = x > 0 && y > 0 && x + y <= 16
-        val t = texel(x, y)
-        val expectedRgb = if (inside)
-          (((t >>> 24) & 0xff) * 255 >>> 8,
-            ((t >>> 16) & 0xff) * 255 >>> 8,
-            ((t >>> 8) & 0xff) * 255 >>> 8)
-        else (0, 0, 0)
-        val expectedDepth = if (inside) 0x10L else 0x00ffffffL
-        val actualDepth = m.word(depthBase + (y * 16 + x) * 4)
-        assert(rgb(x, y) == expectedRgb,
-          s"texture image ($x,$y): got ${rgb(x, y)} expected $expectedRgb")
-        assert(actualDepth == expectedDepth,
-          f"texture depth ($x,$y): got 0x$actualDepth%08x expected 0x$expectedDepth%08x")
+        dut.io.start.poke(true.B)
+        dut.clock.step()
+        dut.io.start.poke(false.B)
+
+        val respQ = mutable.Queue.empty[(BigInt, BigInt)]
+        var guard = 0
+        var doneSeen = false
+        while (!doneSeen && guard < 400000) {
+          dut.io.memoryRequest.ready.poke(true.B)
+          val hadPending = respQ.nonEmpty
+          if (dut.io.memoryRequest.valid.peek().litToBoolean &&
+              dut.io.memoryRequest.ready.peek().litToBoolean) {
+            val a = dut.io.memoryRequest.bits.address.peek().litValue.toLong
+            val id = dut.io.memoryRequest.bits.transactionId.peek().litValue
+            val isWrite = dut.io.memoryRequest.bits.isWrite.peek().litToBoolean
+            val data =
+              if (isWrite) {
+                m.lineWrite(a, dut.io.memoryRequest.bits.writeData.peek().litValue,
+                  dut.io.memoryRequest.bits.byteMask.peek().litValue)
+                BigInt(0)
+              } else m.lineRead(a)
+            respQ.enqueue((id, data))
+          }
+          if (hadPending) {
+            val (id, data) = respQ.head
+            dut.io.memoryResponse.valid.poke(true.B)
+            dut.io.memoryResponse.bits.transactionId.poke(id.U)
+            dut.io.memoryResponse.bits.readData.poke(data.U)
+            dut.io.memoryResponse.bits.fault.poke(false.B)
+            if (dut.io.memoryResponse.ready.peek().litToBoolean) respQ.dequeue()
+          } else dut.io.memoryResponse.valid.poke(false.B)
+          if (dut.io.done.peek().litToBoolean) doneSeen = true
+          dut.clock.step()
+          guard += 1
+        }
+        assert(doneSeen, "textured renderer did not drain")
+
+        def scale(c: Int, factor: Int): Int = (c * factor + 127) / 255
+        def channel(word: Int, shift: Int): Int = (word >>> shift) & 0xff
+        // Texture sampling uses the pixel-centre UV for every covered sample.
+        // Coverage itself uses the quarter-pixel sample position.
+        for (y <- 0 until 16; x <- 0 until 16;
+             ((sx, sy), s) <- Msaa.positions(sampleMode).zipWithIndex) {
+          val inside = 4 * x + sx > 0 && 4 * y + sy > 0 &&
+            4 * (x + y) + sx + sy <= 64
+          val passStencil = (x + y + s) % 3 != 0
+          val t = texel(x, y)
+          val src = Seq(24, 16, 8).map(shift => channel(t, shift) * 255 >>> 8)
+          val expectedColor = if (sampleMode == 0) {
+            if (inside) (src(0).toLong << 24) | (src(1).toLong << 16) |
+              (src(2).toLong << 8) | 0xffL else 0L
+          } else if (inside && passStencil) {
+            val dst = destination(x, y)
+            val mixed = Seq(24, 16, 8).zipWithIndex.map { case (shift, i) =>
+              math.min(255, scale(src(i), src(i)) +
+                scale(channel(dst, shift), 255 - src(i)))
+            }
+            (mixed(0).toLong << 24) | (mixed(1).toLong << 16) |
+              (mixed(2).toLong << 8) | 0xffL
+          } else destination(x, y) & 0xffffffffL
+          val expectedDepth = if (sampleMode == 0) {
+            if (inside) 0x10L else 0x00ffffffL
+          } else if (inside && passStencil) 0x5a000010L
+          else ((if (passStencil) 0x5aL else 0L) << 24) | 0x40L
+          val actualColor = m.word(colorBase + sampleOffset(x, y, s))
+          val actualDepth = m.word(depthBase + sampleOffset(x, y, s))
+          assert(actualColor == expectedColor,
+            f"mode $sampleMode sample $s color ($x,$y): got 0x$actualColor%08x expected 0x$expectedColor%08x")
+          assert(actualDepth == expectedDepth,
+            f"mode $sampleMode sample $s depth ($x,$y): got 0x$actualDepth%08x expected 0x$expectedDepth%08x")
+        }
       }
     }
   }

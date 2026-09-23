@@ -81,7 +81,7 @@ read error and an invalid Sv32 DMA leaf before a repaired fill.
 
 - [x] Define helper-lane behavior and guarantee 2x2 fragment-quad ordering,
   then admit `vquad.dfdx` and `vquad.dfdy` in the shader profile.
-- [ ] Add software-reference image comparisons for rasterization, depth,
+- [x] Add software-reference image comparisons for rasterization, depth,
   stencil, blend, texture and 1x/2x/4x MSAA combinations.
   - [x] Compare every color and depth sample for a flat shaded triangle at
     1x, 2x and 4x, including edge samples outside the pixel center.
@@ -91,7 +91,7 @@ read error and an invalid Sv32 DMA leaf before a repaired fill.
     destination color and depth-gated pixels.
   - [x] Compare a coordinate-dependent texture image through the shared L2
     and a full command-driven image with per-draw blending.
-  - [ ] Compare mixed stencil, blend and texture scenes under multisampling.
+  - [x] Compare a mixed stencil, blend and texture scene at every 4x sample.
 - [ ] Broaden persistent-depth and multisample continuation coverage in the
   ARTI guest path.
 - [ ] Decide from workloads whether centroid/per-sample interpolation or
