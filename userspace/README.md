@@ -64,6 +64,14 @@ GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
   scripts/run_arti_gpu.sh
 ```
 
+Debian interactive (same binaries on the OPENGPU ISO):
+
+```sh
+scripts/run_arti_debian.sh
+# guest after /root/load_opengpu.sh:
+/root/load_opengpu.sh examples
+```
+
 See the platform-integration section of
 [docs/GRAPHICS_ROADMAP.md](../docs/GRAPHICS_ROADMAP.md). Omit `*_ONLY=1` to
 run the DRM guest regression before the apps. The full release gate remains

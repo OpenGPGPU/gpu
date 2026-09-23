@@ -25,6 +25,7 @@
 # In the guest (root / arti):
 #   /root/load_opengpu.sh
 #   /root/load_opengpu.sh test
+#   /root/load_opengpu.sh examples   # pipe/userspace smoke (when staged)
 set -euo pipefail
 
 GPU_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -182,6 +183,14 @@ echo "  Driver    : $DRIVER_KO"
 
 ensure_disk
 
+# Stage FF pipe/userspace binaries next to the driver so the OPENGPU ISO
+# ships /root/load_opengpu.sh examples. Skip with BUILD_USERSPACE=0.
+if [ "${BUILD_USERSPACE:-1}" = "1" ]; then
+    echo "=== Cross-build guest userspace examples ==="
+    ARTI_WORK="$ARTI_WORK" DRIVER_OUTPUT="$DRIVER_OUTPUT" \
+        bash "$GPU_DIR/scripts/build_userspace_guest.sh"
+fi
+
 if [ "$REBUILD_CLOUDINIT" = "1" ]; then
     echo "=== Refresh cloud-init + OPENGPU modules ISO ==="
     INTEGRATION_CONFIG="$INTEGRATION_CONFIG" \
@@ -192,6 +201,7 @@ if [ "$REBUILD_CLOUDINIT" = "1" ]; then
     DRIVER_MANIFEST="$DRIVER_MANIFEST" \
     OUTPUT="$CIDATA" \
     MODULES_ISO="$MODULES_ISO" \
+    OPENGPU_USERSPACE_DIR="$DRIVER_OUTPUT" \
     CLOUDINIT_PACKAGES="${CLOUDINIT_PACKAGES:-0}" \
         bash "$ARTI_DIR/examples/linux_arti_driver/build_cloudinit.sh"
 fi
@@ -203,6 +213,7 @@ echo "  Login  : root / arti   (or debian / arti)"
 echo "  After cloud-init finishes:"
 echo "    /root/load_opengpu.sh"
 echo "    /root/load_opengpu.sh test"
+echo "    /root/load_opengpu.sh examples"
 echo ""
 
 export ARTI_DIR ARTI_WORK INTEGRATION_CONFIG

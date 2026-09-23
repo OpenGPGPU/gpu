@@ -182,13 +182,18 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    ```
    Expect `OPENGPU USERSPACE EXAMPLES PASS`. `GPU_PIPE_SPIKE=1` is a
    compatibility alias for the fragment-core userspace path. Pipe DMA/draw
-   surfaces for the spike are in; next guest work is Debian interactive
-   (`run_arti_debian.sh`) or Mesa only if NIR stays small. See
-   [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md).
+   surfaces for the spike are in. Debian interactive guest ships the same
+   binaries on the OPENGPU ISO:
+   ```sh
+   scripts/run_arti_debian.sh
+   # guest:
+   /root/load_opengpu.sh
+   /root/load_opengpu.sh examples
+   ```
+   (`BUILD_USERSPACE=0` skips the cross-build.) Mesa only if NIR stays small;
+   see [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md).
    Scanout remains simulation-only — apps validate by reading colour GEMs.
-   Debian interactive guest: `scripts/run_arti_debian.sh` with the same
-   `/dev/dri/card0` ABI. Replace virtual vblank/scanout after choosing
-   display hardware.
+   Replace virtual vblank/scanout after choosing display hardware.
 2. **Keep the submission contract covered** — every submission-path change
    must exercise descriptor errors, reset-during-work, delayed writes,
    completion backpressure, recovery and mixed sample modes. Boundary edits
