@@ -34,7 +34,7 @@ class DivideExecuteStageSpec extends AnyFlatSpec {
 
   private def waitForResult(dut: DivideExecuteStage): Unit = {
     var cycles = 0
-    while (!dut.io.out.valid.peek().litToBoolean && cycles < 36) {
+    while (!dut.io.out.valid.peek().litToBoolean && cycles < 40) {
       dut.clock.step()
       cycles += 1
     }

@@ -8,10 +8,12 @@ import opengpu.core.frontend.decode.ExecutionType
 
 /** Iterative RV32M divide/remainder execution.
   *
-  * One radix-2 quotient bit is produced per cycle. This keeps the critical
-  * combinational path to a 33-bit compare/subtract instead of inferring a
-  * combinational divider. Divide-by-zero and signed overflow follow the RISC-V
-  * architectural results and complete without entering the iteration loop.
+  * One radix-2 quotient bit is produced per cycle, then a finalize cycle
+  * applies sign correction. This keeps the iteration critical path to a
+  * 33-bit compare/subtract instead of stacking negate onto that CPA or
+  * inferring a combinational divider. Divide-by-zero and signed overflow
+  * follow the RISC-V architectural results and complete without entering
+  * the iteration loop.
   */
 class DivideExecuteStage(config: GpuConfig = GpuConfig()) extends Module {
   val io = IO(new Bundle {
@@ -20,6 +22,7 @@ class DivideExecuteStage(config: GpuConfig = GpuConfig()) extends Module {
   })
 
   private val busy = RegInit(false.B)
+  private val finishing = RegInit(false.B)
   private val count = RegInit(0.U(6.W))
   private val quotient = Reg(UInt(32.W))
   private val divisor = Reg(UInt(32.W))
@@ -103,28 +106,30 @@ class DivideExecuteStage(config: GpuConfig = GpuConfig()) extends Module {
     shiftedRemainder
   )
   private val nextQuotient = Cat(quotient(30, 0), subtracts)
+  private val quotientResult =
+    Mux(negateQuotient, 0.U(32.W) - quotient, quotient)
+  private val remainderResult =
+    Mux(
+      negateRemainder,
+      0.U(32.W) - remainder(31, 0),
+      remainder(31, 0)
+    )
 
   when(busy) {
-    remainder := nextRemainder
-    quotient := nextQuotient
-    count := count + 1.U
-
-    when(count === 31.U) {
-      val quotientResult =
-        Mux(negateQuotient, 0.U(32.W) - nextQuotient, nextQuotient)
-      val remainderMagnitude = nextRemainder(31, 0)
-      val remainderResult =
-        Mux(
-          negateRemainder,
-          0.U(32.W) - remainderMagnitude,
-          remainderMagnitude
-        )
-
+    when(finishing) {
       busy := false.B
+      finishing := false.B
       outputValid := true.B
       outputBits := saved
       outputBits.data :=
         Mux(selectRemainder, remainderResult, quotientResult)
+    }.otherwise {
+      remainder := nextRemainder
+      quotient := nextQuotient
+      count := count + 1.U
+      when(count === 31.U) {
+        finishing := true.B
+      }
     }
   }
 

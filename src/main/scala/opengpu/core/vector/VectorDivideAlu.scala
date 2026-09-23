@@ -16,7 +16,9 @@ private class VectorDivideMetadata(config: GpuConfig) extends Bundle {
 /** Lane-parallel RVV integer divide/remainder for the fixed SEW=32 profile.
   *
   * Implements vdivu/vdiv/vremu/vrem in vv and vx forms. All lanes share one
-  * 32-cycle radix-2 iteration, mirroring the scalar DivideExecuteStage.
+  * 32-cycle radix-2 iteration plus a finalize cycle for sign correction,
+  * mirroring the scalar DivideExecuteStage. Keeping negate/select off the
+  * iteration path avoids stacking a second CPA onto the compare/subtract.
   */
 class VectorDivideAlu(config: GpuConfig = GpuConfig()) extends Module {
   val io = IO(new Bundle {
@@ -25,6 +27,7 @@ class VectorDivideAlu(config: GpuConfig = GpuConfig()) extends Module {
   })
 
   private val busy = RegInit(false.B)
+  private val finishing = RegInit(false.B)
   private val count = RegInit(0.U(6.W))
   private val quotient = Reg(Vec(config.lanes, UInt(32.W)))
   private val divisor = Reg(Vec(config.lanes, UInt(32.W)))
@@ -167,12 +170,18 @@ class VectorDivideAlu(config: GpuConfig = GpuConfig()) extends Module {
     nextQuotient(lane) := Cat(quotient(lane)(30, 0), subtracts(lane))
   }
 
+  // Sign-correct from registered state on the finalize cycle so the
+  // iteration path is only the 33-bit compare/subtract into the regs.
   private val finalData = Wire(Vec(config.lanes, UInt(32.W)))
   for (lane <- 0 until config.lanes) {
     val quotientResult =
-      Mux(negateQuotient(lane), 0.U - nextQuotient(lane), nextQuotient(lane))
+      Mux(negateQuotient(lane), 0.U - quotient(lane), quotient(lane))
     val remainderResult =
-      Mux(negateRemainder(lane), 0.U - nextRemainder(lane)(31, 0), nextRemainder(lane)(31, 0))
+      Mux(
+        negateRemainder(lane),
+        0.U - remainder(lane)(31, 0),
+        remainder(lane)(31, 0)
+      )
     val selected = Mux(
       selectRemainder(lane),
       remainderResult,
@@ -190,13 +199,9 @@ class VectorDivideAlu(config: GpuConfig = GpuConfig()) extends Module {
   }
 
   when(busy) {
-    for (lane <- 0 until config.lanes) {
-      quotient(lane) := nextQuotient(lane)
-      remainder(lane) := nextRemainder(lane)
-    }
-    count := count + 1.U
-    when(count === 31.U) {
+    when(finishing) {
       busy := false.B
+      finishing := false.B
       outputValid := true.B
       outputBits.warpId := metadata.warpId
       outputBits.pc := metadata.pc
@@ -206,6 +211,15 @@ class VectorDivideAlu(config: GpuConfig = GpuConfig()) extends Module {
       outputBits.mask := 0.U
       outputBits.writesMask := false.B
       outputBits.saturated := false.B
+    }.otherwise {
+      for (lane <- 0 until config.lanes) {
+        quotient(lane) := nextQuotient(lane)
+        remainder(lane) := nextRemainder(lane)
+      }
+      count := count + 1.U
+      when(count === 31.U) {
+        finishing := true.B
+      }
     }
   }
 
