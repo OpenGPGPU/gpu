@@ -70,7 +70,8 @@ read error and an invalid Sv32 DMA leaf before a repaired fill.
 - [x] Add symbolic shader assembly and validate a small compiler-generated
   shader corpus instead of relying on hand-written instruction words
   (`userspace/shaders/`, `scripts/validate_shader_corpus.py`).
-- [ ] Expose software control of `vxrm` where shader ABI semantics are defined.
+- [x] Expose software control of `vxrm` through the immediate shader ABI,
+  with per-warp launch reset and guest rounding verification.
 - [ ] Admit masked comparisons, reductions, gathers and slides after validator
   data-flow rules cover their predicate and destination dependencies.
 - [ ] Add remaining useful fixed-profile RVV widening/narrowing and VFUNARY1

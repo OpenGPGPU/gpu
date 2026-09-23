@@ -177,6 +177,16 @@ The fixed vertex format is eight words: Q16.16 position, RGBA8888 colour, depth 
 Q16.16 UV. Resource addresses are relocated from validated bindings rather
 than trusted from userspace command data.
 
+#### Shader vector rounding
+
+Validated compute, vertex and fragment shaders may use `csrwi vxrm, mode`
+(`csrrwi x0, 0x00a, mode`) with immediate modes 0=RNU, 1=RNE, 2=RDN and
+3=ROD. Every launched warp starts at RNU, including reuse of a hardware warp
+by a later job. The write is ordered before the next instruction from that
+warp. Other CSR forms remain unsupported and are rejected by the shader
+validator; unvalidated execution reports an illegal-instruction trap. The
+fixed-point vector rounding operations consume the selected per-warp mode.
+
 #### Fragment kernarg
 
 With `stride = 4 * warps * lanes`, fragment data uses structure-of-arrays:

@@ -59,6 +59,8 @@ class VectorConfigurationUnit(config: GpuConfig = GpuConfig()) extends Module {
     val state = Output(new VectorCsrState(config))
     val frmByWarp = Output(Vec(config.warps, UInt(3.W)))
     val csrWrite = Flipped(Valid(new VectorCsrWrite(config)))
+    val shaderCsrWrite = Flipped(Valid(new VectorCsrWrite(config)))
+    val clearWarp = Flipped(Valid(UInt(config.warpIdWidth.W)))
     val flagsWrite = Flipped(Valid(new VectorFlagsWrite(config)))
     val scalarFlagsWrite = Flipped(Valid(new VectorFlagsWrite(config)))
   })
@@ -164,6 +166,16 @@ class VectorConfigurationUnit(config: GpuConfig = GpuConfig()) extends Module {
         writeWarp(vxsat, warp, io.csrWrite.bits.data(0))
       }
     }
+  }
+
+  when(io.shaderCsrWrite.valid) {
+    // The shader ABI admits only an immediate write to vxrm.
+    assert(io.shaderCsrWrite.bits.address === "h00a".U)
+    writeWarp(vxrm, io.shaderCsrWrite.bits.warpId,
+      io.shaderCsrWrite.bits.data(1, 0))
+  }
+  when(io.clearWarp.valid) {
+    writeWarp(vxrm, io.clearWarp.bits, 0.U(2.W))
   }
 
   when(io.flagsWrite.valid) {

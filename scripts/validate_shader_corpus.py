@@ -20,7 +20,7 @@ def run(args):
 
 def binary(assembly, destination):
     obj = destination.with_suffix(".o")
-    run([GCC, "-march=rv32im_zicsr", "-mabi=ilp32", "-c", "-x", "assembler",
+    run([GCC, "-march=rv32imv_zicsr", "-mabi=ilp32", "-c", "-x", "assembler",
          str(assembly), "-o", str(obj)])
     run([OBJCOPY, "-O", "binary", "--only-section=.text", str(obj),
          str(destination)])
@@ -54,10 +54,11 @@ def main():
     with tempfile.TemporaryDirectory(prefix="opengpu-shader-corpus-") as temp:
         out = Path(temp)
         paths = [out / f"{name}.bin" for name in
-                 ("compute_copy", "compute_increment", "fragment_tint", "vertex_offset")]
+                 ("compute_copy", "round_modes", "compute_increment", "fragment_tint", "vertex_offset")]
         binary(SHADERS / "compute_copy.S", paths[0])
+        binary(SHADERS / "round_modes.S", paths[1])
         for name, path in zip(("compute_increment", "fragment_tint", "vertex_offset"),
-                              paths[1:]):
+                              paths[2:]):
             assembly = out / f"{name}.s"
             compiler_assembly(SHADERS / f"{name}.c", assembly)
             binary(assembly, path)

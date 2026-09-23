@@ -97,6 +97,7 @@ class GpuComputeUnit(
   core.io.launch <> controller.io.launch
 
   system.io.in <> core.io.system
+  core.io.shaderCsrWrite := system.io.vxrmWrite
   io.texSample <> system.io.texSample
   core.io.texCommit <> io.texWriteback
   io.vectorTexSample <> core.io.vectorTexSample

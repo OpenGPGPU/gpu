@@ -35,7 +35,8 @@ import opengpu.core.vector.{
   VectorFmaAlu,
   VectorMultiplyAlu,
   VectorFpuAlu,
-  VectorFlagsWrite
+  VectorFlagsWrite,
+  VectorCsrWrite
 }
 
 class VectorCommitRequest(config: GpuConfig) extends Bundle {
@@ -68,6 +69,8 @@ class VectorBackend(
     val scalarFpData = Input(UInt(32.W))
     val scalarFpBusy = Input(Vec(config.warps, UInt(32.W)))
     val scalarFlagsWrite = Flipped(Valid(new VectorFlagsWrite(config)))
+    val shaderCsrWrite = Flipped(Valid(new VectorCsrWrite(config)))
+    val clearWarp = Flipped(Valid(UInt(config.warpIdWidth.W)))
     val frm = Output(Vec(config.warps, UInt(3.W)))
     val scalarReserve = Decoupled(new RegisterReservation(config))
     val initialize = Flipped(Decoupled(new VectorRegisterWrite(config)))
@@ -819,6 +822,8 @@ class VectorBackend(
   configuration.io.flagsWrite.bits.flags :=
     io.committedVectorFlags.bits.flags
   configuration.io.scalarFlagsWrite := io.scalarFlagsWrite
+  configuration.io.shaderCsrWrite := io.shaderCsrWrite
+  configuration.io.clearWarp := io.clearWarp
 
   configuration.io.csrWrite.valid :=
     commitFire && commitBits.saturated

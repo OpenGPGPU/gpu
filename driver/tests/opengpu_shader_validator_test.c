@@ -115,6 +115,16 @@ static uint32_t vquad(unsigned int funct6, unsigned int vd,
 
 int main(void)
 {
+    const uint32_t vxrm_valid[] = {
+        OPENGPU_SHADER_SET_VXRM(0),
+        OPENGPU_SHADER_SET_VXRM(1),
+        OPENGPU_SHADER_SET_VXRM(2),
+        OPENGPU_SHADER_SET_VXRM(3),
+        OPENGPU_SHADER_CEASE,
+    };
+    uint32_t vxrm_invalid[] = {
+        OPENGPU_SHADER_SET_VXRM(4), OPENGPU_SHADER_CEASE,
+    };
     const uint32_t valid[] = {
         lw(10, 96),
         0x00150513, /* addi x10, x10, 1 */
@@ -183,6 +193,14 @@ int main(void)
     uint32_t program[64];
     unsigned int i;
 
+    assert(opengpu_compute_shader_validate_words(vxrm_valid, 5, 64, 1));
+    assert(opengpu_shader_validate_words(vxrm_valid, 5, 288, 8));
+    assert(opengpu_vertex_shader_validate_words(vxrm_valid, 5, 512, 8));
+    assert(!opengpu_compute_shader_validate_words(vxrm_invalid, 2, 64, 1));
+    vxrm_invalid[0] = OPENGPU_SHADER_SET_VXRM(1) | (1u << 7);
+    assert(!opengpu_compute_shader_validate_words(vxrm_invalid, 2, 64, 1));
+    vxrm_invalid[0] = OPENGPU_SHADER_SET_VXRM(1) | (1u << 20);
+    assert(!opengpu_compute_shader_validate_words(vxrm_invalid, 2, 64, 1));
     assert(opengpu_shader_validate_words(valid, 4, 288, 8));
     assert(opengpu_shader_validate_words(vector_valid, 10, 288, 8));
     assert(opengpu_shader_validate_words_with_texture(

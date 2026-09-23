@@ -15,6 +15,7 @@ import opengpu.core.frontend._
 import opengpu.core.frontend.decode.{FpuDecodeResponse, VectorDecodeResponse}
 import opengpu.core.frontend.warp.WarpLaunch
 import opengpu.core.trap.{CoreTrapArbiter, CoreTrapEvent}
+import opengpu.core.vector.VectorCsrWrite
 import opengpu.core.memory.{
   BankedSharedMemory,
   VectorMemorySpaceRouter,
@@ -74,6 +75,7 @@ class GpuCore(
       Flipped(Decoupled(new PageTableMemoryResponse))
     val memory = Decoupled(new ScalarIssuedInstruction(config))
     val system = Decoupled(new ScalarIssuedInstruction(config))
+    val shaderCsrWrite = Flipped(Valid(new VectorCsrWrite(config)))
     val trap = Decoupled(new CoreTrapEvent(config))
     val faultResume = Flipped(Decoupled(new SimtPath(config)))
 
@@ -198,6 +200,9 @@ class GpuCore(
   scalarFpuRead.io.write.bits := scalar.io.appliedWriteback.bits
   frontend.io.scalarRedirect <> completionArbiter.io.out
   vector.io.in <> frontend.io.vectorOut
+  vector.io.shaderCsrWrite := io.shaderCsrWrite
+  vector.io.clearWarp.valid := io.launch.fire
+  vector.io.clearWarp.bits := io.launch.bits.warpId
   io.vectorTexSample <> vector.io.texSample
   vector.io.texCommit <> io.vectorTexCommit
   io.vector <> vector.io.unimplemented

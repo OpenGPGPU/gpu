@@ -5,6 +5,7 @@ import chisel3.util._
 import opengpu.config.GpuConfig
 import opengpu.core.backend.issue.ScalarIssuedInstruction
 import opengpu.core.execute.control.SimtPath
+import opengpu.core.vector.VectorCsrWrite
 
 /** Executes warp-lifecycle system instructions.
   *
@@ -24,6 +25,7 @@ class WarpSystemControl(config: GpuConfig = GpuConfig()) extends Module {
       * backend's commit path. */
     val texSample = Decoupled(new ScalarIssuedInstruction(config))
     val unsupported = Decoupled(new ScalarIssuedInstruction(config))
+    val vxrmWrite = Valid(new VectorCsrWrite(config))
   })
 
   private val decoded = io.in.bits.decode.decoded
@@ -32,6 +34,12 @@ class WarpSystemControl(config: GpuConfig = GpuConfig()) extends Module {
   private val fence = decoded.fence
   private val barrier = decoded.barrier
   private val texSample = decoded.texSample
+  // Shader ABI: only csrrwi x0, vxrm, zimm[1:0] is supported. Other CSR
+  // forms still trap, so no CSR read or read-modify-write semantics leak in.
+  private val instruction = io.in.bits.decode.instruction
+  private val setVxrm = decoded.csr &&
+    (instruction & "hfff07fff".U) === "h00a05073".U &&
+    instruction(19, 17) === 0.U
 
   // `valid` must not depend on `ready`: finish feeds scheduler state and can
   // otherwise close a combinational loop through the completion arbiter.
@@ -41,7 +49,7 @@ class WarpSystemControl(config: GpuConfig = GpuConfig()) extends Module {
   io.restore.valid := io.in.valid && join
   io.restore.bits := io.in.bits.decode.warpId
 
-  io.resume.valid := io.in.valid && fence
+  io.resume.valid := io.in.valid && (fence || setVxrm)
   io.resume.bits.warpId := io.in.bits.decode.warpId
   io.resume.bits.pc := io.in.bits.decode.pc + 4.U
   io.resume.bits.activeMask := io.in.bits.decode.activeMask
@@ -54,7 +62,12 @@ class WarpSystemControl(config: GpuConfig = GpuConfig()) extends Module {
   io.texSample.valid := io.in.valid && texSample
   io.texSample.bits := io.in.bits
 
-  private val known = cease || join || fence || barrier || texSample
+  io.vxrmWrite.valid := io.in.fire && setVxrm
+  io.vxrmWrite.bits.warpId := io.in.bits.decode.warpId
+  io.vxrmWrite.bits.address := "h00a".U
+  io.vxrmWrite.bits.data := instruction(16, 15)
+
+  private val known = cease || join || fence || barrier || texSample || setVxrm
   io.unsupported.valid := io.in.valid && !known
   io.unsupported.bits := io.in.bits
 
@@ -64,6 +77,7 @@ class WarpSystemControl(config: GpuConfig = GpuConfig()) extends Module {
       cease -> true.B,
       join -> io.restore.ready,
       fence -> io.resume.ready,
+      setVxrm -> io.resume.ready,
       barrier -> io.barrier.ready,
       texSample -> io.texSample.ready
     )

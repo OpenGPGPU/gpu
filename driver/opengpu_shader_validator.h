@@ -20,6 +20,8 @@ typedef int64_t opengpu_shader_s64;
 #define OPENGPU_SHADER_MAX_INSTRUCTIONS 256u
 #define OPENGPU_SHADER_MAX_FORWARD_BRANCHES 4u
 #define OPENGPU_SHADER_CEASE 0x30500073u
+/* csrrwi x0, vxrm, mode: shader ABI admits only immediate modes 0..3. */
+#define OPENGPU_SHADER_SET_VXRM(mode) (0x00a05073u | ((mode) << 15))
 
 enum opengpu_shader_value_kind {
     OPENGPU_SHADER_VALUE_UNKNOWN,
@@ -429,6 +431,11 @@ static inline bool opengpu_shader_validate_words_profile(
         lhs = values[rs1];
         rhs = values[rs2];
         switch (opcode) {
+        case 0x73: /* shader-profile vxrm immediate write only */
+            if ((insn & 0xfff07fffu) != 0x00a05073u ||
+                (rs1 & ~3u))
+                return false;
+            break;
         case 0x13: /* RV32I OP-IMM */
             if (rd == 1 || !scalar_defined[rs1])
                 return false;

@@ -33,6 +33,12 @@ class VectorConfigurationUnitSpec extends AnyFlatSpec {
     dut.io.in.bits.rs2Data.poke(0.U)
     dut.io.queryWarpId.poke(0.U)
     dut.io.csrWrite.valid.poke(false.B)
+    dut.io.shaderCsrWrite.valid.poke(false.B)
+    dut.io.shaderCsrWrite.bits.warpId.poke(0.U)
+    dut.io.shaderCsrWrite.bits.address.poke(0.U)
+    dut.io.shaderCsrWrite.bits.data.poke(0.U)
+    dut.io.clearWarp.valid.poke(false.B)
+    dut.io.clearWarp.bits.poke(0.U)
     dut.io.csrWrite.bits.warpId.poke(0.U)
     dut.io.csrWrite.bits.address.poke(0.U)
     dut.io.csrWrite.bits.data.poke(0.U)
@@ -134,6 +140,31 @@ class VectorConfigurationUnitSpec extends AnyFlatSpec {
       dut.io.csrWrite.valid.poke(false.B)
       dut.io.state.vxrm.expect(2.U)
       dut.io.state.vxsat.expect(true.B)
+    }
+  }
+
+  it should "apply a shader mode per warp and reset it on warp reuse" in {
+    simulate(new VectorConfigurationUnit(config)) { dut =>
+      dut.reset.poke(true.B)
+      defaults(dut)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.shaderCsrWrite.valid.poke(true.B)
+      dut.io.shaderCsrWrite.bits.warpId.poke(2.U)
+      dut.io.shaderCsrWrite.bits.address.poke("h00a".U)
+      dut.io.shaderCsrWrite.bits.data.poke(3.U)
+      dut.clock.step()
+      dut.io.shaderCsrWrite.valid.poke(false.B)
+      dut.io.queryWarpId.poke(2.U)
+      dut.io.state.vxrm.expect(3.U)
+      dut.io.queryWarpId.poke(1.U)
+      dut.io.state.vxrm.expect(0.U)
+      dut.io.clearWarp.valid.poke(true.B)
+      dut.io.clearWarp.bits.poke(2.U)
+      dut.clock.step()
+      dut.io.clearWarp.valid.poke(false.B)
+      dut.io.queryWarpId.poke(2.U)
+      dut.io.state.vxrm.expect(0.U)
     }
   }
 

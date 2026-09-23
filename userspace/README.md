@@ -9,7 +9,7 @@ wait on the output syncobj before reading results. The kernel reports failed
 jobs through their fences. See `DRM_IOCTL_OPENGPU_GET_FAULT` for the most recent
 hardware fault snapshot.
 
-Build with installed DRM headers:
+Build with installed DRM headers and a RISC-V GNU assembler/toolchain:
 
 ```sh
 make -C userspace
@@ -22,13 +22,13 @@ make -C userspace CC=aarch64-linux-gnu-gcc \
     DRM_HEADERS=../../arti-work/linux-headers/include
 ```
 
-`examples/compute` loads `shaders/compute_copy.bin`, assembled from symbolic
+`examples/compute` loads `shaders/round_modes.bin`, assembled from symbolic
 RISC-V source, through private shader and kernarg bindings. It checks that
-the shader copies the input word to the output word. Pass the shader binary
+the same input rounds to 1 under RNU and 0 under RDN. Pass the shader binary
 as the second argument when running outside the guest.
 
-`examples/triangle` draws to a 16x16 colour GEM on a fixed-function build. The latter requires a device configured for 16x16
-pixels, with no fragment or vertex core. Pass a DRM node path as the first
+`examples/triangle` draws to a 16x16 colour GEM on a fixed-function
+build. It requires a device configured for 16x16 pixels, with no fragment or vertex core. Pass a DRM node path as the first
 argument, or use the default `/dev/dri/card0`.
 
 To run both examples in the fixed-function ARTI guest and require a pass marker:
@@ -45,7 +45,7 @@ before the examples. The full release gate remains
 ## Shader corpus
 
 Run `python3 scripts/validate_shader_corpus.py` from the repository root. It
-assembles `compute_copy.S`, compiles three small C shaders with
+assembles `compute_copy.S` and `round_modes.S`, and compiles three small C shaders with
 `riscv64-unknown-elf-gcc`, adapts the C argument base to OpenGPU's direct
 `x1` kernarg convention, and replaces the C return with the OpenGPU cease
 instruction. The script checks every binary with the production compute,

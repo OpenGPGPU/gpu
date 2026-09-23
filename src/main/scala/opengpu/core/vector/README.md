@@ -19,8 +19,8 @@ rounding pipeline with narrowing clips, but read only `vs2`, permit source
 and destination overlap, and never raise `vxsat`. Masked-off and inactive
 lanes preserve old `vd`. The driver admits all three forms, requiring defined
 register operands and, for masked forms, defined v0 and old `vd` with `vd != 0`.
-Scaling results discard trusted byte-index provenance. The current shader
-interface uses reset RNU, as for the other fixed-point operations.
+Scaling results discard trusted byte-index provenance. Shader code may select
+any of the four rounding modes through the defined `vxrm` immediate write.
 
 The eight single-width integer reductions combine the active `vs2` lanes with
 the scalar seed in `vs1[0]` and write the result to `vd[0]`. It also implements
@@ -88,8 +88,10 @@ to the unsigned or signed 32-bit range. Rounding occurs before the overflow
 check, so rounding across a limit also saturates. Only enabled lanes can
 raise the result's saturation flag; the backend sets the warp's sticky
 `vxsat` on commit. The ALU captures `vxrm` with each request and preserves
-results and flags under backpressure. The current shader interface uses the
-reset RNU mode; it does not expose software writes to `vxrm`.
+results and flags under backpressure. The shader ABI admits
+`csrwi vxrm, mode` (encoded as `csrrwi x0, 0x00a, mode`) for immediate modes 0–3. Each launched warp starts
+in RNU mode. Other CSR encodings remain unsupported; the write is ordered
+before the resumed warp's next vector instruction.
 
 The backend now contains a behavioral per-warp vector register file and issue
 boundary. Each warp owns 32 VLEN-wide registers with `vs1`, `vs2`, `vs2+1`, old-`vd`,

@@ -29,7 +29,7 @@ int main(int argc, char **argv)
         errno = EINVAL;
         goto done;
     }
-    ((uint32_t *)kernarg.map)[0] = 42;
+    ((uint32_t *)kernarg.map)[0] = 1;
     binding.context_id = context;
     binding.slot = 1;
     binding.handle = shader.handle;
@@ -49,11 +49,12 @@ int main(int argc, char **argv)
     command.out_syncobj = fence;
     if (opengpu_compute(fd, &command) || opengpu_sync_wait_success(fd, fence, 30000))
         goto done;
-    if (((uint32_t *)kernarg.map)[1] != 42) {
+    if (((uint32_t *)kernarg.map)[1] != 1 ||
+        ((uint32_t *)kernarg.map)[2] != 0) {
         errno = EIO;
         goto done;
     }
-    puts("compute completed; output=42");
+    puts("compute completed; RNU=1 RDN=0");
     status = 0;
 done:
     if (status) perror("compute");

@@ -70,6 +70,7 @@ class Gpu(
   core.io.fpuInitialize <> io.fpuInitialize
 
   system.io.in <> core.io.system
+  core.io.shaderCsrWrite := system.io.vxrmWrite
   system.io.texSample.ready := true.B
   system.io.unsupported.ready := true.B
   core.io.texCommit.valid := false.B
