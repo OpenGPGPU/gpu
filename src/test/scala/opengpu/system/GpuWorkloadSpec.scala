@@ -18,7 +18,8 @@ class GpuWorkloadSpec extends AnyFlatSpec with GpuHostTestSupport {
     ("shader_16_1x", 16, 0, true, false, 1),
     ("shader_16_4x", 16, 2, true, false, 1),
     ("texture_16_1x", 16, 0, false, true, 1),
-    ("overdraw_16_1x", 16, 0, false, false, 4))
+    ("overdraw_16_1x", 16, 0, false, false, 4),
+    ("overdraw_16_4x", 16, 2, false, false, 4))
   for ((name, size, mode, programmable, textured, draws) <- workloads if enabled &&
     sys.env.get("GPU_BENCHMARK_CASES").forall(_.split(",").contains(name))) {
     it should s"measure $name" in {

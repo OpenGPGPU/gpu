@@ -190,13 +190,16 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    centroid or per-sample interpolation or framebuffer compression. Record
    the observed quality or bandwidth gap, expected benefit and verification
    scene; retain current center interpolation and uncompressed storage until
-   a workload demonstrates a need. The current ten-case sweep covers flat,
-   shader, texture and overdraw scenes at 1x/2x/4x, but contains no varying
+   a workload demonstrates a need. The sweep covers flat scenes at 1x/2x/4x,
+   shader and overdraw at 1x/4x, and texture at 1x, but contains no varying
    UV at a partially covered sample or representative compressible frame.
-   Its 4x flat case writes 67,328 bytes at 16x16 versus 15,360 bytes at 1x,
-   while OM stalls track raster stalls. That shows a bandwidth opportunity,
-   not a measured compression win. Next add an edge-texture quality scene and
-   a realistic framebuffer traffic scene before making either feature call.
+   On the same worktree, `flat_16_4x` takes 20,058 cycles and transfers
+   14,224 read / 67,328 write bytes below L2; the new `overdraw_16_4x`
+   takes 25,414 cycles and transfers 29,904 read / 67,328 write bytes.
+   Depth rejection keeps writes equal in this scene, while read traffic
+   doubles. This establishes a traffic stress case, not a measured
+   compression win. Next add an edge-texture quality scene and a
+   representative compressible frame before making either feature call.
 7. **Platform integration** — replace virtual vblank/scanout after choosing
    display hardware and its interface. Evaluate a small Mesa/Gallium path
    against the stable userspace ABI, private-VM isolation and full functional

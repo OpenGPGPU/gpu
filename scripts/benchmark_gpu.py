@@ -11,7 +11,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--cases', help='comma-separated workload names; default runs all ten')
+    parser.add_argument('--cases', help='comma-separated workload names; default runs all eleven')
     parser.add_argument('--output', type=Path, default=ROOT / 'generated/qualification/workloads')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -40,7 +40,7 @@ def main():
                 results.append(json.loads(line.split('GPU_BENCHMARK_RESULT ', 1)[1]))
         status = process.wait()
     (args.output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
-    expected = len(args.cases.split(',')) if args.cases else 10
+    expected = len(args.cases.split(',')) if args.cases else 11
     if status or len(results) != expected:
         raise SystemExit(f'Workload qualification failed: exit={status}, results={len(results)}/{expected}')
 
