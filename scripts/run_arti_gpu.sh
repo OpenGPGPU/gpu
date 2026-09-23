@@ -418,6 +418,11 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
         -o "$WORK/opengpu_pipe_clear_draw" \
         "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
         "$GPU_DIR/userspace/examples/pipe_clear_draw.c"
+    "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+        -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+        -o "$WORK/opengpu_pipe_compute" \
+        "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
+        "$GPU_DIR/userspace/examples/pipe_compute.c"
 fi
 HARNESS_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/opengpu-harness.XXXXXX")"
 ln -s "$ARTI_DIR/examples/linux_arti_driver/run_linux_test.sh" \

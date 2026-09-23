@@ -122,6 +122,11 @@ page/PTE cached policy on that path. A registered non-flow pending queue
 stall collapsed (17 / 23) and further cuts flats to **4975 / 18162**
 (−3.9% / −6.2% vs the pending-8 point, −5.6% / −5.7% vs `e2e155e`). OM
 remains the binder; next flat lever is a dual color/depth OM memory port.
+A first dual-port wiring (separate colour/depth word clients through L2)
+was measured and **not kept**: `flat_16_1x` 4975 → 4986 and `flat_32_1x`
+18162 → 18831 — extra client/arbiter cost outweighed dual-issue. Revisit
+only with a cheaper dual-issue path (shared bridge, dual-accept without a
+second TLB client) or a wider word fabric.
 
 | Gate | Result |
 |---|---|
@@ -162,10 +167,12 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    are in after measured wins: framebuffer translation stall collapses and
    flats improve vs `e2e155e` (`flat_16_1x` 5271 → 4975, `flat_32_1x`
    19266 → 18162). Flat counters still show `om_conflict` = 0 with
-   `om_stall` ≈ `raster_stall`, so the next flat lever is a dual
-   color/depth OM memory port. Shader staging stays intentionally uncached
-   for CPU coherence; treat the `e2e155e` shader cycle rise vs `1194224`
-   as the coherent baseline, not a regression to claw back by re-caching.
+   `om_stall` ≈ `raster_stall`, so the next flat lever needs a cheaper
+   dual-issue path than a second framebuffer TLB client (a full dual colour/
+   depth client split was measured and rejected: flat_32 +3.7%). Shader
+   staging stays intentionally uncached for CPU coherence; treat the
+   `e2e155e` shader cycle rise vs `1194224` as the coherent baseline, not a
+   regression to claw back by re-caching.
 3. **Physical closure** — the strided-copy descriptor address cone and the
    command-router dispatch cone are pipelined; the FP32 FMA lane now runs
    five stages (completion add cut from invert/LZD-mask/mask-valid).

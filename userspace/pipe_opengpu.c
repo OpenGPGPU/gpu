@@ -9,6 +9,10 @@
 #define PIPE_KERNARG_SLOT 3u
 #define PIPE_FS_GEM_BYTES 128u
 #define PIPE_KERNARG_BYTES 288u
+#define PIPE_CS_SLOT 1u
+#define PIPE_CS_KERNARG_SLOT 2u
+#define PIPE_CS_GEM_BYTES 64u
+#define PIPE_CS_KERNARG_BYTES 64u
 
 struct pipe_opengpu_screen {
     int fd;
@@ -33,7 +37,13 @@ struct pipe_opengpu_context {
     struct opengpu_buffer shader;
     struct opengpu_buffer kernarg;
     int fs_bound;
+    int cs_bound;
 };
+
+static struct pipe_opengpu_fence *alloc_fence(int fd);
+static int finish_or_hand_off(struct pipe_opengpu_context *ctx,
+                              struct pipe_opengpu_fence *fence,
+                              struct pipe_opengpu_fence **out_fence);
 
 struct pipe_opengpu_screen *pipe_opengpu_screen_create(const char *path)
 {
@@ -110,6 +120,10 @@ void pipe_opengpu_context_destroy(struct pipe_opengpu_context *ctx)
         opengpu_unbind(ctx->screen->fd, ctx->context_id, PIPE_FS_SLOT);
         opengpu_unbind(ctx->screen->fd, ctx->context_id, PIPE_KERNARG_SLOT);
     }
+    if (ctx->cs_bound) {
+        opengpu_unbind(ctx->screen->fd, ctx->context_id, PIPE_CS_SLOT);
+        opengpu_unbind(ctx->screen->fd, ctx->context_id, PIPE_CS_KERNARG_SLOT);
+    }
     if (ctx->shader.handle)
         opengpu_buffer_destroy(ctx->screen->fd, &ctx->shader);
     if (ctx->kernarg.handle)
@@ -182,6 +196,11 @@ int pipe_opengpu_bind_fs(struct pipe_opengpu_context *ctx,
         return -1;
     }
     fd = ctx->screen->fd;
+    if (ctx->cs_bound) {
+        opengpu_unbind(fd, ctx->context_id, PIPE_CS_SLOT);
+        opengpu_unbind(fd, ctx->context_id, PIPE_CS_KERNARG_SLOT);
+        ctx->cs_bound = 0;
+    }
     if (ctx->fs_bound) {
         opengpu_unbind(fd, ctx->context_id, PIPE_FS_SLOT);
         opengpu_unbind(fd, ctx->context_id, PIPE_KERNARG_SLOT);
@@ -227,6 +246,96 @@ int pipe_opengpu_bind_fs(struct pipe_opengpu_context *ctx,
         return -1;
     ctx->fs_bound = 1;
     return 0;
+}
+
+int pipe_opengpu_bind_cs(struct pipe_opengpu_context *ctx,
+                         const void *code, size_t bytes)
+{
+    struct drm_opengpu_resource binding = { 0 };
+    int fd;
+
+    if (!ctx || !code || bytes == 0 || bytes > PIPE_CS_GEM_BYTES || (bytes & 3)) {
+        errno = EINVAL;
+        return -1;
+    }
+    fd = ctx->screen->fd;
+    if (ctx->fs_bound) {
+        opengpu_unbind(fd, ctx->context_id, PIPE_FS_SLOT);
+        opengpu_unbind(fd, ctx->context_id, PIPE_KERNARG_SLOT);
+        ctx->fs_bound = 0;
+    }
+    if (ctx->cs_bound) {
+        opengpu_unbind(fd, ctx->context_id, PIPE_CS_SLOT);
+        opengpu_unbind(fd, ctx->context_id, PIPE_CS_KERNARG_SLOT);
+        ctx->cs_bound = 0;
+    }
+    if (ctx->shader.handle) {
+        opengpu_buffer_destroy(fd, &ctx->shader);
+        memset(&ctx->shader, 0, sizeof(ctx->shader));
+    }
+    if (ctx->kernarg.handle) {
+        opengpu_buffer_destroy(fd, &ctx->kernarg);
+        memset(&ctx->kernarg, 0, sizeof(ctx->kernarg));
+    }
+    if (opengpu_buffer_create(fd, PIPE_CS_GEM_BYTES, &ctx->shader) ||
+        opengpu_buffer_create(fd, PIPE_CS_KERNARG_BYTES, &ctx->kernarg))
+        return -1;
+    memcpy(ctx->shader.map, code, bytes);
+    memset(ctx->kernarg.map, 0, PIPE_CS_KERNARG_BYTES);
+    binding.context_id = ctx->context_id;
+    binding.slot = PIPE_CS_SLOT;
+    binding.handle = ctx->shader.handle;
+    binding.type = OPENGPU_RESOURCE_COMPUTE_SHADER;
+    binding.size = PIPE_CS_GEM_BYTES;
+    if (opengpu_bind(fd, &binding))
+        return -1;
+    binding.slot = PIPE_CS_KERNARG_SLOT;
+    binding.handle = ctx->kernarg.handle;
+    binding.type = OPENGPU_RESOURCE_COMPUTE_KERNARG;
+    binding.size = PIPE_CS_KERNARG_BYTES;
+    binding.flags = OPENGPU_RESOURCE_UNCACHED;
+    if (opengpu_bind(fd, &binding))
+        return -1;
+    ctx->cs_bound = 1;
+    return 0;
+}
+
+void *pipe_opengpu_cs_kernarg_map(struct pipe_opengpu_context *ctx)
+{
+    if (!ctx || !ctx->cs_bound)
+        return NULL;
+    return ctx->kernarg.map;
+}
+
+int pipe_opengpu_launch_grid(struct pipe_opengpu_context *ctx,
+                             const uint32_t grid[3], const uint32_t local[3],
+                             struct pipe_opengpu_fence **out_fence)
+{
+    struct drm_opengpu_compute command = { 0 };
+    struct pipe_opengpu_fence *fence;
+
+    if (!ctx || !ctx->cs_bound || !grid || !local) {
+        errno = EINVAL;
+        return -1;
+    }
+    fence = alloc_fence(ctx->screen->fd);
+    if (!fence)
+        return -1;
+    command.context_id = ctx->context_id;
+    command.shader_slot = PIPE_CS_SLOT;
+    command.kernarg_slot = PIPE_CS_KERNARG_SLOT;
+    command.grid[0] = grid[0];
+    command.grid[1] = grid[1];
+    command.grid[2] = grid[2];
+    command.local[0] = local[0];
+    command.local[1] = local[1];
+    command.local[2] = local[2];
+    command.out_syncobj = fence->handle;
+    if (opengpu_compute(ctx->screen->fd, &command)) {
+        pipe_opengpu_fence_reference(&fence, NULL);
+        return -1;
+    }
+    return finish_or_hand_off(ctx, fence, out_fence);
 }
 
 static struct pipe_opengpu_fence *alloc_fence(int fd)

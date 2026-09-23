@@ -109,7 +109,8 @@ int main(void)
 #elif defined(OPENGPU_RUN_USERSPACE_EXAMPLES)
     } else if (run_program("/opengpu_compute_example") < 0 ||
                run_program("/opengpu_triangle_example") < 0 ||
-               run_program("/opengpu_pipe_clear_draw") < 0) {
+               run_program("/opengpu_pipe_clear_draw") < 0 ||
+               run_program("/opengpu_pipe_compute") < 0) {
         putstr("OPENGPU USERSPACE EXAMPLES FAIL\r\n");
 #endif
 #ifndef OPENGPU_USERSPACE_EXAMPLES_ONLY

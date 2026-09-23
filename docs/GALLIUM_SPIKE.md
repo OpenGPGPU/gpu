@@ -14,6 +14,7 @@ Out-of-tree winsys in-tree under `userspace/`:
 | `pipe_opengpu.h` / `pipe_opengpu.c` | Gallium-shaped `screen` / `context` / `resource` / `fence`; links only `opengpu.c` |
 | `opengpu_fill` | Clear maps to `DRM_IOCTL_OPENGPU_FILL` |
 | `examples/pipe_clear_draw` | `clear` + `draw_vbo` smoke (fixed or fragment-tint) |
+| `examples/pipe_compute` | `bind_cs` + `launch_grid` smoke (`round_modes`) |
 
 Fixed-function guest (with other userspace examples):
 

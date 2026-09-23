@@ -7,7 +7,7 @@ RISCV_GCC ?= riscv64-unknown-elf-gcc
 RISCV_OBJCOPY ?= riscv64-unknown-elf-objcopy
 
 EXAMPLES := examples/compute examples/triangle examples/fragment_tint \
-	examples/pipe_clear_draw
+	examples/pipe_clear_draw examples/pipe_compute
 
 all: $(EXAMPLES) shaders/round_modes.bin
 
@@ -27,6 +27,9 @@ examples/fragment_tint: examples/fragment_tint.c opengpu.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< opengpu.o
 
 examples/pipe_clear_draw: examples/pipe_clear_draw.c pipe_opengpu.o opengpu.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< pipe_opengpu.o opengpu.o
+
+examples/pipe_compute: examples/pipe_compute.c pipe_opengpu.o opengpu.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< pipe_opengpu.o opengpu.o
 
 shaders/round_modes.bin: shaders/round_modes.S

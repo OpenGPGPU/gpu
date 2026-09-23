@@ -39,6 +39,18 @@ void pipe_opengpu_set_framebuffer(struct pipe_opengpu_context *ctx,
 int pipe_opengpu_bind_fs(struct pipe_opengpu_context *ctx,
                          const void *code, size_t bytes);
 
+/* Bind a validator-admitted compute shader (+ uncached kernarg GEM). */
+int pipe_opengpu_bind_cs(struct pipe_opengpu_context *ctx,
+                         const void *code, size_t bytes);
+
+/* Kernarg mapping after a successful bind_cs (64 bytes for the corpus). */
+void *pipe_opengpu_cs_kernarg_map(struct pipe_opengpu_context *ctx);
+
+/* Gallium launch_grid → opengpu_compute. */
+int pipe_opengpu_launch_grid(struct pipe_opengpu_context *ctx,
+                             const uint32_t grid[3], const uint32_t local[3],
+                             struct pipe_opengpu_fence **out_fence);
+
 /* Fill colour GEM with a 32-bit pattern. Offset/bytes must be 64-byte aligned. */
 int pipe_opengpu_clear(struct pipe_opengpu_context *ctx, uint32_t pattern,
                        struct pipe_opengpu_fence **out_fence);

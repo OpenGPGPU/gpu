@@ -4,5 +4,6 @@ examples/compute
 examples/triangle
 examples/fragment_tint
 examples/pipe_clear_draw
+examples/pipe_compute
 shaders/*.o
 shaders/*.bin
