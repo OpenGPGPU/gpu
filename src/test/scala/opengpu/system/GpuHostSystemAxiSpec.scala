@@ -331,6 +331,121 @@ class GpuHostSystemAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
     }
   }
 
+  it should "drain an outstanding DMA page walk before resetting and recover" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      val root = 0x30000
+      val fillVa = 0x400000
+      val fillPa = 0x800000
+      val pte = BigInt((fillPa >> 12) << 10 | 0xcf)
+      val reads = mutable.ArrayBuffer.empty[BigInt]
+      val writes = mutable.ArrayBuffer.empty[BigInt]
+      var resetDuringWalk = false
+      def readLine(address: BigInt): BigInt = {
+        reads += address
+        if ((address & ~BigInt(63)) == root) pte << 32 else BigInt(0)
+      }
+
+      axiWrite(dut, GpuCommandMmioRegs.VECTOR_SATP, 0x80000000 | (root >> 12))
+      axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 41)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE, GpuCommandOpcode.fill.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, fillVa)
+      axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+      axiWrite(dut, GpuCommandMmioRegs.PATTERN, 0x13579bdf)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+
+      serviceMemoryMaster(dut, readLine, writeAckDelay = 12,
+        readResponseDelay = 8,
+        onReadAccepted = address => {
+          if (address == root + 4 && !resetDuringWalk) {
+            resetDuringWalk = true
+            axiWrite(dut, GpuCommandMmioRegs.RESET, 1)
+            for (_ <- 0 until 3)
+              assert((axiRead(dut, GpuCommandMmioRegs.STATUS) & 8) != 0,
+                "reset acknowledged before the page-table response")
+          }
+        })(
+        (address, _, _) => writes += address
+      ) {
+        resetDuringWalk && dut.io.m_irq.peek().litToBoolean
+      }
+      assert(resetDuringWalk && reads.contains(BigInt(root + 4)),
+        "the reset must overlap a real DMA page walk")
+      assert(writes.contains(BigInt(fillPa)),
+        "reset must drain the translated write before acknowledging")
+      assert((axiRead(dut, GpuCommandMmioRegs.STATUS) & 0xaL) == 0L,
+        "reset must clear its busy state and discard the old completion")
+
+      axiWrite(dut, RenderHostRegs.IRQ, 3)
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 42)
+      axiWrite(dut, GpuCommandMmioRegs.PATTERN, 0x2468ace0)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      serviceMemoryMaster(dut, readLine, writeAckDelay = 4)(
+        (address, _, _) => writes += address
+      ) {
+        dut.io.m_irq.peek().litToBoolean
+      }
+      val recovered = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+      assert((recovered & 0xff) == 42 && ((recovered >> 15) & 1) == 1,
+        "post-reset translated fill must complete successfully")
+    }
+  }
+
+  it should "clear a backpressured completion on reset and accept later work" in {
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
+    val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+      axiWrite(dut, GpuCommandMmioRegs.OPCODE, GpuCommandOpcode.fill.litValue.toInt)
+      axiWrite(dut, GpuCommandMmioRegs.BYTES, 64)
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 51)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, 0x6000)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      assert(acceptMemoryWrite(dut).address == 0x6000)
+      var wait = 0
+      while ((axiRead(dut, GpuCommandMmioRegs.STATUS) & 2) == 0 && wait < 40)
+        wait += 1
+      assert(wait < 40, "first completion never occupied the MMIO slot")
+      assert((axiRead(dut, GpuCommandMmioRegs.COMPLETION) & 0xff) == 51)
+
+      // Leave ID 51 unpopped. ID 52 reaches memory and then waits behind its
+      // occupied completion slot; reset must discard both old results.
+      axiWrite(dut, RenderHostRegs.IRQ, 3)
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 52)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, 0x7000)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      assert(acceptMemoryWrite(dut).address == 0x7000)
+      dut.io.s_axi_aclk.step(64)
+      assert((axiRead(dut, GpuCommandMmioRegs.COMPLETION) & 0xff) == 51,
+        "backpressured completion overwrote the occupied slot")
+
+      axiWrite(dut, GpuCommandMmioRegs.RESET, 1)
+      wait = 0
+      while ((axiRead(dut, GpuCommandMmioRegs.STATUS) & 8) != 0 && wait < 40)
+        wait += 1
+      assert(wait < 40, "reset remained blocked behind completion backpressure")
+      assert((axiRead(dut, GpuCommandMmioRegs.STATUS) & 2) == 0,
+        "reset left an old completion visible")
+      axiWrite(dut, RenderHostRegs.IRQ, 3)
+      axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, 53)
+      axiWrite(dut, GpuCommandMmioRegs.DESTINATION, 0x8000)
+      axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      assert(acceptMemoryWrite(dut).address == 0x8000)
+      wait = 0
+      while ((axiRead(dut, GpuCommandMmioRegs.STATUS) & 2) == 0 && wait < 40)
+        wait += 1
+      assert(wait < 40, "post-reset fill never completed")
+      val recovered = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+      assert((recovered & 0xff) == 53 && ((recovered >> 15) & 1) == 1,
+        "new completion must replace the discarded command stream")
+    }
+  }
+
   it should "execute a unified kernel through the AXI memory master" in {
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)
     val gpu = GpuConfig(l2Sets = 8, l2Ways = 2)

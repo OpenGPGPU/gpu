@@ -2478,6 +2478,66 @@ int main(void)
         CHECK(destroy_context(fd, iso_context_a),
               "VM isolation destroy context A");
     }
+    /* Context destruction must wait for an active render's delayed writes and
+     * finished fence before freeing its VM. Reuse the same resource bindings
+     * through a fresh context so the test covers the selected shader backend. */
+    {
+        struct dumb_fb teardown_fb = { 0 };
+        uint32_t teardown_context = 0, teardown_sync = 0;
+
+        CHECK(create_fb(fd, 0x5a5a5a5au, &teardown_fb),
+              "create teardown framebuffer");
+        CHECK(create_context(fd, &teardown_context),
+              "create delayed-render teardown context");
+        CHECK(bind_texture(fd, teardown_context, 1, &texture),
+              "bind teardown texture");
+        CHECK(bind_resource(fd, teardown_context, 2, &shader,
+                            OPENGPU_RESOURCE_SHADER, 128),
+              "bind teardown fragment shader");
+        CHECK(bind_resource(fd, teardown_context, 3, &kernarg,
+                            OPENGPU_RESOURCE_KERNARG, 640),
+              "bind teardown fragment kernarg");
+        if (vert_core) {
+            CHECK(bind_resource(fd, teardown_context, 4, &vertex_buffer,
+                                OPENGPU_RESOURCE_VERTEX_BUFFER,
+                                3 * sizeof(struct vertex_data)),
+                  "bind teardown vertex buffer");
+            CHECK(bind_resource(fd, teardown_context, 5, &vertex_shader,
+                                OPENGPU_RESOURCE_VERTEX_SHADER, 256),
+                  "bind teardown vertex shader");
+            CHECK(bind_resource(fd, teardown_context, 6, &vertex_kernarg,
+                                OPENGPU_RESOURCE_VERTEX_KERNARG, 512),
+                  "bind teardown vertex kernarg");
+        }
+        CHECK(create_syncobj(fd, &teardown_sync),
+              "create delayed-render teardown syncobj");
+        CHECK(submit_selected_render(
+                  fd, vert_core, teardown_context, &commands, &teardown_fb,
+                  texture_slot, shader_slot, kernarg_slot,
+                  vertex_buffer_slot, vertex_shader_slot,
+                  vertex_kernarg_slot, 0, 0, teardown_sync),
+              "queue delayed render before context destroy");
+        errno = 0;
+        if (wait_syncobjs_timeout(fd, &teardown_sync, 1, 0) != -1 ||
+            errno != ETIME) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL teardown render already done");
+            return 1;
+        }
+        CHECK(destroy_context(fd, teardown_context),
+              "destroy context during delayed render");
+        CHECK(expect_syncobj_status(fd, teardown_sync, 1),
+              "teardown render finished fence");
+        if ((frag_core &&
+             framebuffer_count(&teardown_fb, expected_pixel) != 60) ||
+            (!frag_core &&
+             *(uint32_t *)((uint8_t *)teardown_fb.map +
+                           teardown_fb.pitch + 4) != expected_pixel)) {
+            errno = EIO;
+            perror("OPENGPU USERSPACE DRM FAIL teardown render result");
+            return 1;
+        }
+    }
     CHECK(get_last_fault(fd, &final_fault), "query final GPU fault");
     if (final_fault.sequence != initial_fault.sequence) {
         fprintf(stderr,
@@ -2501,6 +2561,7 @@ int main(void)
            "persistent-depth cross-submission pass + "
            "VM fill/rebind/map-failure/recycle isolation + "
            "render/compute mapping-failure recovery + "
+           "delayed-render context teardown + "
            "fault-query ABI + vblank flip event sequence=%u\n",
            vert_core ? "vertex+fragment-core-backed" :
            frag_core ? "core-backed" : "texture",

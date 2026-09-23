@@ -40,9 +40,10 @@ unbound storage, and no validated VM job depends on VA equal to PA.
 - [x] Cover private-map allocation failure through render and compute ioctls,
   including failed-fence status, untouched output and a successful follow-up
   submission in the guest DRM path.
-- [ ] Cover context destruction reset during page walks or delayed writes and
-  completion backpressure; queued-work teardown and ASID reuse are now covered
-  in the guest path.
+- [x] Cover reset during an outstanding DMA page walk and completion
+  backpressure in AXI tests, and context destruction during an active render
+  in the guest path. Delayed-write reset, queued-work teardown, and ASID reuse
+  are also covered.
 - [ ] Add randomized legal command sequences with memory backpressure and
   injected descriptor, translation and bus faults.
 - [ ] Promote the full Scala suite, host driver tests and selected guest paths
