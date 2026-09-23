@@ -23,10 +23,10 @@ driver and initramfs as needed, so a first run can take substantially longer
 than a cached run.
 
 Prerequisites are sbt, a JDK, a host C compiler, the AArch64 cross compiler,
-Verilator, and the sibling ARTI checkout. `scripts/run_arti_gpu.sh` documents
-its path overrides and downloads QEMU/Linux sources into `ARTI_WORK` when
-needed. The gate uses the Verilator backend by default; set `GPU_SIM=flashsim`
-to qualify that backend instead.
+FlashSim (or Verilator), and the sibling ARTI checkout.
+`scripts/run_arti_gpu.sh` documents its path overrides and downloads
+QEMU/Linux sources into `ARTI_WORK` when needed. The gate uses the FlashSim
+backend by default; set `GPU_SIM=verilator` to qualify that backend instead.
 
 The normal CI workflow uses affected-package Scala selection and the host
 driver tests for quicker feedback. This command is the full local gate,

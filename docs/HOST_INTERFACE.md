@@ -267,5 +267,6 @@ borrow the execution self-test buffer. `opengpu,render-only` omits KMS setup
 while retaining GEM, render and syncobj services.
 
 Host validation: `python3 scripts/test_driver.py`. Linux integration:
-`GPU_SIM=verilator bash scripts/run_arti_gpu.sh`. Status:
+`bash scripts/run_arti_gpu.sh` (FlashSim by default; `GPU_SIM=verilator` for
+Verilator). Status:
 [GRAPHICS_ROADMAP.md](GRAPHICS_ROADMAP.md).
