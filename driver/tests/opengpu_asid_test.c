@@ -16,7 +16,7 @@ int main(void)
 
 	opengpu_asid_pool_init(&pool);
 
-	/* ASID 0 is reserved for the global identity map. */
+	/* ASID 0 is reserved for the driver's identity map. */
 	assert(opengpu_asid_in_use(&pool, 0));
 	assert(!opengpu_asid_in_use(&pool, 1));
 	assert(opengpu_asid_alloc(&pool, &first) == 0);

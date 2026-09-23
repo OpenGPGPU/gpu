@@ -6,15 +6,14 @@
  * GPU address-space ID (ASID) allocator.
  *
  * Sv32 tags TLB entries with a 9-bit ASID (512 values).  ASID 0 is reserved
- * for the driver's global identity map, whose entries are needed by every
- * address space; user VMs allocate from 1..511.  Each VM owns one ASID and
+ * for the driver's identity map used by controlled physical paths; user VMs
+ * allocate from 1..511. Each VM owns one ASID and
  * one root page table, so a coarse switch (quiesce, then reprogram satp)
  * needs no full flush: entries of other ASIDs stay resident.
  *
  * The allocator only hands out IDs.  A switched-out ASID keeps its TLB
  * entries, so an ASID must be shot down (opengpu_hw_flush_tlb_asid) before it
- * is reused for a different page table; the MMU VM layer does that on create
- * and destroy.
+ * is reused for a different page table; the MMU VM layer does that on destroy.
  *
  * Kernel-free so the same logic is exercised by tests/opengpu_asid_test.c.
  */
@@ -29,7 +28,7 @@ typedef uint32_t opengpu_asid_u32;
 #endif
 
 #define OPENGPU_ASID_COUNT 512u
-/* ASID 0 is the global identity map; it is never handed out. */
+/* ASID 0 is the driver's identity map; it is never handed out. */
 #define OPENGPU_ASID_RESERVED 0u
 #define OPENGPU_ASID_MAX (OPENGPU_ASID_COUNT - 1u)
 #define OPENGPU_ASID_WORDS (OPENGPU_ASID_COUNT / 32u)
@@ -47,7 +46,7 @@ static inline void opengpu_asid_pool_init(struct opengpu_asid_pool *pool)
 
 	for (i = 0; i < OPENGPU_ASID_WORDS; i++)
 		pool->in_use[i] = 0;
-	/* Reserve ASID 0 for the global identity map. */
+	/* Reserve ASID 0 for the driver's identity map. */
 	pool->in_use[OPENGPU_ASID_RESERVED / 32u] =
 		1u << (OPENGPU_ASID_RESERVED % 32u);
 	pool->next = 1u;

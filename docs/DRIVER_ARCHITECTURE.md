@@ -20,7 +20,7 @@ buffers. All opcodes share one dependency/fence path and one-credit policy.
 Per-job VM remapping runs when the scheduler starts the job after its
 predecessor drains. Compute kernel code is remapped into a private code VA
 window at run time (`kernel_pc`), so compute instruction fetch translates
-under the context ASID instead of the shared identity map. Fragment and
+under the context ASID. Fragment and
 vertex snapshots occupy separate private code windows, and the shared graphics
 shader core uses the same instruction SATP and scoped TLB flushes. Shader
 kernarg and vertex-buffer staging share VECTOR_SATP with CU data loads;
@@ -30,7 +30,9 @@ failed batches do not emit pixels or vertex outputs. Faults are not resumable.
 For a context with an enabled VM, resource binding and per-job command, DMA,
 framebuffer and snapshot mapping failures abort the operation; they never
 fall back to the resource's physical address. Bare bring-up jobs still use the
-ASID-0 identity map. Resource unbind revokes its private leaves and performs an
+ASID-0 identity map; context roots start empty and expose only explicit private
+mappings. Identity PTEs are ASID-tagged, so they cannot be reused by a context.
+Resource unbind revokes its private leaves and performs an
 ASID-scoped TLB invalidation before releasing the GEM object. Rebinding a slot
 to a resource in a different VA window revokes the old window as part of the
 same quiesced update. Render and compute submission also reject any VM-enabled
@@ -45,8 +47,8 @@ MODESET/ATOMIC while keeping render, GEM and syncobj.
 Probe order: hardware → execution → DRM allocate → optional KMS → DRM
 register. Teardown reverses that. Shader snapshots use a validated RV32IMF+V
 profile with defined-register tracking; that is separate from GPUVM isolation.
-Context VMs still inherit identity mappings, but those leaves are
-non-executable; snapshot code runs from private code windows. Graphics TLBs
+Context VMs do not inherit identity mappings; snapshot code runs from private
+code windows. Graphics TLBs
 are ASID-tagged and honour the same full/ASID/VPN-scoped shootdown as the CU
 TLBs.
 

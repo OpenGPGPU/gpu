@@ -31,7 +31,6 @@ struct opengpu_mmu {
     u32 l1_region[OPENGPU_MMU_MAX_TABLES];
     u32 l1_count;
     struct opengpu_asid_pool asids;
-    struct opengpu_vm *vm_by_asid[OPENGPU_ASID_COUNT];
     bool enabled;
 };
 struct opengpu_vm {
@@ -57,8 +56,9 @@ static int opengpu_buffer_alloc(struct opengpu_device *gpu,
         return -ENOMEM;
     if (allocations_until_failure > 0)
         allocations_until_failure--;
-    b->cpu = calloc(1, size);
+    b->cpu = malloc(size);
     assert(b->cpu);
+    memset(b->cpu, 0xa5, size);
     b->size = size;
     b->dma = next_dma;
     next_dma += size;
@@ -124,7 +124,8 @@ int main(void)
     u32 i;
 
     assert(!opengpu_mmu_init(&gpu));
-    assert((((u32 *)gpu.mmu.root.cpu)[0] & 0x20) != 0); /* global identity */
+    assert((((u32 *)gpu.mmu.root.cpu)[0] & MMU_PTE_V) != 0);
+    assert((((u32 *)gpu.mmu.root.cpu)[0] & 0x20) == 0); /* ASID-tagged identity */
     /* Identity leaves are read/write but never executable. */
     assert((((u32 *)gpu.mmu.root.cpu)[0] & MMU_PTE_X) == 0);
     memcpy(root_before, gpu.mmu.root.cpu, sizeof(root_before));
@@ -141,8 +142,8 @@ int main(void)
     allocations_until_failure = -1;
     assert(!opengpu_mmu_set_range_policy(&gpu, 0x3ff000, 8192, 2));
     assert(gpu.mmu.l1_count == 2 && flushes == 1);
-    assert((((u32 *)gpu.mmu.l1[0].cpu)[1023] & 0x320) == 0x220);
-    assert((((u32 *)gpu.mmu.l1[1].cpu)[0] & 0x320) == 0x220);
+    assert((((u32 *)gpu.mmu.l1[0].cpu)[1023] & 0x320) == 0x200);
+    assert((((u32 *)gpu.mmu.l1[1].cpu)[0] & 0x320) == 0x200);
     assert((((u32 *)gpu.mmu.l1[0].cpu)[1022] & 0x300) == 0);
 
     /* Existing PTEs must also survive allocation failure in a later region. */
@@ -167,8 +168,7 @@ int main(void)
     assert(gpu.mmu.l1_region[i] == 1023);
     assert((((u32 *)gpu.mmu.l1[i].cpu)[1023] >> 10) == 0xfffff);
 
-    /* Per-VM root tables: create allocates an ASID and an identity root and
-     * shoots the ASID down; activate reprograms satp without a full flush. */
+    /* Per-VM roots start empty; activation reprograms satp. */
     {
         struct opengpu_vm vm, vm2;
         int base_live = live_allocations;
@@ -176,14 +176,11 @@ int main(void)
 
         assert(!opengpu_mmu_vm_create(&gpu, &vm));
         assert(vm.enabled && vm.asid == 1);
-        assert(gpu.mmu.vm_by_asid[vm.asid] == &vm);
         assert(live_allocations == base_live + 1);
-        /* Creation clones the global map; it does not shoot the ASID down. */
+        /* Creation does not shoot down a freshly allocated ASID. */
         assert(asid_flushes == base_asid);
-        assert((((u32 *)vm.root.cpu)[0] & 0x300) == 0);
-        /* The VM shares the global identity map, with the global (G) bit. */
-        assert((((u32 *)vm.root.cpu)[512] & 0x20) != 0);
-        assert(!memcmp(vm.root.cpu, gpu.mmu.root.cpu, MMU_PAGE_SIZE));
+        for (i = 0; i < MMU_ROOT_ENTRIES; i++)
+            assert(((u32 *)vm.root.cpu)[i] == 0);
 
         assert(!opengpu_mmu_vm_activate(&gpu, &vm));
         assert(vm_activations == 1);
@@ -198,14 +195,11 @@ int main(void)
 
         opengpu_mmu_vm_destroy(&gpu, &vm);
         assert(!vm.enabled);
-        assert(!gpu.mmu.vm_by_asid[vm.asid]);
         assert(asid_flushes == base_asid + 2);
         assert(live_allocations == base_live);
     }
 
-    /* A policy update after VM creation propagates the new L1 link into every
-     * live VM root, so a VM sees the uncached leaf instead of the cached
-     * identity superpage. */
+    /* ASID-0 policy updates never grant access to a live context. */
     {
         struct opengpu_vm vm;
         u32 region = 500;
@@ -213,23 +207,18 @@ int main(void)
         unsigned full_before = flushes;
 
         assert(!opengpu_mmu_vm_create(&gpu, &vm));
-        assert(gpu.mmu.vm_by_asid[vm.asid] == &vm);
-        /* The clone already carries the links split before it existed. */
-        assert((((u32 *)vm.root.cpu)[1023] & 1) != 0);
+        assert(((u32 *)vm.root.cpu)[1023] == 0);
         assert(!opengpu_mmu_set_range_policy(
             &gpu, (dma_addr_t)region * MMU_SUPERPAGE_SIZE, MMU_PAGE_SIZE, 2));
-        assert((((u32 *)vm.root.cpu)[region] & 1) != 0);
-        assert((((u32 *)vm.root.cpu)[region] >> 10) ==
-               (((u32 *)gpu.mmu.root.cpu)[region] >> 10));
+        assert(((u32 *)vm.root.cpu)[region] == 0);
+        assert(((u32 *)gpu.mmu.root.cpu)[region] & MMU_PTE_V);
         assert(flushes == full_before + 1);
         opengpu_mmu_vm_destroy(&gpu, &vm);
-        assert(!gpu.mmu.vm_by_asid[vm.asid]);
         /* Only the new L1 table stays allocated after the VM is gone. */
         assert(live_allocations == live_before + 1);
     }
 
-    /* Per-VM private mapping: a VA maps to a non-identity PA through a
-     * non-global leaf; untouched leaves keep the global identity mapping. */
+    /* Private mappings expose only their explicitly bound pages. */
     {
         struct opengpu_vm vm;
         dma_addr_t va = 0x20000000;            /* region 128, page 0 */
@@ -243,10 +232,8 @@ int main(void)
         full_before = flushes;
         asid_before = asid_flushes;
         assert(!opengpu_mmu_vm_map(&gpu, &vm, va, pa, MMU_PAGE_SIZE, 2));
-        /* A mapping change full-flushes: an ASID-scoped flush would keep a
-         * cached global identity entry that could shadow the new private leaf. */
-        assert(flushes == full_before + 1);
-        assert(asid_flushes == asid_before);
+        assert(flushes == full_before);
+        assert(asid_flushes == asid_before + 1);
         assert(vm.l1_count == 1);
         assert((((u32 *)vm.root.cpu)[region] & 1) != 0);
         assert((((u32 *)vm.root.cpu)[region] >> 10) ==
@@ -258,12 +245,8 @@ int main(void)
         assert((table[0] & 0x20) == 0);
         assert((table[0] & 0x300) == 0x200);
         assert((table[0] & MMU_PTE_X) != 0);
-        /* An untouched sibling is still the cached global identity leaf, which
-         * stays non-executable. */
-        assert((table[1] & 0x20) != 0);
-        assert((table[1] >> 10) == 0x20001);
-        assert((table[1] & 0x300) == 0);
-        assert((table[1] & MMU_PTE_X) == 0);
+        /* An untouched sibling has no valid translation. */
+        assert(table[1] == 0);
         /* Validation: alignment, size, policy and the 32-bit window. */
         assert(opengpu_mmu_vm_map(&gpu, &vm, va + 1, pa, MMU_PAGE_SIZE, 0) ==
                -EINVAL);
@@ -274,19 +257,16 @@ int main(void)
                -EINVAL);
         assert(opengpu_mmu_vm_map(&gpu, &vm, 0xfffff000, pa, 0x2000, 0) ==
                -ERANGE);
-        /* A global split of the same region must not clobber the private
-         * table (propagation skips a VM that mapped the region itself). */
+        /* An ASID-0 split of the same region cannot clobber the private table. */
         assert(!opengpu_mmu_set_range_policy(
             &gpu, (dma_addr_t)region * MMU_SUPERPAGE_SIZE, MMU_PAGE_SIZE, 0));
         assert((((u32 *)vm.root.cpu)[region] >> 10) ==
                (u32)(vm.l1[0].dma >> 12));
-        /* Unbind revokes the private leaf and uses an ASID-scoped flush. The
-         * unaligned user-visible subrange still revokes its containing page,
-         * while an untouched sibling remains available. */
+        /* Unbind revokes the containing page, leaving siblings invalid. */
         asid_before = asid_flushes;
         assert(!opengpu_mmu_vm_unmap(&gpu, &vm, va + 123, 100));
         assert(table[0] == 0);
-        assert((table[1] & MMU_PTE_V) != 0);
+        assert(table[1] == 0);
         assert(asid_flushes == asid_before + 1);
         assert(opengpu_mmu_vm_unmap(
                    &gpu, &vm, 0x30000000, MMU_PAGE_SIZE) == -ENOENT);
@@ -320,15 +300,18 @@ int main(void)
         second_table = second.l1[0].cpu;
         assert((first_table[0] >> 10) == 0x11111);
         assert((second_table[0] >> 10) == 0x22222);
+        assert(first_table[1] == 0 && second_table[1] == 0);
+        assert(((u32 *)first.root.cpu)[0] == 0);
+        assert(((u32 *)second.root.cpu)[0] == 0);
         assert(!opengpu_mmu_vm_unmap(
             &gpu, &first, va, MMU_PAGE_SIZE));
         assert(first_table[0] == 0);
         assert((second_table[0] >> 10) == 0x22222);
-        assert(asid_flushes == asid_before + 1);
+        assert(asid_flushes == asid_before + 3);
         recycled_asid = first.asid;
         opengpu_mmu_vm_destroy(&gpu, &first);
         opengpu_mmu_vm_destroy(&gpu, &second);
-        assert(asid_flushes == asid_before + 3);
+        assert(asid_flushes == asid_before + 5);
 
         /* Force the allocator cursor to the released ID. Destroy already
          * flushed it, so the new owner starts from a fresh root and cannot
@@ -336,11 +319,12 @@ int main(void)
         gpu.mmu.asids.next = recycled_asid;
         assert(!opengpu_mmu_vm_create(&gpu, &recycled));
         assert(recycled.asid == recycled_asid);
+        assert(((u32 *)recycled.root.cpu)[va / MMU_SUPERPAGE_SIZE] == 0);
         assert(!opengpu_mmu_vm_map(
             &gpu, &recycled, va, 0x33333000, MMU_PAGE_SIZE, 0));
         assert((((u32 *)recycled.l1[0].cpu)[0] >> 10) == 0x33333);
         opengpu_mmu_vm_destroy(&gpu, &recycled);
-        assert(asid_flushes == asid_before + 4);
+        assert(asid_flushes == asid_before + 7);
         assert(live_allocations == live_before);
     }
     assert(!gpu.hw.submit_lock.held && !gpu.mmu.lock.held);

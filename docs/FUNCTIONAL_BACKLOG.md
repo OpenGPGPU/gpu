@@ -29,7 +29,7 @@ Remaining work:
   without racing the next job's reuse of a fixed VA window.
 - [x] Separate resolve and PA-tagged line-invalidate requirements from the
   context address space.
-- [ ] Replace full-space identity inheritance in context roots with explicit
+- [x] Replace full-space identity inheritance in context roots with explicit
   mappings. Keep ASID 0 only for controlled Bare bring-up.
 
 Completion means a context root cannot address another context's resources or

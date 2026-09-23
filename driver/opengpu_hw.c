@@ -474,10 +474,10 @@ void opengpu_hw_fini(struct opengpu_device *gpu)
 
 /* Program the address space a submission will run in.  Called with submit_lock
  * held, immediately before the doorbell, so the switch cannot race another
- * submission.  A NULL or disabled VM selects the global ASID-0 identity map.
+ * submission. A NULL or disabled VM selects the ASID-0 identity map.
  * The CU TLBs and the graphics address translator are ASID-tagged, so a switch
- * needs no flush; global mappings stay resident and private entries only
- * resolve under their own ASID.  Bare builds (MMU never enabled) skip satp. */
+ * needs no flush; each entry only resolves under its own ASID. Bare builds
+ * (MMU never enabled) skip satp. */
 static int opengpu_hw_activate_vm_locked(struct opengpu_device *gpu,
                                          const struct opengpu_vm *vm)
 {

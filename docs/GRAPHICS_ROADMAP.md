@@ -24,12 +24,12 @@ A passing sim is not silicon; a completed tool run is not timing closure.
   consumes GEM framebuffers; it does not own execution lifetime.
 - Sv32 private VA windows and ASIDs. Command, framebuffer, texture,
   kernarg/VB staging, fill/blit/strided DMA, shader data loads and the
-  programmable `vtex.sample` path translate with CU accesses. Global identity
-  mappings remain but are read/write, non-executable; compute, fragment and
-  vertex code use private executable windows. Host vertex→fragment translation
-  and instruction-fault recovery are covered. This is not yet full VM isolation:
-  identity maps still cover the full PA space for Bare mode and unresolved
-  physical paths, while VM-enabled mapping failures abort the operation.
+  programmable `vtex.sample` path translate with CU accesses. Context roots
+  start empty and only explicit private mappings grant access. ASID-0 identity
+  mappings remain read/write and non-executable for controlled physical paths;
+  compute, fragment and vertex code use private executable windows. Host
+  vertex→fragment translation and instruction-fault recovery are covered.
+  VM-enabled mapping failures abort the operation.
 - External display hardware owns scanout and signal generation.
 
 ## Capability status
@@ -161,14 +161,14 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
    [../timing/README.md](../timing/README.md). Derive real parent IO budgets.
 4. **Software-driven growth** — grow the shader ISA from a small compiler
    corpus. Compute and graphics fragment shader code use private executable
-   windows; the shared identity map is read/write but non-executable. Shared-CU
+   windows; the ASID-0 identity map is read/write but non-executable. Shared-CU
    vertex→fragment reuse and vertex instruction-fault recovery are now covered:
    L1 probes progress while a demand miss waits for an L2 eviction, avoiding
    the circular wait exposed by vector-heavy vertex kernels. Fill/blit/strided
    DMA now translate under `VECTOR_SATP` (legacy kernel-word and unified
    engines). Context fill/blit/strided jobs map into a private DMA VA window
    at run time. Resolve/invalidate remain physical (L2 invalidate is
-   PA-tagged). Remaining isolation work is shrinking or dropping the global
+   PA-tagged). Remaining platform work is shrinking or dropping the ASID-0
    identity table once Bare bring-up and those leftover physical paths no
    longer need it.
 
@@ -179,16 +179,15 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
   `vtex.sample`, kernarg/VB staging, fill/blit/strided DMA and shader data
   loads all translate under the context ASID (`VECTOR_SATP`). Context
   fill/blit/strided jobs map buffers into a private DMA VA window at run time
-  so they no longer depend on VA==PA through the global identity table;
-  VM-enabled mapping failures abort. Bare jobs, resolve and
-  line-invalidate stay physical because L2 invalidate is PA-tagged. Shared
-  identity maps remain as a broader fallback until they can be bounded further.
+  so they no longer depend on VA==PA; VM-enabled mapping failures abort.
+  Bare jobs, resolve and line-invalidate stay physical because L2 invalidate
+  is PA-tagged. Context roots expose no identity fallback.
 - Qualification gate is boundary suites + workload sweep, not the full Scala
   suite.
 - No parent-level per-interface timing budgets.
 - Display/scanout is simulation-only.
-- Shared identity mappings remain read/write and non-executable for Bare and
-  unresolved physical paths. Fragment instruction faults
+- ASID-0 identity mappings remain read/write and non-executable for Bare and
+  controlled physical paths. Fragment instruction faults
   fail the render and allow a later draw to recover; vertex instruction faults
   and subsequent shared-CU reuse are also covered. No resumable page faults or
   full removal of identity maps yet.

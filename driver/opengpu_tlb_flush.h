@@ -8,8 +8,8 @@
  * The register carries a one-shot TLB shootdown.  A full flush invalidates
  * every entry of both CU translation caches and the three graphics word
  * clients.  A scoped flush drops only the entries that match an ASID, a
- * virtual page number, or both, so other address spaces and global mappings
- * stay warm; the graphics clients are ASID-tagged and honour the same scope.
+ * virtual page number, or both, so other address spaces stay warm; the
+ * graphics clients are ASID-tagged and honour the same scope.
  * A set full-flush bit dominates the scope bits.
  *
  * This header is deliberately free of kernel dependencies so the encoding is

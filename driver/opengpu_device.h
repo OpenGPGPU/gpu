@@ -142,12 +142,10 @@ struct opengpu_display {
 /* Forward declaration: `struct opengpu_mmu` holds a VM registry below. */
 struct opengpu_vm;
 
-/** Identity-map GPU MMU: one root table of 4 MiB superpages, split into
+/** ASID-0 identity GPU MMU: one root table of 4 MiB superpages, split into
   * second-level tables on demand so individual 4 KiB pages can carry a
   * non-default cache policy.  `asids` hands out Sv32 ASIDs to per-VM root
-  * tables; ASID 0 is the driver's global identity map.  `vm_by_asid`
-  * registers live VMs so a policy update can propagate a newly split L1 link
-  * into every VM root. */
+  * tables; ASID 0 is reserved for the driver's identity map. */
 struct opengpu_mmu {
     struct mutex lock;
     struct opengpu_buffer root;
@@ -155,19 +153,17 @@ struct opengpu_mmu {
     u32 l1_region[OPENGPU_MMU_MAX_TABLES];
     u32 l1_count;
     struct opengpu_asid_pool asids;
-    struct opengpu_vm *vm_by_asid[OPENGPU_ASID_COUNT];
     bool enabled;
 };
 
 /** One GPU address space: a root page table reached through `asid`.
   *
-  * ASID 0 is the driver's global identity map, whose mappings are needed by
-  * every address space.  A VM owns an ASID in 1..511 and its own root table,
+  * ASID 0 is the driver's identity map for controlled physical bring-up.
+  * A VM owns an ASID in 1..511 and its own initially empty root table,
   * so a coarse switch (quiesce, then reprogram satp) needs no full TLB flush:
   * other ASIDs stay resident.  The scoped TLB flush evicts this VM's entries
-  * when it is destroyed or when its ASID is recycled.  A new root starts as a
-  * full identity map; per-VM cache-policy mappings are added once the
-  * scheduler selects VMs. */
+  * when it is destroyed or when its ASID is recycled.  Only explicit private
+  * mappings grant a VM access to memory. */
 struct opengpu_vm {
     struct opengpu_buffer root;
     u32 asid;
@@ -321,17 +317,16 @@ int opengpu_mmu_init(struct opengpu_device *gpu);
 void opengpu_mmu_fini(struct opengpu_device *gpu);
 int opengpu_mmu_set_range_policy(struct opengpu_device *gpu, dma_addr_t base,
                                  size_t size, u32 policy);
-/* Per-VM root tables.  Create allocates an ASID and clones the global identity
- * map into a root table; activate switches both CU `satp` registers to it;
+/* Per-VM root tables. Create allocates an ASID and an empty root table;
+ * activate switches both CU `satp` registers to it;
  * destroy evicts its TLB entries and releases it. */
 int opengpu_mmu_vm_create(struct opengpu_device *gpu, struct opengpu_vm *vm);
 int opengpu_mmu_vm_activate(struct opengpu_device *gpu,
                             const struct opengpu_vm *vm);
 /* Map `size` bytes of 4 KiB-aligned VA (`va`) to PA (`pa`) in this VM's private
  * address space with `policy`.  Mapped leaves are non-global, so only this
- * VM's ASID resolves them, and a full flush drops any prior private or global
- * identity translation that could shadow the new leaf.  Untouched pages keep
- * the shared global identity mapping. */
+ * VM's ASID resolves them, and an ASID-scoped flush drops prior translations.
+ * Untouched pages remain unmapped. */
 int opengpu_mmu_vm_map(struct opengpu_device *gpu, struct opengpu_vm *vm,
                        dma_addr_t va, dma_addr_t pa, size_t size, u32 policy);
 int opengpu_mmu_vm_unmap(struct opengpu_device *gpu, struct opengpu_vm *vm,
