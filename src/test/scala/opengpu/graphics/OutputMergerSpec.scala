@@ -400,6 +400,61 @@ class OutputMergerSpec extends AnyFlatSpec {
     }
   }
 
+  it should "match a software source-over image with depth-gated pixels" in {
+    simulate(new OutputMerger(GraphicsConfig())) { dut =>
+      val mem = Array.fill(1 << 15)(0)
+      newDut(dut)
+      pokeConfig(dut, true, 0, true, true)
+      val model = new OooModel(mem)
+
+      def channel(word: Int, shift: Int): Int = (word >>> shift) & 0xff
+      def pack(r: Int, g: Int, b: Int, a: Int): Int =
+        (r << 24) | (g << 16) | (b << 8) | a
+      def over(src: Int, dst: Int, alpha: Int): Int =
+        (src * alpha + dst * (255 - alpha) + 127) / 255
+      def source(x: Int, y: Int): Int =
+        pack(x * 41 + y * 7, x * 13 + y * 39, x * 29 + y * 11,
+          Seq(0, 64, 128, 255)((x + y) % 4))
+      def destination(x: Int, y: Int): Int =
+        pack(255 - x * 23 - y * 9, x * 17 + y * 21,
+          240 - x * 19 - y * 13, Seq(0, 85, 170, 255)((x + 2 * y) % 4))
+      def expectedBlend(src: Int, dst: Int): Int = {
+        val a = channel(src, 0)
+        pack(over(channel(src, 24), channel(dst, 24), a),
+          over(channel(src, 16), channel(dst, 16), a),
+          over(channel(src, 8), channel(dst, 8), a),
+          a + (channel(dst, 0) * (255 - a) + 127) / 255)
+      }
+
+      for (y <- 0 until H; x <- 0 until W) {
+        mem(addrOf(colorBase, x, y)) = destination(x, y)
+        mem(addrOf(depthBase, x, y)) =
+          if ((x + y) % 2 == 0) 0x40 else 0x10
+      }
+      for (y <- 0 until H; x <- 0 until W) {
+        dut.io.fragIn.valid.poke(true.B)
+        pokeFrag(dut, x, y, source(x, y), 0x20)
+        dut.io.fragIn.ready.expect(true.B)
+        tick(dut, model)
+        dut.io.fragIn.valid.poke(false.B)
+        drain(dut, model)
+      }
+      for (y <- 0 until H; x <- 0 until W) {
+        val passes = (x + y) % 2 == 0
+        val expectedColor =
+          if (passes) expectedBlend(source(x, y), destination(x, y))
+          else destination(x, y)
+        val expectedDepth = if (passes) 0x20 else 0x10
+        val actualColor = mem(addrOf(colorBase, x, y))
+        val actualDepth = mem(addrOf(depthBase, x, y))
+        assert(actualColor == expectedColor,
+          f"blend image ($x,$y): got 0x$actualColor%08x expected 0x$expectedColor%08x")
+        assert(actualDepth == expectedDepth,
+          f"blend depth ($x,$y): got 0x$actualDepth%08x expected 0x$expectedDepth%08x")
+      }
+    }
+  }
+
   it should "ignore write acknowledgements that arrive while a depth read is in flight" in {
     // The OooModel releases held write acks ahead of every read response, so
     // acks (tagged write=true, data=0) overtake the read.  The OM must pop

@@ -295,6 +295,28 @@ class RenderCoreSpec extends AnyFlatSpec {
         s"outside the small triangle green must remain, got ${rgb(1, 14)}")
       assert(depthWord(1, 14) == ((0x5a << 24) | 0x10),
         f"draw 0's stencil stamp and depth must persist, got 0x${depthWord(1, 14)}%08x")
+
+      // Independent screen-space reference for all pixels. The large and
+      // small triangles have vertices (0,0)/(16,0)/(0,16) and
+      // (4,4)/(12,4)/(4,12). Their top and left edges are excluded; the
+      // shared descending edge is included. Draw 1 fails stencil everywhere,
+      // while draw 2 paints blue only inside the small triangle.
+      for (y <- 0 until 16; x <- 0 until 16) {
+        val bigInside = x > 0 && y > 0 && x + y <= 16
+        val smallInside = x > 4 && y > 4 && x + y <= 16
+        val expectedRgb =
+          if (smallInside) (0, 0, 255)
+          else if (bigInside) (0, 255, 0)
+          else (0, 0, 0)
+        val expectedDepth =
+          if (smallInside) (0x5a << 24) | 0x08
+          else if (bigInside) (0x5a << 24) | 0x10
+          else 0x00ffffff
+        assert(rgb(x, y) == expectedRgb,
+          s"stencil scene RGB ($x,$y): got ${rgb(x, y)} expected $expectedRgb")
+        assert(depthWord(x, y) == expectedDepth,
+          f"stencil scene D24S8 ($x,$y): got 0x${depthWord(x, y)}%08x expected 0x$expectedDepth%08x")
+      }
     }
   }
 

@@ -85,7 +85,11 @@ read error and an invalid Sv32 DMA leaf before a repaired fill.
   stencil, blend, texture and 1x/2x/4x MSAA combinations.
   - [x] Compare every color and depth sample for a flat shaded triangle at
     1x, 2x and 4x, including edge samples outside the pixel center.
-  - [ ] Add full-image stencil, blend and texture reference scenes.
+  - [x] Compare the 16x16 command-driven stencil scene's full RGB and D24S8
+    images, including a blocked draw and a later passing draw.
+  - [x] Compare a 4x4 output-merger source-over image with varied alpha,
+    destination color and depth-gated pixels.
+  - [ ] Add a full-image texture reference scene and integrated blend coverage.
 - [ ] Broaden persistent-depth and multisample continuation coverage in the
   ARTI guest path.
 - [ ] Decide from workloads whether centroid/per-sample interpolation or
