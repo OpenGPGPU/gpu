@@ -447,8 +447,7 @@ static int opengpu_binding_invalidate(
     bytes = (u32)(end - start);
     if (!bytes)
         return 0;
-    ret = opengpu_hw_invalidate_async(gpu, (u32)start, bytes, NULL, NULL,
-                                      &fence);
+    ret = opengpu_hw_invalidate_async(gpu, (u32)start, bytes, NULL, &fence);
     if (ret)
         return ret;
     return opengpu_wait_fence(gpu, &fence, true);
@@ -1485,21 +1484,21 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_RESOLVE) {
-        /* Resolve still issues physical line traffic today; keep PA until the
-         * resolve port is wrapped like fill/blit/strided. */
+        /* Resolve and line invalidate are PA-tagged operations and never
+         * depend on the context address space; submit them under ASID 0. */
         ret = opengpu_hw_resolve_async(
             job->gpu, lower_32_bits(job->dma_source),
             lower_32_bits(job->dma_destination), job->dma_bytes,
             job->dma_height, job->dma_source_stride,
             job->dma_destination_stride, job->dma_sample_mode,
-            &job->events, vm, &fence);
+            &job->events, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_INVALIDATE) {
         /* Line invalidate is physically tagged in L2; never remap to a VA. */
         ret = opengpu_hw_invalidate_async(
             job->gpu, lower_32_bits(job->dma_source), job->dma_bytes,
-            &job->events, vm, &fence);
+            &job->events, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     /* Command-buffer fetches bypass the shared L2 in RTL, so the CPU-written
@@ -2545,7 +2544,8 @@ int opengpu_compute_resolve_ioctl(struct drm_device *drm, void *data,
         goto out_exec;
     }
     sched_job->gpu = gpu;
-    sched_job->vm = context->vm.enabled ? &context->vm : NULL;
+    /* Resolve is PA-tagged and runs under the ASID-0 identity map. */
+    sched_job->vm = NULL;
     sched_job->type = OPENGPU_SCHED_RESOLVE;
     sched_job->dma_source = source_address;
     sched_job->dma_destination = destination_address;
@@ -2661,7 +2661,8 @@ int opengpu_compute_invalidate_ioctl(struct drm_device *drm, void *data,
         goto out_exec;
     }
     sched_job->gpu = gpu;
-    sched_job->vm = context->vm.enabled ? &context->vm : NULL;
+    /* Line invalidate is PA-tagged and runs under the ASID-0 identity map. */
+    sched_job->vm = NULL;
     sched_job->type = OPENGPU_SCHED_INVALIDATE;
     sched_job->dma_source = address;
     sched_job->dma_bytes = args->bytes;

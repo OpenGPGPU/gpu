@@ -76,8 +76,7 @@ static int opengpu_gem_invalidate(struct drm_gem_object *obj)
     bytes = (u32)(end - start);
     if (!bytes)
         return 0;
-    ret = opengpu_hw_invalidate_async(gpu, (u32)start, bytes, NULL, NULL,
-                                      &fence);
+    ret = opengpu_hw_invalidate_async(gpu, (u32)start, bytes, NULL, &fence);
     if (ret)
         return ret;
     /* Emulated hardware only advances while the guest touches registers, so

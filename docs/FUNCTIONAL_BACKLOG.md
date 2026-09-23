@@ -27,7 +27,7 @@ Remaining work:
   including cleanup and a successful follow-up submission.
 - [x] Track and revoke temporary per-job mappings when their lifetime ends,
   without racing the next job's reuse of a fixed VA window.
-- [ ] Separate resolve and PA-tagged line-invalidate requirements from the
+- [x] Separate resolve and PA-tagged line-invalidate requirements from the
   context address space.
 - [ ] Replace full-space identity inheritance in context roots with explicit
   mappings. Keep ASID 0 only for controlled Bare bring-up.

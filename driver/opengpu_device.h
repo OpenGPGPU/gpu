@@ -294,12 +294,10 @@ int opengpu_hw_resolve_async(struct opengpu_device *gpu, u32 source,
                              u32 source_stride, u32 destination_stride,
                              u32 sample_mode,
                              const struct opengpu_command_events *events,
-                             const struct opengpu_vm *vm,
                              struct dma_fence **fence);
 int opengpu_hw_invalidate_async(struct opengpu_device *gpu, u32 address,
                                 u32 bytes,
                                 const struct opengpu_command_events *events,
-                                const struct opengpu_vm *vm,
                                 struct dma_fence **fence);
 int opengpu_hw_enable_mmu(struct opengpu_device *gpu, dma_addr_t root_table);
 /* Program both CU `satp` registers with `root_table` and `asid`, without a
