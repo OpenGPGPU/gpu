@@ -77,7 +77,7 @@ class RasterPixel(config: GraphicsConfig) extends Bundle {
   val e1 = SInt(config.edgeWidth.W)
   val e2 = SInt(config.edgeWidth.W)
   val area = SInt(config.edgeWidth.W)
-  /** True for covered samples; false identifies a fragment-shader helper lane. */
+  /** True when any sample is covered; false identifies a fragment-shader helper lane. */
   val covered = Bool()
   /** Per-sample coverage; bit 0 is exactly `covered` in sample mode 0. */
   val coverageMask = UInt(config.maxSampleCount.W)
@@ -425,16 +425,6 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   private val edgeNextRow = VecInit((0 until 3).map(i =>
     FixedPointMath.trim64(rowStartReg.e(i) + dyReg.e(i))))
 
-  // Coverage on the current sample using hoisted fill-rule flags:
-  // strictOk <=> fl(e) > 0 without materialising -e.
-  private def laneInside(es: Seq[SInt]): Bool =
-    (0 until 3).map { i =>
-      val strictOk = Mux(frontReg, es(i) > 0.S, es(i) < 0.S)
-      strictOk || (es(i) === 0.S && tlReg(i))
-    }.reduce(_ && _)
-  private val curInside =
-    laneInside(Seq(edgeReg.e(0), edgeReg.e(1), edgeReg.e(2)))
-
   private val quadCov = Module(new QuadCoverage(config))
   quadCov.io.base.zipWithIndex.foreach { case (e, i) => e := edgeReg.e(i) }
   quadCov.io.dx.zipWithIndex.foreach { case (e, i) => e := dxReg.e(i) }
@@ -483,7 +473,7 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
       io.quad.bits.lanes(k).e2 := quadCov.io.e2(k)
       io.quad.bits.lanes(k).area := areaReg
       val inBounds = laneX < config.screenWidth.U && laneY < config.screenHeight.U
-      io.quad.bits.lanes(k).covered := quadCov.io.inside(k) && inBounds
+      io.quad.bits.lanes(k).covered := quadCoverage(k).orR && inBounds
       io.quad.bits.lanes(k).coverageMask :=
         Mux(inBounds, quadCoverage(k), 0.U(config.maxSampleCount.W))
     }
@@ -498,7 +488,7 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
     io.pixel.bits.e1 := edgeReg.e(1)
     io.pixel.bits.e2 := edgeReg.e(2)
     io.pixel.bits.area := areaReg
-    io.pixel.bits.covered := curInside
+    io.pixel.bits.covered := curCoveredAny
     io.pixel.bits.coverageMask := curCoverage
   }
 

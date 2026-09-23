@@ -83,6 +83,9 @@ read error and an invalid Sv32 DMA leaf before a repaired fill.
   then admit `vquad.dfdx` and `vquad.dfdy` in the shader profile.
 - [ ] Add software-reference image comparisons for rasterization, depth,
   stencil, blend, texture and 1x/2x/4x MSAA combinations.
+  - [x] Compare every color and depth sample for a flat shaded triangle at
+    1x, 2x and 4x, including edge samples outside the pixel center.
+  - [ ] Add full-image stencil, blend and texture reference scenes.
 - [ ] Broaden persistent-depth and multisample continuation coverage in the
   ARTI guest path.
 - [ ] Decide from workloads whether centroid/per-sample interpolation or

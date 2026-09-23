@@ -132,6 +132,26 @@ class RenderPipelineSpec extends AnyFlatSpec {
         px(i) = (c >> 24) & 0xff; px(i + 1) = (c >> 16) & 0xff; px(i + 2) = (c >> 8) & 0xff
         i += 3
       }
+      // Independent top-left fill rule for screen vertices (0,0), (16,0),
+      // (0,16): the horizontal and vertical edges are excluded, and the
+      // descending diagonal is included. Compare every exported RGB byte.
+      val reference = (0 until 16).flatMap { y =>
+        (0 until 16).flatMap { x =>
+          if (x > 0 && y > 0 && x + y <= 16) Seq(255, 0, 0)
+          else Seq(0, 0, 0)
+        }
+      }
+      for (index <- px.indices) {
+        assert(px(index) == reference(index),
+          s"RGB image mismatch at (${(index / 3) % 16},${index / 48}) channel ${index % 3}: " +
+            s"got ${px(index)} expected ${reference(index)}")
+      }
+      for (y <- 0 until 16; x <- 0 until 16) {
+        val expectedDepth = if (x > 0 && y > 0 && x + y <= 16) 0x10 else 0x00ffffff
+        val actualDepth = mem(depthBase / 4 + y * 16 + x)
+        assert(actualDepth == expectedDepth,
+          f"depth image mismatch at ($x,$y): got 0x$actualDepth%08x expected 0x$expectedDepth%08x")
+      }
       val out = new StringBuilder
       out.append("P6\n16 16\n255\n")
       val bytes = out.toString.getBytes("US-ASCII") ++ px.map(_.toByte)
@@ -622,6 +642,25 @@ class RenderPipelineSpec extends AnyFlatSpec {
       x: Int, y: Int, s: Int): Int =
       m.getOrElse(depthBase + sampleOffset(x, y, s, mode), 0)
 
+    def checkReferenceImage(m: scala.collection.mutable.LongMap[Int], mode: Int): Unit = {
+      for (y <- 0 until 16; x <- 0 until 16;
+           ((sx, sy), sample) <- Msaa.positions(mode).zipWithIndex) {
+        // Screen vertices are (0,0), (16,0), (0,16). Express quarter-pixel
+        // sample positions as integers and apply the independent top-left
+        // rule: x=0 and y=0 are excluded; x+y=16 is included.
+        val coveredSample = 4 * x + sx > 0 && 4 * y + sy > 0 &&
+          4 * (x + y) + sx + sy <= 64
+        val expectedColor = if (coveredSample) 0xff0000ffL else 0L
+        val expectedDepth = if (coveredSample) {
+          if (mode == 0) vertexDepth + 1 else vertexDepth
+        } else 0x00ffffff
+        assert(colorWord(m, mode, x, y, sample) == expectedColor,
+          f"mode $mode sample $sample colour ($x,$y): got 0x${colorWord(m, mode, x, y, sample)}%08x expected 0x$expectedColor%08x")
+        assert(depthWord(m, mode, x, y, sample) == expectedDepth,
+          f"mode $mode sample $sample depth ($x,$y): got 0x${depthWord(m, mode, x, y, sample)}%08x expected 0x$expectedDepth%08x")
+      }
+    }
+
     // Fully covered interior pixels of the lower-left-half triangle.
     val covered = Seq((5, 5), (2, 2), (8, 4), (4, 8))
 
@@ -631,6 +670,7 @@ class RenderPipelineSpec extends AnyFlatSpec {
     // increment), so the result matches the direct fixed-function path bit
     // for bit.
     val mode0 = soak(0)
+    checkReferenceImage(mode0, 0)
     for ((x, y) <- covered) {
       assert(colorWord(mode0, 0, x, y, 0) == 0xff0000ffL,
         s"sampleMode 0 colour ($x,$y): got 0x${colorWord(mode0, 0, x, y, 0).toHexString}")
@@ -647,6 +687,7 @@ class RenderPipelineSpec extends AnyFlatSpec {
     for (mode <- Seq(1, 2)) {
       val positions = Msaa.positions(mode)
       val m = soak(mode)
+      checkReferenceImage(m, mode)
       for ((x, y) <- covered; s <- positions.indices) {
         assert(colorWord(m, mode, x, y, s) == 0xff0000ffL,
           s"sampleMode $mode colour sample $s of ($x,$y): " +
