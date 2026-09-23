@@ -45,8 +45,8 @@ typedef uint32_t opengpu_kernarg_u32;
  * fetch never runs from the shared identity map. */
 #define OPENGPU_CODE_VA_BASE      0xc0000000ull
 #define OPENGPU_CODE_VA_STRIDE    (4ull * 1024ull * 1024ull)
-/* Fill/blit/strided DMA buffers (not resolve/invalidate: those stay PA-tagged).
- * Slot 0 is source, slot 1 is destination; fill uses slot 1 alone. */
+/* Fill/blit/strided/resolve DMA buffers (not line-invalidate: that stays
+ * PA-tagged). Slot 0 is source, slot 1 is destination; fill uses slot 1 alone. */
 #define OPENGPU_DMA_VA_BASE       0xc4000000ull
 #define OPENGPU_DMA_VA_STRIDE     (4ull * 1024ull * 1024ull)
 

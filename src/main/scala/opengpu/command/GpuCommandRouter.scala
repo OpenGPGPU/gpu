@@ -28,6 +28,8 @@ class GpuCommand(config: GpuConfig, val commandIdWidth: Int) extends Bundle {
   val sourceAddress = UInt(config.xLen.W)
   val destinationAddress = UInt(config.xLen.W)
   val bytes = UInt(32.W)
+  /** Fill pattern. For resolve: physical invalidate base when non-zero;
+    * zero means invalidate `sourceAddress` (Bare / identity). */
   val pattern = UInt(32.W)
   val widthBytes = UInt(32.W)
   val height = UInt(32.W)
@@ -177,6 +179,10 @@ class GpuCommandRouter(
   io.resolve.bits.descriptorId := head.commandId
   io.resolve.bits.sourceAddress := head.sourceAddress
   io.resolve.bits.destinationAddress := head.destinationAddress
+  // PATTERN carries the physical invalidate base for resolve when the engine
+  // uses a private VA; zero means invalidate the source address itself (Bare).
+  io.resolve.bits.invalidateAddress :=
+    Mux(head.pattern === 0.U, head.sourceAddress, head.pattern)
   io.resolve.bits.imgWidth := head.widthBytes(15, 0)
   io.resolve.bits.imgHeight := head.height(15, 0)
   io.resolve.bits.sourceStride := head.sourceStride

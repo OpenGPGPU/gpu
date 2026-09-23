@@ -621,10 +621,11 @@ static int opengpu_binding_map_code(struct opengpu_device *gpu,
     return 0;
 }
 
-/* Map a fill/blit/strided buffer into the context VM so those DMA engines
- * translate under VECTOR_SATP instead of relying on VA==PA through the
- * shared identity map. Slot 0 is source; slot 1 is destination. Resolve and
- * line-invalidate stay physical because L2 invalidate is PA-tagged. */
+/* Map a fill/blit/strided/resolve buffer into the context VM so those DMA
+ * engines translate under VECTOR_SATP instead of relying on VA==PA through the
+ * shared identity map. Slot 0 is source; slot 1 is destination. Line-invalidate
+ * stays physical because L2 invalidate is PA-tagged; resolve keeps a separate
+ * physical invalidate base in UCMD_PATTERN. */
 static int opengpu_binding_map_dma(struct opengpu_device *gpu,
                                    struct opengpu_render_context *context,
                                    dma_addr_t dma, size_t size, u32 slot,
@@ -1485,14 +1486,46 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_RESOLVE) {
-        /* Resolve and line invalidate are PA-tagged operations and never
-         * depend on the context address space; submit them under ASID 0. */
+        u64 source_end = 0, destination_end = 0;
+        size_t source_span = job->dma_bytes;
+        size_t destination_span = job->dma_bytes;
+        dma_addr_t source, destination;
+        u32 invalidate_phys = lower_32_bits(job->dma_source);
+
+        if (!opengpu_strided_range_end(job->dma_source, job->dma_bytes,
+                                       job->dma_height, job->dma_source_stride,
+                                       &source_end) &&
+            source_end > job->dma_source)
+            source_span = (size_t)(source_end - job->dma_source);
+        if (!opengpu_strided_range_end(job->dma_destination, job->dma_bytes,
+                                       job->dma_height,
+                                       job->dma_destination_stride,
+                                       &destination_end) &&
+            destination_end > job->dma_destination)
+            destination_span = (size_t)(destination_end - job->dma_destination);
+        /* Engine addresses may be private VAs; the pre-resolve L2 invalidate
+         * still uses the physical source base via UCMD_PATTERN. */
+        ret = opengpu_job_map_dma_range(
+            job, job->dma_source, source_span, 0, &source);
+        if (ret)
+            return ERR_PTR(ret);
+        ret = opengpu_job_track_mapping(job, source, source_span);
+        if (ret)
+            return ERR_PTR(ret);
+        ret = opengpu_job_map_dma_range(
+            job, job->dma_destination, destination_span, 1, &destination);
+        if (ret)
+            return ERR_PTR(ret);
+        ret = opengpu_job_track_mapping(job, destination, destination_span);
+        if (ret)
+            return ERR_PTR(ret);
+
         ret = opengpu_hw_resolve_async(
-            job->gpu, lower_32_bits(job->dma_source),
-            lower_32_bits(job->dma_destination), job->dma_bytes,
+            job->gpu, lower_32_bits(source),
+            lower_32_bits(destination), job->dma_bytes,
             job->dma_height, job->dma_source_stride,
             job->dma_destination_stride, job->dma_sample_mode,
-            &job->events, &fence);
+            &job->events, vm, invalidate_phys, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }
     if (job->type == OPENGPU_SCHED_INVALIDATE) {
@@ -2545,8 +2578,9 @@ int opengpu_compute_resolve_ioctl(struct drm_device *drm, void *data,
         goto out_exec;
     }
     sched_job->gpu = gpu;
-    /* Resolve is PA-tagged and runs under the ASID-0 identity map. */
-    sched_job->vm = NULL;
+    /* Resolve engine traffic uses the context VM; pre-resolve invalidate stays
+     * on the physical source address. */
+    sched_job->vm = context->vm.enabled ? &context->vm : NULL;
     sched_job->type = OPENGPU_SCHED_RESOLVE;
     sched_job->dma_source = source_address;
     sched_job->dma_destination = destination_address;

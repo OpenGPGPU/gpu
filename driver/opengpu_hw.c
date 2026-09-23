@@ -1166,11 +1166,14 @@ int opengpu_hw_resolve_async(struct opengpu_device *gpu, u32 source,
                              u32 source_stride, u32 destination_stride,
                              u32 sample_mode,
                              const struct opengpu_command_events *events,
+                             const struct opengpu_vm *vm,
+                             u32 invalidate_phys,
                              struct dma_fence **out_fence)
 {
     struct opengpu_resolve_desc desc;
     struct opengpu_resolve_layout layout;
     u32 max_sample_mode;
+    u32 pattern;
     int ret;
 
     if (!out_fence)
@@ -1203,12 +1206,17 @@ int opengpu_hw_resolve_async(struct opengpu_device *gpu, u32 source,
     if (ret)
         return ret;
 
+    /* PATTERN carries the physical invalidate base when the engine source is a
+     * private VA; zero keeps Bare/identity behaviour (invalidate == source). */
+    pattern = (vm && invalidate_phys && invalidate_phys != source) ?
+        invalidate_phys : 0;
+
     mutex_lock(&gpu->hw.submit_lock);
     ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
         opengpu_hw_unified_submit_locked(
             gpu, NULL, events, GPU_UCMD_OP_RESOLVE, source, destination,
-            width, 0, sample_mode, height, source_stride,
-            destination_stride, (u64)width * height * 4ull, NULL, out_fence);
+            width, pattern, sample_mode, height, source_stride,
+            destination_stride, (u64)width * height * 4ull, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }

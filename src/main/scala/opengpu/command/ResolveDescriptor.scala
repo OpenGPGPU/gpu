@@ -14,12 +14,17 @@ import opengpu.config.GpuConfig
   */
 class ResolveDescriptor(config: GpuConfig, val commandIdWidth: Int) extends Bundle {
   val descriptorId = UInt(commandIdWidth.W)
+  /** Source/destination bases for the resolve engine (VA under VECTOR_SATP,
+    * or physical when translation is Bare). */
   val sourceAddress = UInt(config.xLen.W)
   val destinationAddress = UInt(config.xLen.W)
+  /** Physical source base for the pre-resolve L2 line invalidate. Equal to
+    * `sourceAddress` when the engine also runs on physical addresses. */
+  val invalidateAddress = UInt(config.xLen.W)
   /** Logical extent in pixels. */
   val imgWidth = UInt(16.W)
   val imgHeight = UInt(16.W)
-  /** Physical row strides in bytes. */
+  /** Row strides in bytes (same under VA or PA when the mapping is contiguous). */
   val sourceStride = UInt(32.W)
   val destinationStride = UInt(32.W)
   /** 0 = 1x, 1 = 2x, 2 = 4x. */

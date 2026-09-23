@@ -264,6 +264,7 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
       dut.io.resolve.bits.descriptorId.expect(6.U)
       dut.io.resolve.bits.sourceAddress.expect(0x8000.U)
       dut.io.resolve.bits.destinationAddress.expect(0x9000.U)
+      dut.io.resolve.bits.invalidateAddress.expect(0x8000.U)
       dut.io.resolve.bits.imgWidth.expect(16.U)
       dut.io.resolve.bits.imgHeight.expect(8.U)
       dut.io.resolve.bits.sourceStride.expect(256.U)
@@ -278,10 +279,34 @@ class GpuCommandRouterSpec extends AnyFlatSpec {
       dut.io.resolveCompletion.valid.poke(true.B)
       dut.clock.step(); dut.io.resolveCompletion.valid.poke(false.B)
 
-      dut.io.completion.valid.expect(true.B)
+      awaitValid(dut, dut.io.completion.valid.peek().litToBoolean)
       dut.io.completion.bits.commandId.expect(6.U)
       dut.io.completion.bits.opcode.expect(GpuCommandOpcode.resolve)
-      dut.io.completion.bits.bytesProcessed.expect(16L * 8 * 4)
+      dut.io.completion.bits.success.expect(true.B)
+      dut.io.completion.ready.poke(true.B); dut.clock.step()
+    }
+  }
+
+  it should "carry a distinct physical invalidate base for translated resolve" in {
+    simulate(new GpuCommandRouter(
+      GpuConfig(lanes = 4), commandIdWidth = 4,
+      commandQueueDepth = 2, completionQueueDepth = 2)) { dut =>
+      initialize(dut)
+      dut.io.command.bits.sourceAddress.poke(0xc4001000L.U)
+      dut.io.command.bits.destinationAddress.poke(0xc4010000L.U)
+      dut.io.command.bits.pattern.poke(0x2000.U)
+      dut.io.command.bits.widthBytes.poke(4.U)
+      dut.io.command.bits.height.poke(1.U)
+      dut.io.command.bits.sourceStride.poke(16.U)
+      dut.io.command.bits.destinationStride.poke(4.U)
+      dut.io.command.bits.sampleMode.poke(1.U)
+      submit(dut, 3, GpuCommandOpcode.resolve)
+
+      awaitValid(dut, dut.io.resolve.valid.peek().litToBoolean)
+      dut.io.resolve.bits.sourceAddress.expect(0xc4001000L.U)
+      dut.io.resolve.bits.destinationAddress.expect(0xc4010000L.U)
+      dut.io.resolve.bits.invalidateAddress.expect(0x2000.U)
+      dut.io.resolve.ready.poke(true.B); dut.clock.step()
     }
   }
 

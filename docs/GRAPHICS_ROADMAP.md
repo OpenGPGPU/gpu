@@ -177,12 +177,12 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    L1 probes progress while a demand miss waits for an L2 eviction, avoiding
    the circular wait exposed by vector-heavy vertex kernels. Fill/blit/strided
    DMA now translate under `VECTOR_SATP` (legacy kernel-word and unified
-   engines). Context fill/blit/strided jobs map into a private DMA VA window
-   at run time. Resolve/invalidate remain physical (L2 invalidate is
-   PA-tagged). The symbolic corpus now also validates fixed-profile
+   engines). Context fill/blit/strided/resolve jobs map into a private DMA VA
+   window at run time; resolve still invalidates L2 with the physical source
+   base (`UCMD_PATTERN`) because host invalidate is PA-tagged. Line-invalidate
+   remains physical. The symbolic corpus now also validates fixed-profile
    `vsext`/`vzext`/`vnclip` (`userspace/shaders/fixed_width.S`). Remaining
-   platform work is shrinking or dropping the ASID-0 identity table once Bare
-   bring-up and those leftover physical paths no longer need it.
+   ASID-0 identity use is Bare bring-up and explicit line-invalidate.
 5. **Workload-driven ISA** — add remaining VFUNARY1 (and any further
    widening/narrowing beyond the fixed SEW=32 profile already in the corpus)
    when a shader in the validated corpus or a target workload needs them.
@@ -220,19 +220,19 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
   end-to-end DRM tests pass and power off cleanly on `cfc045a`. Programmable
   `vtex.sample`, kernarg/VB staging, fill/blit/strided DMA and shader data
   loads all translate under the context ASID (`VECTOR_SATP`). Context
-  fill/blit/strided jobs map buffers into a private DMA VA window at run time
-  so they no longer depend on VA==PA; VM-enabled mapping failures abort.
-  Bare jobs, resolve and line-invalidate stay physical because L2 invalidate
-  is PA-tagged. Context roots expose no identity fallback.
+  fill/blit/strided/resolve jobs map buffers into a private DMA VA window at
+  run time so they no longer depend on VA==PA; resolve still invalidates with
+  the physical source base. VM-enabled mapping failures abort. Bare jobs and
+  line-invalidate stay physical because L2 invalidate is PA-tagged. Context
+  roots expose no identity fallback.
 - Qualification gate is boundary suites + workload sweep, not the full Scala
   suite.
 - No parent-level per-interface timing budgets.
 - Display/scanout is simulation-only.
 - ASID-0 identity mappings remain read/write and non-executable for Bare and
-  controlled physical paths. Fragment instruction faults
-  fail the render and allow a later draw to recover; vertex instruction faults
-  and subsequent shared-CU reuse are also covered. No resumable page faults or
-  full removal of identity maps yet.
+  explicit line-invalidate. Resolve engine traffic uses private DMA VAs under
+  the context ASID; the pre-resolve L2 invalidate still names the physical
+  source. No resumable page faults or full removal of identity maps yet.
 - Shader ISA growth is validation-profile driven, not a real compiler corpus.
 
 ## Later / out of scope

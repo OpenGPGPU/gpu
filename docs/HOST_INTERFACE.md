@@ -97,7 +97,7 @@ The C definitions in `driver/gpu_abi.h` and Scala definitions are compared by
 | 0xF4 | UCMD_SOURCE | RW | copy source address or render descriptor VA |
 | 0xF8 | UCMD_DESTINATION | RW | copy/fill destination byte address |
 | 0xFC | UCMD_BYTES | RW | linear copy/fill byte count |
-| 0x100 | UCMD_PATTERN | RW | fill pattern |
+| 0x100 | UCMD_PATTERN | RW | fill pattern; for resolve, physical source base for the pre-resolve L2 invalidate when SOURCE is a private VA (0 = invalidate SOURCE) |
 | 0x104 | UCMD_WIDTH | RW | strided-copy width in bytes |
 | 0x108 | UCMD_HEIGHT | RW | strided-copy row count |
 | 0x10C | UCMD_SOURCE_STRIDE | RW | strided-copy source stride |
@@ -134,10 +134,12 @@ UCMD_INSTRUCTION_SATP and UCMD_TLB_FLUSH; Bare mode still fetches physical
 instructions. Shader instruction faults fail render completion with a memory
 fault after draining. Shader kernarg, vertex-buffer staging and scalar/vector
 data accesses translate under VECTOR_SATP alongside the graphics word clients
-(Bare mode keeps physical addressing). Resolve and line-invalidate commands
-keep physical addresses because the L2 host-invalidate path is PA-tagged;
-fill/blit/strided DMA translate under VECTOR_SATP through a private DMA VA
-window when the context VM is enabled.
+(Bare mode keeps physical addressing). Resolve engine traffic translates under
+VECTOR_SATP through the private DMA VA window when the context VM is enabled;
+UCMD_PATTERN carries the physical source base for the pre-resolve L2
+invalidate. Line-invalidate commands remain physically addressed because the
+L2 host-invalidate path is PA-tagged. Fill/blit/strided DMA likewise translate
+under VECTOR_SATP.
 
 The command client remains uncached. Texture/framebuffer clients use the
 PTE cache policy. CPU writes still require the appropriate CPU cache/DMA

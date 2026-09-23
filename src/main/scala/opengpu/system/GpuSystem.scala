@@ -31,8 +31,8 @@ object GpuSystem {
   private[system] val fillTransactions = 2
   private[system] val stridedCopyTransactions = 4
   private[system] val resolveTransactions = 4
-  /** One PTE-walk slot per fill/blit/strided translator. */
-  private[system] val dmaWalkTransactions = 3
+  /** One PTE-walk slot per fill/blit/strided/resolve translator. */
+  private[system] val dmaWalkTransactions = 4
 
   def totalMemoryTransactions(
     numComputeUnits: Int,
@@ -87,6 +87,7 @@ class GpuSystem(
   private val copyWalkBase = dmaWalkBase
   private val fillWalkBase = copyWalkBase + 1
   private val stridedWalkBase = fillWalkBase + 1
+  private val resolveWalkBase = stridedWalkBase + 1
   private val totalSystemTransactions =
     GpuSystem.totalMemoryTransactions(
       numComputeUnits, transactionsPerCu, graphicsHostTransactions)
@@ -249,8 +250,8 @@ class GpuSystem(
     config, descriptorIdWidth = commandIdWidth, lineBytes = 64,
     maxOutstanding = stridedCopyTransactions,
     descriptorQueueDepth = config.stridedCopyDescriptorQueueDepth))
-  // Unified fill/blit/strided addresses go through VECTOR_SATP so identity
-  // maps can shrink without leaving DMA on a physical bypass.
+  // Unified fill/blit/strided/resolve addresses go through VECTOR_SATP so
+  // identity maps can shrink without leaving those engines on a physical bypass.
   private val copyClient = Module(new TranslatedLineClient(
     config, outstanding = copyTransactions, preserveCachePolicy = true))
   private val fillClient = Module(new TranslatedLineClient(
@@ -263,17 +264,21 @@ class GpuSystem(
   fillEngine.io.memoryResponse <> fillClient.io.out
   stridedClient.io.in <> stridedCopyEngine.io.memoryRequest
   stridedCopyEngine.io.memoryResponse <> stridedClient.io.out
-  for (client <- Seq(copyClient, fillClient, stridedClient)) {
-    client.io.satp := io.vectorSatp
-    client.io.flush := io.vectorTlbFlush
-  }
-  // MSAA resolve: a word-level engine behind a word-to-line bridge, so it
-  // shares the same line-based L2 as the DMA engines.
+  // MSAA resolve: a word-level engine behind a word-to-line bridge, then the
+  // same Sv32 line translator as the other DMA clients.
   private val resolveEngine = Module(new MsaaResolveEngine())
   private val resolvePort = Module(new OmWordToLinePort(
     config, lineBytes = 64, maxOutstanding = resolveTransactions))
+  private val resolveClient = Module(new TranslatedLineClient(
+    config, outstanding = resolveTransactions, preserveCachePolicy = true))
   resolvePort.io.in <> resolveEngine.io.mem.req
   resolveEngine.io.mem.resp <> resolvePort.io.out
+  resolveClient.io.in <> resolvePort.io.memoryRequest
+  resolvePort.io.memoryResponse <> resolveClient.io.out
+  for (client <- Seq(copyClient, fillClient, stridedClient, resolveClient)) {
+    client.io.satp := io.vectorSatp
+    client.io.flush := io.vectorTlbFlush
+  }
 
   dispatcher.io.launch <> commandProcessor.io.dispatch
   commandProcessor.io.dispatchCompletion <> dispatcher.io.completion
@@ -332,9 +337,7 @@ class GpuSystem(
   }
   when(l2.io.hostInvalidateDone.fire) { invalidateBusy := false.B }
 
-  // Typed resolve adapter: invalidate the source range, pulse the engine, and
-  // publish one completion.  The router frees the descriptor once accepted, so
-  // latch the fields the invalidate and the engine still need.
+  // Typed resolve adapter: PA-tagged invalidate, then translated engine traffic.
   private val resolveActive = RegInit(false.B)
   private val resolveDonePending = RegInit(false.B)
   private val resolveCommandId = Reg(UInt(commandIdWidth.W))
@@ -343,6 +346,7 @@ class GpuSystem(
   private val resolveInvIssued = RegInit(false.B)
   private val resolveSrcBase = Reg(UInt(config.xLen.W))
   private val resolveDstBase = Reg(UInt(config.xLen.W))
+  private val resolveInvBase = Reg(UInt(config.xLen.W))
   private val resolveSrcStride = Reg(UInt(32.W))
   private val resolveDstStride = Reg(UInt(32.W))
   private val resolveWidth = Reg(UInt(16.W))
@@ -357,7 +361,7 @@ class GpuSystem(
     !resolveInvPending
   resolveInvalidate.io.request.valid := resolveInvPending && !resolveInvIssued
   resolveInvalidate.io.request.bits.descriptorId := 0.U
-  resolveInvalidate.io.request.bits.address := resolveSrcBase
+  resolveInvalidate.io.request.bits.address := resolveInvBase
   resolveInvalidate.io.request.bits.bytes := resolveInvBytes
   resolveInvalidate.io.completion.ready := true.B
   resolveEngine.io.start := resolveInvalidate.io.completion.valid
@@ -375,6 +379,7 @@ class GpuSystem(
       (resolveDesc.bits.imgWidth * resolveDesc.bits.imgHeight * 4.U).pad(64)
     resolveSrcBase := resolveDesc.bits.sourceAddress
     resolveDstBase := resolveDesc.bits.destinationAddress
+    resolveInvBase := resolveDesc.bits.invalidateAddress
     resolveSrcStride := resolveDesc.bits.sourceStride
     resolveDstStride := resolveDesc.bits.destinationStride
     resolveWidth := resolveDesc.bits.imgWidth
@@ -577,7 +582,7 @@ class GpuSystem(
     stridedCopyEngine.io.completion.bits.success
 
   private val l2RequestArbiter = Module(new RRArbiter(
-    new ComputeMemoryRequest(config, 64, totalSystemTransactions), 10))
+    new ComputeMemoryRequest(config, 64, totalSystemTransactions), 11))
   l2RequestArbiter.io.in(0).valid := memory.io.memoryRequest.valid
   l2RequestArbiter.io.in(0).bits := memory.io.memoryRequest.bits
   memory.io.memoryRequest.ready := l2RequestArbiter.io.in(0).ready
@@ -611,12 +616,12 @@ class GpuSystem(
     graphicsHostBase.U(systemTransactionWidth.W) +
     io.graphicsHostRequest.bits.transactionId
   io.graphicsHostRequest.ready := l2RequestArbiter.io.in(5).ready
-  l2RequestArbiter.io.in(6).valid := resolvePort.io.memoryRequest.valid
-  l2RequestArbiter.io.in(6).bits := resolvePort.io.memoryRequest.bits
+  l2RequestArbiter.io.in(6).valid := resolveClient.io.memReq.valid
+  l2RequestArbiter.io.in(6).bits := resolveClient.io.memReq.bits
   l2RequestArbiter.io.in(6).bits.transactionId :=
     resolveBase.U(systemTransactionWidth.W) +
-    resolvePort.io.memoryRequest.bits.transactionId
-  resolvePort.io.memoryRequest.ready := l2RequestArbiter.io.in(6).ready
+    resolveClient.io.memReq.bits.transactionId
+  resolveClient.io.memReq.ready := l2RequestArbiter.io.in(6).ready
   l2RequestArbiter.io.in(7).valid := copyClient.io.pageWalk.valid
   l2RequestArbiter.io.in(7).bits := copyClient.io.pageWalk.bits
   l2RequestArbiter.io.in(7).bits.transactionId :=
@@ -632,6 +637,11 @@ class GpuSystem(
   l2RequestArbiter.io.in(9).bits.transactionId :=
     stridedWalkBase.U(systemTransactionWidth.W)
   stridedClient.io.pageWalk.ready := l2RequestArbiter.io.in(9).ready
+  l2RequestArbiter.io.in(10).valid := resolveClient.io.pageWalk.valid
+  l2RequestArbiter.io.in(10).bits := resolveClient.io.pageWalk.bits
+  l2RequestArbiter.io.in(10).bits.transactionId :=
+    resolveWalkBase.U(systemTransactionWidth.W)
+  resolveClient.io.pageWalk.ready := l2RequestArbiter.io.in(10).ready
   l2.io.request <> l2RequestArbiter.io.out
 
   private val l2ResponseForCu =
@@ -660,6 +670,8 @@ class GpuSystem(
     l2.io.response.bits.transactionId === fillWalkBase.U
   private val l2ResponseForStridedWalk =
     l2.io.response.bits.transactionId === stridedWalkBase.U
+  private val l2ResponseForResolveWalk =
+    l2.io.response.bits.transactionId === resolveWalkBase.U
   memory.io.memoryResponse.valid := l2.io.response.valid && l2ResponseForCu
   memory.io.memoryResponse.bits.readData := l2.io.response.bits.readData
   memory.io.memoryResponse.bits.fault := l2.io.response.bits.fault
@@ -691,11 +703,11 @@ class GpuSystem(
     l2.io.response.bits.fault
   stridedClient.io.memResp.bits.transactionId :=
     l2.io.response.bits.transactionId - stridedCopyBase.U
-  resolvePort.io.memoryResponse.valid :=
+  resolveClient.io.memResp.valid :=
     l2.io.response.valid && l2ResponseForResolve
-  resolvePort.io.memoryResponse.bits.readData := l2.io.response.bits.readData
-  resolvePort.io.memoryResponse.bits.fault := l2.io.response.bits.fault
-  resolvePort.io.memoryResponse.bits.transactionId :=
+  resolveClient.io.memResp.bits.readData := l2.io.response.bits.readData
+  resolveClient.io.memResp.bits.fault := l2.io.response.bits.fault
+  resolveClient.io.memResp.bits.transactionId :=
     l2.io.response.bits.transactionId - resolveBase.U
   io.graphicsHostResponse.valid :=
     l2.io.response.valid && l2ResponseForGraphicsHost
@@ -718,23 +730,29 @@ class GpuSystem(
   stridedClient.io.pageWalkResp.bits.readData := l2.io.response.bits.readData
   stridedClient.io.pageWalkResp.bits.fault := l2.io.response.bits.fault
   stridedClient.io.pageWalkResp.bits.transactionId := 0.U
+  resolveClient.io.pageWalkResp.valid :=
+    l2.io.response.valid && l2ResponseForResolveWalk
+  resolveClient.io.pageWalkResp.bits.readData := l2.io.response.bits.readData
+  resolveClient.io.pageWalkResp.bits.fault := l2.io.response.bits.fault
+  resolveClient.io.pageWalkResp.bits.transactionId := 0.U
   l2.io.response.ready := MuxCase(false.B, Seq(
     l2ResponseForCu -> memory.io.memoryResponse.ready,
     l2ResponseForGraphicsShader -> io.graphicsShaderResponse.ready,
     l2ResponseForCopy -> copyClient.io.memResp.ready,
     l2ResponseForFill -> fillClient.io.memResp.ready,
     l2ResponseForStridedCopy -> stridedClient.io.memResp.ready,
-    l2ResponseForResolve -> resolvePort.io.memoryResponse.ready,
+    l2ResponseForResolve -> resolveClient.io.memResp.ready,
     l2ResponseForGraphicsHost -> io.graphicsHostResponse.ready,
     l2ResponseForCopyWalk -> copyClient.io.pageWalkResp.ready,
     l2ResponseForFillWalk -> fillClient.io.pageWalkResp.ready,
-    l2ResponseForStridedWalk -> stridedClient.io.pageWalkResp.ready))
+    l2ResponseForStridedWalk -> stridedClient.io.pageWalkResp.ready,
+    l2ResponseForResolveWalk -> resolveClient.io.pageWalkResp.ready))
   when(l2.io.response.valid) {
     assert(l2ResponseForCu || l2ResponseForGraphicsShader ||
       l2ResponseForCopy || l2ResponseForFill || l2ResponseForStridedCopy ||
       l2ResponseForResolve || l2ResponseForGraphicsHost ||
       l2ResponseForCopyWalk || l2ResponseForFillWalk ||
-      l2ResponseForStridedWalk,
+      l2ResponseForStridedWalk || l2ResponseForResolveWalk,
       "L2 response must target a CU, graphics shader, DMA, resolve, host or DMA walk")
   }
   io.memoryRequest <> l2.io.memoryRequest
