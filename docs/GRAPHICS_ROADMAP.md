@@ -2,7 +2,7 @@
 
 What the graphics path implements today, and what remains. Contracts:
 [HOST_INTERFACE.md](HOST_INTERFACE.md), [DRIVER_ARCHITECTURE.md](DRIVER_ARCHITECTURE.md).
-Non-PPA tasks: [FUNCTIONAL_BACKLOG.md](FUNCTIONAL_BACKLOG.md).
+Functional qualification: [FUNCTIONAL_QUALIFICATION.md](FUNCTIONAL_QUALIFICATION.md).
 Physical numbers: [../timing/README.md](../timing/README.md).
 
 **functional** = behavioral coverage on the unified path. **physical** = PPA.
@@ -139,6 +139,17 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
 
 ## Next work
 
+The functional baseline includes private Sv32 mappings with context-local
+revocation and ASID reuse, failure cleanup across compute/render ioctls,
+reset and completion-backpressure recovery, seeded AXI fault sequences,
+shader assembly validation, helper-lane derivatives, full-image reference
+comparisons, and persistent-depth continuation at 1x/2x/4x. A context root
+must not address another context's resources or unbound storage; validated VM
+jobs must not rely on VA equal to PA. Keep these properties in the
+[functional qualification gate](FUNCTIONAL_QUALIFICATION.md). Reproduce the
+seeded AXI sequence with `OPENGPU_AXI_SEED=0x5eed2026 sbt -batch 'testOnly
+opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
+
 1. **Keep the submission contract covered** — every submission-path change
    must exercise descriptor errors, reset-during-work, delayed writes,
    completion backpressure, recovery and mixed sample modes. Boundary edits
@@ -171,6 +182,25 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
    PA-tagged). Remaining platform work is shrinking or dropping the ASID-0
    identity table once Bare bring-up and those leftover physical paths no
    longer need it.
+5. **Workload-driven ISA** — add fixed-profile RVV widening/narrowing and
+   VFUNARY1 operations when a shader in the validated corpus or a target
+   workload needs them. Capture the motivating shader, validator rules and
+   execution/guest coverage with each addition.
+6. **Graphics feature decision** — measure target scenes before adding
+   centroid or per-sample interpolation or framebuffer compression. Record
+   the observed quality or bandwidth gap, expected benefit and verification
+   scene; retain current center interpolation and uncompressed storage until
+   a workload demonstrates a need. The current ten-case sweep covers flat,
+   shader, texture and overdraw scenes at 1x/2x/4x, but contains no varying
+   UV at a partially covered sample or representative compressible frame.
+   Its 4x flat case writes 67,328 bytes at 16x16 versus 15,360 bytes at 1x,
+   while OM stalls track raster stalls. That shows a bandwidth opportunity,
+   not a measured compression win. Next add an edge-texture quality scene and
+   a realistic framebuffer traffic scene before making either feature call.
+7. **Platform integration** — replace virtual vblank/scanout after choosing
+   display hardware and its interface. Evaluate a small Mesa/Gallium path
+   against the stable userspace ABI, private-VM isolation and full functional
+   qualification gate; scope it to a representative shader and draw first.
 
 ## Known limits
 
@@ -195,7 +225,6 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
 
 ## Later / out of scope
 
-- Small Mesa/Gallium experiment once baselines are dependable.
 - Nonblocking graphics translation, larger TLBs or wider OM only when
   counters justify the cost.
 - Discrete PCIe/local VRAM, demand paging, tile-based rendering and display
