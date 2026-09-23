@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Cross-build static aarch64 userspace examples into the ARTI driver output
 # directory so build_cloudinit.sh can stage them on the OPENGPU modules ISO.
+#
+# Default: fixed-function set. With GPU_FRAG_CORE=1 also emit fragment_tint.
 set -euo pipefail
 
 GPU_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,6 +12,7 @@ LINUX_HEADERS="${LINUX_HEADERS:-$ARTI_WORK/linux-headers}"
 CROSS_GCC="${CROSS_GCC:-aarch64-linux-gnu-gcc}"
 RISCV_GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 RISCV_OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
+GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -20,7 +23,7 @@ mkdir -p "$DRIVER_OUTPUT"
 CFLAGS=(-static -std=c11 -O2 -Wall -Wextra -Werror
     -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace")
 
-echo "=== Build OpenGPU guest userspace → $DRIVER_OUTPUT ==="
+echo "=== Build OpenGPU guest userspace → $DRIVER_OUTPUT (FRAG=$GPU_FRAG_CORE) ==="
 
 "$RISCV_GCC" -march=rv32imv_zicsr -mabi=ilp32 -c \
     -o "$DRIVER_OUTPUT/opengpu_compute_shader.o" \
@@ -45,5 +48,18 @@ for ex in pipe_clear_draw pipe_compute pipe_blit pipe_strided_blit \
         "$GPU_DIR/userspace/examples/${ex}.c"
 done
 
+if [ "$GPU_FRAG_CORE" = "1" ]; then
+    python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+        --emit fragment_tint "$DRIVER_OUTPUT/opengpu_fragment_tint.bin"
+    "$CROSS_GCC" "${CFLAGS[@]}" \
+        -o "$DRIVER_OUTPUT/opengpu_fragment_tint" \
+        "$GPU_DIR/userspace/opengpu.c" \
+        "$GPU_DIR/userspace/examples/fragment_tint.c"
+fi
+
 echo "Guest binaries:"
-ls -1 "$DRIVER_OUTPUT"/opengpu_* | sed 's/^/  /'
+ls -1 "$DRIVER_OUTPUT"/opengpu_pipe_* \
+    "$DRIVER_OUTPUT"/opengpu_compute_example \
+    "$DRIVER_OUTPUT"/opengpu_triangle_example \
+    "$DRIVER_OUTPUT"/opengpu_compute_shader.bin \
+    "$DRIVER_OUTPUT"/opengpu_fragment_tint* 2>/dev/null | sed 's/^/  /' || true

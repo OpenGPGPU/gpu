@@ -183,11 +183,14 @@ echo "  Driver    : $DRIVER_KO"
 
 ensure_disk
 
-# Stage FF pipe/userspace binaries next to the driver so the OPENGPU ISO
+# Stage pipe/userspace binaries next to the driver so the OPENGPU ISO
 # ships /root/load_opengpu.sh examples. Skip with BUILD_USERSPACE=0.
+# Match GPU_FRAG_CORE to the QEMU binary you boot (this script never
+# rebuilds RTL).
 if [ "${BUILD_USERSPACE:-1}" = "1" ]; then
-    echo "=== Cross-build guest userspace examples ==="
+    echo "=== Cross-build guest userspace examples (FRAG=${GPU_FRAG_CORE:-0}) ==="
     ARTI_WORK="$ARTI_WORK" DRIVER_OUTPUT="$DRIVER_OUTPUT" \
+    GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}" \
         bash "$GPU_DIR/scripts/build_userspace_guest.sh"
 fi
 
