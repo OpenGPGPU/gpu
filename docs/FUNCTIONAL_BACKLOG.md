@@ -79,7 +79,7 @@ read error and an invalid Sv32 DMA leaf before a repaired fill.
 
 ## Graphics correctness and coverage
 
-- [ ] Define helper-lane behavior and guarantee 2x2 fragment-quad ordering,
+- [x] Define helper-lane behavior and guarantee 2x2 fragment-quad ordering,
   then admit `vquad.dfdx` and `vquad.dfdy` in the shader profile.
 - [ ] Add software-reference image comparisons for rasterization, depth,
   stencil, blend, texture and 1x/2x/4x MSAA combinations.

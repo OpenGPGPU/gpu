@@ -29,10 +29,11 @@ independently, and indices outside VLMAX produce zero.
 `vslideup.vx/vi` and `vslidedown.vx/vi` move elements across lanes; slide-up
 preserves destination elements below the offset, while slide-down returns zero
 when its source index is outside VLMAX. The custom fragment-quad
-`vquad.dfdx`/`vquad.dfdy`
-cross-lane primitives over four-lane groups ordered TL, TR, BL, BR. These
-encodings remain outside the driver shader profile until graphics dispatch
-guarantees that ordering and supplies helper lanes at primitive edges.
+`vquad.dfdx`/`vquad.dfdy` cross-lane primitives operate over four-lane groups
+ordered TL, TR, BL, BR. The fragment shader profile admits their unmasked
+forms. Rasterization emits complete quads, including uncovered helper lanes;
+helpers execute the shader but cannot emit pixels. Derivatives therefore use
+their values at primitive edges.
 
 `VectorMultiplyAlu` implements `vmul`, `vmulh`, `vmulhu`, and `vmulhsu` in
 `vv` and `vx` forms with one elastic radix-4 Booth pipeline per lane. It also

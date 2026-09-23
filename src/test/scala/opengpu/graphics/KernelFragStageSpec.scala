@@ -948,81 +948,83 @@ class KernelFragStageSpec extends AnyFlatSpec {
     }
   }
 
-  it should "feed a helper lane into a quad derivative without emitting it" in {
-    // A quad may contain helper lanes: uncovered pixels the rasterizer still
-    // shades so `vquad` has a full 2x2 neighbourhood.  `VectorIntegerAlu`'s
-    // quad-dx (`funct6 = 0x0c`) has each left pair contribute
-    // `lhs(left + 1) - lhs(left)` with `left = quadBase` for lanes 0/1 and
-    // `quadBase + 2` for lanes 2/3, so lane 0's derivative is exactly the
-    // helper's `u` minus its own and lane 2's is lane 3's minus its own.  The
-    // helper itself must never be promoted to the output stream.
-    val config = GpuConfig(lanes = 4, warps = 2)
-    simulate(new KernelFragStageWithKernel(config)) { dut =>
-      val mem = new MemModel
-      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-      pokeDefaults(dut)
-      dut.io.abi1.poke(true.B)
-      dut.io.shaderPc.poke(0x1000.U)
-      dut.io.kernargBase.poke(0x8000.U)
-      dut.io.kernargBankStride.poke(0.U)
+  it should "feed helper lanes into both quad derivatives without emitting them" in {
+    // Uncovered lanes still shade so both derivatives see a complete quad.
+    // The helper in lane 1 contributes to dfdx at lane 0 and dfdy at lane 3,
+    // but must never be promoted to the output stream.
+    val cases = Seq(
+      (0x0c, Seq(0, 0x11223344, 0, 0x55667788),
+        Seq(0x11223344L, 0x55667788L, 0x55667788L)),
+      (0x0d, Seq(0, 0x11223344, 0x55667788, 0x66778899),
+        Seq(0x55667788L, 0x55667788L, 0x55555555L))
+    )
+    for ((funct6, u, expectedWords) <- cases) {
+      val config = GpuConfig(lanes = 4, warps = 2)
+      simulate(new KernelFragStageWithKernel(config)) { dut =>
+        val mem = new MemModel
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        pokeDefaults(dut)
+        dut.io.abi1.poke(true.B)
+        dut.io.shaderPc.poke(0x1000.U)
+        dut.io.kernargBase.poke(0x8000.U)
+        dut.io.kernargBankStride.poke(0.U)
 
-      // Program: v1 = per-lane u (kernarg+128); v4 = dfdx(u); the colour
-      // output slice (kernarg+192) receives v4 and is therefore the observable
-      // of the derivative.
-      mem.putWord(0x1000L, 0, vsetivli(4))
-      mem.putWord(0x1000L, 1, addi(5, 1, 128))
-      mem.putWord(0x1000L, 2, vle32(5, 1))
-      mem.putWord(0x1000L, 3, vquad(0x0c, 4, 1))
-      mem.putWord(0x1000L, 4, addi(5, 1, 192))
-      mem.putWord(0x1000L, 5, vse32(5, 4))
-      mem.putWord(0x1000L, 6, cease)
+        // Program: v1 = per-lane u (kernarg+128); v4 = derivative(u); the colour
+        // output slice (kernarg+192) receives v4 and is therefore the observable
+        // of the derivative.
+        mem.putWord(0x1000L, 0, vsetivli(4))
+        mem.putWord(0x1000L, 1, addi(5, 1, 128))
+        mem.putWord(0x1000L, 2, vle32(5, 1))
+        mem.putWord(0x1000L, 3, vquad(funct6, 4, 1))
+        mem.putWord(0x1000L, 4, addi(5, 1, 192))
+        mem.putWord(0x1000L, 5, vse32(5, 4))
+        mem.putWord(0x1000L, 6, cease)
 
-      // Lane 1 is the uncovered helper; lanes 0 and 2 anchor the two left
-      // pairs, so their dfdx values are lane 1's and lane 3's u respectively
-      // (each anchor's own u is zero).
-      val u = Seq(0, 0x11223344, 0, 0x55667788)
-      val v = Seq.fill(4)(0)
-      fireQuad(dut, Seq(
-        Frag(3, 4, 0x20, covered = true),
-        Frag(4, 4, 0x20, covered = false),
-        Frag(3, 5, 0x20, covered = true),
-        Frag(4, 5, 0x20, covered = true)
-      ), uvs = u zip v)
-      dut.io.flush.poke(true.B); dut.clock.step()
-      dut.io.flush.poke(false.B)
+        // Lane 1 is the uncovered helper in both cases.
+        val v = Seq.fill(4)(0)
+        fireQuad(dut, Seq(
+          Frag(3, 4, 0x20, covered = true),
+          Frag(4, 4, 0x20, covered = false),
+          Frag(3, 5, 0x20, covered = true),
+          Frag(4, 5, 0x20, covered = true)
+        ), uvs = u zip v)
+        dut.io.flush.poke(true.B); dut.clock.step()
+        dut.io.flush.poke(false.B)
 
-      val emitted =
-        scala.collection.mutable.ArrayBuffer.empty[(Long, Long, Long, Long, Long)]
-      val done = pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean,
-        guard = 6000)
-      assert(done, "helper-derivative kernel did not complete")
-      // Step every iteration: the emit walk spends cycles on the helper lane
-      // it suppresses, so the collector must let simulated time advance
-      // through the low-valid beats.
-      var guard = 0
-      while (emitted.size < 3 && guard < 200) {
-        val valid = dut.io.out.valid.peek().litToBoolean
-        dut.io.out.ready.poke(valid.B)
-        if (valid) {
-          emitted += ((dut.io.out.bits.x.peek().litValue.toLong,
-            dut.io.out.bits.color.r.peek().litValue.toLong,
-            dut.io.out.bits.color.g.peek().litValue.toLong,
-            dut.io.out.bits.color.b.peek().litValue.toLong,
-            dut.io.out.bits.alpha.peek().litValue.toLong))
+        val emitted =
+          scala.collection.mutable.ArrayBuffer.empty[(Long, Long, Long, Long, Long)]
+        val done = pump(dut, mem, () => dut.io.out.valid.peek().litToBoolean,
+          guard = 6000)
+        assert(done, "helper-derivative kernel did not complete")
+        // Step every iteration: the emit walk spends cycles on the helper lane
+        // it suppresses, so the collector must let simulated time advance
+        // through the low-valid beats.
+        var guard = 0
+        while (emitted.size < 3 && guard < 200) {
+          val valid = dut.io.out.valid.peek().litToBoolean
+          dut.io.out.ready.poke(valid.B)
+          if (valid) {
+            emitted += ((dut.io.out.bits.x.peek().litValue.toLong,
+              dut.io.out.bits.color.r.peek().litValue.toLong,
+              dut.io.out.bits.color.g.peek().litValue.toLong,
+              dut.io.out.bits.color.b.peek().litValue.toLong,
+              dut.io.out.bits.alpha.peek().litValue.toLong))
+          }
+          dut.clock.step()
+          guard += 1
         }
-        dut.clock.step()
-        guard += 1
+        dut.io.out.ready.poke(false.B)
+        // Only the three covered lanes emit, in batch order.
+        assert(emitted.size == 3, s"expected 3 covered fragments, got ${emitted.size}")
+        for ((word, index) <- expectedWords.zipWithIndex) {
+          val rgba = ((word >> 24) & 0xffL, (word >> 16) & 0xffL,
+            (word >> 8) & 0xffL, word & 0xffL)
+          val expected = (if (index == 2) 4L else 3L, rgba._1, rgba._2,
+            rgba._3, rgba._4)
+          assert(emitted(index) == expected,
+            s"funct6=$funct6 lane $index: expected $expected, got ${emitted(index)}")
+        }
       }
-      dut.io.out.ready.poke(false.B)
-      // Only the three covered lanes emit, in batch order; each left pair
-      // shares one dfdx, so lane 3 carries lane 2's value.
-      assert(emitted.size == 3, s"expected 3 covered fragments, got ${emitted.size}")
-      assert(emitted(0) == (3L, 0x11L, 0x22L, 0x33L, 0x44L),
-        s"lane 0 must take the helper's u as its dfdx: got ${emitted(0)}")
-      assert(emitted(1) == (3L, 0x55L, 0x66L, 0x77L, 0x88L),
-        s"lane 2 must take lane 3's u as its dfdx: got ${emitted(1)}")
-      assert(emitted(2) == (4L, 0x55L, 0x66L, 0x77L, 0x88L),
-        s"lane 3 shares lane 2's dfdx: got ${emitted(2)}")
     }
   }
 
