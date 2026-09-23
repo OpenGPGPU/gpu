@@ -23,10 +23,10 @@ A passing sim is not silicon; a completed tool run is not timing closure.
 - Driver scheduler owns GEM references, dependencies and fences. Display
   consumes GEM framebuffers; it does not own execution lifetime.
 - Sv32 private VA windows and ASIDs. Command, framebuffer, texture,
-  kernarg/VB staging, fill/blit/strided DMA, shader data loads and the
+  kernarg/VB staging, fill/blit/strided/resolve DMA, shader data loads and the
   programmable `vtex.sample` path translate with CU accesses. Context roots
   start empty and only explicit private mappings grant access. ASID-0 identity
-  mappings remain read/write and non-executable for controlled physical paths;
+  mappings remain read/write and non-executable for Bare and line-invalidate;
   compute, fragment and vertex code use private executable windows. Host
   vertex→fragment translation and instruction-fault recovery are covered.
   VM-enabled mapping failures abort the operation.
