@@ -22,9 +22,12 @@ make -C userspace CC=aarch64-linux-gnu-gcc \
     DRM_HEADERS=../../arti-work/linux-headers/include
 ```
 
-`examples/compute` submits a one-instruction cease kernel through private
-shader and kernarg bindings. `examples/triangle` draws to a 16x16 colour GEM
-on a fixed-function build. The latter requires a device configured for 16x16
+`examples/compute` loads `shaders/compute_copy.bin`, assembled from symbolic
+RISC-V source, through private shader and kernarg bindings. It checks that
+the shader copies the input word to the output word. Pass the shader binary
+as the second argument when running outside the guest.
+
+`examples/triangle` draws to a 16x16 colour GEM on a fixed-function build. The latter requires a device configured for 16x16
 pixels, with no fragment or vertex core. Pass a DRM node path as the first
 argument, or use the default `/dev/dri/card0`.
 
@@ -38,3 +41,14 @@ GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
 Omit `GPU_USERSPACE_EXAMPLES_ONLY=1` to run the existing DRM guest regression
 before the examples. The full release gate remains
 `scripts/qualify_functional.sh`.
+
+## Shader corpus
+
+Run `python3 scripts/validate_shader_corpus.py` from the repository root. It
+assembles `compute_copy.S`, compiles three small C shaders with
+`riscv64-unknown-elf-gcc`, adapts the C argument base to OpenGPU's direct
+`x1` kernarg convention, and replaces the C return with the OpenGPU cease
+instruction. The script checks every binary with the production compute,
+fragment or vertex shader validator. It rejects compiler output with labels
+or indirect memory operands, rather than assuming arbitrary C is a valid
+shader. Set `RISCV_GCC` and `RISCV_OBJCOPY` for another RISC-V toolchain.

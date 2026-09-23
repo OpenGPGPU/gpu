@@ -1,0 +1,5 @@
+opengpu.o
+examples/compute
+examples/triangle
+shaders/*.o
+shaders/*.bin

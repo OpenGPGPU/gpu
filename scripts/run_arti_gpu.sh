@@ -384,6 +384,12 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
         fail "userspace examples require the fixed-function build"
     [ "$GPU_WIDTH" = "16" ] && [ "$GPU_HEIGHT" = "16" ] || \
         fail "userspace triangle example requires 16x16"
+    "${RISCV_GCC:-riscv64-unknown-elf-gcc}" -march=rv32im_zicsr \
+        -mabi=ilp32 -c -o "$WORK/opengpu_compute_shader.o" \
+        "$GPU_DIR/userspace/shaders/compute_copy.S"
+    "${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}" -O binary \
+        --only-section=.text "$WORK/opengpu_compute_shader.o" \
+        "$WORK/opengpu_compute_shader.bin"
     "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
         -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" \
         -o "$WORK/opengpu_compute_example" \

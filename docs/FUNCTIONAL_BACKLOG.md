@@ -67,8 +67,9 @@ read error and an invalid Sv32 DMA leaf before a repaired fill.
 
 - [x] Add a small userspace library for context, buffer, binding, submission
   and fence operations, plus compute and graphics examples (`userspace/`).
-- [ ] Add symbolic shader assembly and validate a small compiler-generated
-  shader corpus instead of relying on hand-written instruction words.
+- [x] Add symbolic shader assembly and validate a small compiler-generated
+  shader corpus instead of relying on hand-written instruction words
+  (`userspace/shaders/`, `scripts/validate_shader_corpus.py`).
 - [ ] Expose software control of `vxrm` where shader ABI semantics are defined.
 - [ ] Admit masked comparisons, reductions, gathers and slides after validator
   data-flow rules cover their predicate and destination dependencies.
