@@ -127,7 +127,7 @@ arbiter. Keep measuring before landing either outstanding translations
 |---|---|
 | Boundary suites (roadmap Reproduce `testOnly` list + `GpuCommandMmioSpec`) | 136/136 pass on `e2e155e` |
 | `scripts/test_driver.py` + `scripts/test_test_selection.py` | pass |
-| Workload sweep (`scripts/benchmark_gpu.py`, 10 cases) | pass; `manifest.json` commit `e2e155e` |
+| Workload sweep (`scripts/benchmark_gpu.py`, 12 cases incl. `app_16_4x`) | 11-case baseline on `e2e155e`; `app_16_4x` measured on this tree |
 | Guest DRM, default (`GPU_FRAG_CORE=0`) | pass on `cfc045a` (private fill/blit/strided DMA VAs); powers off |
 | Guest DRM, fragment-core (`GPU_FRAG_CORE=1`) | pass on `cfc045a`; powers off |
 | Guest DRM, vertex+fragment (`GPU_FRAG_CORE=1` `GPU_VERT_CORE=1`) | pass on `cfc045a`; powers off |
@@ -191,23 +191,22 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    the observed quality or bandwidth gap, expected benefit and verification
    scene; retain current center interpolation and uncompressed storage until
    a workload demonstrates a need. The sweep covers flat scenes at 1x/2x/4x,
-   shader and overdraw at 1x/4x, and texture at 1x. The shared-L2 4x image
-   scene now measures its varying texture at partially covered samples:
-   all 106 such samples differ from a quarter-pixel per-sample UV reference,
-   with 752 summed RGB-channel levels of difference and a maximum single
-   channel difference of 35. This shows a measurable edge-quality difference;
-   its value still needs a target workload and quality criterion.
-   On the same worktree, `flat_16_4x` takes 20,058 cycles and transfers
-   14,224 read / 67,328 write bytes below L2; the new `overdraw_16_4x`
-   takes 25,414 cycles and transfers 29,904 read / 67,328 write bytes.
-   Depth rejection keeps writes equal in this scene, while read traffic
-   doubles. The benchmark now counts final-frame 64-byte lines whose 16
-   words are identical: in `flat_32_4x`, 189/256 color lines and 189/256
-   depth lines qualify; in `overdraw_16_4x`, each plane has 33/64. These
-   synthetic solid-region scenes show compressible output but do not predict
-   compressed traffic, metadata cost or latency. Next use a representative
-   application frame and a target edge-quality criterion before making
-   either feature call.
+   shader and overdraw at 1x/4x, texture at 1x, and `app_16_4x` (UV-mapped
+   gradient texture, nearer overlapping triangle, 4x MSAA). The shared-L2
+   and `app_16_4x` 4x scenes both see 106 partially covered textured samples
+   that differ from a quarter-pixel per-sample UV reference (752 summed
+   RGB-channel levels, max single-channel delta 35). On `app_16_4x` only
+   4/106 of those samples reach a single-channel delta ≥ 8 (the visible
+   threshold used below). Final-frame uniform 64-byte lines drop to 21/64
+   colour and 27/64 depth versus 189/256 on solid `flat_32_4x` and 33/64 on
+   `overdraw_16_4x`. The app frame takes 27,526 cycles and transfers 21,396
+   read / 84,736 write bytes below L2.
+   **Decision criteria (hold until a scene breaks them):** keep centre UV
+   while fewer than 25% of partially covered textured samples have
+   max-channel delta ≥ 8 against the per-sample reference; keep uncompressed
+   storage while a representative frame stays under 50% uniform colour lines
+   (solid flats are not predictive). Revisit only with a product quality bar
+   or a frame that fails these thresholds.
 7. **Platform integration** — replace virtual vblank/scanout after choosing
    display hardware and its interface. Evaluate a small Mesa/Gallium path
    against the stable userspace ABI, private-VM isolation and full functional
