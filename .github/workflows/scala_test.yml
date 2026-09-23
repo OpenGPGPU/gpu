@@ -24,7 +24,50 @@ jobs:
     - name: Check integration test selection
       run: python3 scripts/test_test_selection.py
 
-  build:
+  # Resolve affected packages once, then fan out only the shards that have work.
+  # Keeps Verilator/JDK setup off runners that would immediately no-op.
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      selected: ${{ steps.select.outputs.selected }}
+      shards: ${{ steps.select.outputs.shards }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Select affected tests and shards
+      id: select
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          BASE=$(git merge-base origin/main HEAD)
+        else
+          BASE=$(git rev-parse HEAD^)
+        fi
+        CHANGED=$(git diff --name-only "$BASE" HEAD)
+        echo "Changed files:"
+        echo "$CHANGED"
+        SELECTED=$(bash scripts/select_tests.sh $CHANGED)
+        echo "Selected: $SELECTED"
+        SHARDS=$(bash scripts/ci_shard_tests.sh shards-json "$SELECTED")
+        echo "Shards: $SHARDS"
+        if [ "$SELECTED" != "NONE" ] && [ "$SHARDS" = "[]" ]; then
+          echo "selected packages did not map to any CI shard" >&2
+          exit 1
+        fi
+        {
+          echo "selected<<EOF"
+          echo "$SELECTED"
+          echo "EOF"
+          echo "shards=$SHARDS"
+        } >> "$GITHUB_OUTPUT"
+
+  scala:
+    needs: select
+    if: needs.select.outputs.selected != 'NONE'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(needs.select.outputs.shards) }}
 
     # Pinned so the distro Verilator version is stable; ubuntu-latest still
     # points at 24.04 (Verilator 5.020) until the Oct-Nov 2026 migration.
@@ -38,7 +81,6 @@ jobs:
     - uses: actions/checkout@v4
       with:
         submodules: recursive
-        fetch-depth: 0
     - name: Set up JDK 11
       uses: actions/setup-java@v4
       with:
@@ -54,31 +96,52 @@ jobs:
         verilator --version
         curl -sL https://github.com/chipsalliance/espresso/releases/download/v2.4/x86_64-linux-gnu-espresso -o /usr/local/bin/espresso
         chmod +x /usr/local/bin/espresso
-    - name: Select affected tests
-      id: select
+    - name: Run shard ${{ matrix.shard }}
       run: |
-        if [ "${{ github.event_name }}" = "pull_request" ]; then
-          BASE=$(git merge-base origin/main HEAD)
-        else
-          BASE=$(git rev-parse HEAD^)
+        # Serial inside each runner: forked/shared-JVM parallelism OOMs under
+        # Chisel elaboration. Parallelism comes from the matrix, not sbt.
+        SUITES=$(bash scripts/ci_shard_tests.sh suites "${{ matrix.shard }}" "${{ needs.select.outputs.selected }}")
+        if [ -z "$SUITES" ]; then
+          echo "Shard ${{ matrix.shard }} has no suites for this selection; skipping"
+          exit 0
         fi
-        CHANGED=$(git diff --name-only "$BASE" HEAD)
-        echo "Changed files:"
-        echo "$CHANGED"
-        SELECTED=$(bash scripts/select_tests.sh $CHANGED)
-        echo "Selected: $SELECTED"
-        echo "selected=$SELECTED" >> "$GITHUB_OUTPUT"
-    - name: Run tests
-      run: |
-        # Only run the packages affected by the changed files; ALL/NONE
-        # fallbacks are handled here too.
-        if [ "${{ steps.select.outputs.selected }}" = "ALL" ]; then
-          sbt 'set Test / parallelExecution := false' test
-        elif [ "${{ steps.select.outputs.selected }}" = "NONE" ]; then
-          echo "No Scala sources affected; skipping tests"
-        else
-          sbt 'set Test / parallelExecution := false' \
-            "testOnly ${{ steps.select.outputs.selected }}"
-        fi
+        echo "Running: $SUITES"
+        sbt 'set Test / parallelExecution := false' "testOnly $SUITES"
+
+  dependency-graph:
+    runs-on: ubuntu-26.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - name: Set up JDK 11
+      uses: actions/setup-java@v4
+      with:
+        java-version: '11'
+        distribution: 'temurin'
+        cache: 'sbt'
+    - name: Set up sbt
+      uses: sbt/setup-sbt@v1
     - name: Upload dependency graph
       uses: scalacenter/sbt-dependency-submission@ab086b50c947c9774b70f39fc7f6e20ca2706c91
+
+  # Stable required-check name once branch protection points at it.
+  ci-ok:
+    if: always()
+    needs: [driver, select, scala, dependency-graph]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Aggregate job results
+      run: |
+        echo "driver=${{ needs.driver.result }}"
+        echo "select=${{ needs.select.result }}"
+        echo "scala=${{ needs.scala.result }}"
+        echo "dependency-graph=${{ needs.dependency-graph.result }}"
+        [ "${{ needs.driver.result }}" = "success" ] || exit 1
+        [ "${{ needs.select.result }}" = "success" ] || exit 1
+        [ "${{ needs.dependency-graph.result }}" = "success" ] || exit 1
+        # When selection is NONE the scala job is skipped — treat as success.
+        case "${{ needs.scala.result }}" in
+          success|skipped) ;;
+          *) exit 1 ;;
+        esac
