@@ -126,11 +126,23 @@ class GpuWorkloadSpec extends AnyFlatSpec with GpuHostTestSupport {
         assert(words(BigInt(pixel)) == expected,
           s"covered pixel differs: ${words(BigInt(pixel))} (expected $expected)")
         assert(words(BigInt(colorBase)) == 0x12345678L, "uncovered pixel was overwritten")
+        // A solid 64-byte line is a simple lossless-compression opportunity.
+        // This describes the completed frame, not traffic saved by hardware.
+        def uniformLines(base: Int): Int =
+          (0 until size * size * (1 << mode) by 16).count { first =>
+            (0 until 16).map(i => words(BigInt(base + (first + i) * 4))).distinct.size == 1
+          }
+        val framebufferLines = size * size * (1 << mode) / 16
+        val colorUniformLines = uniformLines(colorBase)
+        val depthUniformLines = uniformLines(depthBase)
         val counters = after.toSeq.sortBy(_._1).map { case (key, value) =>
           "\"" + key + "\":" + (value - before(key))
         }
         println("GPU_BENCHMARK_RESULT {\"workload\":\"" + name + "\",\"size\":" + size +
-          ",\"samples\":" + (1 << mode) + "," + counters.mkString(",") + "}")
+          ",\"samples\":" + (1 << mode) +
+          s",\"framebuffer_lines_per_plane\":$framebufferLines" +
+          s",\"color_uniform_lines\":$colorUniformLines" +
+          s",\"depth_uniform_lines\":$depthUniformLines," + counters.mkString(",") + "}")
       }
     }
   }

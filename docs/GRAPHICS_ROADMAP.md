@@ -201,9 +201,13 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    14,224 read / 67,328 write bytes below L2; the new `overdraw_16_4x`
    takes 25,414 cycles and transfers 29,904 read / 67,328 write bytes.
    Depth rejection keeps writes equal in this scene, while read traffic
-   doubles. This establishes a traffic stress case, not a measured
-   compression win. Next add a representative compressible frame and a
-   target edge-quality criterion before making either feature call.
+   doubles. The benchmark now counts final-frame 64-byte lines whose 16
+   words are identical: in `flat_32_4x`, 189/256 color lines and 189/256
+   depth lines qualify; in `overdraw_16_4x`, each plane has 33/64. These
+   synthetic solid-region scenes show compressible output but do not predict
+   compressed traffic, metadata cost or latency. Next use a representative
+   application frame and a target edge-quality criterion before making
+   either feature call.
 7. **Platform integration** — replace virtual vblank/scanout after choosing
    display hardware and its interface. Evaluate a small Mesa/Gallium path
    against the stable userspace ABI, private-VM isolation and full functional
