@@ -113,11 +113,10 @@ operations from the same warp, and exposes launch-time VGPR initialization
 plus scalar RF bridge ports.
 
 The driver admits masked lane-local integer ALU, saturation, multiply,
-divide and remainder operations in the same operand forms as their unmasked
-counterparts. Predicate v0, the old destination and register sources must be
-defined, and the destination cannot be v0. Masked comparisons, reductions,
-gathers and slides remain outside the driver profile. Masked arithmetic
-invalidates trusted local-index provenance; only an unmasked `vsll.vi ...,2`
+divide and remainder operations, plus comparisons, reductions, gathers and
+slides in the supported operand forms. Predicate v0, the old destination and
+register sources must be defined, and the destination cannot be v0. Masked
+arithmetic invalidates trusted local-index provenance; only an unmasked `vsll.vi ...,2`
 can establish a complete-batch byte-index proof for indexed memory access.
 
 The vector memory path applies the same `vl` and `v0` lane mask to unit-stride

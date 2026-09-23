@@ -491,8 +491,33 @@ int main(void)
     }
     program[3] = vector_alu(0x12, 2, 3, 1, 1) & ~(1u << 25);
     assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
-    program[3] = vector_alu(0x18, 3, 3, 1, 0) & ~(1u << 25);
-    assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    /* Masked comparison, reduction, gather and slides require v0 and old vd. */
+    {
+        const struct { unsigned funct6, form, operand; } cases[] = {
+            { 0x18, 3, 0 }, /* vmseq.vi */
+            { 0x00, 2, 1 }, /* vredsum.vs */
+            { 0x0c, 3, 0 }, /* vrgather.vi */
+            { 0x0e, 3, 1 }, /* vslideup.vi */
+            { 0x0f, 3, 1 }, /* vslidedown.vi */
+        };
+        for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            program[3] = vector_alu(cases[i].funct6, cases[i].form, 3, 1,
+                                    cases[i].operand) & ~(1u << 25);
+            assert(opengpu_compute_shader_validate_words(program, 5, 64, 4));
+            assert(opengpu_shader_validate_words(program, 5, 288, 8));
+            assert(opengpu_vertex_shader_validate_words(program, 5, 512, 8));
+            program[1] = vector_alu(0x18, 0, 2, 1, 1); /* no v0 */
+            assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+            program[1] = vector_alu(0x18, 0, 0, 1, 1);
+            program[2] = vector_alu(0x00, 3, 4, 1, 0); /* no old v3 */
+            assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+            program[2] = vector_alu(0x00, 3, 3, 1, 0);
+            program[3] = (program[3] & ~(31u << 7)); /* masked vd=v0 */
+            assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        }
+        program[3] = vector_alu(0x0e, 3, 1, 1, 1) & ~(1u << 25);
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    }
 
     /* A masked extension must discard previously trusted index provenance. */
     program[0] = vsetivli(4);
@@ -650,11 +675,11 @@ int main(void)
                        == (form == 3)); /* immediates are not registers */
             }
         }
-        /* These families still need their own masked validation contract. */
+        /* Reserved operand forms remain rejected under a mask. */
         const unsigned int excluded[][2] = {
-            { 0x18, 0 }, { 0x1c, 3 }, { 0x1f, 4 },
-            { 0x00, 2 }, { 0x07, 2 }, { 0x0c, 0 },
-            { 0x0e, 3 }, { 0x0f, 4 }, { 0x02, 3 },
+            { 0x02, 3 }, /* vsub.vi */
+            { 0x0e, 0 }, /* vslideup.vv */
+            { 0x18, 2 }, /* comparison reduction form */
         };
         for (i = 0; i < sizeof(excluded) / sizeof(excluded[0]); i++) {
             program[3] = vector_alu(excluded[i][0], excluded[i][1],

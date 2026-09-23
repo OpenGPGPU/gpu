@@ -473,6 +473,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.activeMask.poke("b0111".U)
       dut.io.in.bits.predicateMask.poke("b0101".U)
       dut.io.in.bits.funct6.poke("h18".U)
+      dut.io.in.bits.oldVd(0).poke("ha".U)
       for (lane <- 0 until config.lanes) {
         dut.io.in.bits.vs2(lane).poke(lane.U)
         dut.io.in.bits.vs1(lane).poke((if (lane == 2) 2 else 9).U)
@@ -481,9 +482,35 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.valid.poke(false.B)
       dut.clock.step(6)
       dut.io.out.bits.writesMask.expect(true.B)
-      dut.io.out.bits.mask.expect("b0100".U)
+      dut.io.out.bits.mask.expect("b1110".U)
       dut.io.out.bits.data(1).expect(101.U)
       dut.io.out.bits.data(3).expect(103.U)
+    }
+  }
+
+  it should "preserve old lanes in masked gather and slide operations" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      dut.io.in.bits.vm.poke(false.B)
+      dut.io.in.bits.predicateMask.poke("b0101".U)
+      dut.io.in.bits.operandType.poke("b011".U)
+      Seq(11, 22, 33, 44).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.in.bits.vs2(lane).poke(value.U)
+      }
+      def run(funct6: Int, index: Int, expected: Seq[Int]): Unit = {
+        dut.io.in.bits.funct6.poke(funct6.U)
+        dut.io.in.bits.immediate.poke(index.U)
+        dut.io.in.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+        dut.clock.step(6)
+        expected.zipWithIndex.foreach { case (value, lane) =>
+          dut.io.out.bits.data(lane).expect(value.U)
+        }
+      }
+      run(0x0c, 3, Seq(44, 101, 44, 103))
+      run(0x0e, 1, Seq(100, 101, 22, 103))
+      run(0x0f, 1, Seq(22, 101, 44, 103))
     }
   }
 
@@ -649,6 +676,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
 
       // The scalar seed is always included, even if every vector lane is masked.
       issue(0x00, 10, Seq(1, 2, 3, 4), 10, vm = false, predicate = 0)
+      issue(0x00, 10, Seq(1, 2, 3, 4), 14, vm = false, predicate = 0x5)
     }
   }
 

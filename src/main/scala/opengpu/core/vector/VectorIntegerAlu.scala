@@ -266,8 +266,12 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       outputBits.warpActiveMask := candidateBits.warpActiveMask
       outputBits.vd := candidateBits.vd
       outputBits.data := selectedResults
+      // Comparison destinations are packed masks. Preserve masked-off and
+      // inactive bits from the old destination, including when vd != v0.
       outputBits.mask :=
-        candidateBits.comparison & candidateBits.enabled
+        (candidateBits.comparison & candidateBits.enabled) |
+          (candidateBits.oldVd(0)(config.lanes - 1, 0) &
+            ~candidateBits.enabled)
       outputBits.writesMask := outputComparison
       outputBits.saturated :=
         outputSaturating &&

@@ -178,17 +178,25 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
     opengpu_shader_u32 vd = (insn >> 7) & 0x1f;
     opengpu_shader_u32 vs2 = (insn >> 20) & 0x1f;
 
-    /* Masked lane-local arithmetic preserves old vd. Comparisons,
-     * reductions and cross-lane operations retain their unmasked profile.
-     * The form allow-list below still rejects reserved encodings. */
+    /* Masked operations require a defined v0 and old vd below. Keep the
+     * form allow-list authoritative so reserved encodings stay rejected. */
     if (!(insn & (1u << 25))) {
         bool lane_local =
             ((form == 0 || form == 3 || form == 4) &&
              (funct6 < 0x0c || funct6 >= 0x20)) ||
             ((form == 2 || form == 6) && funct6 >= 0x20) ||
             (form == 2 && funct6 == 0x12);
+        bool comparison =
+            (form == 0 || form == 3 || form == 4) &&
+            funct6 >= 0x18 && funct6 <= 0x1f;
+        bool reduction = form == 2 && funct6 <= 0x07;
+        bool gather = (form == 0 || form == 3 || form == 4) &&
+                      funct6 == 0x0c;
+        bool slide = (form == 3 || form == 4) &&
+                     (funct6 == 0x0e || funct6 == 0x0f);
 
-        if (!lane_local || vd == 0)
+        if (!(lane_local || comparison || reduction || gather || slide) ||
+            vd == 0)
             return false;
     }
     if (funct6 == 0x0e && vd == vs2) /* vslideup overlap is reserved */
@@ -334,8 +342,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * bounds. The RVV profile admits vsetivli e32,m1, the implemented lane-local
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
  * divide and remainder forms, vssrl/vssra rounded scaling shifts,
- * masked lane-local integer arithmetic and
- * extensions, fixed-profile vnsrl/vnsra narrowing shifts over even/odd
+ * masked lane-local integer arithmetic, comparisons, reductions, gathers,
+ * slides and extensions, fixed-profile vnsrl/vnsra narrowing shifts over even/odd
  * register pairs, vnclipu/vnclip rounded saturating narrowing, and masked
  * or unmasked unit-, constant-stride, and
  * trusted-local-index word memory operations. Defined-register
