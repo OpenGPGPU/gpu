@@ -383,8 +383,9 @@ strides and `UCMD_SAMPLE_MODE` (0x148). Driver range rules live in
 `opengpu_resolve_validator.h`; UAPI is `DRM_IOCTL_OPENGPU_RESOLVE` via the
 common scheduler with source-read / destination-write reservations. KMS
 orders scanout on the destination write fence. Depth resolve is out of scope.
-Remaining work is broader guest coverage and physical closure of the
-programmable fragment stage (capability bit 7 is functional only).
+Remaining work is physical closure of the programmable fragment stage
+(capability bit 7 is functional only). Guest DRM now exercises typed resolve
+for every advertised sample mode on a CPU-filled source.
 
 Resolve averages every pixel's physical colour samples into a separate
 single-sample RGBA8888 buffer.
@@ -444,7 +445,7 @@ memory-port utilisation under 2x and 4x workloads.
 | Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented, advertised through bit 7 on fragment-core builds, and exercised by the guest MSAA round trip | Physical timing closure of the fragment stage (separate PPA gate) |
 | Expansion/OM | Backpressured expander, sample addresses, address-hazard ordering and acknowledged write drain implemented | Broader integrated multisample regressions |
 | Persistent depth | Caller-owned depth attachment (`drm_opengpu_submit.depth_handle`/`depth_offset`), `OPENGPU_SUBMIT_DEPTH_LOAD` cross-submission continuation, driver range validation (`opengpu_depth_validator.h`, unit-tested) and the `OPENGPU_CAP_PERSISTENT_DEPTH` advertisement implemented; `RenderHostSpec` covers a queued two-submission pass and the guest DRM test repeats it under Verilator | Broader ARTI multisample pass-continuation coverage; FlashSim does not yet expose the prior depth write |
-| Resolve | `MsaaResolveEngine` backend, the `GPU_UCMD_OP_RESOLVE` router path through the shared L2, unified MMIO staging (`UCMD_SAMPLE_MODE`), the validated range rules and command builder, the `DRM_IOCTL_OPENGPU_RESOLVE` UAPI, the scheduler-backed ioctl with source read / destination write reservations and output syncobj, and KMS ordering via the standard implicit-sync path | Broader ARTI resolve coverage |
+| Resolve | `MsaaResolveEngine` backend, the `GPU_UCMD_OP_RESOLVE` router path through the shared L2, unified MMIO staging (`UCMD_SAMPLE_MODE`), the validated range rules and command builder, the `DRM_IOCTL_OPENGPU_RESOLVE` UAPI, the scheduler-backed ioctl with source read / destination write reservations and output syncobj, and KMS ordering via the standard implicit-sync path; guest DRM walks every advertised sample mode on a CPU-filled source | Multi-row resolve remains covered in RTL (`GpuSystemSpec` / `GpuHostSystemAxiSpec`); further ARTI scenes optional |
 
 ## Verification
 
