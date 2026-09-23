@@ -35,9 +35,9 @@ class GraphicsAddressTranslator(
   val maxOutstanding: Int = 8,
   /** Soft cap on the registered hit/disabled pending queue.  The effective
     * depth is `min(pendingDepth, maxOutstanding)` so unit tests with a
-    * narrow ID space still elaborate, while host clients with large
-    * transaction spaces do not flood the shared request arbiter. */
-  pendingDepth: Int = 8,
+    * narrow ID space still elaborate.  Keep this at least `omInflight` so
+    * a deeper output merger does not refill-starve behind translation. */
+  pendingDepth: Int = 16,
   /** When true, keep the client's requested cache policy instead of the
     * translated page's policy.  The command port sets an uncached policy for
     * coherence and must not have it replaced by the page tables. */

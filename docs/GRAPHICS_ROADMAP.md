@@ -82,12 +82,12 @@ without an L2 invalidate).
 
 Workload note (`scripts/benchmark_gpu.py`): flat draws are OM-bound
 (`om_stall` ≈ `raster_stall`, `om_conflict` = 0). Measured changes kept:
-`GraphicsConfig.omInflight` 4 → 8 (~5–7% flat cycles) and a same-cycle
-retire/accept on graphics TLB hits (~1% more). Programmable shading is still
-staging-bound. Framebuffer translation-stall cycles stay high because the
-word client backs up on downstream memory ready, not only on walks — further
-flat gains need outstanding translated requests or a wider OM memory port.
-Numbers land in `generated/qualification/workloads/`.
+`GraphicsConfig.omInflight` 4 → 8 (~5–7% flat cycles), then 8 → 16 with
+`pendingDepth` 8 → 16 so translation is not refill-starved (~4–6% more on
+flat); same-cycle retire/accept on graphics TLB hits (~1%); and a registered
+non-flow outstanding-hit pending queue. Programmable shading is still
+staging-bound. Further flat gains need a dual color/depth OM memory port or
+a wider word fabric. Numbers land in `generated/qualification/workloads/`.
 
 ## Qualification baseline
 
@@ -115,11 +115,13 @@ single respond slot backs up behind memory ready. Shader cycles rose on
 `e2e155e` because staging now preserves its uncached request policy through
 Bare and Sv32 (CPU-coherent kernarg/VB); the earlier `1194224` win used
 page/PTE cached policy on that path. A registered non-flow pending queue
-(`pendingDepth` soft-capped at 8, no `out.ready` combo into the shared
-arbiter) collapses that stall (3160 → 17 on `flat_16_1x`, 14989 → 24 on
-`flat_32_1x`) and cuts `flat_16_1x` 5271 → 5176 (−1.8%) while `flat_32_1x`
-moves 19266 → 19361 (+0.5%). OM remains the binder (`om_conflict` = 0,
-`om_stall` ≈ `raster_stall`); next flat lever is a wider OM memory port.
+(no `out.ready` combo into the shared arbiter) collapses that stall
+(3160 → 17 on `flat_16_1x`, 14989 → 24 on `flat_32_1x`) and cuts
+`flat_16_1x` 5271 → 5176 (−1.8%) while `flat_32_1x` moves 19266 → 19361
+(+0.5%) at `omInflight` 8 / `pendingDepth` 8. Raising both to 16 keeps the
+stall collapsed (17 / 23) and further cuts flats to **4975 / 18162**
+(−3.9% / −6.2% vs the pending-8 point, −5.6% / −5.7% vs `e2e155e`). OM
+remains the binder; next flat lever is a dual color/depth OM memory port.
 
 | Gate | Result |
 |---|---|
@@ -131,7 +133,8 @@ moves 19266 → 19361 (+0.5%). OM remains the binder (`om_conflict` = 0,
 | Guest DRM, vertex+fragment (`GPU_FRAG_CORE=1` `GPU_VERT_CORE=1`) | pass on `cfc045a`; powers off |
 
 Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0).
-`flat_16_1x` is 5271 cycles. Programmable `shader_16_1x` is staging-bound
+`flat_16_1x` is 4975 cycles after omInflight/pendingDepth 16. Programmable
+`shader_16_1x` is staging-bound
 (`om_stall` = 0, `raster_stall` = 63089, `staging_read_bytes` = 49152).
 
 
@@ -153,16 +156,16 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    completion backpressure, recovery and mixed sample modes. Boundary edits
    must pull system integration tests.
 2. **Measure before optimizing** — compare with `scripts/benchmark_gpu.py`
-   under the same source hash, scene and memory model. OM depth 8,
+   under the same source hash, scene and memory model. OM depth 16,
    hit-path graphics translation (accept on response retire), and a
-   registered non-flow outstanding-hit pending queue (`pendingDepth` ≤ 8)
+   registered non-flow outstanding-hit pending queue (`pendingDepth` 16)
    are in after measured wins: framebuffer translation stall collapses and
-   `flat_16_1x` improves ~2% while `flat_32_1x` is within +0.5%. Flat
-   counters still show `om_conflict` = 0 with `om_stall` ≈ `raster_stall`,
-   so the next flat lever is a wider OM memory port. Shader staging stays
-   intentionally uncached for CPU coherence; treat the `e2e155e` shader
-   cycle rise vs `1194224` as the coherent baseline, not a regression to
-   claw back by re-caching.
+   flats improve vs `e2e155e` (`flat_16_1x` 5271 → 4975, `flat_32_1x`
+   19266 → 18162). Flat counters still show `om_conflict` = 0 with
+   `om_stall` ≈ `raster_stall`, so the next flat lever is a dual
+   color/depth OM memory port. Shader staging stays intentionally uncached
+   for CPU coherence; treat the `e2e155e` shader cycle rise vs `1194224`
+   as the coherent baseline, not a regression to claw back by re-caching.
 3. **Physical closure** — the strided-copy descriptor address cone and the
    command-router dispatch cone are pipelined; the FP32 FMA lane now runs
    five stages (completion add cut from invert/LZD-mask/mask-valid).
@@ -244,8 +247,9 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
 
 ## Later / out of scope
 
-- Nonblocking graphics translation is landed (registered pending queue);
-  larger TLBs or a wider OM only when counters justify the cost.
+- OM depth and nonblocking graphics translation are landed after measured
+  wins; larger TLBs or a dual color/depth OM port only when counters
+  justify the cost.
 - Discrete PCIe/local VRAM, demand paging, tile-based rendering and display
   PHY/timing.
 

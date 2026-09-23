@@ -370,7 +370,7 @@ conflict = existing.colorAddr == incoming.colorAddr ||
 
 Different samples of one pixel have different addresses and may occupy
 different in-flight entries. Fragments for the same sample remain serialized,
-preserving draw order. Table depth is `GraphicsConfig.omInflight` (default 8);
+preserving draw order. Table depth is `GraphicsConfig.omInflight` (default 16);
 workload sweeps showed flat draws are OM-bound with zero address conflicts, so
 depth hides memory latency. Increasing it further is still a measured
 optimisation.
