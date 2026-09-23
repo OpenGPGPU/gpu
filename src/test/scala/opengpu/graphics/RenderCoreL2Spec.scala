@@ -221,7 +221,7 @@ class RenderCoreL2Spec extends AnyFlatSpec {
     }
   }
 
-  it should "render a texture-modulated draw through the shared L2" in {
+  it should "match a textured image reference through the shared L2" in {
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
     val cfg = GpuConfig(lanes = 4, warps = 2)
     val stride = 16 * 4
@@ -229,13 +229,15 @@ class RenderCoreL2Spec extends AnyFlatSpec {
     val depthBase = 0x9000
     val cmdBase = 0x4000
     val texBase = 0xA000
+    val texelCentre = q(0.5 / 16.0)
+    val farCentre = q(1.0 + 0.5 / 16.0)
 
     def tri(x: Int, y: Int, d: Int, u: Int, v: Int) =
-      ((x, y, 0, q(1.0)), (255, 0, 0), d, u, v)
+      ((x, y, 0, q(1.0)), (255, 255, 255), d, u, v)
     val record = Seq(
-      tri(q(-1.0), q(-1.0), 0x10, 0, 0),
-      tri(q(1.0), q(-1.0), 0x10, q(1.0), 0),
-      tri(q(-1.0), q(1.0), 0x10, 0, q(1.0))
+      tri(q(-1.0), q(-1.0), 0x10, texelCentre, texelCentre),
+      tri(q(1.0), q(-1.0), 0x10, farCentre, texelCentre),
+      tri(q(-1.0), q(1.0), 0x10, texelCentre, farCentre)
     )
 
     val m = new MemModel
@@ -255,10 +257,14 @@ class RenderCoreL2Spec extends AnyFlatSpec {
       m.wwrite(cmdBase + i * 4, word)
     }
     for (i <- 0 until (16 * 16)) m.wwrite(depthBase + i * 4, 0x00ffffff) // stencil 0, depth far
-    // Solid half-strength red texture in the renderer's 0xRRGGBBAA layout:
-    // every modulated fragment halves R.
+    def texel(x: Int, y: Int): Int = {
+      val r = x * 7 + y * 5 + 3
+      val g = x * 4 + y * 9 + 11
+      val b = x * 6 + y * 3 + 17
+      (r << 24) | (g << 16) | (b << 8) | 0xff
+    }
     for (y <- 0 until 16; x <- 0 until 16)
-      m.wwrite(texBase + (y * 16 + x) * 4, 0x800000ff)
+      m.wwrite(texBase + (y * 16 + x) * 4, texel(x, y))
 
     simulate(new RenderCoreL2(gfx, cfg, fragCore = false)) { dut =>
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
@@ -326,12 +332,23 @@ class RenderCoreL2Spec extends AnyFlatSpec {
         val c = m.word(colorBase + (y * 16 + x) * 4).toInt
         (((c >> 24) & 0xff), ((c >> 16) & 0xff), ((c >> 8) & 0xff))
       }
-      // Interior pixel: interpolated red (255,0,0) MODULATE half-red texel
-      // (r=0x80) -> (127,0,0); green/blue stay zero.
-      assert(rgb(5, 5) == (127, 0, 0),
-        s"modulated (5,5) expected (127,0,0), got ${rgb(5, 5)}")
-      assert(m.word(depthBase + (5 * 16 + 5) * 4) == 0x10,
-        "depth still written through the L2")
+      // UVs target each texel centre. Compare the full image after the
+      // fixed-function white-colour modulation (channel * 255 >> 8).
+      for (y <- 0 until 16; x <- 0 until 16) {
+        val inside = x > 0 && y > 0 && x + y <= 16
+        val t = texel(x, y)
+        val expectedRgb = if (inside)
+          (((t >>> 24) & 0xff) * 255 >>> 8,
+            ((t >>> 16) & 0xff) * 255 >>> 8,
+            ((t >>> 8) & 0xff) * 255 >>> 8)
+        else (0, 0, 0)
+        val expectedDepth = if (inside) 0x10L else 0x00ffffffL
+        val actualDepth = m.word(depthBase + (y * 16 + x) * 4)
+        assert(rgb(x, y) == expectedRgb,
+          s"texture image ($x,$y): got ${rgb(x, y)} expected $expectedRgb")
+        assert(actualDepth == expectedDepth,
+          f"texture depth ($x,$y): got 0x$actualDepth%08x expected 0x$expectedDepth%08x")
+      }
     }
   }
 }

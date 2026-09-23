@@ -89,7 +89,9 @@ read error and an invalid Sv32 DMA leaf before a repaired fill.
     images, including a blocked draw and a later passing draw.
   - [x] Compare a 4x4 output-merger source-over image with varied alpha,
     destination color and depth-gated pixels.
-  - [ ] Add a full-image texture reference scene and integrated blend coverage.
+  - [x] Compare a coordinate-dependent texture image through the shared L2
+    and a full command-driven image with per-draw blending.
+  - [ ] Compare mixed stencil, blend and texture scenes under multisampling.
 - [ ] Broaden persistent-depth and multisample continuation coverage in the
   ARTI guest path.
 - [ ] Decide from workloads whether centroid/per-sample interpolation or

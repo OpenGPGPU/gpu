@@ -73,11 +73,13 @@ class RenderCoreSpec extends AnyFlatSpec {
     )
 
     val cbMem = Array.fill(1 << 15)(0)
-    // Draw 0 inherits LESS from the job. Draw 1 overrides depth to ALWAYS,
-    // so its farther red fragments replace green in the overlap.
-    val redAlways = 1 | 2 | (3 << 4) | (1 << 7)
+    // Draw 0 inherits LESS. Draw 1 uses ALWAYS so its farther red fragments
+    // reach the blend stage. SRC_COLOR / ONE_MINUS_SRC_COLOR turns the
+    // red-over-green overlap yellow while leaving red-only pixels red.
+    val redAlways = 1 | 2 | (6 << 4) | (1 << 7)
+    val redBlend = 1 | (2 << 4) | (3 << 8)
     (encode(green, 0x9000, 0x20000) ++
-      encode(red, 0x9000, 0x20000, state = redAlways))
+      encode(red, 0x9000, 0x20000, state = redAlways, blendCfg = redBlend))
       .zipWithIndex.foreach { case (w, i) => cbMem(cmdBase / 4 + i) = w }
 
     simulate(new RenderCore(config)) { dut =>
@@ -154,10 +156,27 @@ class RenderCoreSpec extends AnyFlatSpec {
       }
       assert(guard < 20000, "did not drain")
       def rgb(x: Int, y: Int): (Int, Int, Int) = rgbOf(fbMem, colorBase, x, y)
-      // Per-draw ALWAYS makes the farther second draw win in the overlap.
-      assert(rgb(5, 5) == (255, 0, 0), s"red override (5,5) should win, got ${rgb(5, 5)}")
+      // The farther red draw reaches blending despite the nearer green depth.
+      assert(rgb(5, 5) == (255, 255, 0),
+        s"blended overlap (5,5) should be yellow, got ${rgb(5, 5)}")
       assert(fbMem(depthBase / 4 + 5 * 16 + 5) == 0x10,
         "ALWAYS override must replace the nearer 0x08 depth with 0x10")
+
+      for (y <- 0 until 16; x <- 0 until 16) {
+        val bigInside = x > 0 && y > 0 && x + y <= 16
+        val smallInside = x > 4 && y > 4 && x + y <= 16
+        val expectedColor =
+          if (smallInside) 0xffff00ffL
+          else if (bigInside) 0xff0000ffL
+          else 0L
+        val expectedDepth = if (bigInside) 0x10L else 0x00ffffffL
+        val actualColor = fbMem(colorBase / 4 + y * 16 + x) & 0xffffffffL
+        val actualDepth = fbMem(depthBase / 4 + y * 16 + x) & 0xffffffffL
+        assert(actualColor == expectedColor,
+          f"blended scene ($x,$y): got 0x$actualColor%08x expected 0x$expectedColor%08x")
+        assert(actualDepth == expectedDepth,
+          f"blended depth ($x,$y): got 0x$actualDepth%08x expected 0x$expectedDepth%08x")
+      }
 
       val px = new Array[Int](16 * 16 * 3); var i = 0
       for (y <- 0 until 16; x <- 0 until 16) {
