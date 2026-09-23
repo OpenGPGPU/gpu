@@ -8,9 +8,134 @@ import opengpu.graphics.{GpuCommandMmioRegs, GraphicsConfig, RenderHostRegs}
 import org.scalatest.flatspec.AnyFlatSpec
 
 import scala.collection.mutable
+import scala.util.Random
 
 class GpuHostSystemAxiSpec extends AnyFlatSpec with GpuHostTestSupport {
   behavior of "GpuHostSystemAxi"
+
+  it should "replay randomized commands under backpressure and injected faults" in {
+    val seed = sys.env.get("OPENGPU_AXI_SEED")
+      .map(value => java.lang.Long.decode(value).longValue())
+      .getOrElse(0x5eed2026L)
+    val random = new Random(seed)
+    val gfx = GraphicsConfig(screenWidth = 4, screenHeight = 4)
+    val gpu = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuHostSystemAxi(gfx, gpu)) { dut =>
+      initialize(dut)
+      val memory = mutable.Map.empty[BigInt, Int]
+      val writes = mutable.ArrayBuffer.empty[BigInt]
+      var busFaultAt = BigInt(-1)
+      def putWord(address: BigInt, value: Long): Unit =
+        for (byte <- 0 until 4)
+          memory(address + byte) = ((value >> (byte * 8)) & 255).toInt
+      def readLine(address: BigInt): BigInt = {
+        val base = address & ~BigInt(63)
+        (0 until 64).foldLeft(BigInt(0)) { (line, byte) =>
+          line | (BigInt(memory.getOrElse(base + byte, 0)) << (byte * 8))
+        }
+      }
+      def writeLine(address: BigInt, data: BigInt, mask: BigInt): Unit = {
+        writes += address
+        for (byte <- 0 until 64 if mask.testBit(byte))
+          memory(address + byte) = ((data >> (byte * 8)) & 255).toInt
+      }
+      def submit(id: Int, opcode: Int, source: Int, destination: Int,
+                 bytes: Int, pattern: Int = 0): Unit = {
+        axiWrite(dut, GpuCommandMmioRegs.COMMAND_ID, id)
+        axiWrite(dut, GpuCommandMmioRegs.OPCODE, opcode)
+        axiWrite(dut, GpuCommandMmioRegs.SOURCE, source)
+        axiWrite(dut, GpuCommandMmioRegs.DESTINATION, destination)
+        axiWrite(dut, GpuCommandMmioRegs.BYTES, bytes)
+        axiWrite(dut, GpuCommandMmioRegs.PATTERN, pattern)
+        axiWrite(dut, GpuCommandMmioRegs.SUBMIT, 1)
+      }
+      def complete(id: Int, opcode: Int, success: Boolean,
+                   expectedStatus: Int = 0): Unit = {
+        val readDelay = 1 + random.nextInt(5)
+        val writeDelay = 1 + random.nextInt(9)
+        serviceMemoryMaster(dut, readLine, address => address == busFaultAt,
+          writeAckDelay = writeDelay, readResponseDelay = readDelay,
+          maxCycles = 80000)(writeLine) {
+          dut.io.m_irq.peek().litToBoolean
+        }
+        val result = axiRead(dut, GpuCommandMmioRegs.COMPLETION)
+        assert((result & 255) == id && ((result >> 8) & 7) == opcode &&
+          ((result >> 11) & 15) == expectedStatus &&
+          ((result >> 15) & 1) == (if (success) 1 else 0),
+          f"seed=0x$seed%x id=$id completion=0x$result%x")
+        axiWrite(dut, GpuCommandMmioRegs.COMPLETION_POP, 1)
+        axiWrite(dut, RenderHostRegs.IRQ, 3)
+      }
+      axiWrite(dut, RenderHostRegs.IRQ, 1)
+
+      // Each seed generates legal single- and two-line fills/copies with
+      // distinct source and destination regions. Check every written byte.
+      for (index <- 0 until 8) {
+        val id = 0x80 + index
+        val bytes = 64 * (1 + random.nextInt(2))
+        val source = 0x10000 + index * 0x200
+        val destination = 0x20000 + index * 0x200
+        val copy = random.nextBoolean()
+        val pattern = random.nextInt()
+        val expected = (0 until bytes).map { byte =>
+          val value = if (copy) random.nextInt(256)
+            else (pattern >>> ((byte % 4) * 8)) & 255
+          if (copy) memory(BigInt(source + byte)) = value
+          value
+        }
+        submit(id, if (copy) GpuCommandOpcode.copy.litValue.toInt
+          else GpuCommandOpcode.fill.litValue.toInt,
+          source, destination, bytes, pattern)
+        complete(id, if (copy) GpuCommandOpcode.copy.litValue.toInt
+          else GpuCommandOpcode.fill.litValue.toInt, success = true)
+        expected.indices.foreach { byte =>
+          assert(memory.getOrElse(BigInt(destination + byte), -1) == expected(byte),
+            f"seed=0x$seed%x id=$id byte=$byte")
+        }
+      }
+
+      // Invalid descriptor data and an AXI read error are separate failure
+      // sources. Neither may paint, and each must leave the next slot usable.
+      val descriptor = 0x3000
+      putWord(descriptor + 9 * 4, 3)
+      submit(0x90, GpuCommandOpcode.render.litValue.toInt,
+        descriptor, 0, 64)
+      complete(0x90, GpuCommandOpcode.render.litValue.toInt,
+        success = false, expectedStatus = 2)
+      busFaultAt = descriptor
+      submit(0x91, GpuCommandOpcode.render.litValue.toInt,
+        descriptor, 0, 64)
+      complete(0x91, GpuCommandOpcode.render.litValue.toInt,
+        success = false, expectedStatus = 1)
+      busFaultAt = -1
+
+      // An invalid Sv32 leaf must suppress DMA writes. Repair it, flush the
+      // translation cache, and prove that a later fill reaches the physical PA.
+      val root = 0x30000
+      val fillVa = 0x400000
+      val fillPa = 0x800000
+      putWord(root + 4, 0)
+      axiWrite(dut, GpuCommandMmioRegs.VECTOR_SATP, 0x80000000 | (root >> 12))
+      axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
+      val beforeFault = writes.size
+      submit(0x92, GpuCommandOpcode.fill.litValue.toInt,
+        0, fillVa, 64, 0x12345678)
+      complete(0x92, GpuCommandOpcode.fill.litValue.toInt,
+        success = false, expectedStatus = 6)
+      assert(writes.size == beforeFault,
+        f"seed=0x$seed%x invalid translation wrote to physical memory")
+      putWord(root + 4, ((fillPa >> 12) << 10) | 0xcf)
+      axiWrite(dut, GpuCommandMmioRegs.TLB_FLUSH, 1)
+      submit(0x93, GpuCommandOpcode.fill.litValue.toInt,
+        0, fillVa, 64, 0x76543210)
+      complete(0x93, GpuCommandOpcode.fill.litValue.toInt, success = true)
+      assert(writes.contains(BigInt(fillPa)),
+        f"seed=0x$seed%x repaired translation missed the physical address")
+      for (byte <- 0 until 64)
+        assert(memory(BigInt(fillPa + byte)) ==
+          ((0x76543210 >>> ((byte % 4) * 8)) & 255))
+    }
+  }
 
   it should "route an AXI-programmed clear through the shared L2" in {
     val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16)

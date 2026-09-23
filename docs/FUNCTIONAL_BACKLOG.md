@@ -44,10 +44,23 @@ unbound storage, and no validated VM job depends on VA equal to PA.
   backpressure in AXI tests, and context destruction during an active render
   in the guest path. Delayed-write reset, queued-work teardown, and ASID reuse
   are also covered.
-- [ ] Add randomized legal command sequences with memory backpressure and
-  injected descriptor, translation and bus faults.
+- [x] Add seeded legal fill/copy sequences with memory response backpressure
+  and injected descriptor, translation and AXI read faults. Check byte-exact
+  results, failed completions, suppressed writes and recovery in the integrated
+  AXI path.
 - [ ] Promote the full Scala suite, host driver tests and selected guest paths
   into a documented functional qualification gate.
+
+The randomized AXI regression uses seed `0x5eed2026` by default. Reproduce a
+failure with the seed printed in its assertion message:
+
+```sh
+OPENGPU_AXI_SEED=0x5eed2026 sbt -batch 'testOnly opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'
+```
+
+The seed controls fill/copy choices, lengths, data and memory response delays.
+The same test also injects invalid render descriptor data, a descriptor AXI
+read error and an invalid Sv32 DMA leaf before a repaired fill.
 
 ## Shader software and ISA
 
