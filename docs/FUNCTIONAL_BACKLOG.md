@@ -92,8 +92,10 @@ read error and an invalid Sv32 DMA leaf before a repaired fill.
   - [x] Compare a coordinate-dependent texture image through the shared L2
     and a full command-driven image with per-draw blending.
   - [x] Compare a mixed stencil, blend and texture scene at every 4x sample.
-- [ ] Broaden persistent-depth and multisample continuation coverage in the
-  ARTI guest path.
+- [x] Broaden persistent-depth and multisample continuation coverage in the
+  ARTI guest path. Fixed-function submissions now verify 2x and 4x depth
+  clear/load, partial-coverage samples and the second pass's color/depth result
+  in addition to the existing 1x continuation.
 - [ ] Decide from workloads whether centroid/per-sample interpolation or
   framebuffer compression is needed before implementing either.
 

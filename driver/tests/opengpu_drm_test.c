@@ -2249,6 +2249,137 @@ int main(void)
                 return 1;
             }
         }
+
+        /* Repeat the clear/load continuation with interleaved depth samples.
+         * Verify each sample rather than only resolved pixels: a partial
+         * coverage edge must retain far depth in its untouched samples. */
+        if (!frag_core && msaa_capable) {
+            for (uint32_t mode = 1; mode <= msaa_max_mode; mode++) {
+                struct dumb_fb sample_depth = { 0 }, sample_colour = { 0 };
+                uint32_t sample_sync[2] = { 0 };
+                uint32_t samples = 1u << mode;
+                uint8_t first_covered[TEST_WIDTH * TEST_HEIGHT * samples];
+                uint32_t covered_count = 0, empty_count = 0;
+                uint32_t partial_pixels = 0;
+
+                CHECK(create_dumb_buffer(fd, TEST_WIDTH * samples,
+                                         TEST_HEIGHT, 0, &sample_depth),
+                      "multisample persistent depth attachment");
+                CHECK(create_dumb_buffer(fd, TEST_WIDTH * samples,
+                                         TEST_HEIGHT, 0x5a5a5a5au,
+                                         &sample_colour),
+                      "multisample persistent colour buffer");
+                CHECK(create_syncobj(fd, &sample_sync[0]),
+                      "multisample persistent first syncobj");
+                CHECK(create_syncobj(fd, &sample_sync[1]),
+                      "multisample persistent continuation syncobj");
+                CHECK(submit_depth_render(fd, vert_core, context_id,
+                                          &commands, &sample_colour, 1,
+                                          texture_slot, shader_slot,
+                                          kernarg_slot, vertex_buffer_slot,
+                                          vertex_shader_slot,
+                                          vertex_kernarg_slot, mode,
+                                          sample_depth.handle, 0, 0, 0,
+                                          sample_sync[0]),
+                      "queue multisample persistent first pass");
+                CHECK(wait_syncobjs(fd, &sample_sync[0], 1),
+                      "wait multisample persistent first pass");
+                for (uint32_t y = 0; y < TEST_HEIGHT; y++) {
+                    const uint32_t *colour = (const uint32_t *)
+                        ((const uint8_t *)sample_colour.map +
+                         y * sample_colour.pitch);
+                    const uint32_t *depth = (const uint32_t *)
+                        ((const uint8_t *)sample_depth.map +
+                         y * sample_depth.pitch);
+
+                    for (uint32_t x = 0; x < TEST_WIDTH; x++) {
+                        uint32_t pixel_covered = 0;
+
+                        for (uint32_t s = 0; s < samples; s++) {
+                            uint32_t at = x * samples + s;
+                            uint32_t index = (y * TEST_WIDTH + x) * samples + s;
+                            bool covered = colour[at] != 0x5a5a5a5au;
+                            uint32_t expected_depth =
+                                covered ? 0x10u : 0x00ffffffu;
+
+                            first_covered[index] = covered;
+                            pixel_covered += covered;
+                            covered_count += covered;
+                            empty_count += !covered;
+                            if (depth[at] != expected_depth) {
+                                fprintf(stderr,
+                                        "MSAA depth first mode=%u (%u,%u,%u) "
+                                        "got=0x%08x expected=0x%08x\n",
+                                        mode, x, y, s, depth[at],
+                                        expected_depth);
+                                errno = EIO;
+                                perror("OPENGPU USERSPACE DRM FAIL MSAA "
+                                       "persistent first pass");
+                                return 1;
+                            }
+                        }
+                        partial_pixels += pixel_covered > 0 &&
+                                          pixel_covered < samples;
+                    }
+                }
+                if (!covered_count || !empty_count || !partial_pixels) {
+                    fprintf(stderr,
+                            "MSAA depth mode=%u covered=%u empty=%u "
+                            "partial=%u\n", mode, covered_count,
+                            empty_count, partial_pixels);
+                    errno = EIO;
+                    perror("OPENGPU USERSPACE DRM FAIL MSAA first "
+                           "coverage");
+                    return 1;
+                }
+                CHECK(submit_depth_render(fd, vert_core, context_id,
+                                          &continuation, &sample_colour, 1,
+                                          texture_slot, shader_slot,
+                                          kernarg_slot, vertex_buffer_slot,
+                                          vertex_shader_slot,
+                                          vertex_kernarg_slot, mode,
+                                          sample_depth.handle, 0,
+                                          OPENGPU_SUBMIT_DEPTH_LOAD, 0,
+                                          sample_sync[1]),
+                      "queue multisample persistent continuation");
+                CHECK(wait_syncobjs(fd, &sample_sync[1], 1),
+                      "wait multisample persistent continuation");
+                for (uint32_t y = 0; y < TEST_HEIGHT; y++) {
+                    const uint32_t *colour = (const uint32_t *)
+                        ((const uint8_t *)sample_colour.map +
+                         y * sample_colour.pitch);
+                    const uint32_t *depth = (const uint32_t *)
+                        ((const uint8_t *)sample_depth.map +
+                         y * sample_depth.pitch);
+
+                    for (uint32_t x = 0; x < TEST_WIDTH; x++) {
+                        for (uint32_t s = 0; s < samples; s++) {
+                            uint32_t at = x * samples + s;
+                            uint32_t index = (y * TEST_WIDTH + x) * samples + s;
+                            uint32_t expected_colour = first_covered[index] ?
+                                0u : 0x5a5a5a5au;
+                            uint32_t expected_depth = first_covered[index] ?
+                                0x20u : 0x00ffffffu;
+
+                            if (colour[at] != expected_colour ||
+                                depth[at] != expected_depth) {
+                                fprintf(stderr,
+                                        "MSAA depth load mode=%u (%u,%u,%u) "
+                                        "colour=0x%08x/0x%08x "
+                                        "depth=0x%08x/0x%08x\n",
+                                        mode, x, y, s, colour[at],
+                                        expected_colour, depth[at],
+                                        expected_depth);
+                                errno = EIO;
+                                perror("OPENGPU USERSPACE DRM FAIL MSAA "
+                                       "persistent continuation");
+                                return 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     if (vert_core)
         CHECK(unbind_resource(fd, context_id, 5), "unbind vertex shader");
