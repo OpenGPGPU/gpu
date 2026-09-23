@@ -399,4 +399,39 @@ class GraphicsAddressTranslatorSpec extends AnyFlatSpec {
       consumeOut(dut)
     }
   }
+
+  it should "queue TLB hits while the translated port is backed up" in {
+    simulate(new GraphicsAddressTranslator(
+      GpuConfig(lanes = 2, warps = 1), entries = 4, maxOutstanding = 4)) { dut =>
+      dut.io.in.valid.poke(false.B)
+      dut.io.in.bits.poke(0.U.asTypeOf(dut.io.in.bits))
+      dut.io.out.ready.poke(false.B)
+      dut.io.faultResponse.ready.poke(true.B)
+      dut.io.pageWalk.ready.poke(true.B)
+      dut.io.pageWalkResp.valid.poke(false.B)
+      dut.io.satp.poke((BigInt(1) << 31 | 0x80).U)
+      dut.io.flush.valid.poke(false.B)
+      dut.io.flush.bits.poke(0.U.asTypeOf(dut.io.flush.bits))
+      dut.io.pageWalkTransactionId.poke(3.U)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+
+      fillPage(dut, 0x2000, 0, 0x400, global = false)
+      // First translated line is held on `out`; further hits must still accept.
+      for (id <- 1 until 4) {
+        dut.io.in.ready.expect(true.B)
+        request(dut, 0x2000, id)
+        dut.io.pageWalk.valid.expect(false.B)
+      }
+      dut.io.in.ready.expect(false.B)
+
+      for (id <- 0 until 4) {
+        waitOut(dut)
+        dut.io.out.bits.transactionId.expect(id.U)
+        dut.io.out.bits.address.expect(0x402000.U)
+        consumeOut(dut)
+      }
+      dut.io.in.ready.expect(true.B)
+      dut.io.out.valid.expect(false.B)
+    }
+  }
 }
