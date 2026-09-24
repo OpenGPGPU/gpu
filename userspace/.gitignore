@@ -11,5 +11,6 @@ examples/pipe_texture_draw
 examples/pipe_vertex_draw
 examples/pipe_strided_blit
 examples/pipe_depth_pass
+examples/pipe_msaa_draw
 shaders/*.o
 shaders/*.bin

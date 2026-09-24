@@ -7,7 +7,13 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
+
+/* Shader BO must be a multiple of 64 (instruction window); kernarg BO must be
+ * a multiple of GPU_KERNARG_BANK_ALIGN (64). Match pipe_opengpu's FS sizes —
+ * 288 is not 64-aligned and the bind ioctl rejects it with EINVAL. */
+enum { FS_GEM_BYTES = 128u, FS_KERNARG_BYTES = 640u };
 
 int main(int argc, char **argv)
 {
@@ -36,8 +42,8 @@ int main(int argc, char **argv)
     if (opengpu_context_create(fd, &context) ||
         opengpu_buffer_create(fd, sizeof(struct drm_opengpu_draw), &commands) ||
         opengpu_buffer_create(fd, 16u * 16u * 4u, &color) ||
-        opengpu_buffer_create(fd, 128, &shader) ||
-        opengpu_buffer_create(fd, 288, &kernarg) ||
+        opengpu_buffer_create(fd, FS_GEM_BYTES, &shader) ||
+        opengpu_buffer_create(fd, FS_KERNARG_BYTES, &kernarg) ||
         opengpu_sync_create(fd, &fence))
         goto done;
 
@@ -45,8 +51,10 @@ int main(int argc, char **argv)
                      O_RDONLY);
     if (shader_fd < 0)
         goto done;
-    shader_bytes = read(shader_fd, shader.map, shader.size);
-    if (shader_bytes <= 0 || shader_bytes > 128 || (shader_bytes & 3)) {
+    memset(shader.map, 0, shader.size);
+    shader_bytes = read(shader_fd, shader.map, FS_GEM_BYTES);
+    if (shader_bytes <= 0 || shader_bytes > FS_GEM_BYTES ||
+        (shader_bytes & 3)) {
         errno = EINVAL;
         goto done;
     }
@@ -55,18 +63,19 @@ int main(int argc, char **argv)
     binding.slot = 2;
     binding.handle = shader.handle;
     binding.type = OPENGPU_RESOURCE_SHADER;
-    binding.size = 128;
+    binding.size = FS_GEM_BYTES;
     if (opengpu_bind(fd, &binding))
         goto done;
     binding.slot = 3;
     binding.handle = kernarg.handle;
     binding.type = OPENGPU_RESOURCE_KERNARG;
-    binding.size = 288;
+    binding.size = FS_KERNARG_BYTES;
     binding.flags = OPENGPU_RESOURCE_UNCACHED;
     if (opengpu_bind(fd, &binding))
         goto done;
 
     draw = commands.map;
+    memset(draw, 0, sizeof(*draw));
     draw->v0[0] = -0x10000;
     draw->v0[1] = -0x10000;
     draw->v1[0] = 0x10000;
@@ -95,8 +104,10 @@ int main(int argc, char **argv)
     submit.shader_slot = 2;
     submit.kernarg_slot = 3;
     submit.out_syncobj = fence;
+    /* FlashSim FRAG draws need on the order of minutes; the DRM sandbox
+     * waits 300s. 30s expires while poll_work is still ticking the model. */
     if (opengpu_render(fd, &submit) ||
-        opengpu_sync_wait_success(fd, fence, 30000))
+        opengpu_sync_wait_success(fd, fence, 300000))
         goto done;
 
     for (unsigned i = 0; i < 16u * 16u; i++) {

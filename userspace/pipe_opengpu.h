@@ -29,7 +29,8 @@ uint64_t pipe_opengpu_resource_size(const struct pipe_opengpu_resource *res);
 void pipe_opengpu_resource_destroy(struct pipe_opengpu_screen *screen,
                                    struct pipe_opengpu_resource *res);
 
-/* Colour target for clear / draw_vbo. Width*height*4 must fit the GEM. */
+/* Colour target for clear / draw_vbo. Width*height*4*(1<<sample_mode) must
+ * fit the GEM when MSAA is enabled. */
 void pipe_opengpu_set_framebuffer(struct pipe_opengpu_context *ctx,
                                   struct pipe_opengpu_resource *color,
                                   uint32_t width, uint32_t height);
@@ -38,6 +39,10 @@ void pipe_opengpu_set_framebuffer(struct pipe_opengpu_context *ctx,
  * private cleared plane. load!=0 sets OPENGPU_SUBMIT_DEPTH_LOAD. */
 void pipe_opengpu_set_depth(struct pipe_opengpu_context *ctx,
                             struct pipe_opengpu_resource *depth, int load);
+
+/* Sample mode 0/1/2 (1x/2x/4x). Affects colour stride and submit.sample_mode. */
+int pipe_opengpu_set_sample_mode(struct pipe_opengpu_context *ctx,
+                                 uint32_t sample_mode);
 
 /* Bind a validator-admitted FS binary (+ empty kernarg). Pass code=NULL for
  * fixed-function draws (no fragment core). */

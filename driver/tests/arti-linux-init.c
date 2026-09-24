@@ -83,7 +83,12 @@ static int run_program(const char *path)
     }
     if (waitpid(child, &status, 0) < 0)
         return -1;
-    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+        return 0;
+    putstr("ARTI Linux init: failed ");
+    putstr(path);
+    putstr("\r\n");
+    return -1;
 }
 
 int main(void)
@@ -118,7 +123,8 @@ int main(void)
                run_program("/opengpu_pipe_strided_blit") < 0 ||
                run_program("/opengpu_pipe_resolve") < 0 ||
                run_program("/opengpu_pipe_texture_draw") < 0 ||
-               run_program("/opengpu_pipe_depth_pass") < 0) {
+               run_program("/opengpu_pipe_depth_pass") < 0 ||
+               run_program("/opengpu_pipe_msaa_draw") < 0) {
         putstr("OPENGPU USERSPACE EXAMPLES FAIL\r\n");
 #endif
 #ifndef OPENGPU_USERSPACE_EXAMPLES_ONLY

@@ -41,6 +41,7 @@ struct pipe_opengpu_context {
     struct pipe_opengpu_resource *depth;
     uint32_t fb_width;
     uint32_t fb_height;
+    uint32_t sample_mode;
     int depth_load;
     struct opengpu_buffer shader;
     struct opengpu_buffer kernarg;
@@ -222,6 +223,31 @@ void pipe_opengpu_set_depth(struct pipe_opengpu_context *ctx,
         return;
     ctx->depth = depth;
     ctx->depth_load = depth ? !!load : 0;
+}
+
+int pipe_opengpu_set_sample_mode(struct pipe_opengpu_context *ctx,
+                                 uint32_t sample_mode)
+{
+    uint32_t max_mode;
+
+    if (!ctx || sample_mode > 2u) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (sample_mode != 0) {
+        if (!(ctx->screen->caps & OPENGPU_CAP_MSAA)) {
+            errno = EOPNOTSUPP;
+            return -1;
+        }
+        max_mode = (uint32_t)((ctx->screen->caps & OPENGPU_CAP_MSAA_MAX_MODE_MASK) >>
+                              OPENGPU_CAP_MSAA_MAX_MODE_SHIFT);
+        if (sample_mode > max_mode) {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+    ctx->sample_mode = sample_mode;
+    return 0;
 }
 
 int pipe_opengpu_bind_fs(struct pipe_opengpu_context *ctx,
@@ -418,6 +444,7 @@ static int apply_depth_submit(struct pipe_opengpu_context *ctx,
                               struct drm_opengpu_submit *submit)
 {
     uint64_t need;
+    uint32_t samples;
 
     if (!ctx->depth)
         return 0;
@@ -427,7 +454,13 @@ static int apply_depth_submit(struct pipe_opengpu_context *ctx,
         errno = EINVAL;
         return -1;
     }
-    need = (uint64_t)ctx->fb_width * ctx->fb_height * 4u;
+    samples = 1u << ctx->sample_mode;
+    need = (uint64_t)ctx->fb_width * samples * 4u;
+    if (need > UINT32_MAX) {
+        errno = EINVAL;
+        return -1;
+    }
+    need *= ctx->fb_height;
     if (need > ctx->depth->buffer.size) {
         errno = EINVAL;
         return -1;
@@ -436,6 +469,33 @@ static int apply_depth_submit(struct pipe_opengpu_context *ctx,
     submit->depth_offset = 0;
     if (ctx->depth_load)
         submit->flags |= OPENGPU_SUBMIT_DEPTH_LOAD;
+    return 0;
+}
+
+static uint64_t color_stride_bytes(const struct pipe_opengpu_context *ctx)
+{
+    return (uint64_t)ctx->fb_width * (1u << ctx->sample_mode) * 4u;
+}
+
+static uint64_t color_bytes(const struct pipe_opengpu_context *ctx)
+{
+    return color_stride_bytes(ctx) * ctx->fb_height;
+}
+
+static int apply_color_submit(struct pipe_opengpu_context *ctx,
+                              struct drm_opengpu_submit *submit)
+{
+    uint64_t stride = color_stride_bytes(ctx);
+
+    if (!ctx->fb_width || !ctx->fb_height ||
+        stride > UINT32_MAX ||
+        color_bytes(ctx) > ctx->color->buffer.size) {
+        errno = EINVAL;
+        return -1;
+    }
+    submit->color_handle = ctx->color->buffer.handle;
+    submit->stride = stride;
+    submit->sample_mode = ctx->sample_mode;
     return 0;
 }
 
@@ -450,7 +510,11 @@ int pipe_opengpu_clear(struct pipe_opengpu_context *ctx, uint32_t pattern,
         errno = EINVAL;
         return -1;
     }
-    bytes = (uint64_t)ctx->fb_width * ctx->fb_height * 4u;
+    if (color_stride_bytes(ctx) > UINT32_MAX) {
+        errno = EINVAL;
+        return -1;
+    }
+    bytes = color_bytes(ctx);
     if ((bytes & 63u) || bytes > ctx->color->buffer.size) {
         errno = EINVAL;
         return -1;
@@ -808,10 +872,10 @@ int pipe_opengpu_draw_vbo(struct pipe_opengpu_context *ctx,
     memcpy(commands.map, draw, sizeof(*draw));
     submit.context_id = ctx->context_id;
     submit.command_handle = commands.handle;
-    submit.color_handle = ctx->color->buffer.handle;
-    submit.stride = ctx->fb_width * 4u;
     submit.command_count = 1;
     submit.out_syncobj = fence->handle;
+    if (apply_color_submit(ctx, &submit))
+        goto out;
     if (ctx->fs_bound) {
         submit.shader_slot = PIPE_FS_SLOT;
         submit.kernarg_slot = PIPE_KERNARG_SLOT;
@@ -867,8 +931,6 @@ int pipe_opengpu_draw_vertex(struct pipe_opengpu_context *ctx,
     memcpy(commands.map, draw, sizeof(*draw));
     submit.context_id = ctx->context_id;
     submit.command_handle = commands.handle;
-    submit.color_handle = ctx->color->buffer.handle;
-    submit.stride = ctx->fb_width * 4u;
     submit.command_count = 1;
     submit.flags = OPENGPU_SUBMIT_VERTEX_CORE;
     submit.shader_slot = PIPE_FS_SLOT;
@@ -877,6 +939,8 @@ int pipe_opengpu_draw_vertex(struct pipe_opengpu_context *ctx,
     submit.vertex_shader_slot = PIPE_VS_SLOT;
     submit.vertex_kernarg_slot = PIPE_VS_KERNARG_SLOT;
     submit.out_syncobj = fence->handle;
+    if (apply_color_submit(ctx, &submit))
+        goto out;
     if (ctx->tex_bound)
         submit.texture_slot = PIPE_TEX_SLOT;
     if (apply_depth_submit(ctx, &submit))

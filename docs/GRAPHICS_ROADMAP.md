@@ -165,7 +165,7 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    Userspace apps on top of that API:
    - Fixed-function (`GPU_FRAG_CORE=0`): compute, triangle, `pipe_clear_draw`,
      `pipe_compute`, `pipe_blit`, `pipe_strided_blit`, `pipe_resolve`,
-     `pipe_texture_draw`, `pipe_depth_pass`.
+     `pipe_texture_draw`, `pipe_depth_pass`, `pipe_msaa_draw`.
    - Fragment core (`GPU_FRAG_CORE=1`): `fragment_tint`, `pipe_clear_draw`,
      `pipe_resolve`, `pipe_vertex_draw` (no-ops skip without
      `GPU_VERT_CORE=1`; corpus tint binary staged as

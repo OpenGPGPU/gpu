@@ -38,11 +38,12 @@ if [ "${GPU_PIPE_SPIKE:-0}" = "1" ]; then
 fi
 # Emulated quad shading is roughly linear in covered+helper lanes, so scale
 # the draw watchdog with the pixel count (60 s at the 16x16 baseline).
-# Fragment-core builds also run a second queued draw under live scanout and
-# per-job snapshot invalidate, so give them more headroom than fixed-function.
+# Fragment-core DRM coverage includes a three-record stencil job. FlashSim
+# takes over 200 guest seconds for one fragment draw at 16x16, so the job and
+# scheduler need a budget for all three records.
 _ARTI_GPU_DRAW_WAIT_DEFAULT=$((60000 * GPU_WIDTH * GPU_HEIGHT / 256))
 if [ "$GPU_FRAG_CORE" = "1" ]; then
-    _ARTI_GPU_DRAW_WAIT_DEFAULT=$((_ARTI_GPU_DRAW_WAIT_DEFAULT * 5))
+    _ARTI_GPU_DRAW_WAIT_DEFAULT=$((_ARTI_GPU_DRAW_WAIT_DEFAULT * 15))
 fi
 ARTI_GPU_DRAW_WAIT_MS="${ARTI_GPU_DRAW_WAIT_MS:-$_ARTI_GPU_DRAW_WAIT_DEFAULT}"
 unset _ARTI_GPU_DRAW_WAIT_DEFAULT
@@ -205,19 +206,20 @@ echo "=== 1/4 Emit GpuHostSystemAxi RTL ==="
 if [ "${SKIP_RTL_EMIT:-0}" = "1" ]; then
     echo "Skipping RTL emit (SKIP_RTL_EMIT=1); reusing generated/host"
     if [ "$GPU_VERT_CORE" = "1" ] || [ "$GPU_FRAG_CORE" = "1" ]; then
-        TIMEOUT="${TIMEOUT:-900}"
+        TIMEOUT="${TIMEOUT:-3600}"
     else
         TIMEOUT="${TIMEOUT:-300}"
     fi
 elif [ "$GPU_VERT_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
         sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --frag-core --vert-core --width $GPU_WIDTH --height $GPU_HEIGHT")
-    TIMEOUT="${TIMEOUT:-900}"
+    TIMEOUT="${TIMEOUT:-3600}"
 elif [ "$GPU_FRAG_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
         sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --frag-core --width $GPU_WIDTH --height $GPU_HEIGHT")
-    # Guest draw watchdog is 5x the fixed-function baseline; keep QEMU above it.
-    TIMEOUT="${TIMEOUT:-900}"
+    # The 3-draw fragment stencil job has a 15x watchdog; allow the full
+    # userspace suite to continue after that job completes.
+    TIMEOUT="${TIMEOUT:-2400}"
 else
     (cd "$GPU_DIR" && \
         sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --width $GPU_WIDTH --height $GPU_HEIGHT")
@@ -414,6 +416,7 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
             -o "$WORK/opengpu_pipe_vertex_draw" \
             "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
             "$GPU_DIR/userspace/examples/pipe_vertex_draw.c"
+        rm -f "$WORK"/opengpu_*.o
     else
         [ "$GPU_VERT_CORE" = "0" ] || \
             fail "fixed-function userspace examples require GPU_VERT_CORE=0"
@@ -466,6 +469,13 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
             -o "$WORK/opengpu_pipe_depth_pass" \
             "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
             "$GPU_DIR/userspace/examples/pipe_depth_pass.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_pipe_msaa_draw" \
+            "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
+            "$GPU_DIR/userspace/examples/pipe_msaa_draw.c"
+        # Drop intermediate objects so they are not packed into initramfs.
+        rm -f "$WORK"/opengpu_*.o "$WORK"/opengpu_compute_shader.o
     fi
 fi
 HARNESS_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/opengpu-harness.XXXXXX")"

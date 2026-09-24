@@ -18,6 +18,7 @@ Out-of-tree winsys in-tree under `userspace/`:
 | `examples/pipe_blit` | `clear` + `blit` smoke (1024-byte GEM copy) |
 | `examples/pipe_strided_blit` | `invalidate` + 2D strided blit (64×4) |
 | `examples/pipe_depth_pass` | persistent depth clear + `DEPTH_LOAD` continuation (FF) |
+| `examples/pipe_msaa_draw` | 2x MSAA clear/draw + `resolve` (FF) |
 | `examples/pipe_resolve` | CPU-fill 2x MSAA GEM + `resolve` average check |
 | `examples/pipe_texture_draw` | `bind_texture` + textured `draw_vbo` (fixed-function) |
 | `examples/pipe_vertex_draw` | VS/VB bind + `draw_vertex` (vertex+fragment cores) |

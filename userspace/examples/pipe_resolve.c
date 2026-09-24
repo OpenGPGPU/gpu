@@ -78,7 +78,7 @@ int main(int argc, char **argv)
 
     if (pipe_opengpu_resolve(ctx, dst, src, WIDTH, HEIGHT, src_stride,
                              dst_stride, MODE, &fence) ||
-        pipe_opengpu_fence_finish(ctx, fence, 30000))
+        pipe_opengpu_fence_finish(ctx, fence, 300000))
         goto done;
     pipe_opengpu_fence_reference(&fence, NULL);
 

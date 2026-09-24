@@ -9,7 +9,7 @@ RISCV_OBJCOPY ?= riscv64-unknown-elf-objcopy
 EXAMPLES := examples/compute examples/triangle examples/fragment_tint \
 	examples/pipe_clear_draw examples/pipe_compute examples/pipe_blit \
 	examples/pipe_resolve examples/pipe_texture_draw examples/pipe_vertex_draw \
-	examples/pipe_strided_blit examples/pipe_depth_pass
+	examples/pipe_strided_blit examples/pipe_depth_pass examples/pipe_msaa_draw
 
 all: $(EXAMPLES) shaders/round_modes.bin
 
@@ -50,6 +50,9 @@ examples/pipe_strided_blit: examples/pipe_strided_blit.c pipe_opengpu.o opengpu.
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< pipe_opengpu.o opengpu.o
 
 examples/pipe_depth_pass: examples/pipe_depth_pass.c pipe_opengpu.o opengpu.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< pipe_opengpu.o opengpu.o
+
+examples/pipe_msaa_draw: examples/pipe_msaa_draw.c pipe_opengpu.o opengpu.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< pipe_opengpu.o opengpu.o
 
 shaders/round_modes.bin: shaders/round_modes.S
