@@ -34,6 +34,7 @@
 static const u32 opengpu_formats[] = {
     /* DRM [31:0] R:G:B:A, matching renderer word 0xRRGGBBAA. */
     DRM_FORMAT_RGBA8888,
+    DRM_FORMAT_XRGB8888,
 };
 
 static int opengpu_kms_commit(struct opengpu_drm *kms,
@@ -42,7 +43,8 @@ static int opengpu_kms_commit(struct opengpu_drm *kms,
     struct drm_framebuffer *fb = plane_state->fb;
     struct opengpu_scanout scanout;
 
-    if (!fb || fb->format->format != DRM_FORMAT_RGBA8888)
+    if (!fb || (fb->format->format != DRM_FORMAT_RGBA8888 &&
+                fb->format->format != DRM_FORMAT_XRGB8888))
         return -EINVAL;
 
     scanout = (struct opengpu_scanout) {
@@ -50,7 +52,8 @@ static int opengpu_kms_commit(struct opengpu_drm *kms,
         .stride = fb->pitches[0],
         .width = plane_state->crtc_w,
         .height = plane_state->crtc_h,
-        .format = GPU_SCANOUT_FORMAT_RGBA8888,
+        .format = fb->format->format == DRM_FORMAT_RGBA8888 ?
+                  GPU_SCANOUT_FORMAT_RGBA8888 : GPU_SCANOUT_FORMAT_XRGB8888,
         .enable = true,
     };
     return opengpu_hw_display_commit(kms->gpu, &scanout);

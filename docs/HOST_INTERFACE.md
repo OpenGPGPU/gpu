@@ -276,6 +276,7 @@ guest-memory` in `gpu_integration.yaml`). Soft/timer vblank remains in the
 Linux driver; a hardware vblank IRQ is future work.
 
 Host validation: `python3 scripts/test_driver.py`. Linux integration:
-`bash scripts/run_arti_gpu.sh` (FlashSim by default; `GPU_SIM=verilator` for
-Verilator). Visual scanout: `bash scripts/run_arti_display.sh`. Status:
+`bash scripts/run_arti_gpu.sh` (Verilator with eight simulation threads by
+default; `GPU_SIM=flashsim` for FlashSim). Visual scanout:
+`bash scripts/run_arti_display.sh`. Status:
 [GRAPHICS_ROADMAP.md](GRAPHICS_ROADMAP.md).

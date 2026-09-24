@@ -41,7 +41,7 @@ object RenderHostRegs {
   val SCANOUT_STRIDE    = 0x48
   val SCANOUT_WIDTH     = 0x4C
   val SCANOUT_HEIGHT    = 0x50
-  /** 0: packed RGBA8888 (0xRRGGBBAA). */
+  /** 0: packed RGBA8888 (0xRRGGBBAA), 1: DRM XRGB8888. */
   val SCANOUT_FORMAT    = 0x54
   /** bit0: scanout enable. */
   val SCANOUT_CONTROL   = 0x58

@@ -14,7 +14,7 @@ export DRIVER_OUTPUT="${DRIVER_OUTPUT:-$DISPLAY_WORK/opengpu-driver}"
 export GPU_RTL_DIR="${GPU_RTL_DIR:-$GPU_DIR/generated/debian-64x64}"
 export INTEGRATION_CONFIG="${INTEGRATION_CONFIG:-$GPU_DIR/driver/gpu_integration_debian.yaml}"
 export GPU_SIM="${GPU_SIM:-verilator}"
-export ARTI_VERILATOR_THREADS="${ARTI_VERILATOR_THREADS:-4}"
+export ARTI_VERILATOR_THREADS="${ARTI_VERILATOR_THREADS:-8}"
 export ARTI_VERILATOR_BUILD_JOBS="${ARTI_VERILATOR_BUILD_JOBS:-4}"
 # ARTI's setup looks under WORK_DIR by default. Reuse the existing Debian
 # image in ARTI_WORK; setup only checks that DEBIAN_QCOW2 exists at this step.

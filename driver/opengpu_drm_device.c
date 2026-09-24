@@ -4,6 +4,9 @@
 #include <linux/overflow.h>
 #include <linux/dma-buf.h>
 #include <drm/drm_drv.h>
+#include <drm/clients/drm_client_setup.h>
+#include <drm/drm_fourcc.h>
+#include <drm/drm_fbdev_dma.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_managed.h>
@@ -219,6 +222,7 @@ static const struct drm_driver opengpu_drm_driver = {
     .ioctls = opengpu_drm_ioctls,
     .num_ioctls = ARRAY_SIZE(opengpu_drm_ioctls),
     .gem_create_object = opengpu_gem_create_object,
+    .fbdev_probe = drm_fbdev_dma_driver_fbdev_probe,
     DRM_GEM_DMA_DRIVER_OPS,
 };
 
@@ -241,8 +245,12 @@ int opengpu_drm_register(struct opengpu_device *gpu)
 {
     int ret = drm_dev_register(&gpu->drm->drm, 0);
 
-    if (!ret)
-        dev_info(gpu->dev, "OPENGPU DRM PASS: card registered, format=RGBA8888\n");
+    if (!ret) {
+        dev_info(gpu->dev, "OPENGPU DRM PASS: card registered, formats=RGBA8888,XRGB8888\n");
+        if (gpu->drm->drm.driver_features & DRIVER_MODESET)
+            drm_client_setup(&gpu->drm->drm,
+                             drm_format_info(DRM_FORMAT_XRGB8888));
+    }
     return ret;
 }
 

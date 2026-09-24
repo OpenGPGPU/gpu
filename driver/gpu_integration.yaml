@@ -51,5 +51,6 @@ display:
   control_register: 0x58
   width_register: 0x4c
   height_register: 0x50
+  format_register: 0x54
   refresh_hz: 30
   framebuffer_size: 0x4000  # 64 * 64 * 4 bytes

@@ -3,15 +3,16 @@
 # KMS test, then boot the end-to-end Linux test. The ARTI setup is incremental
 # after the first run, so this remains the normal development entry point.
 #
-# GPU_SIM=flashsim (default) compiles the embedded model with FlashSim
-# (set FLASHSIM_DIR if it is not ../FlashSim). GPU_SIM=verilator uses
-# Verilator instead. QEMU, Linux and the driver stay the same.
+# Verilator is the default simulator (8 simulation threads). Set
+# GPU_SIM=flashsim to use FlashSim (FLASHSIM_DIR defaults to ../FlashSim).
+# QEMU, Linux and the driver stay the same.
 set -euo pipefail
 
 GPU_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ARTI_DIR="${ARTI_DIR:-$GPU_DIR/../arti}"
 FLASHSIM_DIR="${FLASHSIM_DIR:-$GPU_DIR/../FlashSim}"
-GPU_SIM="${GPU_SIM:-flashsim}"
+GPU_SIM="${GPU_SIM:-verilator}"
+export ARTI_VERILATOR_THREADS="${ARTI_VERILATOR_THREADS:-8}"
 INTEGRATION_CONFIG="${INTEGRATION_CONFIG:-$GPU_DIR/driver/gpu_integration.yaml}"
 # Durable cache next to gpu/arti/FlashSim. /tmp is reaped on macOS.
 ARTI_WORK="${ARTI_WORK:-$(cd "$GPU_DIR/.." && pwd)/arti-work}"

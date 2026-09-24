@@ -199,6 +199,7 @@ typedef int32_t s32;
 #define GPU_CAP_UNIFIED_RENDER  (1u << 20)
 
 #define GPU_SCANOUT_FORMAT_RGBA8888 0u
+#define GPU_SCANOUT_FORMAT_XRGB8888 1u
 #define GPU_SCANOUT_ENABLE          (1u << 0)
 #define GPU_SCANOUT_ACTIVE          (1u << 0)
 

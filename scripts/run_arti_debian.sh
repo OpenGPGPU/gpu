@@ -20,7 +20,9 @@
 #   REBUILD_DISK=1 ./scripts/run_arti_debian.sh   # fresh qcow2 from base image
 #   CLOUDINIT_PACKAGES=1 ./scripts/run_arti_debian.sh  # also apt-install tools (slow)
 #
-# OpenGPU loads at boot and presents a KMS frame by default. In the guest
+# OpenGPU loads at boot and exposes the Debian framebuffer console by default.
+# Set OPENGPU_AUTO_DISPLAY=gradient for the old KMS gradient demo, or 0 to
+# load the driver manually. In the guest
 # (root / arti):
 #   systemctl status opengpu-boot-display.service
 #   /root/load_opengpu.sh test      # opengpu_drm_test (modeset + flip → ARTI scanout)
@@ -28,7 +30,6 @@
 #
 # For a visible primary scanout window:
 #   QEMU_DISPLAY=cocoa ./scripts/run_arti_debian.sh
-# Set OPENGPU_AUTO_DISPLAY=0 to keep the old manual module-loading workflow.
 # Headless present check (PPM of first scanout):
 #   ./scripts/run_arti_display.sh
 set -euo pipefail
@@ -204,7 +205,7 @@ if [ "${BUILD_USERSPACE:-1}" = "1" ]; then
     GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}" \
         bash "$GPU_DIR/scripts/build_userspace_guest.sh"
 fi
-if [ "${OPENGPU_AUTO_DISPLAY:-1}" = "1" ]; then
+if [ "${OPENGPU_AUTO_DISPLAY:-console}" = "gradient" ]; then
     [ -x "$DRIVER_OUTPUT/opengpu_kms_present" ] || \
         fail "autodisplay needs $DRIVER_OUTPUT/opengpu_kms_present (set BUILD_USERSPACE=1)"
 fi
@@ -220,7 +221,7 @@ if [ "$REBUILD_CLOUDINIT" = "1" ]; then
     OUTPUT="$CIDATA" \
     MODULES_ISO="$MODULES_ISO" \
     OPENGPU_USERSPACE_DIR="$DRIVER_OUTPUT" \
-    OPENGPU_AUTO_DISPLAY="${OPENGPU_AUTO_DISPLAY:-1}" \
+    OPENGPU_AUTO_DISPLAY="${OPENGPU_AUTO_DISPLAY:-console}" \
         CLOUDINIT_PACKAGES="${CLOUDINIT_PACKAGES:-0}" \
         bash "$ARTI_DIR/examples/linux_arti_driver/build_cloudinit.sh"
 fi
@@ -240,7 +241,7 @@ export ARTI_DIR ARTI_WORK INTEGRATION_CONFIG
 export QEMU KERNEL DISK CIDATA MODULES_ISO
 export DRIVER_KO DRIVER_MANIFEST
 export QEMU_DISPLAY LINUX_BUILD
-export OPENGPU_AUTO_DISPLAY="${OPENGPU_AUTO_DISPLAY:-1}"
+export OPENGPU_AUTO_DISPLAY="${OPENGPU_AUTO_DISPLAY:-console}"
 export PATH="/opt/homebrew/bin:${QEMU_TOOLS:-$ARTI_WORK/qemu-build-tools}/bin:${PATH:-}"
 
 # Prefer firmware next to the work tree when present.

@@ -208,11 +208,14 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    and DRM initramfs produced a
    16x16 PPM with 120 rendered green pixels; pixel (1,1) was `00fe00`, matching
    the guest's expected framebuffer value. The Debian runner enables
-   `opengpu-boot-display.service` by default: on boot it loads the driver and
-   keeps a small KMS gradient framebuffer active. A headless Debian boot
+   `opengpu-boot-display.service` by default: on boot it loads the driver,
+   whose DRM fbdev client provides the Debian framebuffer console. Use
+   `OPENGPU_AUTO_DISPLAY=gradient` to run the KMS gradient demo, or
+   `OPENGPU_AUTO_DISPLAY=0` for manual loading. A headless Debian boot
    previously confirmed `/dev/dri/card0`, an active service, and a 16x16
-   scanout PPM. Set `OPENGPU_AUTO_DISPLAY=0` for manual loading. The next
-   display milestone is a real graphics client.
+   scanout PPM. The next display milestone is a real graphics client.
+   On a reused Debian disk, cloud-init stops any previously enabled gradient
+   presenter, reloads the service unit and restarts it in console mode.
    Cocoa uses `zoom-to-fit=on`; an already-running window
    can enable **View → Zoom To Fit** and then be resized.
    Apps may still validate by reading colour GEMs; the QEMU window / PPM dump
@@ -225,6 +228,8 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    0.23 MHz total-tick rate is workload and wrapper specific. A headless
    Debian boot registered DRM at mode 64x64 and produced a nonblack 64x64
    scanout PPM.
+   New builds default to `--threads 8`; the 0.112 s measurement above is for
+   four threads and does not predict the eight-thread result.
 2. **Keep the submission contract covered** — every submission-path change
    must exercise descriptor errors, reset-during-work, delayed writes,
    completion backpressure, recovery and mixed sample modes. Boundary edits
