@@ -69,9 +69,9 @@ jobs:
       matrix:
         shard: ${{ fromJson(needs.select.outputs.shards) }}
 
-    # Pinned so the distro Verilator version is stable; ubuntu-latest still
-    # points at 24.04 (Verilator 5.020) until the Oct-Nov 2026 migration.
-    runs-on: ubuntu-26.04
+    # Distro Verilator on 24.04 is 5.020 (too old) and on 26.04 is 5.032
+    # (internal fault on GraphicsAddressTranslator). Pin v5.050 from source.
+    runs-on: ubuntu-latest
 
     env:
       JAVA_OPTS: -Xms6G -Xmx6G -Xss6M -XX:+UseG1GC -Dfile.encoding=UTF-8
@@ -89,13 +89,39 @@ jobs:
         cache: 'sbt'
     - name: Set up sbt
       uses: sbt/setup-sbt@v1
-    - name: Install Verilator and espresso
+    - name: Compute Verilator cache key
+      id: verilator-key
+      # ImageOS is injected into the runner's process environment but is not
+      # part of the expression context, so read it from the shell. Keying on the
+      # image family (ubuntu24/ubuntu26) means a runner image migration rebuilds
+      # rather than reusing a binary linked against a different glibc.
+      run: echo "key=verilator-5.050-${ImageOS:-unknown}-${{ runner.arch }}" >> "$GITHUB_OUTPUT"
+    - name: Cache Verilator
+      id: verilator-cache
+      uses: actions/cache@v4
+      with:
+        path: /opt/verilator
+        key: ${{ steps.verilator-key.outputs.key }}
+    - name: Install Verilator (v5.050 from source) and espresso
       run: |
         sudo apt-get update
-        sudo apt-get install -y verilator
-        verilator --version
+        sudo apt-get install -y git perl python3 make autoconf g++ flex bison libfl-dev zlib1g-dev ccache help2man
+        echo "/opt/verilator/bin" >> "$GITHUB_PATH"
         curl -sL https://github.com/chipsalliance/espresso/releases/download/v2.4/x86_64-linux-gnu-espresso -o /usr/local/bin/espresso
         chmod +x /usr/local/bin/espresso
+        if [ "${{ steps.verilator-cache.outputs.cache-hit }}" = "true" ]; then
+          /opt/verilator/bin/verilator --version
+          exit 0
+        fi
+        sudo mkdir -p /opt/verilator
+        sudo chown "$(id -u):$(id -g)" /opt/verilator
+        git clone --depth 1 --branch v5.050 https://github.com/verilator/verilator /tmp/verilator
+        cd /tmp/verilator
+        autoconf
+        ./configure --prefix=/opt/verilator
+        make -j"$(nproc)"
+        make install
+        /opt/verilator/bin/verilator --version
     - name: Run shard ${{ matrix.shard }}
       run: |
         # Serial inside each runner: forked/shared-JVM parallelism OOMs under
