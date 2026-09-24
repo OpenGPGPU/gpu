@@ -24,13 +24,24 @@ void pipe_opengpu_context_destroy(struct pipe_opengpu_context *ctx);
 
 struct pipe_opengpu_resource *pipe_opengpu_resource_create(
     struct pipe_opengpu_screen *screen, uint32_t bytes);
+/* 2D RGBA8888 dumb GEM (native pitch). Sized for render and KMS present. */
+struct pipe_opengpu_resource *pipe_opengpu_resource_create_2d(
+    struct pipe_opengpu_screen *screen, uint32_t width, uint32_t height);
 void *pipe_opengpu_resource_map(struct pipe_opengpu_resource *res);
 uint64_t pipe_opengpu_resource_size(const struct pipe_opengpu_resource *res);
+uint32_t pipe_opengpu_resource_width(const struct pipe_opengpu_resource *res);
+uint32_t pipe_opengpu_resource_height(const struct pipe_opengpu_resource *res);
+uint32_t pipe_opengpu_resource_pitch(const struct pipe_opengpu_resource *res);
 void pipe_opengpu_resource_destroy(struct pipe_opengpu_screen *screen,
                                    struct pipe_opengpu_resource *res);
 
+/* Single OpenGPU KMS mode (matches RTL/device width×height). */
+int pipe_opengpu_screen_display_size(struct pipe_opengpu_screen *screen,
+                                     uint32_t *width, uint32_t *height);
+
 /* Colour target for clear / draw_vbo. Width*height*4*(1<<sample_mode) must
- * fit the GEM when MSAA is enabled. */
+ * fit the GEM when MSAA is enabled. For pitched 2D resources, width/height
+ * must match the resource and sample_mode 0 uses resource pitch as stride. */
 void pipe_opengpu_set_framebuffer(struct pipe_opengpu_context *ctx,
                                   struct pipe_opengpu_resource *color,
                                   uint32_t width, uint32_t height);
@@ -122,6 +133,11 @@ int pipe_opengpu_draw_vbo(struct pipe_opengpu_context *ctx,
 int pipe_opengpu_draw_vertex(struct pipe_opengpu_context *ctx,
                              const struct drm_opengpu_vertex_draw *draw,
                              struct pipe_opengpu_fence **out_fence);
+
+/* Program the OpenGPU CRTC with a 1x pitched colour GEM matching the mode.
+ * Registers an FB on first use; keeps the GEM alive for scanout. */
+int pipe_opengpu_present(struct pipe_opengpu_screen *screen,
+                         struct pipe_opengpu_resource *color);
 
 int pipe_opengpu_fence_finish(struct pipe_opengpu_context *ctx,
                               struct pipe_opengpu_fence *fence,

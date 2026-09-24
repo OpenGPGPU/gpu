@@ -22,6 +22,7 @@ Out-of-tree winsys in-tree under `userspace/`:
 | `examples/pipe_resolve` | CPU-fill 2x MSAA GEM + `resolve` average check |
 | `examples/pipe_texture_draw` | `bind_texture` + textured `draw_vbo` (fixed-function) |
 | `examples/pipe_vertex_draw` | VS/VB bind + `draw_vertex` (vertex+fragment cores) |
+| `examples/pipe_present` | mode-sized clear + draw + `pipe_opengpu_present` |
 
 Fixed-function guest apps:
 
@@ -58,9 +59,12 @@ python3 scripts/validate_shader_corpus.py --emit fragment_tint /tmp/tint.bin
 
 ## Non-goals (first spike)
 
-- Softpipe fallback, NIR lowering, texture multi-sampling, or display scanout.
+- Softpipe fallback, NIR lowering, or texture multi-sampling.
 - Shipping inside upstream Mesa; treat this as an out-of-tree winsys + pipe.
 - New ISA work driven by Mesa (add ops only when a spike shader needs them).
+
+KMS present is in-tree via `pipe_opengpu_present` / `examples/pipe_present`
+(still no Mesa winsys display integration).
 
 ## ABI map
 
@@ -77,6 +81,7 @@ python3 scripts/validate_shader_corpus.py --emit fragment_tint /tmp/tint.bin
 | fence | syncobj via `opengpu_sync_*` |
 | clear / blit | `DRM_IOCTL_OPENGPU_FILL` / `BLIT` / `STRIDED_BLIT` |
 | MSAA resolve | `DRM_IOCTL_OPENGPU_RESOLVE` |
+| present / scanout | `pipe_opengpu_present` → `ADDFB2` + `SETCRTC` |
 | flush CPU→GPU visibility | line invalidate or uncached resource flags |
 
 Draw-record and kernarg layouts: [HOST_INTERFACE.md](HOST_INTERFACE.md).

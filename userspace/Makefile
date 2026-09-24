@@ -7,9 +7,11 @@ RISCV_GCC ?= riscv64-unknown-elf-gcc
 RISCV_OBJCOPY ?= riscv64-unknown-elf-objcopy
 
 EXAMPLES := examples/compute examples/triangle examples/fragment_tint \
+	examples/triangle_present \
 	examples/pipe_clear_draw examples/pipe_compute examples/pipe_blit \
 	examples/pipe_resolve examples/pipe_texture_draw examples/pipe_vertex_draw \
-	examples/pipe_strided_blit examples/pipe_depth_pass examples/pipe_msaa_draw
+	examples/pipe_strided_blit examples/pipe_depth_pass examples/pipe_msaa_draw \
+	examples/pipe_present
 
 all: $(EXAMPLES) shaders/round_modes.bin
 
@@ -26,6 +28,9 @@ examples/triangle: examples/triangle.c opengpu.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< opengpu.o
 
 examples/fragment_tint: examples/fragment_tint.c opengpu.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< opengpu.o
+
+examples/triangle_present: examples/triangle_present.c opengpu.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< opengpu.o
 
 examples/pipe_clear_draw: examples/pipe_clear_draw.c pipe_opengpu.o opengpu.o
@@ -53,6 +58,9 @@ examples/pipe_depth_pass: examples/pipe_depth_pass.c pipe_opengpu.o opengpu.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< pipe_opengpu.o opengpu.o
 
 examples/pipe_msaa_draw: examples/pipe_msaa_draw.c pipe_opengpu.o opengpu.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< pipe_opengpu.o opengpu.o
+
+examples/pipe_present: examples/pipe_present.c pipe_opengpu.o opengpu.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< pipe_opengpu.o opengpu.o
 
 shaders/round_modes.bin: shaders/round_modes.S

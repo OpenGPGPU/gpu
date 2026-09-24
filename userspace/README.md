@@ -37,6 +37,16 @@ corpus `fragment_tint` shader and expects `OPENGPU_CAP_FRAGMENT_CORE`. Pass
 the DRM node and optional shader binary path (default
 `/opengpu_fragment_tint.bin`).
 
+`examples/triangle_present` draws into the native KMS mode buffer (64x64 on
+the Debian display profile) and programs the CRTC so ARTI/QEMU scanout shows
+the result. Fixed-function builds paint a solid red triangle; fragment-core
+builds use the tint shader. Pass `--hold` (or `OPENGPU_PRESENT_HOLD=1`) to
+keep the framebuffer live for cocoa. Debian auto-display:
+
+```sh
+OPENGPU_AUTO_DISPLAY=triangle QEMU_DISPLAY=cocoa scripts/run_arti_debian.sh
+```
+
 `pipe_opengpu.h` / `pipe_opengpu.c` is the Gallium-shaped winsys spike
 (`docs/GALLIUM_SPIKE.md`). `examples/pipe_clear_draw` clears via
 `opengpu_fill`, then draws one triangle through `pipe_opengpu_draw_vbo`
@@ -51,6 +61,9 @@ bound depth GEM and `OPENGPU_SUBMIT_DEPTH_LOAD`.
 MSAA buffer. `examples/pipe_texture_draw` binds a mip chain and draws a
 textured triangle on the fixed-function path. `examples/pipe_vertex_draw`
 exercises vertex+fragment cores (`GPU_VERT_CORE=1`).
+`examples/pipe_present` allocates a mode-sized 2D colour GEM, clears, draws,
+and presents via `pipe_opengpu_present` (same `--hold` / tint rules as
+`triangle_present`).
 
 **ARTI as a GPU** (preferred programmable path):
 
@@ -72,6 +85,7 @@ Debian interactive (same binaries on the OPENGPU ISO):
 scripts/run_arti_debian.sh
 # guest after /root/load_opengpu.sh:
 /root/load_opengpu.sh examples
+/root/opengpu_triangle_present --hold
 ```
 
 See the platform-integration section of

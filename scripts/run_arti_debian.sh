@@ -21,15 +21,16 @@
 #   CLOUDINIT_PACKAGES=1 ./scripts/run_arti_debian.sh  # also apt-install tools (slow)
 #
 # OpenGPU loads at boot and exposes the Debian framebuffer console by default.
-# Set OPENGPU_AUTO_DISPLAY=gradient for the old KMS gradient demo, or 0 to
-# load the driver manually. In the guest
-# (root / arti):
+# Set OPENGPU_AUTO_DISPLAY=triangle to render+present a GPU triangle on scanout
+# (cocoa-friendly), gradient for the CPU KMS fill demo, or 0 to load manually.
+# In the guest (root / arti):
 #   systemctl status opengpu-boot-display.service
 #   /root/load_opengpu.sh test      # opengpu_drm_test (modeset + flip → ARTI scanout)
 #   /root/load_opengpu.sh examples  # pipe/userspace smoke (when staged)
+#   /root/opengpu_triangle_present --hold
 #
-# For a visible primary scanout window:
-#   QEMU_DISPLAY=cocoa ./scripts/run_arti_debian.sh
+# For a visible primary scanout window with a rendered triangle:
+#   OPENGPU_AUTO_DISPLAY=triangle QEMU_DISPLAY=cocoa ./scripts/run_arti_debian.sh
 # Headless present check (PPM of first scanout):
 #   ./scripts/run_arti_display.sh
 set -euo pipefail
@@ -205,10 +206,16 @@ if [ "${BUILD_USERSPACE:-1}" = "1" ]; then
     GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}" \
         bash "$GPU_DIR/scripts/build_userspace_guest.sh"
 fi
-if [ "${OPENGPU_AUTO_DISPLAY:-console}" = "gradient" ]; then
-    [ -x "$DRIVER_OUTPUT/opengpu_kms_present" ] || \
-        fail "autodisplay needs $DRIVER_OUTPUT/opengpu_kms_present (set BUILD_USERSPACE=1)"
-fi
+case "${OPENGPU_AUTO_DISPLAY:-console}" in
+    gradient)
+        [ -x "$DRIVER_OUTPUT/opengpu_kms_present" ] || \
+            fail "autodisplay needs $DRIVER_OUTPUT/opengpu_kms_present (set BUILD_USERSPACE=1)"
+        ;;
+    triangle)
+        [ -x "$DRIVER_OUTPUT/opengpu_triangle_present" ] || \
+            fail "autodisplay needs $DRIVER_OUTPUT/opengpu_triangle_present (set BUILD_USERSPACE=1)"
+        ;;
+esac
 
 if [ "$REBUILD_CLOUDINIT" = "1" ]; then
     echo "=== Refresh cloud-init + OPENGPU modules ISO ==="

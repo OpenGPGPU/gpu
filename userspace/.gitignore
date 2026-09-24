@@ -3,6 +3,7 @@ pipe_opengpu.o
 examples/compute
 examples/triangle
 examples/fragment_tint
+examples/triangle_present
 examples/pipe_clear_draw
 examples/pipe_compute
 examples/pipe_blit
@@ -12,5 +13,6 @@ examples/pipe_vertex_draw
 examples/pipe_strided_blit
 examples/pipe_depth_pass
 examples/pipe_msaa_draw
+examples/pipe_present
 shaders/*.o
 shaders/*.bin

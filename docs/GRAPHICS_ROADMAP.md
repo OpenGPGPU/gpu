@@ -164,10 +164,12 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
 1. **ARTI as a usable GPU** — `scripts/qualify_functional.sh` already boots
    fixed-function and vertex+fragment guests with `opengpu_drm_test`.
    Userspace apps on top of that API:
-   - Fixed-function (`GPU_FRAG_CORE=0`): compute, triangle, `pipe_clear_draw`,
+   - Fixed-function (`GPU_FRAG_CORE=0`): compute, triangle, `triangle_present`,
+     `pipe_present`, `pipe_clear_draw`,
      `pipe_compute`, `pipe_blit`, `pipe_strided_blit`, `pipe_resolve`,
      `pipe_texture_draw`, `pipe_depth_pass`, `pipe_msaa_draw`.
-   - Fragment core (`GPU_FRAG_CORE=1`): `fragment_tint`, `pipe_clear_draw`,
+   - Fragment core (`GPU_FRAG_CORE=1`): `fragment_tint`, `triangle_present`,
+     `pipe_present`, `pipe_clear_draw`,
      `pipe_resolve`, `pipe_vertex_draw` (no-ops skip without
      `GPU_VERT_CORE=1`; corpus tint binary staged as
      `/opengpu_fragment_tint.bin`).
@@ -190,6 +192,7 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    # guest:
    /root/load_opengpu.sh
    /root/load_opengpu.sh examples
+   /root/opengpu_triangle_present --hold
    ```
    (`BUILD_USERSPACE=0` skips the cross-build.) Mesa only if NIR stays small;
    see [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md).
@@ -201,7 +204,7 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    interactive Debian model once, then boot it:
    ```sh
    scripts/build_arti_debian_display.sh
-   QEMU_DISPLAY=cocoa scripts/run_arti_debian.sh
+   OPENGPU_AUTO_DISPLAY=triangle QEMU_DISPLAY=cocoa scripts/run_arti_debian.sh
    ```
    The standalone DRM scanout check remains available with
    `scripts/run_arti_display.sh`. An earlier direct boot of the FlashSim QEMU
@@ -210,12 +213,16 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    the guest's expected framebuffer value. The Debian runner enables
    `opengpu-boot-display.service` by default: on boot it loads the driver,
    whose DRM fbdev client provides the Debian framebuffer console. Use
-   `OPENGPU_AUTO_DISPLAY=gradient` to run the KMS gradient demo, or
+   `OPENGPU_AUTO_DISPLAY=triangle` for a GPU-rendered triangle on scanout,
+   `OPENGPU_AUTO_DISPLAY=gradient` for the CPU KMS fill demo, or
    `OPENGPU_AUTO_DISPLAY=0` for manual loading. A headless Debian boot
    previously confirmed `/dev/dri/card0`, an active service, and a 16x16
-   scanout PPM. The next display milestone is a real graphics client.
+   scanout PPM. `examples/triangle_present` and `examples/pipe_present` close
+   the graphics-client loop: render into the mode buffer, then SETCRTC for
+   ARTI/QEMU present (`pipe_opengpu_present` is the Gallium-shaped path).
    On a reused Debian disk, cloud-init stops any previously enabled gradient
-   presenter, reloads the service unit and restarts it in console mode.
+   or triangle presenter, reloads the service unit and restarts it in console
+   mode.
    Cocoa uses `zoom-to-fit=on`; an already-running window
    can enable **View → Zoom To Fit** and then be resized.
    Apps may still validate by reading colour GEMs; the QEMU window / PPM dump

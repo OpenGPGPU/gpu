@@ -28,6 +28,10 @@ echo "=== Build OpenGPU guest userspace → $DRIVER_OUTPUT (FRAG=$GPU_FRAG_CORE)
 "$CROSS_GCC" "${CFLAGS[@]}" \
     -o "$DRIVER_OUTPUT/opengpu_kms_present" \
     "$GPU_DIR/userspace/examples/kms_present.c"
+"$CROSS_GCC" "${CFLAGS[@]}" \
+    -o "$DRIVER_OUTPUT/opengpu_triangle_present" \
+    "$GPU_DIR/userspace/opengpu.c" \
+    "$GPU_DIR/userspace/examples/triangle_present.c"
 
 "$RISCV_GCC" -march=rv32imv_zicsr -mabi=ilp32 -c \
     -o "$DRIVER_OUTPUT/opengpu_compute_shader.o" \
@@ -46,7 +50,7 @@ rm -f "$DRIVER_OUTPUT/opengpu_compute_shader.o"
 
 for ex in pipe_clear_draw pipe_compute pipe_blit pipe_strided_blit \
           pipe_resolve pipe_texture_draw pipe_depth_pass pipe_msaa_draw \
-          pipe_vertex_draw; do
+          pipe_vertex_draw pipe_present; do
     "$CROSS_GCC" "${CFLAGS[@]}" \
         -o "$DRIVER_OUTPUT/opengpu_${ex}" \
         "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
@@ -63,7 +67,9 @@ if [ "$GPU_FRAG_CORE" = "1" ]; then
 fi
 
 echo "Guest binaries:"
-ls -1 "$DRIVER_OUTPUT"/opengpu_pipe_* \
+ls -1 "$DRIVER_OUTPUT"/opengpu_kms_present \
+    "$DRIVER_OUTPUT"/opengpu_triangle_present \
+    "$DRIVER_OUTPUT"/opengpu_pipe_* \
     "$DRIVER_OUTPUT"/opengpu_compute_example \
     "$DRIVER_OUTPUT"/opengpu_triangle_example \
     "$DRIVER_OUTPUT"/opengpu_compute_shader.bin \

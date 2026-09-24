@@ -1,8 +1,13 @@
 /* SPDX-License-Identifier: MIT */
 #include "pipe_opengpu.h"
+#include <drm/drm.h>
+#include <drm/drm_fourcc.h>
+#include <drm/drm_mode.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #define PIPE_FS_SLOT 2u
@@ -27,6 +32,10 @@ struct pipe_opengpu_screen {
 
 struct pipe_opengpu_resource {
     struct opengpu_buffer buffer;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t fb_id;
 };
 
 struct pipe_opengpu_fence {
@@ -185,6 +194,54 @@ struct pipe_opengpu_resource *pipe_opengpu_resource_create(
     return res;
 }
 
+struct pipe_opengpu_resource *pipe_opengpu_resource_create_2d(
+    struct pipe_opengpu_screen *screen, uint32_t width, uint32_t height)
+{
+    struct pipe_opengpu_resource *res;
+    struct drm_mode_create_dumb create = { .bpp = 32 };
+    struct drm_mode_map_dumb map = { 0 };
+    struct drm_mode_destroy_dumb destroy;
+    void *mapping;
+    int saved;
+
+    if (!screen || !width || !height) {
+        errno = EINVAL;
+        return NULL;
+    }
+    res = calloc(1, sizeof(*res));
+    if (!res) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    create.width = width;
+    create.height = height;
+    if (ioctl(screen->fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0) {
+        free(res);
+        return NULL;
+    }
+    map.handle = create.handle;
+    if (ioctl(screen->fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0)
+        goto fail;
+    mapping = mmap(NULL, create.size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                   screen->fd, map.offset);
+    if (mapping == MAP_FAILED)
+        goto fail;
+    res->buffer.handle = create.handle;
+    res->buffer.size = create.size;
+    res->buffer.map = mapping;
+    res->width = width;
+    res->height = height;
+    res->pitch = create.pitch;
+    return res;
+fail:
+    saved = errno;
+    destroy.handle = create.handle;
+    ioctl(screen->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+    free(res);
+    errno = saved;
+    return NULL;
+}
+
 void *pipe_opengpu_resource_map(struct pipe_opengpu_resource *res)
 {
     return res ? res->buffer.map : NULL;
@@ -195,14 +252,77 @@ uint64_t pipe_opengpu_resource_size(const struct pipe_opengpu_resource *res)
     return res ? res->buffer.size : 0;
 }
 
+uint32_t pipe_opengpu_resource_width(const struct pipe_opengpu_resource *res)
+{
+    return res ? res->width : 0;
+}
+
+uint32_t pipe_opengpu_resource_height(const struct pipe_opengpu_resource *res)
+{
+    return res ? res->height : 0;
+}
+
+uint32_t pipe_opengpu_resource_pitch(const struct pipe_opengpu_resource *res)
+{
+    return res ? res->pitch : 0;
+}
+
 void pipe_opengpu_resource_destroy(struct pipe_opengpu_screen *screen,
                                    struct pipe_opengpu_resource *res)
 {
     if (!screen || !res)
         return;
+    if (res->fb_id)
+        ioctl(screen->fd, DRM_IOCTL_MODE_RMFB, &res->fb_id);
     if (res->buffer.handle)
         opengpu_buffer_destroy(screen->fd, &res->buffer);
     free(res);
+}
+
+int pipe_opengpu_screen_display_size(struct pipe_opengpu_screen *screen,
+                                     uint32_t *width, uint32_t *height)
+{
+    struct drm_mode_card_res resources = { 0 };
+    struct drm_mode_get_connector connector = { 0 };
+    struct drm_mode_modeinfo mode = { 0 };
+    uint32_t connector_id = 0, crtc_id = 0;
+    uint32_t encoders[8] = { 0 }, framebuffers[8] = { 0 };
+    uint32_t connector_encoders[8] = { 0 }, properties[32] = { 0 };
+    uint64_t property_values[32] = { 0 };
+
+    if (!screen || !width || !height) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (ioctl(screen->fd, DRM_IOCTL_MODE_GETRESOURCES, &resources) < 0)
+        return -1;
+    if (resources.count_connectors != 1 || resources.count_crtcs != 1 ||
+        resources.count_encoders > 8 || resources.count_fbs > 8) {
+        errno = ENODEV;
+        return -1;
+    }
+    resources.connector_id_ptr = (uintptr_t)&connector_id;
+    resources.crtc_id_ptr = (uintptr_t)&crtc_id;
+    resources.encoder_id_ptr = (uintptr_t)encoders;
+    resources.fb_id_ptr = (uintptr_t)framebuffers;
+    if (ioctl(screen->fd, DRM_IOCTL_MODE_GETRESOURCES, &resources) < 0)
+        return -1;
+    connector.connector_id = connector_id;
+    if (ioctl(screen->fd, DRM_IOCTL_MODE_GETCONNECTOR, &connector) < 0 ||
+        connector.count_modes != 1 || connector.count_encoders > 8 ||
+        connector.count_props > 32) {
+        errno = ENODEV;
+        return -1;
+    }
+    connector.modes_ptr = (uintptr_t)&mode;
+    connector.encoders_ptr = (uintptr_t)connector_encoders;
+    connector.props_ptr = (uintptr_t)properties;
+    connector.prop_values_ptr = (uintptr_t)property_values;
+    if (ioctl(screen->fd, DRM_IOCTL_MODE_GETCONNECTOR, &connector) < 0)
+        return -1;
+    *width = mode.hdisplay;
+    *height = mode.vdisplay;
+    return 0;
 }
 
 void pipe_opengpu_set_framebuffer(struct pipe_opengpu_context *ctx,
@@ -474,6 +594,10 @@ static int apply_depth_submit(struct pipe_opengpu_context *ctx,
 
 static uint64_t color_stride_bytes(const struct pipe_opengpu_context *ctx)
 {
+    if (ctx->color && ctx->color->pitch) {
+        /* Pitched 2D targets carry the row bytes (including MSAA width). */
+        return ctx->color->pitch;
+    }
     return (uint64_t)ctx->fb_width * (1u << ctx->sample_mode) * 4u;
 }
 
@@ -490,6 +614,15 @@ static int apply_color_submit(struct pipe_opengpu_context *ctx,
     if (!ctx->fb_width || !ctx->fb_height ||
         stride > UINT32_MAX ||
         color_bytes(ctx) > ctx->color->buffer.size) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (ctx->color->pitch &&
+        (ctx->fb_width != ctx->color->width ||
+         ctx->fb_height != ctx->color->height ||
+         (ctx->sample_mode &&
+          ctx->color->pitch <
+              ctx->fb_width * (1u << ctx->sample_mode) * 4u))) {
         errno = EINVAL;
         return -1;
     }
@@ -957,6 +1090,72 @@ out:
     if (commands.handle)
         opengpu_buffer_destroy(fd, &commands);
     return status;
+}
+
+int pipe_opengpu_present(struct pipe_opengpu_screen *screen,
+                         struct pipe_opengpu_resource *color)
+{
+    struct drm_mode_card_res resources = { 0 };
+    struct drm_mode_get_connector connector = { 0 };
+    struct drm_mode_modeinfo mode = { 0 };
+    struct drm_mode_fb_cmd2 fb = { .pixel_format = DRM_FORMAT_RGBA8888 };
+    struct drm_mode_crtc crtc = { 0 };
+    uint32_t connector_id = 0, crtc_id = 0;
+    uint32_t encoders[8] = { 0 }, framebuffers[8] = { 0 };
+    uint32_t connector_encoders[8] = { 0 }, properties[32] = { 0 };
+    uint64_t property_values[32] = { 0 };
+
+    if (!screen || !color || !color->buffer.handle || !color->pitch ||
+        !color->width || !color->height) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (ioctl(screen->fd, DRM_IOCTL_MODE_GETRESOURCES, &resources) < 0)
+        return -1;
+    if (resources.count_connectors != 1 || resources.count_crtcs != 1 ||
+        resources.count_encoders > 8 || resources.count_fbs > 8) {
+        errno = ENODEV;
+        return -1;
+    }
+    resources.connector_id_ptr = (uintptr_t)&connector_id;
+    resources.crtc_id_ptr = (uintptr_t)&crtc_id;
+    resources.encoder_id_ptr = (uintptr_t)encoders;
+    resources.fb_id_ptr = (uintptr_t)framebuffers;
+    if (ioctl(screen->fd, DRM_IOCTL_MODE_GETRESOURCES, &resources) < 0)
+        return -1;
+    connector.connector_id = connector_id;
+    if (ioctl(screen->fd, DRM_IOCTL_MODE_GETCONNECTOR, &connector) < 0 ||
+        connector.count_modes != 1 || connector.count_encoders > 8 ||
+        connector.count_props > 32) {
+        errno = ENODEV;
+        return -1;
+    }
+    connector.modes_ptr = (uintptr_t)&mode;
+    connector.encoders_ptr = (uintptr_t)connector_encoders;
+    connector.props_ptr = (uintptr_t)properties;
+    connector.prop_values_ptr = (uintptr_t)property_values;
+    if (ioctl(screen->fd, DRM_IOCTL_MODE_GETCONNECTOR, &connector) < 0)
+        return -1;
+    if (color->width != mode.hdisplay || color->height != mode.vdisplay) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!color->fb_id) {
+        fb.width = color->width;
+        fb.height = color->height;
+        fb.pitches[0] = color->pitch;
+        fb.handles[0] = color->buffer.handle;
+        if (ioctl(screen->fd, DRM_IOCTL_MODE_ADDFB2, &fb) < 0)
+            return -1;
+        color->fb_id = fb.fb_id;
+    }
+    crtc.crtc_id = crtc_id;
+    crtc.fb_id = color->fb_id;
+    crtc.set_connectors_ptr = (uintptr_t)&connector_id;
+    crtc.count_connectors = 1;
+    crtc.mode_valid = 1;
+    crtc.mode = mode;
+    return ioctl(screen->fd, DRM_IOCTL_MODE_SETCRTC, &crtc);
 }
 
 int pipe_opengpu_fence_finish(struct pipe_opengpu_context *ctx,

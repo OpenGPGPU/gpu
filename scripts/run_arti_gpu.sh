@@ -419,6 +419,16 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
             "$GPU_DIR/userspace/examples/fragment_tint.c"
         "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_triangle_present" \
+            "$GPU_DIR/userspace/opengpu.c" \
+            "$GPU_DIR/userspace/examples/triangle_present.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_pipe_present" \
+            "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
+            "$GPU_DIR/userspace/examples/pipe_present.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
             -o "$WORK/opengpu_pipe_clear_draw" \
             "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
             "$GPU_DIR/userspace/examples/pipe_clear_draw.c"
@@ -450,6 +460,16 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" \
             -o "$WORK/opengpu_triangle_example" \
             "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/triangle.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_triangle_present" \
+            "$GPU_DIR/userspace/opengpu.c" \
+            "$GPU_DIR/userspace/examples/triangle_present.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_pipe_present" \
+            "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
+            "$GPU_DIR/userspace/examples/pipe_present.c"
         "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
             -o "$WORK/opengpu_pipe_clear_draw" \
