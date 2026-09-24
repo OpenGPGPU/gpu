@@ -46,7 +46,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       }
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       for (lane <- 0 until config.lanes) {
         dut.io.out.bits.data(lane).expect((11 + 2 * lane).U)
       }
@@ -57,7 +57,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.scalar.poke(3.U)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       for (lane <- 0 until config.lanes) {
         dut.io.out.bits.data(lane).expect((7 + lane).U)
       }
@@ -68,7 +68,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.immediate.poke("b11111".U)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       for (lane <- 0 until config.lanes) {
         dut.io.out.bits.data(lane).expect((9 + lane).U)
       }
@@ -88,7 +88,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.vs2(3).poke("h12345678".U)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.bits.data(0).expect("hffff8001".U)
       dut.io.out.bits.data(1).expect("h00007fff".U)
       dut.io.out.bits.data(2).expect("hffff8000".U)
@@ -98,7 +98,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.immediate.poke(6.U) // vzext.vf2
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.bits.data(0).expect("h00008001".U)
       dut.io.out.bits.data(2).expect("h00008000".U)
       dut.io.out.bits.data(3).expect("h00005678".U)
@@ -109,7 +109,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.vs2(1).poke("h0000007f".U)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.bits.data(0).expect("hffffff80".U)
       dut.io.out.bits.data(1).expect("h0000007f".U)
 
@@ -118,7 +118,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.vs2(0).poke("h0000000f".U)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.bits.data(0).expect("h0000000f".U)
     }
   }
@@ -143,7 +143,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
         dut.io.in.ready.expect(true.B)
         dut.clock.step()
         dut.io.in.valid.poke(false.B)
-        dut.clock.step(6)
+        dut.clock.step(7)
         val width = 1 << (selector / 2 + 1)
         val expected = inputs.zipWithIndex.map { case (value, lane) =>
           val low = value & ((BigInt(1) << width) - 1)
@@ -199,7 +199,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
         dut.io.in.valid.poke(true.B)
         dut.clock.step()
         dut.io.in.valid.poke(false.B)
-        dut.clock.step(6)
+        dut.clock.step(7)
         val expected = lows.zip(highs).zipWithIndex.map {
           case ((low, high), lane) =>
             val wide = (high << 32) | low
@@ -420,7 +420,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
         // Rounding metadata must be captured with its instruction.
         dut.io.in.bits.vxrm.poke(((mode + 1) & 3).U)
         var cycles = 0
-        while (!dut.io.out.valid.peek().litToBoolean && cycles < 8) {
+        while (!dut.io.out.valid.peek().litToBoolean && cycles < 10) {
           dut.clock.step()
           cycles += 1
         }
@@ -480,7 +480,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       }
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.bits.writesMask.expect(true.B)
       dut.io.out.bits.mask.expect("b1110".U)
       dut.io.out.bits.data(1).expect(101.U)
@@ -503,7 +503,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
         dut.io.in.valid.poke(true.B)
         dut.clock.step()
         dut.io.in.valid.poke(false.B)
-        dut.clock.step(6)
+        dut.clock.step(7)
         expected.zipWithIndex.foreach { case (value, lane) =>
           dut.io.out.bits.data(lane).expect(value.U)
         }
@@ -527,7 +527,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.valid.poke(true.B)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       Seq(4, 4, 8, 8).zipWithIndex.foreach { case (value, lane) =>
         dut.io.out.bits.data(lane).expect(value.U)
       }
@@ -536,7 +536,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.valid.poke(true.B)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       Seq(11, 15, 11, 15).zipWithIndex.foreach { case (value, lane) =>
         dut.io.out.bits.data(lane).expect(value.U)
       }
@@ -558,7 +558,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.valid.poke(true.B)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       Seq(44, 11, 0, 22).zipWithIndex.foreach { case (value, lane) =>
         dut.io.out.bits.data(lane).expect(value.U)
       }
@@ -568,7 +568,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.valid.poke(true.B)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       for (lane <- 0 until config.lanes)
         dut.io.out.bits.data(lane).expect(33.U)
 
@@ -578,7 +578,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.valid.poke(true.B)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.bits.data(0).expect(22.U)
       dut.io.out.bits.data(1).expect(22.U)
       dut.io.out.bits.data(2).expect(102.U)
@@ -599,7 +599,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.valid.poke(true.B)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       Seq(100, 11, 22, 33).zipWithIndex.foreach { case (value, lane) =>
         dut.io.out.bits.data(lane).expect(value.U)
       }
@@ -609,7 +609,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.valid.poke(true.B)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       Seq(100, 101, 11, 22).zipWithIndex.foreach { case (value, lane) =>
         dut.io.out.bits.data(lane).expect(value.U)
       }
@@ -620,7 +620,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.valid.poke(true.B)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       Seq(22, 33, 44, 0).zipWithIndex.foreach { case (value, lane) =>
         dut.io.out.bits.data(lane).expect(value.U)
       }
@@ -630,7 +630,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.valid.poke(true.B)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       for (lane <- 0 until config.lanes)
         dut.io.out.bits.data(lane).expect(0.U)
     }
@@ -659,7 +659,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
         dut.io.in.valid.poke(true.B)
         dut.clock.step()
         dut.io.in.valid.poke(false.B)
-        dut.clock.step(6)
+        dut.clock.step(7)
         dut.io.out.bits.data(0).expect(expected.U)
         for (lane <- 1 until config.lanes)
           dut.io.out.bits.data(lane).expect((100 + lane).U)
@@ -691,11 +691,11 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
       dut.io.out.ready.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.valid.expect(true.B)
       dut.io.out.bits.data(0).expect("hffffffff".U)
       dut.io.out.bits.saturated.expect(true.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.valid.expect(true.B)
       dut.io.out.bits.data(0).expect("hffffffff".U)
 
@@ -706,7 +706,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.vs2(0).poke("h7fffffff".U)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.bits.data(0).expect("h7fffffff".U)
       dut.io.out.bits.saturated.expect(true.B)
 
@@ -715,7 +715,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.vs2(0).poke("h80000000".U)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.bits.data(0).expect("h80000000".U)
       dut.io.out.bits.saturated.expect(true.B)
     }
@@ -739,7 +739,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.vs1(3).poke("h00001234".U) // lower 16: 0x1234 = 4660
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       // sext(0x7fff)=32767, sext(0x0002)=2, sum=32769=0x8001
       dut.io.out.bits.data(0).expect("h00008001".U) // 32767 + 2 = 32769
 
@@ -750,7 +750,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.vs1(0).poke("h00008000".U) // lower16: 0x8000 = -32768 as signed
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       // sext(0x7fff)=32767, sext(0x8000)=-32768, diff=32767-(-32768)=65535=0x0000ffff
       dut.io.out.bits.data(0).expect("h0000ffff".U)
 
@@ -765,7 +765,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.vs1(2).poke("h00007fff".U) // lower16: +32767
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.bits.data(0).expect("h0000000f".U)  // 3 * 5 = 15
       dut.io.out.bits.data(1).expect("hfffffffa".U)  // -2 * 3 = -6
       dut.io.out.bits.data(2).expect("h3fff0001".U)  // 32767 * 32767 = 1073676289 = 0x3FFF0001
@@ -777,7 +777,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.vs1(0).poke("h00000003".U) // lower16: 3
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       // 65534 * 3 = 196602 = 0x2fffa
       dut.io.out.bits.data(0).expect("h0002fffa".U)
 
@@ -788,7 +788,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.vs1(0).poke("h00000003".U) // lower16: 3 (unsigned)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       // -2 * 3 = -6 = 0xfffffffa
       dut.io.out.bits.data(0).expect("hfffffffa".U)
 
@@ -800,7 +800,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.scalar.poke("h00000005".U)  // lower16: +5
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.bits.data(0).expect("h00000015".U) // 16 + 5 = 21
 
       // Widening add.vi (0x30, form vi)
@@ -811,7 +811,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.immediate.poke("b00101".U)  // imm = 5
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.bits.data(0).expect("h00000015".U) // 16 + 5 = 21
     }
   }
@@ -841,7 +841,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.in.bits.oldVd(3).poke(103.U)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
-      dut.clock.step(6)
+      dut.clock.step(7)
       dut.io.out.bits.data(0).expect(100.U) // inactive: old vd
       dut.io.out.bits.data(1).expect("h00000011".U) // active: 16+1=17
       dut.io.out.bits.data(2).expect(102.U) // inactive: old vd

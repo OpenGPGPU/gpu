@@ -554,8 +554,8 @@ class GpuSystemSpec extends AnyFlatSpec {
       dut.io.gpuCompletion.bits.success.expect(true.B)
       dut.io.gpuCompletion.bits.bytesProcessed.expect(64.U)
       dut.io.performance.lowerWriteRequests.expect(1.U)
-      // Fired → delta → count is two registers deep after completion.
-      dut.clock.step(2)
+      // Fired → CS accumulate is one register deep; observation is combinational CPA.
+      dut.clock.step(1)
       dut.io.performance.dmaBytesCompleted.expect(64.U)
       dut.io.clearPerformanceCounters.poke(true.B)
       dut.clock.step(); dut.io.clearPerformanceCounters.poke(false.B)

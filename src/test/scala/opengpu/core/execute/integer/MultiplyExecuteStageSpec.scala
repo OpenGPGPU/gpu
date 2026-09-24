@@ -11,7 +11,7 @@ class MultiplyExecuteStageSpec extends AnyFlatSpec {
 
   private def waitForResult(dut: MultiplyExecuteStage): Unit = {
     var cycles = 0
-    while (!dut.io.out.valid.peek().litToBoolean && cycles < 4) {
+    while (!dut.io.out.valid.peek().litToBoolean && cycles < 8) {
       dut.clock.step()
       cycles += 1
     }

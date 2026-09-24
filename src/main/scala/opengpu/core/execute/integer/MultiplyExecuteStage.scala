@@ -30,15 +30,26 @@ private class BoothStageThree(config: GpuConfig) extends Bundle {
   val terms = Vec(2, UInt(68.W))
 }
 
-/** Four-stage elastic radix-4 Booth RV32M multiplier.
+private class BoothStageFour(config: GpuConfig) extends Bundle {
+  val metadata = new MultiplyMetadata(config)
+  // Carry-select partials of the 68-bit completion add (same cut as
+  // VectorMultiplyAlu): assemble on the output stage so stageThree→CPA
+  // cannot bind the integrated top.
+  val lowSum = UInt(35.W)
+  val highSum0 = UInt(35.W)
+  val highSum1 = UInt(35.W)
+}
+
+/** Five-stage elastic radix-4 Booth RV32M multiplier.
   *
   * Seventeen Booth partial products are reduced by carry-save compressors
   * without propagating carry. The first boundary is deliberately close to
   * Booth generation, following the timing structure used by XiangShan's
   * multiplier: it prevents partial-product generation and a deep compressor
   * tree from occupying one cycle. The tree is split 17→12, 12→4, and 4→2;
-  * only the final stage contains a carry-propagating addition. Once full, the
-  * unit accepts and completes one multiply per cycle.
+  * stage four registers carry-select halves of the final add; the output
+  * stage mux-assembles and selects the high/low half. Once full, the unit
+  * accepts and completes one multiply per cycle.
   */
 class MultiplyExecuteStage(config: GpuConfig = GpuConfig()) extends Module {
   val io = IO(new Bundle {
@@ -81,11 +92,14 @@ class MultiplyExecuteStage(config: GpuConfig = GpuConfig()) extends Module {
   private val stageTwoBits = Reg(new BoothStageTwo(config))
   private val stageThreeValid = RegInit(false.B)
   private val stageThreeBits = Reg(new BoothStageThree(config))
+  private val stageFourValid = RegInit(false.B)
+  private val stageFourBits = Reg(new BoothStageFour(config))
   private val outputValid = RegInit(false.B)
   private val outputBits = Reg(new IntegerExecutionResult(config))
 
   private val outputReady = !outputValid || io.out.ready
-  private val stageThreeReady = !stageThreeValid || outputReady
+  private val stageFourReady = !stageFourValid || outputReady
+  private val stageThreeReady = !stageThreeValid || stageFourReady
   private val stageTwoReady = !stageTwoValid || stageThreeReady
   private val stageOneReady = !stageOneValid || stageTwoReady
 
@@ -128,26 +142,49 @@ class MultiplyExecuteStage(config: GpuConfig = GpuConfig()) extends Module {
     reduceTo(stageOneBits.terms.toSeq, 4)
   private val thirdReduction =
     reduceTo(stageTwoBits.terms.toSeq, 2)
-  private val product =
-    stageThreeBits.terms(0) + stageThreeBits.terms(1)
+  private val productSplit = 34
+  private val productLow =
+    stageThreeBits.terms(0)(productSplit - 1, 0) +&
+      stageThreeBits.terms(1)(productSplit - 1, 0)
+  private val productHigh0 =
+    stageThreeBits.terms(0)(67, productSplit) +&
+      stageThreeBits.terms(1)(67, productSplit)
+  private val productHigh1 = (productHigh0 +& 1.U)(34, 0)
+  private val product = {
+    val highSum = Mux(
+      stageFourBits.lowSum(productSplit),
+      stageFourBits.highSum1,
+      stageFourBits.highSum0)
+    Cat(highSum(67 - productSplit, 0), stageFourBits.lowSum(productSplit - 1, 0))
+  }
 
   io.in.ready := stageOneReady && supported
   io.out.valid := outputValid
   io.out.bits := outputBits
 
   when(outputReady) {
-    outputValid := stageThreeValid
-    when(stageThreeValid) {
-      outputBits.warpId := stageThreeBits.metadata.warpId
-      outputBits.pc := stageThreeBits.metadata.pc
-      outputBits.activeMask := stageThreeBits.metadata.activeMask
-      outputBits.rd := stageThreeBits.metadata.rd
-      outputBits.writeRd := stageThreeBits.metadata.writeRd
+    outputValid := stageFourValid
+    when(stageFourValid) {
+      outputBits.warpId := stageFourBits.metadata.warpId
+      outputBits.pc := stageFourBits.metadata.pc
+      outputBits.activeMask := stageFourBits.metadata.activeMask
+      outputBits.rd := stageFourBits.metadata.rd
+      outputBits.writeRd := stageFourBits.metadata.writeRd
       outputBits.data := Mux(
-        stageThreeBits.metadata.highHalf,
+        stageFourBits.metadata.highHalf,
         product(63, 32),
         product(31, 0)
       )
+    }
+  }
+
+  when(stageFourReady) {
+    stageFourValid := stageThreeValid
+    when(stageThreeValid) {
+      stageFourBits.metadata := stageThreeBits.metadata
+      stageFourBits.lowSum := productLow
+      stageFourBits.highSum0 := productHigh0
+      stageFourBits.highSum1 := productHigh1
     }
   }
 

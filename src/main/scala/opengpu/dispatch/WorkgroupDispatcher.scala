@@ -17,11 +17,13 @@ class WorkgroupDispatcher(config: GpuConfig = GpuConfig()) extends Module {
     val completion = Decoupled(new WorkgroupCompletion)
   })
 
-  private val idle :: prepare :: active :: finish :: Nil = Enum(4)
+  private val idle :: prepare :: settle :: active :: finish :: Nil = Enum(5)
   private val state = RegInit(idle)
   private val task = Reg(new WorkgroupTask(config))
   private val partialProduct = Reg(UInt(32.W))
   private val taskLocalSize2 = Reg(UInt(16.W))
+  private val mulLo = Reg(UInt(32.W))
+  private val mulHi = Reg(UInt(32.W))
   private val taskCount = RegInit(0.U(48.W))
   private val totalWarps = RegInit(0.U(48.W))
   private val issuedWarps = RegInit(0.U(48.W))
@@ -51,8 +53,9 @@ class WorkgroupDispatcher(config: GpuConfig = GpuConfig()) extends Module {
   io.completion.valid := state === finish
   io.completion.bits.success := accumulatedSuccess
 
-  // Split the two 16x16 multiplies feeding the workgroup count across the
-  // accept and prepare cycles so the dispatch cone does not run through both.
+  // Split XY product accept, then Z as two 16x16 partials, then add+warp
+  // count so no register-to-register edge sees a 32x16 mul into state
+  // (writeuse limiter was taskLocalSize2 → workgroups.state).
   when(io.workgroup.fire) {
     task := io.workgroup.bits
     partialProduct := io.workgroup.bits.localSize(0) *
@@ -62,7 +65,13 @@ class WorkgroupDispatcher(config: GpuConfig = GpuConfig()) extends Module {
   }
 
   when(state === prepare) {
-    val count = partialProduct * taskLocalSize2
+    mulLo := partialProduct(15, 0) * taskLocalSize2
+    mulHi := partialProduct(31, 16) * taskLocalSize2
+    state := settle
+  }
+
+  when(state === settle) {
+    val count = Cat(0.U(16.W), mulLo) + Cat(mulHi, 0.U(16.W))
     val warps = (count + (config.lanes - 1).U) / config.lanes.U
     val fits = warps <= config.warps.U
     taskCount := count

@@ -38,7 +38,12 @@ private class VectorBoothStageThree(config: GpuConfig) extends Bundle {
 
 private class VectorProductStage(config: GpuConfig) extends Bundle {
   val metadata = new VectorMultiplyMetadata(config)
-  val products = Vec(config.lanes, UInt(68.W))
+  // Carry-select partials of the 68-bit completion add. Assembling in the
+  // next stage keeps the stageThree→product CPA from binding the integrated
+  // top (gpu-system-cspipe limiter through stageThreeBits_terms).
+  val lowSum = Vec(config.lanes, UInt(35.W))
+  val highSum0 = Vec(config.lanes, UInt(35.W))
+  val highSum1 = Vec(config.lanes, UInt(35.W))
 }
 
 private class VectorRoundingStage(config: GpuConfig) extends Bundle {
@@ -168,14 +173,22 @@ class VectorMultiplyAlu(config: GpuConfig = GpuConfig()) extends Module {
 
   private val secondTerms = Wire(Vec(config.lanes, Vec(4, UInt(68.W))))
   private val thirdTerms = Wire(Vec(config.lanes, Vec(2, UInt(68.W))))
-  private val products = Wire(Vec(config.lanes, UInt(68.W)))
+  private val productLow = Wire(Vec(config.lanes, UInt(35.W)))
+  private val productHigh0 = Wire(Vec(config.lanes, UInt(35.W)))
+  private val productHigh1 = Wire(Vec(config.lanes, UInt(35.W)))
+  private val productSplit = 34
   for (lane <- 0 until config.lanes) {
     secondTerms(lane) :=
       VecInit(reduceTo(stageOneBits.terms(lane).toSeq, 4))
     thirdTerms(lane) :=
       VecInit(reduceTo(stageTwoBits.terms(lane).toSeq, 2))
-    products(lane) :=
-      stageThreeBits.terms(lane)(0) + stageThreeBits.terms(lane)(1)
+    val term0 = stageThreeBits.terms(lane)(0)
+    val term1 = stageThreeBits.terms(lane)(1)
+    val lowSum = term0(productSplit - 1, 0) +& term1(productSplit - 1, 0)
+    val highSum0 = term0(67, productSplit) +& term1(67, productSplit)
+    productLow(lane) := lowSum
+    productHigh0(lane) := highSum0
+    productHigh1(lane) := (highSum0 +& 1.U)(34, 0)
   }
 
   io.in.ready := inputReady && supported
@@ -189,7 +202,13 @@ class VectorMultiplyAlu(config: GpuConfig = GpuConfig()) extends Module {
   private val preparedIncrement = Wire(Vec(config.lanes, Bool()))
   private val preparedSaturation = Wire(Vec(config.lanes, Bool()))
   for (lane <- 0 until config.lanes) {
-    val product = productBits.products(lane)
+    val highSum = Mux(
+      productBits.lowSum(lane)(productSplit),
+      productBits.highSum1(lane),
+      productBits.highSum0(lane))
+    val product = Cat(
+      highSum(67 - productSplit, 0),
+      productBits.lowSum(lane)(productSplit - 1, 0))
     preparedIncrement(lane) := MuxLookup(
       productBits.metadata.vxrm,
       false.B
@@ -259,7 +278,9 @@ class VectorMultiplyAlu(config: GpuConfig = GpuConfig()) extends Module {
     productValid := stageThreeValid
     when(stageThreeValid) {
       productBits.metadata := stageThreeBits.metadata
-      productBits.products := products
+      productBits.lowSum := productLow
+      productBits.highSum0 := productHigh0
+      productBits.highSum1 := productHigh1
     }
   }
 

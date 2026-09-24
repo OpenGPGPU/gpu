@@ -44,8 +44,8 @@ class MsaaResolveEngine(maxSampleCount: Int = 4) extends Module {
     }
   })
 
-  private val sIdle :: sReadReq :: sReadResp :: sWriteReq :: sWriteResp :: sDone :: Nil =
-    Enum(6)
+  private val sIdle :: sPrep :: sReadReq :: sReadResp :: sWriteReq :: sWriteResp :: sWriteUse :: sDone :: Nil =
+    Enum(8)
   private val state = RegInit(sIdle)
 
   // Configuration latched at start so the host may reprogram immediately.
@@ -64,16 +64,27 @@ class MsaaResolveEngine(maxSampleCount: Int = 4) extends Module {
   // Scanline bases avoid a y*stride multiply on the request-address path.
   private val srcRowBase = Reg(UInt(32.W))
   private val dstRowBase = Reg(UInt(32.W))
+  // Address is registered in sPrep / response handlers so mode/x/s arithmetic
+  // cannot sit on the mem-request → translator-pending path.
+  private val reqAddr = Reg(UInt(32.W))
 
   private val samplesByMode =
     VecInit(1.U(3.W), 2.U(3.W), 4.U(3.W), 4.U(3.W))
   // Half-up rounding term; 1x needs none, 2x adds 1, 4x adds 2.
   private val roundByMode = VecInit(0.U(3.W), 1.U(3.W), 2.U(3.W), 0.U(3.W))
 
-  private def sampleAddr(sx: UInt, ss: UInt): UInt =
-    srcRowBase + (sx * samples + ss) * 4.U
+  // samples is always 1/2/4 (1 << mode for mode 0..2; mode 3 aliases 4x).
+  private def sampleAddr(sx: UInt, ss: UInt): UInt = {
+    val sampleIndex = MuxLookup(mode, (sx << 2) + ss)(Seq(
+      0.U -> (sx + ss),
+      1.U -> ((sx << 1) + ss),
+      2.U -> ((sx << 2) + ss),
+      3.U -> ((sx << 2) + ss)
+    ))
+    srcRowBase + (sampleIndex << 2)
+  }
   private def destAddr(sx: UInt): UInt =
-    dstRowBase + sx * 4.U
+    dstRowBase + (sx << 2)
 
   private def nextAcc(c: Int, data: UInt): UInt =
     (acc(c) + data(8 * c + 7, 8 * c))(31, 0)
@@ -81,7 +92,14 @@ class MsaaResolveEngine(maxSampleCount: Int = 4) extends Module {
   private def average(data: UInt): UInt = {
     val round = roundByMode(mode)
     val channels = (0 until 4).map { c =>
-      (((nextAcc(c, data) +& round) >> mode))(7, 0)
+      val summed = nextAcc(c, data) +& round
+      val averaged = MuxLookup(mode, summed >> 2)(Seq(
+        0.U -> summed,
+        1.U -> (summed >> 1),
+        2.U -> (summed >> 2),
+        3.U -> (summed >> 2)
+      ))
+      averaged(7, 0)
     }
     Cat(channels(3), channels(2), channels(1), channels(0))
   }
@@ -110,13 +128,18 @@ class MsaaResolveEngine(maxSampleCount: Int = 4) extends Module {
         srcRowBase := io.srcBase
         dstRowBase := io.dstBase
         state := Mux(io.imgWidth === 0.U || io.imgHeight === 0.U,
-          sDone, sReadReq)
+          sDone, sPrep)
       }
+    }
+
+    is(sPrep) {
+      reqAddr := sampleAddr(x, s)
+      state := sReadReq
     }
 
     is(sReadReq) {
       io.mem.req.valid := true.B
-      io.mem.req.bits.addr := sampleAddr(x, s)
+      io.mem.req.bits.addr := reqAddr
       when(io.mem.req.fire) { state := sReadResp }
     }
 
@@ -127,9 +150,11 @@ class MsaaResolveEngine(maxSampleCount: Int = 4) extends Module {
         acc := VecInit((0 until 4).map(c => nextAcc(c, data)))
         when(s === samples - 1.U) {
           result := average(data)
+          reqAddr := destAddr(x)
           state := sWriteReq
         }.otherwise {
           s := s + 1.U
+          reqAddr := sampleAddr(x, s + 1.U)
           state := sReadReq
         }
       }
@@ -138,7 +163,7 @@ class MsaaResolveEngine(maxSampleCount: Int = 4) extends Module {
     is(sWriteReq) {
       io.mem.req.valid := true.B
       io.mem.req.bits.write := true.B
-      io.mem.req.bits.addr := destAddr(x)
+      io.mem.req.bits.addr := reqAddr
       io.mem.req.bits.data := result
       when(io.mem.req.fire) { state := sWriteResp }
     }
@@ -146,22 +171,28 @@ class MsaaResolveEngine(maxSampleCount: Int = 4) extends Module {
     is(sWriteResp) {
       io.mem.resp.ready := true.B
       when(io.mem.resp.fire) {
-        acc := VecInit(Seq.fill(4)(0.U(32.W)))
-        s := 0.U
-        when(x === imgWidth - 1.U) {
-          x := 0.U
-          when(y === imgHeight - 1.U) {
-            state := sDone
-          }.otherwise {
-            y := y + 1.U
-            srcRowBase := srcRowBase + srcStride
-            dstRowBase := dstRowBase + dstStride
-            state := sReadReq
-          }
+        // Capture the ack only; advance x/y next cycle so L2 response fabric
+        // cannot reach resolveEngine.y in one edge (copyack limiter).
+        state := sWriteUse
+      }
+    }
+
+    is(sWriteUse) {
+      acc := VecInit(Seq.fill(4)(0.U(32.W)))
+      s := 0.U
+      when(x === imgWidth - 1.U) {
+        x := 0.U
+        when(y === imgHeight - 1.U) {
+          state := sDone
         }.otherwise {
-          x := x + 1.U
-          state := sReadReq
+          y := y + 1.U
+          srcRowBase := srcRowBase + srcStride
+          dstRowBase := dstRowBase + dstStride
+          state := sPrep
         }
+      }.otherwise {
+        x := x + 1.U
+        state := sPrep
       }
     }
 

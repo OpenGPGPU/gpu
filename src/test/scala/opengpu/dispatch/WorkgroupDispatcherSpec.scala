@@ -23,7 +23,7 @@ class WorkgroupDispatcherSpec extends AnyFlatSpec {
 
   behavior of "WorkgroupDispatcher"
 
-  private def awaitWarp(dut: WorkgroupDispatcher, cycles: Int = 8): Unit = {
+  private def awaitWarp(dut: WorkgroupDispatcher, cycles: Int = 16): Unit = {
     var remaining = cycles
     while (!dut.io.warp.valid.peek().litToBoolean && remaining > 0) {
       dut.clock.step(); remaining -= 1
@@ -70,7 +70,7 @@ class WorkgroupDispatcherSpec extends AnyFlatSpec {
       dut.io.completion.ready.poke(false.B)
       sendWorkgroup(dut, Seq(24, 1, 1))
 
-      dut.clock.step(4)
+      dut.clock.step(5)
       dut.io.warp.valid.expect(false.B)
       dut.io.completion.valid.expect(false.B)
       (0 until 2).foreach { _ =>
@@ -92,7 +92,7 @@ class WorkgroupDispatcherSpec extends AnyFlatSpec {
       dut.io.warpCompletion.valid.poke(false.B)
       dut.io.completion.ready.poke(false.B)
       sendWorkgroup(dut, Seq(0, 1, 1))
-      dut.clock.step()
+      dut.clock.step(2)
       dut.io.warp.valid.expect(false.B)
       dut.io.completion.valid.expect(true.B)
       dut.io.completion.bits.success.expect(false.B)
@@ -106,7 +106,7 @@ class WorkgroupDispatcherSpec extends AnyFlatSpec {
       dut.io.warpCompletion.valid.poke(false.B)
       dut.io.completion.ready.poke(false.B)
       sendWorkgroup(dut, Seq(config.lanes * config.warps + 1, 1, 1))
-      dut.clock.step()
+      dut.clock.step(2)
       dut.io.warp.valid.expect(false.B)
       dut.io.completion.valid.expect(true.B)
       dut.io.completion.bits.success.expect(false.B)

@@ -29,6 +29,12 @@ class VectorCacheLineResponse(val lineBytes: Int = 64) extends Bundle {
   * Unit-stride lanes normally collapse into one or two requests, while strided
   * lanes may occupy independent lines. Requests are issued one at a time and
   * load bytes are reassembled only after every required line has responded.
+  *
+  * Accept is split across two cycles: capture the transaction into `pending`,
+  * then compute the unique line set from that registered payload. That keeps
+  * the elementSize/address dedup cone off the upstream
+  * `vectorMemoryRouter` global-request path (integrated-top limiter on
+  * `gpu-system-smulcs`).
   */
 class VectorMemoryCoalescer(
   config: GpuConfig = GpuConfig(),
@@ -51,6 +57,8 @@ class VectorMemoryCoalescer(
     val out = Decoupled(new VectorMemoryResponse(config))
   })
 
+  private val pendingValid = RegInit(false.B)
+  private val pending = Reg(new VectorMemoryTransaction(config))
   private val transactionValid = RegInit(false.B)
   private val transaction = Reg(new VectorMemoryTransaction(config))
   private val requestIndex = RegInit(0.U(requestIndexWidth.W))
@@ -72,18 +80,20 @@ class VectorMemoryCoalescer(
       0.U(lineOffsetWidth.W)
     )
 
-  private val inputElementBytes = 1.U << io.in.bits.elementSize
+  // Line uniqueness is computed from the registered pending payload, not from
+  // the live input, so the critical path cannot span the router.
+  private val pendingElementBytes = 1.U << pending.elementSize
   private val candidateValid = Wire(Vec(maxLines, Bool()))
   private val candidateAddress = Wire(Vec(maxLines, UInt(config.xLen.W)))
   for (lane <- 0 until config.lanes) {
-    val first = alignLine(io.in.bits.addresses(lane))
+    val first = alignLine(pending.addresses(lane))
     val last = alignLine(
-      io.in.bits.addresses(lane) + inputElementBytes - 1.U
+      pending.addresses(lane) + pendingElementBytes - 1.U
     )
-    candidateValid(lane * 2) := io.in.bits.laneMask(lane)
+    candidateValid(lane * 2) := pending.laneMask(lane)
     candidateAddress(lane * 2) := first
     candidateValid(lane * 2 + 1) :=
-      io.in.bits.laneMask(lane) && last =/= first
+      pending.laneMask(lane) && last =/= first
     candidateAddress(lane * 2 + 1) := last
   }
 
@@ -135,7 +145,7 @@ class VectorMemoryCoalescer(
     }
   }
 
-  io.in.ready := !transactionValid && !outputValid
+  io.in.ready := !pendingValid && !transactionValid && !outputValid
   when(io.in.fire) {
     when(io.in.bits.laneMask === 0.U) {
       outputValid := true.B
@@ -143,16 +153,21 @@ class VectorMemoryCoalescer(
       outputBits.faultMask := 0.U
       outputBits.pageFault := false.B
     }.otherwise {
-      transactionValid := true.B
-      transaction := io.in.bits
-      requestIndex := 0.U
-      lineCount := inputLineCount
-      waitingResponse := false.B
-      for (line <- 0 until maxLines) {
-        lineAddresses(line) := inputLineAddresses(line)
-        lineFaults(line) := false.B
-        linePageFaults(line) := false.B
-      }
+      pendingValid := true.B
+      pending := io.in.bits
+    }
+  }
+  when(pendingValid && !transactionValid) {
+    pendingValid := false.B
+    transactionValid := true.B
+    transaction := pending
+    requestIndex := 0.U
+    lineCount := inputLineCount
+    waitingResponse := false.B
+    for (line <- 0 until maxLines) {
+      lineAddresses(line) := inputLineAddresses(line)
+      lineFaults(line) := false.B
+      linePageFaults(line) := false.B
     }
   }
 

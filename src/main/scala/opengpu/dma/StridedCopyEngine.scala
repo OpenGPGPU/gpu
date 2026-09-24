@@ -78,7 +78,7 @@ class StridedCopyEngine(
   private val resultStatus = RegInit(CopyStatus.success)
 
   private val d = descriptors.io.deq.bits
-  private val decodeStage = RegInit(0.U(3.W))
+  private val decodeStage = RegInit(0.U(4.W))
   private val holdId = Reg(UInt(descriptorIdWidth.W))
   private val holdSrcAddr = Reg(UInt(config.xLen.W))
   private val holdDstAddr = Reg(UInt(config.xLen.W))
@@ -119,10 +119,18 @@ class StridedCopyEngine(
   private val dstPairHi = Reg(UInt(pairWidth.W))
   private val prodSrc = Reg(UInt(endLineWidth.W))
   private val prodDst = Reg(UInt(endLineWidth.W))
-  private val sumSrcLine = Reg(UInt(endLineWidth.W))
-  private val sumDstLine = Reg(UInt(endLineWidth.W))
+  // Split base+prod into lo then hi so a ~59-bit CPA cannot sit on one
+  // register-to-register edge (joblast limiter was holdDstAddr → sumDstLine).
   private val endLoWidth = 30
   private val endHiWidth = endLineWidth - endLoWidth
+  private val sumSrcLo = Reg(UInt(endLoWidth.W))
+  private val sumDstLo = Reg(UInt(endLoWidth.W))
+  private val sumSrcCarry = Reg(Bool())
+  private val sumDstCarry = Reg(Bool())
+  private val sumSrcHi = Reg(UInt(endHiWidth.W))
+  private val sumDstHi = Reg(UInt(endHiWidth.W))
+  private val sumSrcLine = Cat(sumSrcHi, sumSrcLo)
+  private val sumDstLine = Cat(sumDstHi, sumDstLo)
   private val srcEndLo = Reg(UInt(endLoWidth.W))
   private val dstEndLo = Reg(UInt(endLoWidth.W))
   private val srcEndCarry = Reg(Bool())
@@ -198,26 +206,37 @@ class StridedCopyEngine(
     decodeStage := 4.U
   }
   when(decodeStage === 4.U) {
-    sumSrcLine := srcBaseWide + prodSrc
-    sumDstLine := dstBaseWide + prodDst
+    val srcLoSum = srcBaseWide(endLoWidth - 1, 0) +& prodSrc(endLoWidth - 1, 0)
+    val dstLoSum = dstBaseWide(endLoWidth - 1, 0) +& prodDst(endLoWidth - 1, 0)
+    sumSrcLo := srcLoSum(endLoWidth - 1, 0)
+    sumDstLo := dstLoSum(endLoWidth - 1, 0)
+    sumSrcCarry := srcLoSum(endLoWidth)
+    sumDstCarry := dstLoSum(endLoWidth)
     decodeStage := 5.U
   }
-  private val widthWideLo = Cat(0.U((endLoWidth - strideLineWidth).W), holdWidthLine)
   when(decodeStage === 5.U) {
+    sumSrcHi := srcBaseWide(endLineWidth - 1, endLoWidth) +
+      prodSrc(endLineWidth - 1, endLoWidth) + sumSrcCarry
+    sumDstHi := dstBaseWide(endLineWidth - 1, endLoWidth) +
+      prodDst(endLineWidth - 1, endLoWidth) + sumDstCarry
+    decodeStage := 6.U
+  }
+  private val widthWideLo = Cat(0.U((endLoWidth - strideLineWidth).W), holdWidthLine)
+  when(decodeStage === 6.U) {
     val srcLoSum = sumSrcLine(endLoWidth - 1, 0) +& widthWideLo
     val dstLoSum = sumDstLine(endLoWidth - 1, 0) +& widthWideLo
     srcEndLo := srcLoSum(endLoWidth - 1, 0)
     dstEndLo := dstLoSum(endLoWidth - 1, 0)
     srcEndCarry := srcLoSum(endLoWidth)
     dstEndCarry := dstLoSum(endLoWidth)
-    decodeStage := 6.U
-  }
-  when(decodeStage === 6.U) {
-    srcEndHi := sumSrcLine(endLineWidth - 1, endLoWidth) + srcEndCarry
-    dstEndHi := sumDstLine(endLineWidth - 1, endLoWidth) + dstEndCarry
     decodeStage := 7.U
   }
   when(decodeStage === 7.U) {
+    srcEndHi := sumSrcLine(endLineWidth - 1, endLoWidth) + srcEndCarry
+    dstEndHi := sumDstLine(endLineWidth - 1, endLoWidth) + dstEndCarry
+    decodeStage := 8.U
+  }
+  when(decodeStage === 8.U) {
     descriptorId := holdId
     sourceAddress := holdSrcAddr
     destinationAddress := holdDstAddr
@@ -239,10 +258,20 @@ class StridedCopyEngine(
   rowCopy.io.descriptor.bits.bytes := widthBytes
   when(rowCopy.io.descriptor.fire) { rowInFlight := true.B }
 
-  rowCopy.io.completion.ready := active && rowInFlight
+  // Delay the accumulate by one cycle so L2 response → completion.bytesCopied
+  // cannot sit in the same register-to-register cone as copiedBytes (resolveprep
+  // limiter was l2.request_address → rowCopy completion bytesCopied).
+  private val byteAddPending = RegInit(false.B)
+  private val byteAddend = Reg(UInt(64.W))
+  rowCopy.io.completion.ready := active && rowInFlight && !byteAddPending
+  when(byteAddPending) {
+    copiedBytes := copiedBytes + byteAddend
+    byteAddPending := false.B
+  }
   when(rowCopy.io.completion.fire) {
     rowInFlight := false.B
-    copiedBytes := copiedBytes + rowCopy.io.completion.bits.bytesCopied
+    byteAddend := rowCopy.io.completion.bits.bytesCopied
+    byteAddPending := true.B
     when(!rowCopy.io.completion.bits.success) {
       resultStatus := rowCopy.io.completion.bits.status
       active := false.B
@@ -257,12 +286,12 @@ class StridedCopyEngine(
     }
   }
 
-  io.completion.valid := completionValid
+  io.completion.valid := completionValid && !byteAddPending
   io.completion.bits.descriptorId := descriptorId
   io.completion.bits.status := resultStatus
   io.completion.bits.success := resultStatus === CopyStatus.success
   io.completion.bits.bytesCopied := copiedBytes
   when(io.completion.fire) { completionValid := false.B }
-  io.busy := active || completionValid || decodeStage =/= 0.U ||
+  io.busy := active || completionValid || byteAddPending || decodeStage =/= 0.U ||
     descriptors.io.deq.valid || rowCopy.io.busy
 }

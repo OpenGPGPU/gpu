@@ -88,7 +88,7 @@ class StridedCopyEngineSpec extends AnyFlatSpec {
       dut.io.memoryResponse.valid.poke(false.B)
       dut.io.memoryResponse.bits.poke(0.U.asTypeOf(dut.io.memoryResponse.bits))
       dut.clock.step(); dut.io.descriptor.valid.poke(false.B)
-      dut.clock.step(7)
+      dut.clock.step(8)
       dut.io.memoryRequest.valid.expect(false.B)
       dut.io.completion.valid.expect(true.B)
       dut.io.completion.bits.status.expect(CopyStatus.overlapUnsupported)
@@ -112,7 +112,7 @@ class StridedCopyEngineSpec extends AnyFlatSpec {
       dut.io.memoryResponse.valid.poke(false.B)
       dut.io.memoryResponse.bits.poke(0.U.asTypeOf(dut.io.memoryResponse.bits))
       dut.clock.step(); dut.io.descriptor.valid.poke(false.B)
-      dut.clock.step(7)
+      dut.clock.step(8)
       dut.io.memoryRequest.valid.expect(false.B)
       dut.io.completion.bits.status.expect(CopyStatus.addressOverflow)
     }

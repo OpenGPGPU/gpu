@@ -174,6 +174,14 @@ class CopyEngine(
     slotState(responseSlot) === SlotState.readPending,
     slotState(responseSlot) === SlotState.writePending)
   io.memoryResponse.ready := active && responseExpected
+  // Count successful write acks and drain one lineBytes into copiedBytes per
+  // cycle so the L2 response fabric cannot reach the accumulator in one edge
+  // (resolveresp limiter was request_address → copyEngine bytesCopied).
+  private val pendingByteAdds = RegInit(0.U(log2Ceil(lineSlots + 1).W))
+  private val writeFaultPending = RegInit(false.B)
+  private val writeAckSuccess =
+    io.memoryResponse.fire && !responseIsRead && !io.memoryResponse.bits.fault
+  private val drainByteAdd = pendingByteAdds =/= 0.U
 
   when(io.memoryResponse.valid) {
     assert(active && responseExpected,
@@ -196,13 +204,21 @@ class CopyEngine(
     }.otherwise {
       slotState(responseSlot) := SlotState.free
       when(io.memoryResponse.bits.fault) {
-        when(!aborting) {
-          aborting := true.B
-          resultStatus := CopyStatus.writeFault
-        }
-      }.otherwise {
-        copiedBytes := copiedBytes + lineBytes.U
+        writeFaultPending := true.B
       }
+    }
+  }
+  pendingByteAdds := pendingByteAdds +
+    writeAckSuccess.asUInt -
+    drainByteAdd.asUInt
+  when(drainByteAdd) {
+    copiedBytes := copiedBytes + lineBytes.U
+  }
+  when(writeFaultPending && pendingByteAdds === 0.U && !writeAckSuccess) {
+    writeFaultPending := false.B
+    when(!aborting) {
+      aborting := true.B
+      resultStatus := CopyStatus.writeFault
     }
   }
 
@@ -217,7 +233,8 @@ class CopyEngine(
   }
 
   private val allSlotsFree = slotState.map(_ === SlotState.free).reduce(_ && _)
-  when(active && allSlotsFree && (aborting || !remainingBytes.orR)) {
+  when(active && allSlotsFree && pendingByteAdds === 0.U && !writeFaultPending &&
+      (aborting || !remainingBytes.orR)) {
     active := false.B
     completionValid := true.B
   }
@@ -229,5 +246,6 @@ class CopyEngine(
   io.completion.bits.bytesCopied := copiedBytes
   when(io.completion.fire) { completionValid := false.B }
 
-  io.busy := active || completionValid || descriptors.io.deq.valid
+  io.busy := active || completionValid || pendingByteAdds =/= 0.U ||
+    writeFaultPending || descriptors.io.deq.valid
 }

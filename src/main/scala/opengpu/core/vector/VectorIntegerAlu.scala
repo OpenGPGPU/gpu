@@ -97,10 +97,15 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   // Reductions are split so no register-to-register path contains the full
   // lane tree. This is particularly important for the 8-lane production
   // configuration, where a single tree dominated the 1 GHz timing target.
+  // Pair → fold → vs1 stages keep at most one opcode-muxed combine per cycle
+  // (coalpipe limiter was reductionPairs → reducedBits.lhs).
   private val reductionPairValid = RegInit(false.B)
   private val reductionPairBits = Reg(new NormalizedVectorIntegerRequest(config))
   private val reductionPairs =
     Reg(Vec((config.lanes + 1) / 2, UInt(config.xLen.W)))
+  private val reductionFoldValid = RegInit(false.B)
+  private val reductionFoldBits = Reg(new NormalizedVectorIntegerRequest(config))
+  private val reductionFolded = Reg(UInt(config.xLen.W))
   private val reducedValid = RegInit(false.B)
   private val reducedBits = Reg(new NormalizedVectorIntegerRequest(config))
   private val partialValid = RegInit(false.B)
@@ -113,7 +118,8 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   private val candidateReady = !candidateValid || outputReady
   private val partialReady = !partialValid || candidateReady
   private val reducedReady = !reducedValid || partialReady
-  private val reductionPairReady = !reductionPairValid || reducedReady
+  private val reductionFoldReady = !reductionFoldValid || reducedReady
+  private val reductionPairReady = !reductionPairValid || reductionFoldReady
   private val preparedReady = !preparedValid || reductionPairReady
   private val inputReady = !inputValid || preparedReady
 
@@ -498,10 +504,10 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
     }
   }
 
-  when(reducedReady) {
-    reducedValid := reductionPairValid
+  when(reductionFoldReady) {
+    reductionFoldValid := reductionPairValid
     when(reductionPairValid) {
-      reducedBits := reductionPairBits
+      reductionFoldBits := reductionPairBits
       def combineReduction(left: UInt, right: UInt): UInt = MuxLookup(
         reductionPairBits.funct6, left)(Seq(
           "h00".U -> (left + right), "h01".U -> (left & right),
@@ -518,10 +524,27 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
           case Seq(left) => left
         }.toSeq)
       }
+      reductionFolded := reductionTree(reductionPairs)
+    }
+  }
+
+  when(reducedReady) {
+    reducedValid := reductionFoldValid
+    when(reductionFoldValid) {
+      reducedBits := reductionFoldBits
+      def combineReduction(left: UInt, right: UInt): UInt = MuxLookup(
+        reductionFoldBits.funct6, left)(Seq(
+          "h00".U -> (left + right), "h01".U -> (left & right),
+          "h02".U -> (left | right), "h03".U -> (left ^ right),
+          "h04".U -> Mux(left < right, left, right),
+          "h05".U -> Mux(left.asSInt < right.asSInt, left, right),
+          "h06".U -> Mux(left > right, left, right),
+          "h07".U -> Mux(left.asSInt > right.asSInt, left, right)
+        ))
       reducedBits.lhs(0) := Mux(
-        reductionPairBits.reduction,
-        combineReduction(reductionPairBits.vs1(0), reductionTree(reductionPairs)),
-        reductionPairBits.lhs(0)
+        reductionFoldBits.reduction,
+        combineReduction(reductionFoldBits.vs1(0), reductionFolded),
+        reductionFoldBits.lhs(0)
       )
     }
   }

@@ -115,18 +115,7 @@ class VectorMemoryUnit(config: GpuConfig = GpuConfig()) extends Module {
   io.memoryRequest.bits.elementSize := requestBits.elementSize
   io.memoryRequest.bits.isStore := requestBits.isStore
   for (lane <- 0 until config.lanes) {
-    val laneNumber = lane.U(config.xLen.W)
-    val byteOffset = Mux(
-      requestBits.indexed,
-      requestBits.indexData(lane),
-      Mux(
-        requestBits.strided,
-        laneNumber * requestBits.stride,
-        laneNumber << requestBits.elementSize
-      )
-    )
-    io.memoryRequest.bits.addresses(lane) :=
-      requestBits.baseAddress + byteOffset
+    io.memoryRequest.bits.addresses(lane) := precomputedAddresses(lane)
     io.memoryRequest.bits.writeData(lane) := requestBits.storeData(lane)
   }
   when(io.memoryRequest.fire) {

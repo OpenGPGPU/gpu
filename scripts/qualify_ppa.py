@@ -85,10 +85,13 @@ def main():
         inputs=inputs))
     (args.output / 'result.json').write_text(json.dumps(result.result, indent=2, default=str) + '\n')
     print(json.dumps({k: result.result.get(k) for k in ('status', 'qor', 'overview', 'diagnosis')}, indent=2, default=str), flush=True)
-    if result.result.get('status') in ('error', 'failed', 'missing_tool'):
+    status = result.result.get('status')
+    if status in ('error', 'missing_tool'):
         raise SystemExit(1)
     if result.result.get('overview', {}).get('verdict') == 'FAIL':
         raise SystemExit(2)  # Flow completed, but physical qualification failed.
+    if status == 'failed':
+        raise SystemExit(1)
 
 if __name__ == '__main__':
     main()

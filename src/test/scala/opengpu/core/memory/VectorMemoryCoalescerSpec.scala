@@ -32,6 +32,7 @@ class VectorMemoryCoalescerSpec extends AnyFlatSpec {
       }
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
+      dut.clock.step() // pending → unique line set
 
       dut.io.cacheRequest.valid.expect(true.B)
       dut.io.cacheRequest.bits.lineAddress.expect(0x00.U)
@@ -99,6 +100,7 @@ class VectorMemoryCoalescerSpec extends AnyFlatSpec {
       }
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
+      dut.clock.step() // pending → unique line set
 
       dut.io.cacheRequest.bits.lineAddress.expect(0.U)
       dut.io.cacheRequest.bits.byteMask.expect("hc000".U)
@@ -149,6 +151,7 @@ class VectorMemoryCoalescerSpec extends AnyFlatSpec {
       }
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
+      dut.clock.step() // pending → unique line set
 
       lines.foreach { line =>
         dut.io.cacheRequest.valid.expect(true.B)

@@ -61,15 +61,19 @@ class GpuCommandProcessor(
   // Split the queue read from the deep descriptor/dependency decode: pop the
   // command into hold0, run the checks from hold0, and dispatch from hold1.
   // This keeps the dequeue-pointer cone off the multiply/DMA-lookup logic.
+  // localSize product is itself split across two hold0 cycles (16x16 then
+  // 32x16) so the integrated-top limiter through hold0Cmd_launch_localSize
+  // cannot run both multiplies into the hold1 capture in one period.
   val hold0Cmd = Reg(new KernelCommand(config, commandIdWidth))
   val hold0Valid = RegInit(false.B)
   val h0 = hold0Cmd
+  val h0LocalXY = Reg(UInt(32.W))
+  val h0LocalItems = Reg(UInt(48.W))
+  val h0MulReady = RegInit(false.B)
   val h0PcAligned = h0.launch.kernelPc(1, 0) === 0.U
   val h0KernargAligned = h0.launch.kernargAddress(1, 0) === 0.U
   val h0GridValid = h0.launch.gridSize.map(_.orR).reduce(_ && _)
   val h0LocalValid = h0.launch.localSize.map(_.orR).reduce(_ && _)
-  val h0LocalItems = h0.launch.localSize(0) * h0.launch.localSize(1) *
-    h0.launch.localSize(2)
   val h0ResidentCapacity = (config.lanes * config.warps).U
   val h0LocalFits = h0LocalItems <= h0ResidentCapacity
   val h0DescriptorValid = h0PcAligned && h0KernargAligned && h0GridValid &&
@@ -120,11 +124,19 @@ class GpuCommandProcessor(
   val dispatchFire = io.dispatch.fire
   val errorFire = completionEvents.io.in(1).fire
   val consumeFire = dispatchFire || errorFire
-  val shiftFire = hold0Valid && h0DependencyKnown &&
+  val shiftFire = hold0Valid && h0MulReady && h0DependencyKnown &&
     (!hold1Valid || consumeFire)
   commands.io.deq.ready := !hold0Valid || shiftFire
   hold0Valid := (hold0Valid && !shiftFire) || commands.io.deq.fire
-  when(commands.io.deq.fire) { hold0Cmd := commands.io.deq.bits }
+  when(commands.io.deq.fire) {
+    hold0Cmd := commands.io.deq.bits
+    h0LocalXY := commands.io.deq.bits.launch.localSize(0) *
+      commands.io.deq.bits.launch.localSize(1)
+    h0MulReady := false.B
+  }.elsewhen(hold0Valid && !h0MulReady) {
+    h0LocalItems := h0LocalXY * h0.launch.localSize(2)
+    h0MulReady := true.B
+  }
   when(shiftFire) {
     hold1Valid := true.B
     hold1Failed := h0DependencyFailed

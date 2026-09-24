@@ -444,7 +444,6 @@ class GpuSystem(
   private val activeCuCycleCounter = Module(new CarrySaveAccumulator())
   private val lowerReadCounter = Module(new CarrySaveEventCounter())
   private val lowerWriteCounter = Module(new CarrySaveEventCounter())
-  private val dmaByteCounter = Module(new CarrySaveAccumulator())
   // Register each engine's completion bytes before accumulating so the addend
   // mux does not sit behind the router's completion-arbiter ready path.
   private val copyBytesFired = RegNext(copyEngine.io.completion.fire, false.B)
@@ -458,17 +457,35 @@ class GpuSystem(
   private val stridedBytesValue = RegEnable(
     stridedCopyEngine.io.completion.bits.bytesCopied,
     stridedCopyEngine.io.completion.fire)
-  // Registered three-way sum feeds the carry-save DMA accumulator so the
-  // 64-bit CPA stays off the core-clock register-to-register path.
-  private val dmaBytesDelta = RegInit(0.U(64.W))
+  // Three muxed contributions are absorbed into a local carry-save DMA
+  // accumulator with cascaded 3:2 compressors (all bitwise). No 64-bit CPA
+  // sits on a core-clock register-to-register path (redfold limiter was
+  // fillBytesFired → dmaBytesDelta[63]). Observation CPA stays on the
+  // performance-port / vclk path only.
   private val clearPerf = io.clearPerformanceCounters
+  private val copyBytesTerm = Mux(copyBytesFired, copyBytesValue, 0.U(64.W))
+  private val fillBytesTerm = Mux(fillBytesFired, fillBytesValue, 0.U(64.W))
+  private val stridedBytesTerm =
+    Mux(stridedBytesFired, stridedBytesValue, 0.U(64.W))
+  private val dmaBytesSum = RegInit(0.U(64.W))
+  private val dmaBytesCarry = RegInit(0.U(64.W))
+  private def csa3(a: UInt, b: UInt, c: UInt): (UInt, UInt) = {
+    val sum = a ^ b ^ c
+    val carry = ((a & b) | (a & c) | (b & c)) << 1
+    (sum, carry(63, 0))
+  }
+  private val (termSum, termCarry) =
+    csa3(copyBytesTerm, fillBytesTerm, stridedBytesTerm)
+  private val (foldSum, foldCarry) =
+    csa3(dmaBytesSum, dmaBytesCarry, termSum)
+  private val (nextDmaSum, nextDmaCarry) =
+    csa3(foldSum, foldCarry, termCarry)
   when(clearPerf) {
-    dmaBytesDelta := 0.U
+    dmaBytesSum := 0.U
+    dmaBytesCarry := 0.U
   }.otherwise {
-    dmaBytesDelta :=
-      Mux(copyBytesFired, copyBytesValue, 0.U) +
-        Mux(fillBytesFired, fillBytesValue, 0.U) +
-        Mux(stridedBytesFired, stridedBytesValue, 0.U)
+    dmaBytesSum := nextDmaSum
+    dmaBytesCarry := nextDmaCarry
   }
   cycleCounter.io.clear := clearPerf
   cycleCounter.io.increment := !clearPerf
@@ -480,13 +497,11 @@ class GpuSystem(
   lowerWriteCounter.io.clear := clearPerf
   lowerWriteCounter.io.increment := !clearPerf &&
     io.memoryRequest.fire && io.memoryRequest.bits.isWrite
-  dmaByteCounter.io.clear := clearPerf
-  dmaByteCounter.io.addend := Mux(clearPerf, 0.U, dmaBytesDelta)
   io.performance.cycles := cycleCounter.io.value
   io.performance.activeCuCycles := activeCuCycleCounter.io.value
   io.performance.lowerReadRequests := lowerReadCounter.io.value
   io.performance.lowerWriteRequests := lowerWriteCounter.io.value
-  io.performance.dmaBytesCompleted := dmaByteCounter.io.value
+  io.performance.dmaBytesCompleted := (dmaBytesSum +& dmaBytesCarry)(63, 0)
   io.performance.l2 := l2.io.performance
 
   driverInvalidate.io.request <> commandRouter.io.invalidate

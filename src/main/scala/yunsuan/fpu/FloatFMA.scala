@@ -48,8 +48,8 @@ class FloatFMA() extends Module{
   val fire = io.fire
   val fire_reg0 = GatedValidRegNext(fire)
   val fire_reg0b = GatedValidRegNext(fire_reg0)
-  // Extra stage after the completion add so invert/LZD-mask/mask-valid do not
-  // share a cycle with csaSumReg (integrated-top limiter on 20d0732).
+  // fire_reg0b holds carry-select partials; fire_reg0c mux-assembles and runs
+  // invert/LZD-mask so the completion CPA cannot flatten across the cut.
   val fire_reg0c = GatedValidRegNext(fire_reg0b)
   val fire_reg1 = GatedValidRegNext(fire_reg0c)
   val is_fmul   = io.op_code === FmaOpCode.fmul
@@ -307,9 +307,11 @@ class FloatFMA() extends Module{
   U_CSA3to2.io.in_a := CSA3to2_in_a
   U_CSA3to2.io.in_b := CSA3to2_in_b
   U_CSA3to2.io.in_c := CSA3to2_in_c
-  // Stage split: CSA outputs sample on fire_reg0; completion add settles into
-  // fire_reg0b; invert/LZD-mask/mask-valid move to fire_reg0c so they no longer
-  // share a cycle with csaSumReg.
+  // Stage split: CSA outputs sample on fire_reg0; carry-select *partials*
+  // (low/high0/high1 + high-inv addends) settle into fire_reg0b; mux-assemble
+  // + invert/LZD-mask share fire_reg0c. Registering the CS halves stops
+  // synthesis from flattening the completion add into one long CPA — the
+  // integrated-top limiter on gpu-system-rowbase (csaSumReg, −279 ps).
   val csaSumReg = RegEnable(U_CSA3to2.io.out_sum, fire_reg0)
   val csaCarReg = RegEnable(U_CSA3to2.io.out_car, fire_reg0)
   val is_fp64_reg0b = RegEnable(is_fp64_reg0, fire_reg0)
@@ -323,79 +325,94 @@ class FloatFMA() extends Module{
   val fp_c_rshiftValue_inv_f64_reg0b = RegEnable(fp_c_rshiftValue_inv_f64_reg0, fire_reg0)
   val fp_c_rshiftValue_inv_f32_reg0b = RegEnable(fp_c_rshiftValue_inv_f32_reg0, fire_reg0)
   val fp_c_rshiftValue_inv_f16_reg0b = RegEnable(fp_c_rshiftValue_inv_f16_reg0, fire_reg0)
-  // mul result
-  val adder_lowbit_f64 = csaSumReg + csaCarReg
-  // Narrow bypasses: low N bits of a+b depend only on the low N bits of a
-  // and b, so these are bit-exact slices of the shared wide adds above while
-  // settling through a 49/27/14-bit carry chain instead of the f64 width.
-  val adder_lowbit_f32n = {
-    // Carry-select: the 49-bit completion add is the critical path, so split
-    // it into two halves and pick the high half by the low half's carry.
-    // Bit-exact with csaSumReg(48,0) + csaCarReg(48,0) (Chisel '+' keeps the
-    // wider operand width, so the 49-bit sum drops the final carry).
-    val split = 25
-    val lowSum: UInt = csaSumReg(split - 1, 0) +& csaCarReg(split - 1, 0)
-    val highSum0: UInt = csaSumReg(48, split) +& csaCarReg(48, split)
-    val highSum1: UInt = highSum0 +& 1.U
-    val highSum: UInt = Mux(lowSum(split), highSum1, highSum0)
-    Cat(highSum(23, 0), lowSum(split - 1, 0))
-  }
-  val adder_lowbit_f32 = adder_lowbit_f32n
-  val adder_lowbit_f16 = adder_lowbit_f32n(22,0)
 
-  val fp_c_rshift_result_high_inv_add0_f64 = fp_c_rshiftValue_inv_f64_reg0b.head(significandWidth+3)
-  val fp_c_rshift_result_high_inv_add0_f32 = fp_c_rshiftValue_inv_f32_reg0b.head(24+3)
-  val fp_c_rshift_result_high_inv_add0_f16 = fp_c_rshiftValue_inv_f16_reg0b.head(11+3)
+  // fire_reg0 → fire_reg0b: independent CS half-adds only (no mux across carry).
+  val csaWidth = csaSumReg.getWidth
+  val split64 = csaWidth / 2
+  val f64LowSum = csaSumReg(split64 - 1, 0) +& csaCarReg(split64 - 1, 0)
+  val f64HighSum0 = csaSumReg(csaWidth - 1, split64) +& csaCarReg(csaWidth - 1, split64)
+  val f64HighSum1 = f64HighSum0 +& 1.U
+  // Bit-exact with csaSumReg(48,0) + csaCarReg(48,0) after the fire_reg0c mux.
+  val split32 = 25
+  val f32LowSum = csaSumReg(split32 - 1, 0) +& csaCarReg(split32 - 1, 0)
+  val f32HighSum0 = csaSumReg(48, split32) +& csaCarReg(48, split32)
+  val f32HighSum1 = f32HighSum0 +& 1.U
 
   val highInvAddend = Cat(0.U, 0.U(12.W), 0.U, 0.U, 0.U, 0.U(14.W), 0.U, 0.U(14.W), 1.U)
-  val fp_c_rshift_result_high_inv_add1 = Mux(is_fp64_reg0b,
-    Cat(0.U(3.W),fp_c_rshiftValue_inv_f64_reg0b.head(significandWidth+3)),
-    Mux(
-      is_fp32_reg0b,
-      Cat(0.U(27.W),0.U(5.W),fp_c_rshiftValue_inv_f32_reg0b.head(24+3)),
-      Cat(
-        0.U(14.W),0.U,0.U(14.W),
-        0.U,0.U(14.W),0.U,fp_c_rshiftValue_inv_f16_reg0b.head(11+3)
-      )
-    )
-  ) + highInvAddend
-  // Narrow bypasses for the f32/f16 result slices below: the f32 assembly
-  // occupies bits [26:0] of its branch and the f16 assembly bits [13:0] of
-  // its branch, so these match the shared wide sum exactly whenever the
-  // matching format branch is selected (the only case each result is used).
-  val fp_c_rshift_result_high_inv_add1_f32n =
-    fp_c_rshiftValue_inv_f32_reg0b.head(24+3) + highInvAddend(26,0)
-  val fp_c_rshift_result_high_inv_add1_f16n =
-    fp_c_rshiftValue_inv_f16_reg0b.head(11+3) + highInvAddend(13,0)
+  val highInv0_f64 = fp_c_rshiftValue_inv_f64_reg0b.head(significandWidth + 3)
+  val highInv0_f32 = fp_c_rshiftValue_inv_f32_reg0b.head(24 + 3)
+  val highInv0_f16 = fp_c_rshiftValue_inv_f16_reg0b.head(11 + 3)
+  val highInv1_f64 =
+    (Cat(0.U(3.W), highInv0_f64) + highInvAddend)(55, 0)
+  val highInv1_f32 = highInv0_f32 + highInvAddend(26, 0)
+  val highInv1_f16 = highInv0_f16 + highInvAddend(13, 0)
 
-  val fp_c_rshift_result_high_inv_add1_f64 = fp_c_rshift_result_high_inv_add1(55,0)
-  val fp_c_rshift_result_high_inv_add1_f32 = fp_c_rshift_result_high_inv_add1(26,0)
-  val fp_c_rshift_result_high_inv_add1_f16 = fp_c_rshift_result_high_inv_add1(13,0)
+  val f64LowSum_r = RegEnable(f64LowSum, fire_reg0b)
+  val f64HighSum0_r = RegEnable(f64HighSum0, fire_reg0b)
+  val f64HighSum1_r = RegEnable(f64HighSum1, fire_reg0b)
+  val f32LowSum_r = RegEnable(f32LowSum, fire_reg0b)
+  val f32HighSum0_r = RegEnable(f32HighSum0, fire_reg0b)
+  val f32HighSum1_r = RegEnable(f32HighSum1, fire_reg0b)
+  val highInv0_f64_r = RegEnable(highInv0_f64, fire_reg0b)
+  val highInv0_f32_r = RegEnable(highInv0_f32, fire_reg0b)
+  val highInv0_f16_r = RegEnable(highInv0_f16, fire_reg0b)
+  val highInv1_f64_r = RegEnable(highInv1_f64, fire_reg0b)
+  val highInv1_f32_r = RegEnable(highInv1_f32, fire_reg0b)
+  val highInv1_f16_r = RegEnable(highInv1_f16, fire_reg0b)
+  val is_sub_f64_c = RegEnable(is_sub_f64_reg0b, fire_reg0b)
+  val is_sub_f32_c = RegEnable(is_sub_f32b, fire_reg0b)
+  val is_sub_f16_c = RegEnable(is_sub_f16b, fire_reg0b)
+  val rshift_guard_c = RegEnable(rshift_guard_b, fire_reg0b)
+  val rshift_round_c = RegEnable(rshift_round_b, fire_reg0b)
+  val rshift_sticky_c = RegEnable(rshift_sticky_b, fire_reg0b)
+  val is_fp64_reg0c = RegEnable(is_fp64_reg0b, fire_reg0b)
+  val is_fp32_reg0c = RegEnable(is_fp32_reg0b, fire_reg0b)
 
-  val adder_f64       = Cat(Mux(adder_lowbit_f64.head(1).asBool, fp_c_rshift_result_high_inv_add1_f64, fp_c_rshift_result_high_inv_add0_f64),adder_lowbit_f64.tail(1),
-    Mux(is_sub_f64_reg0b, ((~Cat(rshift_guard_b,rshift_round_b,rshift_sticky_b)).asUInt+1.U).head(2), Cat(rshift_guard_b,rshift_round_b))
+  // fire_reg0b → fire_reg0c: mux by registered carry, then assemble (cheap).
+  val f64HighWidth = f64HighSum0.getWidth
+  val adder_lowbit_f64 = {
+    val highSum = Mux(f64LowSum_r(split64), f64HighSum1_r, f64HighSum0_r)
+    Cat(highSum(f64HighWidth - 2, 0), f64LowSum_r(split64 - 1, 0))
+  }
+  val adder_lowbit_f32n = {
+    val highSum = Mux(f32LowSum_r(split32), f32HighSum1_r, f32HighSum0_r)
+    Cat(highSum(23, 0), f32LowSum_r(split32 - 1, 0))
+  }
+  val adder_lowbit_f32 = adder_lowbit_f32n
+  val adder_lowbit_f16 = adder_lowbit_f32n(22, 0)
+
+  val adder_f64 = Cat(
+    Mux(adder_lowbit_f64.head(1).asBool, highInv1_f64_r, highInv0_f64_r),
+    adder_lowbit_f64.tail(1),
+    Mux(is_sub_f64_c, ((~Cat(rshift_guard_c, rshift_round_c, rshift_sticky_c)).asUInt + 1.U).head(2),
+      Cat(rshift_guard_c, rshift_round_c))
   )
-  val adder_f32       = Cat(Mux(adder_lowbit_f32n(48).asBool, fp_c_rshift_result_high_inv_add1_f32n, fp_c_rshift_result_high_inv_add0_f32),adder_lowbit_f32n(47,0),
-    Mux(is_sub_f32b, ((~Cat(rshift_guard_b,rshift_round_b,rshift_sticky_b)).asUInt+1.U).head(2), Cat(rshift_guard_b,rshift_round_b))
+  val adder_f32 = Cat(
+    Mux(adder_lowbit_f32n(48).asBool, highInv1_f32_r, highInv0_f32_r),
+    adder_lowbit_f32n(47, 0),
+    Mux(is_sub_f32_c, ((~Cat(rshift_guard_c, rshift_round_c, rshift_sticky_c)).asUInt + 1.U).head(2),
+      Cat(rshift_guard_c, rshift_round_c))
   )
-  val adder_f16       = Cat(Mux(adder_lowbit_f32n(22).asBool, fp_c_rshift_result_high_inv_add1_f16n, fp_c_rshift_result_high_inv_add0_f16),adder_lowbit_f32n(21,0),
-    Mux(is_sub_f16b, ((~Cat(rshift_guard_b,rshift_round_b,rshift_sticky_b)).asUInt+1.U).head(2), Cat(rshift_guard_b,rshift_round_b))
+  val adder_f16 = Cat(
+    Mux(adder_lowbit_f32n(22).asBool, highInv1_f16_r, highInv0_f16_r),
+    adder_lowbit_f32n(21, 0),
+    Mux(is_sub_f16_c, ((~Cat(rshift_guard_c, rshift_round_c, rshift_sticky_c)).asUInt + 1.U).head(2),
+      Cat(rshift_guard_c, rshift_round_c))
   )
 
   val adder_is_negative_f64 = adder_f64.head(1).asBool
   val adder_is_negative_f32 = adder_f32.head(1).asBool
   val adder_is_negative_f16 = adder_f16.head(1).asBool
-
-  // fire_reg0 → fire_reg0b: completion-add / assemble only.
-  val adder_is_negative_reg_d = Mux(is_fp64_reg0b, adder_is_negative_f64,
-    Mux(is_fp32_reg0b, adder_is_negative_f32, adder_is_negative_f16))
-  val adder_f64_reg0b = RegEnable(adder_f64, fire_reg0b)
-  val adder_f32_reg0b = RegEnable(adder_f32, fire_reg0b)
-  val adder_f16_reg0b = RegEnable(adder_f16, fire_reg0b)
-  val adder_reg0b = RegEnable(
-    Mux(is_fp64_reg0b, adder_f64, Mux(is_fp32_reg0b, adder_f32, adder_f16)),
-    fire_reg0b)
-  val adder_is_negative_reg0b = RegEnable(adder_is_negative_reg_d, fire_reg0b)
+  // Assembled adder is combinational from fire_reg0b regs; invert/LZD below
+  // consume it in the same fire_reg0c cycle, and the captured copies feed
+  // fire_reg1 (replacing the old fire_reg0b → fire_reg0c adder registers).
+  val adder_is_negative_reg_d = Mux(is_fp64_reg0c, adder_is_negative_f64,
+    Mux(is_fp32_reg0c, adder_is_negative_f32, adder_is_negative_f16))
+  val adder_f64_reg0b = adder_f64
+  val adder_f32_reg0b = adder_f32
+  val adder_f16_reg0b = adder_f16
+  val adder_reg0b = Mux(is_fp64_reg0c, adder_f64, Mux(is_fp32_reg0c, adder_f32, adder_f16))
+  val adder_is_negative_reg0b = adder_is_negative_reg_d
 
   // ab mul is greater then c
   val Eab_is_greater_f64    = rshift_value_f64 > 0.S
@@ -429,9 +446,7 @@ class FloatFMA() extends Module{
   val lshift_value_max_f16_reg0b   = lshift_value_max_reg0b(5,0)
 
   // fire_reg0b → fire_reg0c: invert / TZD / LZD-mask / mask-valid from the
-  // registered completion-add result.
-  val is_fp64_reg0c = RegEnable(is_fp64_reg0b, fire_reg0b)
-  val is_fp32_reg0c = RegEnable(is_fp32_reg0b, fire_reg0b)
+  // mux-assembled completion-add (CS partials registered on fire_reg0b).
   val lshift_value_max_reg0c = RegEnable(lshift_value_max_reg0b, fire_reg0b)
   val lshift_value_max_f64_reg0c = lshift_value_max_reg0c
   val lshift_value_max_f32_reg0c = lshift_value_max_reg0c(8, 0)
