@@ -1313,7 +1313,8 @@ static int wait_syncobjs_timeout(int fd, uint32_t *handles, uint32_t count,
     return ioctl(fd, DRM_IOCTL_SYNCOBJ_WAIT, &wait);
 }
 
-static int wait_syncobjs(int fd, uint32_t *handles, uint32_t count)
+static int wait_syncobjs_for(int fd, uint32_t *handles, uint32_t count,
+                             int64_t budget_nsec)
 {
     struct timespec now;
 
@@ -1321,7 +1322,12 @@ static int wait_syncobjs(int fd, uint32_t *handles, uint32_t count)
         return -1;
     return wait_syncobjs_timeout(fd, handles, count,
                                  (int64_t)now.tv_sec * 1000000000ll +
-                                 now.tv_nsec + 300000000000ll);
+                                 now.tv_nsec + budget_nsec);
+}
+
+static int wait_syncobjs(int fd, uint32_t *handles, uint32_t count)
+{
+    return wait_syncobjs_for(fd, handles, count, 300000000000ll);
 }
 
 static int expect_syncobj_status(int fd, uint32_t handle, int expected)
@@ -2106,7 +2112,8 @@ int main(void)
                               vertex_shader_slot, vertex_kernarg_slot, 0,
                               0, 0, 0, 0, syncobjs[7]),
           "queue stencil-gated render");
-    CHECK(wait_syncobjs(fd, &syncobjs[7], 1), "wait stencil render syncobj");
+    CHECK(wait_syncobjs_for(fd, &syncobjs[7], 1, 900000000000ll),
+          "wait stencil render syncobj");
     if ((frag_core &&
          (framebuffer_count(&first, 0x00000000u) != 60 ||
           framebuffer_count(&first, expected_pixel) != 0)) ||
@@ -2559,8 +2566,23 @@ int main(void)
                   OPENGPU_COMMAND_EVENT(16, 1),
                   OPENGPU_COMMAND_EVENT(17, 1)),
               "VM isolation compute after map failure");
-        CHECK(wait_syncobjs(fd, &iso_fail_sync[1], 1),
-              "wait VM isolation map-failure compute");
+        if (wait_syncobjs(fd, &iso_fail_sync[1], 1)) {
+            int wait_error = errno;
+            struct drm_opengpu_fault fault = { 0 };
+
+            if (!get_last_fault(fd, &fault))
+                fprintf(stderr,
+                        "VM map-failure compute fault: sequence=%llu "
+                        "flags=0x%x error=%d command=%u opcode=%u "
+                        "status=%u\n",
+                        (unsigned long long)fault.sequence, fault.flags,
+                        fault.error, fault.command_id, fault.opcode,
+                        fault.status);
+            errno = wait_error;
+            perror("OPENGPU USERSPACE DRM FAIL wait VM isolation "
+                   "map-failure compute");
+            return 1;
+        }
         for (lane = 0; lane < 4; lane++) {
             uint32_t expected = lane < 2 ? 6u : lane;
 

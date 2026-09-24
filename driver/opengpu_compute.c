@@ -121,7 +121,7 @@ static int opengpu_init_test_shader(struct opengpu_device *gpu)
 
 static int opengpu_submit_test(struct opengpu_device *gpu)
 {
-    const struct opengpu_job job = {
+    struct opengpu_job job = {
         .cmd = gpu->compute.cmd.dma,
         .cmd_count = 1,
         .color = gpu->compute.color.dma,
@@ -135,6 +135,7 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
     struct opengpu_buffer descriptor;
     struct opengpu_vm vm;
     bool vm_ready = false;
+    u32 descriptor_va;
     struct dma_fence *fence = NULL;
     long timeout;
     int ret;
@@ -144,16 +145,20 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
     if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_RENDER))
         return -EOPNOTSUPP;
     opengpu_fill_test_command(gpu);
-    /* The shared identity map is non-executable. Give the probe shader the
-     * same private executable code window used by scheduled render jobs. */
+    /* Context ASIDs have no identity map. Map every probe resource the same
+     * way scheduled render jobs do (code, kernarg, command, FB, descriptor),
+     * then submit by VA — physical addresses fault once the private VM is
+     * active. */
     if (gpu->mmu.enabled && (gpu->hw.capabilities & GPU_CAP_FRAGMENT_CORE)) {
         struct opengpu_kernarg_va_plan plan;
         struct gpu_draw_record *record = gpu->compute.cmd.cpu;
+        size_t fb_bytes = (size_t)gpu->stride * gpu->height;
 
         ret = opengpu_mmu_vm_create(gpu, &vm);
         if (ret)
             return ret;
         vm_ready = true;
+
         ret = opengpu_code_va_plan(gpu->compute.shader.dma,
                                    gpu->compute.shader.size, 1,
                                    OPENGPU_MMU_PAGE_SIZE, &plan);
@@ -164,14 +169,84 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
                                  OPENGPU_MMU_POLICY_CACHED);
         if (ret)
             goto out_vm;
-        record->shader_pc += (u32)plan.va - lower_32_bits(gpu->compute.shader.dma);
+        record->shader_pc += (u32)plan.va -
+            lower_32_bits(gpu->compute.shader.dma);
+
+        if (gpu->compute.kernarg.dma && gpu->compute.kernarg.size) {
+            ret = opengpu_kernarg_va_plan(gpu->compute.kernarg.dma,
+                                          gpu->compute.kernarg.size, 1,
+                                          OPENGPU_MMU_PAGE_SIZE, &plan);
+            if (ret)
+                goto out_vm;
+            ret = opengpu_mmu_vm_map(gpu, &vm, (dma_addr_t)plan.va_page,
+                                     (dma_addr_t)plan.pa_page,
+                                     (size_t)plan.span,
+                                     OPENGPU_MMU_POLICY_UNCACHED);
+            if (ret)
+                goto out_vm;
+            record->kernarg = (u32)plan.va;
+        }
+
+        ret = opengpu_command_va_plan(gpu->compute.cmd.dma,
+                                      gpu->compute.cmd.size, 1,
+                                      OPENGPU_MMU_PAGE_SIZE, &plan);
+        if (ret)
+            goto out_vm;
+        ret = opengpu_mmu_vm_map(gpu, &vm, (dma_addr_t)plan.va_page,
+                                 (dma_addr_t)plan.pa_page, (size_t)plan.span,
+                                 OPENGPU_MMU_POLICY_UNCACHED);
+        if (ret)
+            goto out_vm;
+        job.cmd = (u32)plan.va;
+
+        if (job.color && fb_bytes) {
+            ret = opengpu_framebuffer_va_plan(job.color, fb_bytes, 1,
+                                              OPENGPU_MMU_PAGE_SIZE, &plan);
+            if (ret)
+                goto out_vm;
+            ret = opengpu_mmu_vm_map(gpu, &vm, (dma_addr_t)plan.va_page,
+                                     (dma_addr_t)plan.pa_page,
+                                     (size_t)plan.span,
+                                     OPENGPU_MMU_POLICY_CACHED);
+            if (ret)
+                goto out_vm;
+            job.color = (u32)plan.va;
+        }
+        if (job.depth && fb_bytes) {
+            ret = opengpu_framebuffer_va_plan(job.depth, fb_bytes, 2,
+                                              OPENGPU_MMU_PAGE_SIZE, &plan);
+            if (ret)
+                goto out_vm;
+            ret = opengpu_mmu_vm_map(gpu, &vm, (dma_addr_t)plan.va_page,
+                                     (dma_addr_t)plan.pa_page,
+                                     (size_t)plan.span,
+                                     OPENGPU_MMU_POLICY_CACHED);
+            if (ret)
+                goto out_vm;
+            job.depth = (u32)plan.va;
+        }
         dma_wmb();
     }
     ret = opengpu_buffer_alloc(gpu, &descriptor, 64);
     if (ret)
         goto out_vm;
+    descriptor_va = lower_32_bits(descriptor.dma);
+    if (vm_ready) {
+        struct opengpu_kernarg_va_plan plan;
+
+        ret = opengpu_render_va_plan(descriptor.dma, descriptor.size, 1,
+                                     OPENGPU_MMU_PAGE_SIZE, &plan);
+        if (ret)
+            goto out_descriptor;
+        ret = opengpu_mmu_vm_map(gpu, &vm, (dma_addr_t)plan.va_page,
+                                 (dma_addr_t)plan.pa_page, (size_t)plan.span,
+                                 OPENGPU_MMU_POLICY_UNCACHED);
+        if (ret)
+            goto out_descriptor;
+        descriptor_va = (u32)plan.va;
+    }
     ret = opengpu_hw_render_async(
-        gpu, &job, descriptor.cpu, lower_32_bits(descriptor.dma),
+        gpu, &job, descriptor.cpu, descriptor_va,
         (u32)descriptor.size, NULL, 0, false, 0, 0, 0, NULL,
         vm_ready ? &vm : NULL, &fence);
     if (ret)
@@ -1404,7 +1479,7 @@ struct dma_fence *opengpu_job_run(struct opengpu_sched_job *job)
             job->kernel.kernel_pc = code_va +
                 (job->kernel.kernel_pc - job->shader.dma);
         }
-        ret = opengpu_hw_compute_async(job->gpu, &job->kernel,
+        ret = opengpu_hw_compute_async(job->gpu, &job->kernel, &job->shader,
                                        &job->events, vm, &fence);
         return ret ? ERR_PTR(ret) : fence;
     }

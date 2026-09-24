@@ -337,6 +337,7 @@ int opengpu_mmu_vm_unmap(struct opengpu_device *gpu, struct opengpu_vm *vm,
 void opengpu_mmu_vm_destroy(struct opengpu_device *gpu, struct opengpu_vm *vm);
 int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              const struct opengpu_kernel_launch *launch,
+                             const struct opengpu_buffer *shader,
                              const struct opengpu_command_events *events,
                              const struct opengpu_vm *vm,
                              struct dma_fence **fence);

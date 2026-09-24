@@ -1324,8 +1324,15 @@ int opengpu_hw_flush_tlb_vpn(struct opengpu_device *gpu, u32 vpn)
     return 0;
 }
 
+static int opengpu_hw_invalidate_buffer_locked(
+    struct opengpu_device *gpu, const struct opengpu_buffer *buffer);
+
+/* `shader` is the job's CPU-written code snapshot. Instruction fetch is always
+ * L2-cached, so its lines are dropped under the same submit_lock hold as the
+ * kernel doorbell, like draw snapshots in opengpu_hw_render_async. */
 int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              const struct opengpu_kernel_launch *launch,
+                             const struct opengpu_buffer *shader,
                              const struct opengpu_command_events *events,
                              const struct opengpu_vm *vm,
                              struct dma_fence **out_fence)
@@ -1350,10 +1357,12 @@ int opengpu_hw_compute_async(struct opengpu_device *gpu,
         return -EINVAL;
 
     mutex_lock(&gpu->hw.submit_lock);
-    ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
-        opengpu_hw_unified_submit_locked(
-            gpu, launch, events, GPU_UCMD_OP_KERNEL, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, vm, out_fence);
+    ret = opengpu_hw_invalidate_buffer_locked(gpu, shader);
+    if (!ret)
+        ret = opengpu_hw_execution_busy(gpu) ? -EBUSY :
+            opengpu_hw_unified_submit_locked(
+                gpu, launch, events, GPU_UCMD_OP_KERNEL, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, vm, out_fence);
     mutex_unlock(&gpu->hw.submit_lock);
     return ret;
 }
