@@ -142,6 +142,7 @@ struct drm_opengpu_param {
  * its own depth attachment (depth_handle/depth_offset) and preserve it across
  * submissions with OPENGPU_SUBMIT_DEPTH_LOAD. */
 #define OPENGPU_CAP_PERSISTENT_DEPTH (1u << 19)
+#define OPENGPU_CAP_HW_VBLANK (1u << 21)
 
 /* Sample mode field width (0 = 1x, 1 = 2x, 2 = 4x). */
 #define OPENGPU_MSAA_MODE_MASK 0x3u

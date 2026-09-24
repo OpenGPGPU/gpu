@@ -107,13 +107,22 @@ static void opengpu_pipe_disable(struct drm_simple_display_pipe *pipe)
 
 static int opengpu_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
 {
-    /* Soft timer until an RTL/ARTI hardware vblank IRQ exists (phase 2).
-     * ARTI guest-memory GraphicHwOps owns QEMU scanout independently. */
+    struct opengpu_drm *kms = pipe_to_opengpu_drm(pipe);
+
+    if (kms->gpu->hw.capabilities & GPU_CAP_HW_VBLANK)
+        return opengpu_hw_vblank_enable(kms->gpu, true);
+    /* Soft timer fallback when RTL lacks GPU_CAP_HW_VBLANK. */
     return drm_crtc_vblank_helper_enable_vblank_timer(&pipe->crtc);
 }
 
 static void opengpu_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
 {
+    struct opengpu_drm *kms = pipe_to_opengpu_drm(pipe);
+
+    if (kms->gpu->hw.capabilities & GPU_CAP_HW_VBLANK) {
+        opengpu_hw_vblank_enable(kms->gpu, false);
+        return;
+    }
     drm_crtc_vblank_helper_disable_vblank_timer(&pipe->crtc);
 }
 
@@ -165,7 +174,7 @@ static int opengpu_connector_get_modes(struct drm_connector *connector)
     mode->vsync_end = mode->vsync_start + 1;
     mode->vtotal = mode->vsync_end + 2;
     mode->clock = max_t(u32, 1,
-                        DIV_ROUND_UP(mode->htotal * mode->vtotal * 60,
+                        DIV_ROUND_UP(mode->htotal * mode->vtotal * 30,
                                      1000));
     mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
     drm_mode_set_name(mode);
@@ -195,7 +204,7 @@ static const struct drm_mode_config_funcs opengpu_mode_config_funcs = {
 /*
  * drm_simple_display_pipe has no atomic_flush callback.  Arm pending page
  * flip events explicitly after the new scanout address has been committed;
- * the generic vblank timer will deliver them on the next refresh boundary.
+ * hardware or soft vblank delivers them on the next refresh boundary.
  */
 static void opengpu_atomic_commit_tail(struct drm_atomic_commit *state)
 {
@@ -268,5 +277,13 @@ void opengpu_display_fini(struct opengpu_device *gpu)
     drm_atomic_helper_shutdown(&gpu->display.kms->drm);
     opengpu_hw_display_commit(gpu, &disabled);
     gpu->display.enabled = false;
+    gpu->display.vblank_irq = false;
     gpu->display.kms = NULL;
+}
+
+void opengpu_display_handle_vblank(struct opengpu_device *gpu)
+{
+    if (!gpu->drm)
+        return;
+    drm_crtc_handle_vblank(&gpu->drm->pipe.crtc);
 }

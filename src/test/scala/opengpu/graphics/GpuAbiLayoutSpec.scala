@@ -67,6 +67,7 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
       "GPU_REG_SCANOUT_FORMAT" -> RenderHostRegs.SCANOUT_FORMAT,
       "GPU_REG_SCANOUT_CONTROL" -> RenderHostRegs.SCANOUT_CONTROL,
       "GPU_REG_SCANOUT_STATUS" -> RenderHostRegs.SCANOUT_STATUS,
+      "GPU_REG_SCANOUT_PERIOD" -> RenderHostRegs.SCANOUT_PERIOD,
       "GPU_REG_CAPABILITIES" -> RenderHostRegs.CAPABILITIES,
       "GPU_REG_CLEAR_BASE" -> RenderHostRegs.CLEAR_BASE,
       "GPU_REG_CLEAR_BYTES" -> RenderHostRegs.CLEAR_BYTES,
@@ -158,6 +159,7 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
       "GPU_CAP_UNIFIED_RESET" -> (1L << GpuCapabilities.UnifiedReset),
       "GPU_CAP_PERSISTENT_DEPTH" -> (1L << GpuCapabilities.PersistentDepth),
       "GPU_CAP_UNIFIED_RENDER" -> (1L << GpuCapabilities.UnifiedRender),
+      "GPU_CAP_HW_VBLANK" -> (1L << GpuCapabilities.HwVblank),
       "GPU_CAP_MSAA" -> (1L << GpuCapabilities.Msaa),
       "GPU_CAP_MSAA_MAX_MODE_SHIFT" -> GpuCapabilities.MsaaMaxModeShift.toLong,
       "GPU_CAP_MSAA_MAX_MODE_MASK" ->

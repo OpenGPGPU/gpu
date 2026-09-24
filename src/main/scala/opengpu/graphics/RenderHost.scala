@@ -43,15 +43,17 @@ object RenderHostRegs {
   val SCANOUT_HEIGHT    = 0x50
   /** 0: packed RGBA8888 (0xRRGGBBAA), 1: DRM XRGB8888. */
   val SCANOUT_FORMAT    = 0x54
-  /** bit0: scanout enable. */
+  /** bit0: scanout enable; bit1: hardware vblank IRQ enable. */
   val SCANOUT_CONTROL   = 0x58
   /** bit0: active (enable && non-zero base/stride/size). */
   val SCANOUT_STATUS    = 0x5C
   /** bit0: fragment core; bit2: vertex core;
-    * bits 15:8: fragment batch capacity. */
+    * bits 15:8: fragment batch capacity; bit21: hardware vblank. */
   val CAPABILITIES      = 0x60
-  /* 0x64..0x84 were the retired host-memory job ring and interrupt-history
-   * ring registers; they are reserved and unmapped. */
+  /** AXI clocks between vblank IRQs while scanout is active and CONTROL.bit1
+    * is set. Zero disables the counter. */
+  val SCANOUT_PERIOD    = 0x64
+  /* 0x68..0x84 remain reserved (retired job ring / IH). */
   /** Hardware clear (FillEngine): destination base, byte count (multiple of
     * the 64-byte line) and the 32-bit fill pattern. */
   val CLEAR_BASE        = 0x88
@@ -296,6 +298,8 @@ class RenderHost(
   private val scanoutHeightReg = RegInit(0.U(32.W))
   private val scanoutFormatReg = RegInit(0.U(32.W))
   private val scanoutControlReg = RegInit(0.U(32.W))
+  private val scanoutPeriodReg = RegInit(0.U(32.W))
+  private val scanoutCounter = RegInit(0.U(32.W))
 
   private val busy = RegInit(false.B)
   private val done = RegInit(false.B)
@@ -304,6 +308,7 @@ class RenderHost(
   private val memoryFaulted = RegInit(false.B)
   private val irqEnable = RegInit(false.B)
   private val irqPending = RegInit(false.B)
+  private val vblankPending = RegInit(false.B)
   private val sawBusy = RegInit(false.B)
   /** True while the running job was launched by a unified render command. */
   private val ownerUnified = RegInit(false.B)
@@ -367,10 +372,12 @@ class RenderHost(
   private val statusBits =
     Cat(0.U(26.W), strided.io.busy, blit.io.busy, fill.io.busy,
       error, done, busy)
-  private val irqBits = Cat(0.U(30.W), irqPending, irqEnable)
+  private val irqBits = Cat(0.U(29.W), vblankPending, irqPending, irqEnable)
   private val scanoutActive = scanoutControlReg(0) &&
     scanoutBaseReg.orR && scanoutStrideReg.orR &&
     scanoutWidthReg.orR && scanoutHeightReg.orR
+  private val scanoutVblankEn = scanoutControlReg(1)
+  private val vblankArmed = scanoutActive && scanoutVblankEn && scanoutPeriodReg.orR
   private val scanoutStatusBits = Cat(0.U(31.W), scanoutActive)
   private val capabilityBits =
     ((if (fragCore) (1 << GpuCapabilities.FragmentCore) else 0) |
@@ -388,6 +395,7 @@ class RenderHost(
       (if (unifiedCommands) (1 << GpuCapabilities.UnifiedReset) else 0) |
       (1 << GpuCapabilities.PersistentDepth) |
       (if (unifiedCommands) (1 << GpuCapabilities.UnifiedRender) else 0) |
+      (1 << GpuCapabilities.HwVblank) |
       (gpuConfig.warps * gpuConfig.lanes << GpuCapabilities.FragmentBatchShift))
       .U(32.W)
 
@@ -421,6 +429,7 @@ class RenderHost(
       RenderHostRegs.SCANOUT_CONTROL.U -> scanoutControlReg,
       RenderHostRegs.SCANOUT_STATUS.U -> scanoutStatusBits,
       RenderHostRegs.CAPABILITIES.U -> capabilityBits,
+      RenderHostRegs.SCANOUT_PERIOD.U -> scanoutPeriodReg,
       RenderHostRegs.CLEAR_BASE.U -> clearBaseReg,
       RenderHostRegs.CLEAR_BYTES.U -> clearBytesReg,
       RenderHostRegs.CLEAR_PATTERN.U -> clearPatternReg,
@@ -507,6 +516,10 @@ class RenderHost(
         scanoutControlReg := merge(
           scanoutControlReg, io.reg.req.bits.data, io.reg.req.bits.strb)
       }
+      is(RenderHostRegs.SCANOUT_PERIOD.U) {
+        scanoutPeriodReg := merge(
+          scanoutPeriodReg, io.reg.req.bits.data, io.reg.req.bits.strb)
+      }
       is(RenderHostRegs.STATUS.U) {
         when(io.reg.req.bits.data(1)) { done := false.B }
         when(io.reg.req.bits.data(2)) { error := false.B }
@@ -514,6 +527,7 @@ class RenderHost(
       is(RenderHostRegs.IRQ.U) {
         irqEnable := io.reg.req.bits.data(0)
         when(io.reg.req.bits.data(1)) { irqPending := false.B }
+        // vblankPending W1C is handled with the timer so ack beats wrap.
       }
       is(RenderHostRegs.CLEAR_BASE.U) {
         clearBaseReg := merge(clearBaseReg, io.reg.req.bits.data, io.reg.req.bits.strb)
@@ -703,6 +717,28 @@ class RenderHost(
   // pending bit and W1C acknowledgement as graphics completions.
   when(io.externalCompletion) { irqPending := true.B }
 
+  // Scanout-gated vblank timer: reload PERIOD while ACTIVE && CONTROL.bit1.
+  private val vblankPulse = vblankArmed && scanoutCounter === 1.U &&
+    !(wFire && rAddr === RenderHostRegs.SCANOUT_PERIOD.U)
+  when(wFire && rAddr === RenderHostRegs.SCANOUT_PERIOD.U) {
+    scanoutCounter := 0.U
+  }.elsewhen(!vblankArmed) {
+    scanoutCounter := 0.U
+  }.elsewhen(scanoutCounter === 0.U) {
+    scanoutCounter := scanoutPeriodReg
+  }.elsewhen(scanoutCounter === 1.U) {
+    scanoutCounter := scanoutPeriodReg
+  }.otherwise {
+    scanoutCounter := scanoutCounter - 1.U
+  }
+  when(wFire && rAddr === RenderHostRegs.IRQ.U && io.reg.req.bits.data(2)) {
+    vblankPending := false.B
+  }.elsewhen(vblankPulse) {
+    vblankPending := true.B
+  }
+
+  io.irq := irqEnable && (irqPending || vblankPending)
+
   // The host completion arbiter publishes render results through the shared
   // unified MMIO result slot.
   io.renderCompletion.valid := renderDonePending
@@ -776,8 +812,6 @@ class RenderHost(
   io.kernelGlobalAtomicRequest <> core.io.kernelGlobalAtomicRequest
   core.io.kernelGlobalAtomicResponse <> io.kernelGlobalAtomicResponse
   core.io.texMem <> io.texMem
-
-  io.irq := irqEnable && irqPending
 
   // Read port: single-cycle combinational response; writes are fire-and-forget.
   io.reg.req.ready := true.B

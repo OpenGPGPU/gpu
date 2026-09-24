@@ -368,14 +368,25 @@ static irqreturn_t opengpu_irq_handler(int irq, void *data)
 {
     struct opengpu_device *gpu = data;
     u32 status;
+    u32 irq_bits;
+    u32 ack = GPU_IRQ_ENABLE;
 
     status = opengpu_reg_read(gpu, GPU_REG_STATUS);
-    /* IRQ combines an enable bit with W1C pending.  Preserve enable while
-     * acknowledging, otherwise the first completion permanently masks all
-     * later queue interrupts. */
-    opengpu_reg_write(gpu, GPU_REG_IRQ,
-                      GPU_IRQ_ENABLE | GPU_IRQ_PENDING);
+    irq_bits = opengpu_reg_read(gpu, GPU_REG_IRQ);
+    /* IRQ combines an enable bit with W1C pending causes.  Preserve enable
+     * while acknowledging only the sticky bits that are set. */
+    if (irq_bits & GPU_IRQ_PENDING)
+        ack |= GPU_IRQ_PENDING;
+    if (irq_bits & GPU_IRQ_VBLANK_PENDING)
+        ack |= GPU_IRQ_VBLANK_PENDING;
+    opengpu_reg_write(gpu, GPU_REG_IRQ, ack);
     opengpu_reg_write(gpu, GPU_REG_IRQ, GPU_IRQ_ENABLE);
+
+    if (irq_bits & GPU_IRQ_VBLANK_PENDING)
+        opengpu_display_handle_vblank(gpu);
+
+    if (!(irq_bits & GPU_IRQ_PENDING))
+        return IRQ_HANDLED;
 
     dev_info(gpu->dev, "OPENGPU irq: status=%08x\n", status);
     opengpu_hw_unified_reset_pending(gpu);
@@ -1473,6 +1484,8 @@ int opengpu_hw_render_async(struct opengpu_device *gpu,
 int opengpu_hw_display_commit(struct opengpu_device *gpu,
                               const struct opengpu_scanout *scanout)
 {
+    u32 control = 0;
+
     if (scanout->enable &&
         (!scanout->base || upper_32_bits(scanout->base) ||
          !scanout->stride || !scanout->width || !scanout->height))
@@ -1482,17 +1495,46 @@ int opengpu_hw_display_commit(struct opengpu_device *gpu,
      * CONTROL (enable), WIDTH/HEIGHT, STRIDE and BASE; the BASE write is the
      * visibility latch, and CONTROL bit0 gates presentation. */
     opengpu_reg_write(gpu, GPU_REG_SCANOUT_CONTROL, 0);
+    if (gpu->hw.capabilities & GPU_CAP_HW_VBLANK) {
+        if (!gpu->display.period)
+            gpu->display.period = DIV_ROUND_UP(100000000u, 30u);
+        opengpu_reg_write(gpu, GPU_REG_SCANOUT_PERIOD, gpu->display.period);
+    }
     opengpu_reg_write(gpu, GPU_REG_SCANOUT_STRIDE, scanout->stride);
     opengpu_reg_write(gpu, GPU_REG_SCANOUT_WIDTH, scanout->width);
     opengpu_reg_write(gpu, GPU_REG_SCANOUT_HEIGHT, scanout->height);
     opengpu_reg_write(gpu, GPU_REG_SCANOUT_FORMAT, scanout->format);
     opengpu_reg_write(gpu, GPU_REG_SCANOUT_BASE,
                       scanout->enable ? lower_32_bits(scanout->base) : 0);
-    if (scanout->enable)
-        opengpu_reg_write(gpu, GPU_REG_SCANOUT_CONTROL,
-                          GPU_SCANOUT_ENABLE);
+    if (scanout->enable) {
+        control = GPU_SCANOUT_ENABLE;
+        if ((gpu->hw.capabilities & GPU_CAP_HW_VBLANK) &&
+            gpu->display.vblank_irq)
+            control |= GPU_SCANOUT_VBLANK_EN;
+        opengpu_reg_write(gpu, GPU_REG_SCANOUT_CONTROL, control);
+    }
     if (!!(opengpu_reg_read(gpu, GPU_REG_SCANOUT_STATUS) &
            GPU_SCANOUT_ACTIVE) != scanout->enable)
         return -EIO;
+    return 0;
+}
+
+int opengpu_hw_vblank_enable(struct opengpu_device *gpu, bool enable)
+{
+    u32 control;
+
+    if (!(gpu->hw.capabilities & GPU_CAP_HW_VBLANK))
+        return -EOPNOTSUPP;
+    gpu->display.vblank_irq = enable;
+    if (!gpu->display.period)
+        gpu->display.period = DIV_ROUND_UP(100000000u, 30u);
+    opengpu_reg_write(gpu, GPU_REG_SCANOUT_PERIOD,
+                      enable ? gpu->display.period : 0);
+    control = opengpu_reg_read(gpu, GPU_REG_SCANOUT_CONTROL);
+    if (enable)
+        control |= GPU_SCANOUT_VBLANK_EN;
+    else
+        control &= ~GPU_SCANOUT_VBLANK_EN;
+    opengpu_reg_write(gpu, GPU_REG_SCANOUT_CONTROL, control);
     return 0;
 }

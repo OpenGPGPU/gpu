@@ -40,4 +40,6 @@ object GpuCapabilities {
     * the descriptor and command buffer are fetched through the context VM
     * (bit20). Depends on `UnifiedCommands`. */
   val UnifiedRender = 20
+  /** Scanout-gated period counter raises vblank on the shared IRQ (bit21). */
+  val HwVblank = 21
 }

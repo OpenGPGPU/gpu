@@ -123,7 +123,9 @@ struct opengpu_display {
     u32 width;
     u32 height;
     u32 format;
+    u32 period;
     bool enabled;
+    bool vblank_irq;
 };
 
 /* Sv32 per-page cache policy, matching CachePolicy in the RTL and the Sv32
@@ -343,6 +345,8 @@ int opengpu_hw_compute_async(struct opengpu_device *gpu,
                              struct dma_fence **fence);
 int opengpu_hw_display_commit(struct opengpu_device *gpu,
                               const struct opengpu_scanout *scanout);
+/* Program SCANOUT_PERIOD / CONTROL.VBLANK_EN when GPU_CAP_HW_VBLANK is set. */
+int opengpu_hw_vblank_enable(struct opengpu_device *gpu, bool enable);
 
 int opengpu_buffer_alloc(struct opengpu_device *gpu,
                          struct opengpu_buffer *buffer, size_t size);
@@ -383,5 +387,6 @@ int opengpu_compute_launch_ioctl(struct drm_device *drm, void *data,
 
 int opengpu_display_init(struct opengpu_device *gpu);
 void opengpu_display_fini(struct opengpu_device *gpu);
+void opengpu_display_handle_vblank(struct opengpu_device *gpu);
 
 #endif /* OPENGPU_DEVICE_H */

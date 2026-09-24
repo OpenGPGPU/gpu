@@ -169,7 +169,7 @@ class RenderHostSpec extends AnyFlatSpec {
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
       assert(regRead(dut, RenderHostRegs.ID) == 0x47550001L,
         "device ID register must report device<<16 | version")
-      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0xa08b9L,
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x2a08b9L,
          "fragment-core builds must advertise support, batch capacity, persistent depth and programmable MSAA")
 
       // An unmapped address yields ok=false.
@@ -239,7 +239,7 @@ class RenderHostSpec extends AnyFlatSpec {
       vertCore = true)) { dut =>
       dut.io.externalCompletion.poke(false.B)
       dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
-      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0xa08bdL,
+      assert(regRead(dut, RenderHostRegs.CAPABILITIES) == 0x2a08bdL,
         "shared vertex/fragment-core builds must advertise both shader stages and programmable MSAA")
     }
   }
@@ -260,6 +260,38 @@ class RenderHostSpec extends AnyFlatSpec {
         regWrite(dut, RenderHostRegs.IRQ, 3)
         dut.io.irq.expect(false.B)
         assert((regRead(dut, RenderHostRegs.IRQ) & 0x3L) == 0x1L)
+    }
+  }
+
+  it should "raise a hardware vblank on the shared IRQ while scanout is active" in {
+    simulate(new RenderHost(gpuConfig = GpuConfig(lanes = 4, warps = 2))) {
+      dut =>
+        dut.io.externalCompletion.poke(false.B)
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        assert((regRead(dut, RenderHostRegs.CAPABILITIES) &
+          (1L << GpuCapabilities.HwVblank)) != 0L)
+        regWrite(dut, RenderHostRegs.IRQ, 1)
+        regWrite(dut, RenderHostRegs.SCANOUT_BASE, 0xb000)
+        regWrite(dut, RenderHostRegs.SCANOUT_STRIDE, 64)
+        regWrite(dut, RenderHostRegs.SCANOUT_WIDTH, 16)
+        regWrite(dut, RenderHostRegs.SCANOUT_HEIGHT, 16)
+        regWrite(dut, RenderHostRegs.SCANOUT_PERIOD, 4)
+        regWrite(dut, RenderHostRegs.SCANOUT_CONTROL, 0x3) // ENABLE | VBLANK_EN
+
+        // Counter: 0→4 arm, then 4,3,2,1 pulse. Allow a few cycles.
+        var raised = false
+        var i = 0
+        while (i < 16 && !raised) {
+          dut.clock.step()
+          raised = dut.io.irq.peek().litToBoolean
+          i += 1
+        }
+        assert(raised, "expected hardware vblank IRQ")
+        assert((regRead(dut, RenderHostRegs.IRQ) & 0x5L) == 0x5L)
+
+        regWrite(dut, RenderHostRegs.IRQ, 0x5) // keep enable, clear vblank
+        dut.io.irq.expect(false.B)
+        assert((regRead(dut, RenderHostRegs.IRQ) & 0x5L) == 0x1L)
     }
   }
 
@@ -335,7 +367,7 @@ class RenderHostSpec extends AnyFlatSpec {
 
   it should "advertise MSAA on both backends, selecting the backend by bit 0" in {
     val cfg = GpuConfig(lanes = 4, warps = 2)
-    for ((fragCore, expected) <- Seq(false -> 0xa08b8L, true -> 0xa08b9L)) {
+    for ((fragCore, expected) <- Seq(false -> 0x2a08b8L, true -> 0x2a08b9L)) {
       simulate(new RenderHost(gpuConfig = cfg, fragCore = fragCore)) { dut =>
         dut.io.externalCompletion.poke(false.B)
         dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)

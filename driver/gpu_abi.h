@@ -55,8 +55,10 @@ typedef int32_t s32;
 #define GPU_REG_SCANOUT_CONTROL 0x058
 #define GPU_REG_SCANOUT_STATUS  0x05c
 #define GPU_REG_CAPABILITIES    0x060
+/* AXI clocks between hardware vblank IRQs (0 disables the counter). */
+#define GPU_REG_SCANOUT_PERIOD  0x064
 
-/* 0x064..0x084 held the retired host-memory job queue and interrupt-history
+/* 0x068..0x084 held the retired host-memory job queue and interrupt-history
  * (IH) ring registers; they are reserved and unmapped.  Draws are submitted as
  * unified render commands (GPU_UCMD_OP_RENDER). */
 /* Hardware clear (FillEngine): 64-byte-aligned destination, byte count a
@@ -197,10 +199,13 @@ typedef int32_t s32;
  * context's VM instead of the host-memory job ring.  Implies
  * GPU_CAP_UNIFIED_COMMANDS. */
 #define GPU_CAP_UNIFIED_RENDER  (1u << 20)
+/* Scanout-gated period counter raises vblank on the shared IRQ (bit21). */
+#define GPU_CAP_HW_VBLANK       (1u << 21)
 
 #define GPU_SCANOUT_FORMAT_RGBA8888 0u
 #define GPU_SCANOUT_FORMAT_XRGB8888 1u
 #define GPU_SCANOUT_ENABLE          (1u << 0)
+#define GPU_SCANOUT_VBLANK_EN       (1u << 1)
 #define GPU_SCANOUT_ACTIVE          (1u << 0)
 
 /* TEX_CONFIG: bit0 CLAMP, bits[5:2] max mip level, bit8 sampling enable. */
@@ -287,6 +292,7 @@ typedef int32_t s32;
 /* ---- IRQ (bit0 ENABLE, bit1 PENDING w1c) ------------------------------- */
 #define GPU_IRQ_ENABLE         (1u << 0)
 #define GPU_IRQ_PENDING        (1u << 1)
+#define GPU_IRQ_VBLANK_PENDING (1u << 2)
 
 /* ---- Depth function / cull modes (must match hardware encoding) -------- */
 #define GPU_DEPTH_FUNC_LESS    0u

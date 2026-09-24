@@ -49,7 +49,7 @@ The C definitions in `driver/gpu_abi.h` and Scala definitions are compared by
 | 0x00 | ID | RO | `device_id << 16 \| version` |
 | 0x04 | CONTROL | W1P | legacy START bit is inert; does not launch rendering |
 | 0x08 | STATUS | RO/W1C | BUSY, DONE, ERROR and DMA-engine busy bits |
-| 0x0C | IRQ | RW/W1C | bit 0 ENABLE; bit 1 PENDING for graphics or unified-command completion |
+| 0x0C | IRQ | RW/W1C | bit 0 ENABLE; bit 1 COMPLETION PENDING; bit 2 VBLANK PENDING |
 | 0x10 | CMD_BASE | RW | command-buffer byte address |
 | 0x14 | CMD_COUNT | RW | draw-record count |
 | 0x18 | COLOR_BASE | RW | colour-buffer byte address |
@@ -68,9 +68,10 @@ The C definitions in `driver/gpu_abi.h` and Scala definitions are compared by
 | 0x4C | SCANOUT_WIDTH | RW | active width |
 | 0x50 | SCANOUT_HEIGHT | RW | active height |
 | 0x54 | SCANOUT_FORMAT | RW | 0 = RGBA8888 |
-| 0x58 | SCANOUT_CONTROL | RW | bit 0 ENABLE |
+| 0x58 | SCANOUT_CONTROL | RW | bit 0 ENABLE; bit 1 VBLANK_IRQ_EN |
 | 0x5C | SCANOUT_STATUS | RO | bit 0 ACTIVE |
-| 0x60 | CAPABILITIES | RO | fragment core, vertex core, clear/blit/strided engines, unified commands, MSAA, batch capacity and safe unified reset |
+| 0x60 | CAPABILITIES | RO | fragment/vertex cores, DMA engines, unified commands, MSAA, batch capacity, safe reset, HW vblank |
+| 0x64 | SCANOUT_PERIOD | RW | AXI clocks between vblank IRQs (0 disables) |
 | 0x88 | CLEAR_BASE | RW | 64-byte-aligned fill destination |
 | 0x8C | CLEAR_BYTES | RW | fill size, multiple of 64 |
 | 0x90 | CLEAR_PATTERN | RW | 32-bit fill pattern |
@@ -272,8 +273,9 @@ while retaining GEM, render and syncobj services.
 Under ARTI/QEMU the chosen display model is guest-memory scanout: the
 embedded device watches `SCANOUT_BASE` / `STRIDE` / `CONTROL` / `WIDTH` /
 `HEIGHT` and refreshes the QEMU console from guest RAM (`source:
-guest-memory` in `gpu_integration.yaml`). Soft/timer vblank remains in the
-Linux driver; a hardware vblank IRQ is future work.
+guest-memory` in `gpu_integration.yaml`). Hardware vblank is a scanout-gated
+period counter on the shared IRQ (`GPU_CAP_HW_VBLANK`); soft/timer remains the
+fallback when that capability is absent.
 
 Host validation: `python3 scripts/test_driver.py`. Linux integration:
 `bash scripts/run_arti_gpu.sh` (Verilator with eight simulation threads by

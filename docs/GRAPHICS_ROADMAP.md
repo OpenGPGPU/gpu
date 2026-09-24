@@ -198,8 +198,10 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    see [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md).
    **Display hardware is ARTI guest-memory GraphicHwOps** (`gpu_integration.yaml`:
    SCANOUT BASE/STRIDE/CONTROL/WIDTH/HEIGHT + `refresh_hz`). KMS programs those
-   registers; QEMU presents guest GEM memory. Soft/timer vblank remains in the
-   Linux driver until a hardware vblank IRQ exists (phase 2). The operational
+   registers; QEMU presents guest GEM memory. Hardware vblank
+   (`GPU_CAP_HW_VBLANK`, `SCANOUT_PERIOD`, IRQ bit2) paces DRM flips at 30 Hz
+   to match ARTI `refresh_hz`; soft/timer vblank remains the fallback when the
+   capability is absent. The operational
    RTL, driver, and ARTI display defaults are 64x64 at 30 Hz. Build the
    interactive Debian model once, then boot it:
    ```sh
@@ -320,8 +322,8 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
   suite.
 - No parent-level per-interface timing budgets.
 - Display/scanout under ARTI is guest-memory GraphicHwOps (BASE/STRIDE/
-  CONTROL/WIDTH/HEIGHT + refresh timer). Soft/timer vblank in Linux remains
-  until a hardware vblank IRQ lands.
+  CONTROL/WIDTH/HEIGHT + refresh timer). Hardware vblank IRQ
+  (`GPU_CAP_HW_VBLANK`) paces KMS; soft/timer remains the no-cap fallback.
 - ASID-0 identity mappings remain read/write and non-executable for Bare
   bring-up (`opengpu_hw_enable_mmu`). Resolve and line-invalidate submit
   physical invalidate addresses; engine/resolve traffic uses private DMA VAs
