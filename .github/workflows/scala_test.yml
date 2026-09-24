@@ -122,6 +122,14 @@ jobs:
         make -j"$(nproc)"
         make install
         /opt/verilator/bin/verilator --version
+    - name: Prefetch Scala compiler bridge
+      # Zinc resolves org.scala-lang:scala2-sbt-bridge outside the normal
+      # `update` graph (sbt/sbt#8783). A cached Coursier miss after the
+      # 2.13.18 bump surfaces as (scalaCompilerBridgeBinaryJar) Missing in ~1s.
+      # Force a fresh resolve before tests so shards do not inherit a bad entry.
+      run: |
+        rm -rf "${HOME}/.cache/coursier/v1/https/repo1.maven.org/maven2/org/scala-lang/scala2-sbt-bridge/"
+        sbt --batch 'show scalaCompilerBridgeBinaryJar'
     - name: Run shard ${{ matrix.shard }}
       run: |
         # Serial inside each runner: forked/shared-JVM parallelism OOMs under
