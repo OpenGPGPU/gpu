@@ -108,7 +108,11 @@ int main(void)
     if (load_dependencies() < 0 ||
         load_module("/arti_driver.ko", "arti_driver") < 0) {
         putstr("OPENGPU USERSPACE DRM FAIL: module load\r\n");
-#ifdef OPENGPU_RUN_USERSPACE_FRAG
+#ifdef OPENGPU_RUN_USERSPACE_VERTEX
+    } else if (run_program("/opengpu_pipe_vertex_draw") < 0 ||
+               run_program("/opengpu_pipe_resolve") < 0) {
+        putstr("OPENGPU USERSPACE EXAMPLES FAIL\r\n");
+#elif defined(OPENGPU_RUN_USERSPACE_FRAG)
     } else if (run_program("/opengpu_fragment_tint") < 0 ||
                run_program("/opengpu_triangle_present") < 0 ||
                run_program("/opengpu_pipe_present") < 0 ||
@@ -135,7 +139,8 @@ int main(void)
     } else if (run_program("/opengpu_drm_test") < 0) {
         putstr("OPENGPU USERSPACE DRM FAIL: test process\r\n");
 #endif
-#if defined(OPENGPU_RUN_USERSPACE_FRAG) || defined(OPENGPU_RUN_USERSPACE_EXAMPLES)
+#if defined(OPENGPU_RUN_USERSPACE_VERTEX) || defined(OPENGPU_RUN_USERSPACE_FRAG) || \
+    defined(OPENGPU_RUN_USERSPACE_EXAMPLES)
     } else {
         putstr("OPENGPU USERSPACE EXAMPLES PASS\r\n");
 #endif

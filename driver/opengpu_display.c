@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* DRM/KMS display client over the host-visible scanout control interface. */
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/overflow.h>
 #include <linux/dma-buf.h>
 
@@ -36,6 +37,14 @@ static const u32 opengpu_formats[] = {
     DRM_FORMAT_RGBA8888,
     DRM_FORMAT_XRGB8888,
 };
+
+static bool opengpu_use_hw_vblank(struct opengpu_device *gpu)
+{
+    /* ARTI advances the RTL only during host transactions and IRQ polling.
+     * Its 100 MHz PERIOD counter cannot track guest wall-clock refresh. */
+    return (gpu->hw.capabilities & GPU_CAP_HW_VBLANK) &&
+           !of_device_is_compatible(gpu->dev->of_node, "arti,rtl");
+}
 
 static int opengpu_kms_commit(struct opengpu_drm *kms,
                               struct drm_plane_state *plane_state)
@@ -109,9 +118,9 @@ static int opengpu_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
 {
     struct opengpu_drm *kms = pipe_to_opengpu_drm(pipe);
 
-    if (kms->gpu->hw.capabilities & GPU_CAP_HW_VBLANK)
+    if (opengpu_use_hw_vblank(kms->gpu))
         return opengpu_hw_vblank_enable(kms->gpu, true);
-    /* Soft timer fallback when RTL lacks GPU_CAP_HW_VBLANK. */
+    /* Pace ARTI and older RTL with the DRM soft timer. */
     return drm_crtc_vblank_helper_enable_vblank_timer(&pipe->crtc);
 }
 
@@ -119,7 +128,7 @@ static void opengpu_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
 {
     struct opengpu_drm *kms = pipe_to_opengpu_drm(pipe);
 
-    if (kms->gpu->hw.capabilities & GPU_CAP_HW_VBLANK) {
+    if (opengpu_use_hw_vblank(kms->gpu)) {
         opengpu_hw_vblank_enable(kms->gpu, false);
         return;
     }

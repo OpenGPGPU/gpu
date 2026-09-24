@@ -523,7 +523,13 @@ ln -s "$ARTI_DIR/examples/linux_arti_driver/driver_preflight.sh" \
     "$HARNESS_STAGE/driver_preflight.sh"
 cp "$GPU_DIR/driver/tests/arti-linux-init.c" "$HARNESS_STAGE/arti-linux-init.c"
 if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
-    if [ "$GPU_FRAG_CORE" = "1" ]; then
+    if [ "$GPU_VERT_CORE" = "1" ]; then
+        [ "$GPU_FRAG_CORE" = "1" ] || \
+            fail "vertex userspace examples require GPU_FRAG_CORE=1"
+        sed -i.bak '1i\
+#define OPENGPU_RUN_USERSPACE_VERTEX 1
+' "$HARNESS_STAGE/arti-linux-init.c"
+    elif [ "$GPU_FRAG_CORE" = "1" ]; then
         sed -i.bak '1i\
 #define OPENGPU_RUN_USERSPACE_FRAG 1
 ' "$HARNESS_STAGE/arti-linux-init.c"

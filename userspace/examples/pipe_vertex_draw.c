@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { FB_W = 16, FB_H = 16, TEX_WORDS = 21 };
+enum { TEX_WORDS = 21 };
 
 struct vertex {
     int32_t x, y, z, w;
@@ -77,6 +77,7 @@ int main(int argc, char **argv)
     uint64_t caps;
     unsigned painted = 0, i;
     uint32_t sample = 0;
+    uint32_t width = 0, height = 0;
     int status = 1;
 
     screen = pipe_opengpu_screen_create(argc > 1 ? argv[1] : NULL);
@@ -89,9 +90,13 @@ int main(int argc, char **argv)
         status = 0;
         goto done;
     }
+    if (pipe_opengpu_screen_display_size(screen, &width, &height))
+        goto done;
+    verts[1].u = (width / 2) << 16;
+    verts[2].v = (height / 2) << 16;
 
     ctx = pipe_opengpu_context_create(screen);
-    color = pipe_opengpu_resource_create(screen, FB_W * FB_H * 4u);
+    color = pipe_opengpu_resource_create_2d(screen, width, height);
     tex = pipe_opengpu_resource_create(screen, TEX_WORDS * 4u);
     vb = pipe_opengpu_resource_create(screen, sizeof(verts));
     if (!ctx || !color || !tex || !vb)
@@ -107,7 +112,7 @@ int main(int argc, char **argv)
 
     write_fragment_shader(fs);
     vs_bytes = write_vertex_shader(vs);
-    pipe_opengpu_set_framebuffer(ctx, color, FB_W, FB_H);
+    pipe_opengpu_set_framebuffer(ctx, color, width, height);
     if (pipe_opengpu_bind_fs(ctx, fs, 21u * 4u) ||
         pipe_opengpu_bind_vs(ctx, vs, vs_bytes) ||
         pipe_opengpu_set_vertex_buffer(ctx, vb, sizeof(struct vertex),
@@ -141,7 +146,7 @@ int main(int argc, char **argv)
         goto done;
     pipe_opengpu_fence_reference(&fence, NULL);
 
-    for (i = 0; i < FB_W * FB_H; i++) {
+    for (i = 0; i < width * height; i++) {
         uint32_t pixel = ((uint32_t *)pipe_opengpu_resource_map(color))[i];
 
         if (pixel == 0x000000ffu)

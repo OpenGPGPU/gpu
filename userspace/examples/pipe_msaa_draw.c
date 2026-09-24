@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { FB_W = 16, FB_H = 16, MODE = 1 }; /* 2x */
+enum { MODE = 1 }; /* 2x */
 
 static void fill_triangle(struct drm_opengpu_draw *draw)
 {
@@ -30,8 +30,7 @@ int main(int argc, char **argv)
     struct pipe_opengpu_fence *fence = NULL;
     struct drm_opengpu_draw draw;
     uint32_t samples = 1u << MODE;
-    uint32_t src_stride = FB_W * samples * 4u;
-    uint32_t dst_stride = FB_W * 4u;
+    uint32_t width = 0, height = 0, src_stride, dst_stride;
     uint64_t caps;
     uint32_t max_mode;
     unsigned painted = 0, empty = 0, i;
@@ -59,38 +58,42 @@ int main(int argc, char **argv)
         status = 0;
         goto done;
     }
+    if (pipe_opengpu_screen_display_size(screen, &width, &height))
+        goto done;
+    src_stride = width * samples * 4u;
+    dst_stride = width * 4u;
 
     ctx = pipe_opengpu_context_create(screen);
-    msaa = pipe_opengpu_resource_create(screen, src_stride * FB_H);
-    resolved = pipe_opengpu_resource_create(screen, dst_stride * FB_H);
+    msaa = pipe_opengpu_resource_create(screen, src_stride * height);
+    resolved = pipe_opengpu_resource_create(screen, dst_stride * height);
     if (!ctx || !msaa || !resolved)
         goto done;
 
-    memset(pipe_opengpu_resource_map(msaa), 0, src_stride * FB_H);
-    memset(pipe_opengpu_resource_map(resolved), 0, dst_stride * FB_H);
-    pipe_opengpu_set_framebuffer(ctx, msaa, FB_W, FB_H);
+    memset(pipe_opengpu_resource_map(msaa), 0, src_stride * height);
+    memset(pipe_opengpu_resource_map(resolved), 0, dst_stride * height);
+    pipe_opengpu_set_framebuffer(ctx, msaa, width, height);
     if (pipe_opengpu_set_sample_mode(ctx, MODE) ||
         pipe_opengpu_bind_fs(ctx, NULL, 0))
         goto done;
 
     if (pipe_opengpu_clear(ctx, 0u, &fence) ||
-        pipe_opengpu_fence_finish(ctx, fence, 30000))
+        pipe_opengpu_fence_finish(ctx, fence, 300000))
         goto done;
     pipe_opengpu_fence_reference(&fence, NULL);
 
     fill_triangle(&draw);
     if (pipe_opengpu_draw_vbo(ctx, &draw, &fence) ||
-        pipe_opengpu_fence_finish(ctx, fence, 30000))
+        pipe_opengpu_fence_finish(ctx, fence, 300000))
         goto done;
     pipe_opengpu_fence_reference(&fence, NULL);
 
-    if (pipe_opengpu_resolve(ctx, resolved, msaa, FB_W, FB_H, src_stride,
+    if (pipe_opengpu_resolve(ctx, resolved, msaa, width, height, src_stride,
                              dst_stride, MODE, &fence) ||
-        pipe_opengpu_fence_finish(ctx, fence, 30000))
+        pipe_opengpu_fence_finish(ctx, fence, 300000))
         goto done;
     pipe_opengpu_fence_reference(&fence, NULL);
 
-    for (i = 0; i < FB_W * FB_H; i++) {
+    for (i = 0; i < width * height; i++) {
         uint32_t pixel = ((uint32_t *)pipe_opengpu_resource_map(resolved))[i];
 
         if (pixel == 0)

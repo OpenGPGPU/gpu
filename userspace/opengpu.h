@@ -16,6 +16,7 @@ struct opengpu_buffer {
  * buffers, contexts and syncobjs have explicit lives. */
 int opengpu_open(const char *path);
 int opengpu_capabilities(int fd, uint64_t *value);
+int opengpu_display_size(int fd, uint32_t *width, uint32_t *height);
 int opengpu_context_create(int fd, uint32_t *id);
 int opengpu_context_destroy(int fd, uint32_t id);
 int opengpu_buffer_create(int fd, uint32_t bytes, struct opengpu_buffer *buffer);

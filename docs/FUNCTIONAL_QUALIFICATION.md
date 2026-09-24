@@ -8,7 +8,7 @@ scripts/qualify_functional.sh
 
 The command runs, in order:
 
-1. The full Scala test suite with parallel test execution disabled. This
+1. The full Scala test suite with local parallel test execution enabled. This
    includes the seeded AXI command and fault regression. Set
    `OPENGPU_AXI_SEED` to replay a different seed.
 2. All kernel-free host driver tests through `scripts/test_driver.py`.
@@ -22,6 +22,13 @@ stages pass. The guest runner builds the RTL model, QEMU integration, Linux
 driver and initramfs as needed, so a first run can take substantially longer
 than a cached run.
 
+The userspace example apps, including `triangle_present` and `pipe_present`,
+are opt-in. Run the fixed-function and programmable example paths separately
+with `GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1` and the desired
+`GPU_FRAG_CORE` / `GPU_VERT_CORE` settings. The default gate checks DRM flip
+events but does not measure repeated-flip timing or inspect the displayed
+frame in a QEMU window.
+
 Prerequisites are sbt, a JDK, a host C compiler, the AArch64 cross compiler,
 FlashSim (or Verilator), and the sibling ARTI checkout.
 `scripts/run_arti_gpu.sh` documents its path overrides and downloads
@@ -29,7 +36,8 @@ QEMU/Linux sources into `ARTI_WORK` when needed. The gate uses the FlashSim
 backend when `GPU_SIM=flashsim` is set; the runner defaults to Verilator with
 eight simulation threads.
 
-The normal CI workflow uses affected-package Scala selection and the host
-driver tests for quicker feedback. This command is the full local gate,
+The normal CI workflow uses affected-package Scala selection with parallel
+test execution disabled to stay within runner memory limits, plus host driver
+tests for quicker feedback. This command is the full local gate,
 including guest execution; keep its terminal output with the revision being
 qualified.

@@ -168,11 +168,12 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
      `pipe_present`, `pipe_clear_draw`,
      `pipe_compute`, `pipe_blit`, `pipe_strided_blit`, `pipe_resolve`,
      `pipe_texture_draw`, `pipe_depth_pass`, `pipe_msaa_draw`.
-   - Fragment core (`GPU_FRAG_CORE=1`): `fragment_tint`, `triangle_present`,
+   - Fragment core (`GPU_FRAG_CORE=1`, `GPU_VERT_CORE=0`): `fragment_tint`, `triangle_present`,
      `pipe_present`, `pipe_clear_draw`,
-     `pipe_resolve`, `pipe_vertex_draw` (no-ops skip without
-     `GPU_VERT_CORE=1`; corpus tint binary staged as
+     `pipe_resolve`, `pipe_vertex_draw` (skips without a vertex core;
+     corpus tint binary staged as
      `/opengpu_fragment_tint.bin`).
+   - Vertex+fragment cores: `pipe_vertex_draw`, `pipe_resolve`.
    Preferred programmable bring-up:
    ```sh
    GPU_FRAG_CORE=1 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
@@ -198,10 +199,11 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    see [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md).
    **Display hardware is ARTI guest-memory GraphicHwOps** (`gpu_integration.yaml`:
    SCANOUT BASE/STRIDE/CONTROL/WIDTH/HEIGHT + `refresh_hz`). KMS programs those
-   registers; QEMU presents guest GEM memory. Hardware vblank
-   (`GPU_CAP_HW_VBLANK`, `SCANOUT_PERIOD`, IRQ bit2) paces DRM flips at 30 Hz
-   to match ARTI `refresh_hz`; soft/timer vblank remains the fallback when the
-   capability is absent. The operational
+   registers; QEMU presents guest GEM memory. ARTI uses the DRM soft timer to
+   pace flips at 30 Hz to match `refresh_hz`: its RTL clock advances during
+   transactions and IRQ polls, so a 100 MHz hardware period cannot track wall
+   time. Continuously clocked devices use hardware vblank
+   (`GPU_CAP_HW_VBLANK`, `SCANOUT_PERIOD`, IRQ bit2). The operational
    RTL, driver, and ARTI display defaults are 64x64 at 30 Hz. Build the
    interactive Debian model once, then boot it:
    ```sh
@@ -318,12 +320,14 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
   submits physical addresses under the context ASID (engine ignores satp). Bare
   bring-up still uses the ASID-0 identity map. Context roots expose no identity
   fallback.
-- Qualification gate is boundary suites + workload sweep, not the full Scala
-  suite.
+- The release-style functional gate runs the full Scala suite, host driver
+  tests, and fixed-function plus vertex/fragment ARTI guests
+  (`scripts/qualify_functional.sh`). Userspace examples and the workload sweep
+  are separate opt-in runs.
 - No parent-level per-interface timing budgets.
 - Display/scanout under ARTI is guest-memory GraphicHwOps (BASE/STRIDE/
-  CONTROL/WIDTH/HEIGHT + refresh timer). Hardware vblank IRQ
-  (`GPU_CAP_HW_VBLANK`) paces KMS; soft/timer remains the no-cap fallback.
+  CONTROL/WIDTH/HEIGHT + refresh timer). ARTI uses the DRM soft timer for
+  KMS flips; continuously clocked devices can use the hardware vblank IRQ.
 - ASID-0 identity mappings remain read/write and non-executable for Bare
   bring-up (`opengpu_hw_enable_mmu`). Resolve and line-invalidate submit
   physical invalidate addresses; engine/resolve traffic uses private DMA VAs

@@ -12,7 +12,7 @@ are separate:
 | `opengpu_mmu.c` | Page tables, ASIDs, VA windows, shootdown |
 | `opengpu_compute.c` | Contexts, binding validation, job preparation, opcodes |
 | `opengpu_scheduler.c` | One scheduler, reservation/syncobj deps, common retirement |
-| `opengpu_display.c` | Connector, pipe, atomic modeset, page flips; HW vblank IRQ when `GPU_CAP_HW_VBLANK`, else soft/timer |
+| `opengpu_display.c` | Connector, pipe, atomic modeset, page flips; HW vblank IRQ on continuously clocked devices with `GPU_CAP_HW_VBLANK`, soft timer under ARTI or without the capability |
 
 Validation happens before scheduler submission. On success the scheduler owns
 the job and retained GEM references; the common free callback releases staged
@@ -59,8 +59,10 @@ TLBs.
 CPU/GPU visibility uses DMA allocation/cache sync, GPU line invalidate and
 reservation fences. KMS waits for render/resolve destination write fences.
 Under ARTI, guest-memory GraphicHwOps presents SCANOUT_* (see
-`driver/gpu_integration.yaml`); hardware vblank on the shared IRQ paces flips
-when `GPU_CAP_HW_VBLANK` is set. Real display PHY remains external / out of scope.
+`driver/gpu_integration.yaml`); ARTI uses the DRM soft timer because its RTL
+clock advances on transactions and IRQ polls. Continuously clocked devices use
+the shared hardware vblank IRQ when `GPU_CAP_HW_VBLANK` is set. Real display PHY
+remains external / out of scope.
 
 Validate with `python3 scripts/test_driver.py`. Guest path:
 `scripts/run_arti_gpu.sh`. Status: [GRAPHICS_ROADMAP.md](GRAPHICS_ROADMAP.md).

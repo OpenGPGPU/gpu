@@ -274,8 +274,11 @@ Under ARTI/QEMU the chosen display model is guest-memory scanout: the
 embedded device watches `SCANOUT_BASE` / `STRIDE` / `CONTROL` / `WIDTH` /
 `HEIGHT` and refreshes the QEMU console from guest RAM (`source:
 guest-memory` in `gpu_integration.yaml`). Hardware vblank is a scanout-gated
-period counter on the shared IRQ (`GPU_CAP_HW_VBLANK`); soft/timer remains the
-fallback when that capability is absent.
+period counter on the shared IRQ (`GPU_CAP_HW_VBLANK`). ARTI identifies its
+transaction-driven clock with the secondary `arti,rtl` device-tree compatible;
+the driver uses the DRM soft timer there because the model does not advance
+millions of RTL cycles per wall-clock refresh. Continuously clocked devices use
+the hardware IRQ when the capability is present.
 
 Host validation: `python3 scripts/test_driver.py`. Linux integration:
 `bash scripts/run_arti_gpu.sh` (Verilator with eight simulation threads by

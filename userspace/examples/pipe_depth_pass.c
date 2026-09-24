@@ -6,8 +6,6 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { FB_W = 16, FB_H = 16 };
-
 static void fill_triangle(struct drm_opengpu_draw *draw, int32_t depth,
                           uint32_t depth_func, uint32_t blend)
 {
@@ -38,6 +36,7 @@ int main(int argc, char **argv)
     struct pipe_opengpu_fence *fence = NULL;
     struct drm_opengpu_draw draw;
     uint64_t caps;
+    uint32_t width = 0, height = 0;
     unsigned i, written = 0, zeroed = 0;
     int status = 1;
 
@@ -56,15 +55,17 @@ int main(int argc, char **argv)
         status = 0;
         goto done;
     }
+    if (pipe_opengpu_screen_display_size(screen, &width, &height))
+        goto done;
 
     ctx = pipe_opengpu_context_create(screen);
-    color = pipe_opengpu_resource_create(screen, FB_W * FB_H * 4u);
-    depth = pipe_opengpu_resource_create(screen, FB_W * FB_H * 4u);
+    color = pipe_opengpu_resource_create_2d(screen, width, height);
+    depth = pipe_opengpu_resource_create_2d(screen, width, height);
     if (!ctx || !color || !depth)
         goto done;
 
-    memset(pipe_opengpu_resource_map(color), 0x5a, FB_W * FB_H * 4u);
-    pipe_opengpu_set_framebuffer(ctx, color, FB_W, FB_H);
+    memset(pipe_opengpu_resource_map(color), 0x5a, width * height * 4u);
+    pipe_opengpu_set_framebuffer(ctx, color, width, height);
     if (pipe_opengpu_bind_fs(ctx, NULL, 0))
         goto done;
 
@@ -72,11 +73,11 @@ int main(int argc, char **argv)
     pipe_opengpu_set_depth(ctx, depth, 0);
     fill_triangle(&draw, 0x10, 0 /* LESS */, 0);
     if (pipe_opengpu_draw_vbo(ctx, &draw, &fence) ||
-        pipe_opengpu_fence_finish(ctx, fence, 30000))
+        pipe_opengpu_fence_finish(ctx, fence, 300000))
         goto done;
     pipe_opengpu_fence_reference(&fence, NULL);
 
-    for (i = 0; i < FB_W * FB_H; i++) {
+    for (i = 0; i < width * height; i++) {
         if (((uint32_t *)pipe_opengpu_resource_map(color))[i] != 0x5a5a5a5au)
             written++;
     }
@@ -94,11 +95,11 @@ int main(int argc, char **argv)
                       (1u << OPENGPU_DRAW_BLEND_DST_SHIFT) |
                       (2u << OPENGPU_DRAW_BLEND_EQ_SHIFT));
     if (pipe_opengpu_draw_vbo(ctx, &draw, &fence) ||
-        pipe_opengpu_fence_finish(ctx, fence, 30000))
+        pipe_opengpu_fence_finish(ctx, fence, 300000))
         goto done;
     pipe_opengpu_fence_reference(&fence, NULL);
 
-    for (i = 0; i < FB_W * FB_H; i++) {
+    for (i = 0; i < width * height; i++) {
         if (((uint32_t *)pipe_opengpu_resource_map(color))[i] == 0)
             zeroed++;
     }

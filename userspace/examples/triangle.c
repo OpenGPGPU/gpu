@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT */
-/* Fixed-function triangle into a caller-owned 16x16 colour buffer. */
+/* Fixed-function triangle into a caller-owned native-mode colour buffer. */
 #include "../opengpu.h"
 #include <stdint.h>
 #include <stdio.h>
@@ -11,6 +11,7 @@ int main(int argc, char **argv)
     struct drm_opengpu_submit submit = { 0 };
     struct drm_opengpu_draw *draw;
     uint32_t context = 0, fence = 0;
+    uint32_t width = 0, height = 0;
     uint64_t caps;
     int fd = -1, status = 1;
     unsigned painted = 0;
@@ -22,9 +23,12 @@ int main(int argc, char **argv)
         close(fd);
         return 2;
     }
+    if (opengpu_display_size(fd, &width, &height) || !width || !height ||
+        width > UINT32_MAX / 4u / height)
+        goto done;
     if (opengpu_context_create(fd, &context) ||
         opengpu_buffer_create(fd, sizeof(struct drm_opengpu_draw), &commands) ||
-        opengpu_buffer_create(fd, 16u * 16u * 4u, &color) ||
+        opengpu_buffer_create(fd, width * height * 4u, &color) ||
         opengpu_sync_create(fd, &fence)) goto done;
     draw = commands.map;
     draw->v0[0] = -0x10000; draw->v0[1] = -0x10000;
@@ -36,12 +40,12 @@ int main(int argc, char **argv)
     submit.context_id = context;
     submit.command_handle = commands.handle;
     submit.color_handle = color.handle;
-    submit.stride = 16u * 4u;
+    submit.stride = width * 4u;
     submit.command_count = 1;
     submit.out_syncobj = fence;
-    if (opengpu_render(fd, &submit) || opengpu_sync_wait_success(fd, fence, 30000))
+    if (opengpu_render(fd, &submit) || opengpu_sync_wait_success(fd, fence, 300000))
         goto done;
-    for (unsigned i = 0; i < 16u * 16u; i++)
+    for (uint32_t i = 0; i < width * height; i++)
         if (((uint32_t *)color.map)[i] != 0) painted++;
     if (!painted) {
         fprintf(stderr, "triangle rendered no coloured pixels\n");

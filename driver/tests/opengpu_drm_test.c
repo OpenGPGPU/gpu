@@ -48,6 +48,9 @@
 #if TEST_WIDTH < 16 || TEST_HEIGHT < 16
 #error "TEST_WIDTH/TEST_HEIGHT must be at least 16"
 #endif
+
+/* Expected top-left fill coverage for the test triangle in square modes. */
+#define TEST_TRIANGLE_PIXELS (TEST_WIDTH * (TEST_HEIGHT - 1) / 4)
 #define MIN_FENCE_WAIT_MS 30
 #define FLIP_EVENT_COOKIE UINT64_C(0x4f50454e475055)
 
@@ -355,8 +358,8 @@ static int create_command_buffer(int fd, struct command_buffer *commands)
     draw->d0 = 0x10;
     draw->d1 = 0x10;
     draw->d2 = 0x10;
-    /* Eight repeats over 16 pixels => two base texels/pixel on a 4x4
-     * texture, selecting mip 1 in the quad-backed fragment path. */
+    /* Eight repeats over 16 pixels select mip 1 on the 16x16 fragment path.
+     * Larger fragment-core modes scale these UVs below. */
     draw->uv0[0] = 0;       draw->uv0[1] = 0;
     draw->uv1[0] = 0x80000; draw->uv1[1] = 0;
     draw->uv2[0] = 0;       draw->uv2[1] = 0x80000;
@@ -504,9 +507,9 @@ static int create_vertex_buffer(int fd, struct resource_buffer *buffer)
         { -0x10000, -0x10000, 0, 0x10000,
           0x101010ffu, 0x10, 0,       0 },
         {  0x10000, -0x10000, 0, 0x10000,
-          0x202020ffu, 0x10, 0x80000, 0 },
+          0x202020ffu, 0x10, (TEST_WIDTH / 2) << 16, 0 },
         { -0x10000,  0x10000, 0, 0x10000,
-          0x303030ffu, 0x10, 0,       0x80000 },
+          0x303030ffu, 0x10, 0, (TEST_HEIGHT / 2) << 16 },
     };
 
     if (create_resource_buffer(fd, sizeof(vertices), buffer) < 0)
@@ -1368,6 +1371,7 @@ int main(void)
     struct resource_buffer vertex_shader = { 0 }, vertex_kernarg = { 0 };
     struct resource_buffer compute_shader = { 0 }, compute_kernarg = { 0 };
     struct drm_event_vblank event = { 0 };
+    uint32_t first_flip_sequence = 0;
     struct drm_opengpu_fault initial_fault = { 0 }, final_fault = { 0 };
     uint32_t syncobjs[8] = { 0 };
     uint32_t failure_syncobjs[2] = { 0 };
@@ -1461,6 +1465,8 @@ int main(void)
         uint32_t i;
 
         commands.map->kernarg_bank_stride = 320;
+        commands.map->uv1[0] = (TEST_WIDTH / 2) << 16;
+        commands.map->uv2[1] = (TEST_HEIGHT / 2) << 16;
 
         for (i = 0; i < 3; i++) {
             commands.map->c0[i] = (i + 1) * 0x10;
@@ -1689,7 +1695,7 @@ int main(void)
         return 1;
     }
     if ((frag_core &&
-         (framebuffer_count(&first, expected_pixel) != 60 ||
+         (framebuffer_count(&first, expected_pixel) != TEST_TRIANGLE_PIXELS ||
           framebuffer_count(&first, alternate_pixel) != 0)) ||
         (!frag_core &&
          *(uint32_t *)((uint8_t *)first.map + first.pitch + 4) !=
@@ -1718,7 +1724,7 @@ int main(void)
      * fence with an error and the blit wait would succeed vacuously. */
     CHECK(wait_syncobjs(fd, &syncobjs[2], 1), "wait second render syncobj");
     if ((frag_core &&
-         (framebuffer_count(&second, expected_pixel) != 60 ||
+         (framebuffer_count(&second, expected_pixel) != TEST_TRIANGLE_PIXELS ||
           framebuffer_count(&second, alternate_pixel) != 0)) ||
         (!frag_core &&
          *(uint32_t *)((uint8_t *)second.map + second.pitch + 4) !=
@@ -1748,8 +1754,9 @@ int main(void)
     CHECK(wait_syncobjs(fd, output_syncobjs, ARRAY_SIZE(output_syncobjs)),
           "wait output syncobjs");
     CHECK(wait_flip_event(fd, &event), "wait flip event");
+    first_flip_sequence = event.sequence;
     if ((frag_core &&
-         (framebuffer_count(&second, expected_pixel) != 60 ||
+         (framebuffer_count(&second, expected_pixel) != TEST_TRIANGLE_PIXELS ||
           framebuffer_count(&second, alternate_pixel) != 0)) ||
         (!frag_core &&
          *(uint32_t *)((uint8_t *)second.map + second.pitch + 4) !=
@@ -1953,7 +1960,8 @@ int main(void)
         errno = 0;
         if (submit_resolve(fd, context_id, &reject_source,
                            &reject_destination, 0, 0, width, height,
-                           src_stride / 2, dst_stride, msaa_max_mode,
+                           width * 4u * (1u << msaa_max_mode) - 4u,
+                           dst_stride, msaa_max_mode,
                            0, resolve_sync, 0) != -1 || errno != EINVAL) {
             errno = EPROTO;
             perror("OPENGPU USERSPACE DRM FAIL short resolve stride accepted");
@@ -2096,6 +2104,11 @@ int main(void)
         CHECK(atomic_page_flip(fd, &ids, resolved.fb_id),
               "scan out resolved buffer");
         CHECK(wait_flip_event(fd, &event), "wait MSAA flip event");
+        if (event.sequence == first_flip_sequence) {
+            errno = EPROTO;
+            perror("OPENGPU USERSPACE DRM FAIL flip sequence did not advance");
+            return 1;
+        }
     }
     /* Stencil-gated render: the second draw passes EQUAL 0x5a and blends the
      * covered pixels to black (REV_SUB of identical src/dst), while the third
@@ -2114,7 +2127,7 @@ int main(void)
     CHECK(wait_syncobjs_for(fd, &syncobjs[7], 1, 900000000000ll),
           "wait stencil render syncobj");
     if ((frag_core &&
-         (framebuffer_count(&first, 0x00000000u) != 60 ||
+         (framebuffer_count(&first, 0x00000000u) != TEST_TRIANGLE_PIXELS ||
           framebuffer_count(&first, expected_pixel) != 0)) ||
         (!frag_core &&
          *(uint32_t *)((uint8_t *)first.map + first.pitch + 4) !=
@@ -2246,6 +2259,39 @@ int main(void)
             errno = EIO;
             perror("OPENGPU USERSPACE DRM FAIL persistent depth first pass");
             return 1;
+        }
+        /* Fail fast if depth write-through never landed (FlashSim historically
+         * missed AXI master input pokes during settle). Fixed-function draws
+         * write depth 0x10; fragment-core draws use shader-defined depth. */
+        {
+            uint32_t nearer = 0, changed = 0, far = 0, y, x;
+
+            for (y = 0; y < TEST_HEIGHT; y++) {
+                const uint32_t *row = (const uint32_t *)
+                    ((const uint8_t *)depth_attachment.map +
+                     y * depth_attachment.pitch);
+
+                for (x = 0; x < TEST_WIDTH; x++) {
+                    uint32_t depth = row[x] & 0x00ffffffu;
+
+                    if (depth == 0x10u)
+                        nearer++;
+                    if (depth == 0x00ffffffu)
+                        far++;
+                    else
+                        changed++;
+                }
+            }
+            if ((!frag_core && !nearer) || (frag_core && !changed)) {
+                fprintf(stderr,
+                        "persistent depth first pass nearer=%u changed=%u "
+                        "far=%u coloured=%u\n",
+                        nearer, changed, far, written);
+                errno = EIO;
+                perror("OPENGPU USERSPACE DRM FAIL persistent depth "
+                       "first-pass depth write");
+                return 1;
+            }
         }
         /* The fragment-core backend writes shader-defined depth, so the
          * greater-depth comparison is only meaningful on the fixed-function
@@ -2700,7 +2746,8 @@ int main(void)
         CHECK(expect_syncobj_status(fd, teardown_sync, 1),
               "teardown render finished fence");
         if ((frag_core &&
-             framebuffer_count(&teardown_fb, expected_pixel) != 60) ||
+             framebuffer_count(&teardown_fb, expected_pixel) !=
+                 TEST_TRIANGLE_PIXELS) ||
             (!frag_core &&
              *(uint32_t *)((uint8_t *)teardown_fb.map +
                            teardown_fb.pitch + 4) != expected_pixel)) {

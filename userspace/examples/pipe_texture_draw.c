@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { FB_W = 16, FB_H = 16, TEX_WORDS = 21 };
+enum { TEX_WORDS = 21 };
 
 static void fill_textured_triangle(struct drm_opengpu_draw *draw)
 {
@@ -48,6 +48,7 @@ int main(int argc, char **argv)
     uint64_t caps;
     unsigned painted = 0, i;
     uint32_t sample = 0;
+    uint32_t width = 0, height = 0;
     int status = 1;
 
     screen = pipe_opengpu_screen_create(argc > 1 ? argv[1] : NULL);
@@ -59,9 +60,11 @@ int main(int argc, char **argv)
         status = 0;
         goto done;
     }
+    if (pipe_opengpu_screen_display_size(screen, &width, &height))
+        goto done;
 
     ctx = pipe_opengpu_context_create(screen);
-    color = pipe_opengpu_resource_create(screen, FB_W * FB_H * 4u);
+    color = pipe_opengpu_resource_create_2d(screen, width, height);
     tex = pipe_opengpu_resource_create(screen, TEX_WORDS * 4u);
     if (!ctx || !color || !tex)
         goto done;
@@ -73,7 +76,7 @@ int main(int argc, char **argv)
         texels[i] = 0xff0000ffu;
     texels[20] = 0x0000ffffu;
 
-    pipe_opengpu_set_framebuffer(ctx, color, FB_W, FB_H);
+    pipe_opengpu_set_framebuffer(ctx, color, width, height);
     if (pipe_opengpu_bind_fs(ctx, NULL, 0) ||
         pipe_opengpu_bind_texture(ctx, tex, 4, 4, TEX_WORDS * 4u,
                                   OPENGPU_RESOURCE_TEXTURE_CLAMP |
@@ -82,17 +85,17 @@ int main(int argc, char **argv)
         goto done;
 
     if (pipe_opengpu_clear(ctx, 0x000000ffu, &fence) ||
-        pipe_opengpu_fence_finish(ctx, fence, 30000))
+        pipe_opengpu_fence_finish(ctx, fence, 300000))
         goto done;
     pipe_opengpu_fence_reference(&fence, NULL);
 
     fill_textured_triangle(&draw);
     if (pipe_opengpu_draw_vbo(ctx, &draw, &fence) ||
-        pipe_opengpu_fence_finish(ctx, fence, 30000))
+        pipe_opengpu_fence_finish(ctx, fence, 300000))
         goto done;
     pipe_opengpu_fence_reference(&fence, NULL);
 
-    for (i = 0; i < FB_W * FB_H; i++) {
+    for (i = 0; i < width * height; i++) {
         uint32_t pixel = ((uint32_t *)pipe_opengpu_resource_map(color))[i];
 
         if (pixel == 0x000000ffu)

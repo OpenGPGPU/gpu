@@ -23,6 +23,7 @@ int main(int argc, char **argv)
     struct drm_opengpu_submit submit = { 0 };
     struct drm_opengpu_draw *draw;
     uint32_t context = 0, fence = 0;
+    uint32_t width = 0, height = 0;
     uint64_t caps;
     int fd = -1, shader_fd = -1, status = 1;
     ssize_t shader_bytes;
@@ -39,9 +40,14 @@ int main(int argc, char **argv)
         close(fd);
         return 2;
     }
+    if (opengpu_display_size(fd, &width, &height) || !width || !height ||
+        width > UINT32_MAX / 4u / height) {
+        errno = EINVAL;
+        goto done;
+    }
     if (opengpu_context_create(fd, &context) ||
         opengpu_buffer_create(fd, sizeof(struct drm_opengpu_draw), &commands) ||
-        opengpu_buffer_create(fd, 16u * 16u * 4u, &color) ||
+        opengpu_buffer_create(fd, width * height * 4u, &color) ||
         opengpu_buffer_create(fd, FS_GEM_BYTES, &shader) ||
         opengpu_buffer_create(fd, FS_KERNARG_BYTES, &kernarg) ||
         opengpu_sync_create(fd, &fence))
@@ -99,7 +105,7 @@ int main(int argc, char **argv)
     submit.context_id = context;
     submit.command_handle = commands.handle;
     submit.color_handle = color.handle;
-    submit.stride = 16u * 4u;
+    submit.stride = width * 4u;
     submit.command_count = 1;
     submit.shader_slot = 2;
     submit.kernarg_slot = 3;
@@ -110,7 +116,7 @@ int main(int argc, char **argv)
         opengpu_sync_wait_success(fd, fence, 300000))
         goto done;
 
-    for (unsigned i = 0; i < 16u * 16u; i++) {
+    for (uint32_t i = 0; i < width * height; i++) {
         uint32_t pixel = ((uint32_t *)color.map)[i];
 
         if (pixel == 0)

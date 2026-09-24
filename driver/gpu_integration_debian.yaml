@@ -28,7 +28,7 @@ bridge:
 
 integration:
   irq_base: 180
-  dt_compat: ["riscv-simt,opengpu"]
+  dt_compat: ["riscv-simt,opengpu", "arti,rtl"]
   driver_ko: gpu_drv.ko
   driver_deps: ""
   driver_manifest: ""

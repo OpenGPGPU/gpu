@@ -9,7 +9,7 @@ cd "$GPU_DIR"
 echo '=== Functional qualification: full Scala suite ==='
 # sbt's XML listener expects this path to exist when each suite finishes.
 mkdir -p target/test-reports
-sbt -batch 'set Test / parallelExecution := false' test
+sbt -batch test
 
 echo '=== Functional qualification: host driver tests ==='
 python3 scripts/test_driver.py

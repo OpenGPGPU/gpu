@@ -275,13 +275,13 @@ class RenderHostSpec extends AnyFlatSpec {
         regWrite(dut, RenderHostRegs.SCANOUT_STRIDE, 64)
         regWrite(dut, RenderHostRegs.SCANOUT_WIDTH, 16)
         regWrite(dut, RenderHostRegs.SCANOUT_HEIGHT, 16)
-        regWrite(dut, RenderHostRegs.SCANOUT_PERIOD, 4)
+        regWrite(dut, RenderHostRegs.SCANOUT_PERIOD, 16)
         regWrite(dut, RenderHostRegs.SCANOUT_CONTROL, 0x3) // ENABLE | VBLANK_EN
 
-        // Counter: 0→4 arm, then 4,3,2,1 pulse. Allow a few cycles.
+        // Counter arms from zero and reloads every PERIOD clocks.
         var raised = false
         var i = 0
-        while (i < 16 && !raised) {
+        while (i < 32 && !raised) {
           dut.clock.step()
           raised = dut.io.irq.peek().litToBoolean
           i += 1
@@ -292,6 +292,23 @@ class RenderHostSpec extends AnyFlatSpec {
         regWrite(dut, RenderHostRegs.IRQ, 0x5) // keep enable, clear vblank
         dut.io.irq.expect(false.B)
         assert((regRead(dut, RenderHostRegs.IRQ) & 0x5L) == 0x1L)
+
+        raised = false
+        i = 0
+        while (i < 32 && !raised) {
+          dut.clock.step()
+          raised = dut.io.irq.peek().litToBoolean
+          i += 1
+        }
+        assert(raised, "expected a second hardware vblank IRQ")
+
+        regWrite(dut, RenderHostRegs.SCANOUT_CONTROL, 0)
+        regWrite(dut, RenderHostRegs.IRQ, 0x5)
+        dut.io.irq.expect(false.B)
+        for (_ <- 0 until 32) {
+          dut.clock.step()
+          dut.io.irq.expect(false.B)
+        }
     }
   }
 

@@ -10,8 +10,6 @@
 #include <string.h>
 #include <unistd.h>
 
-enum { FB_W = 16, FB_H = 16 };
-
 static void fill_triangle(struct drm_opengpu_draw *draw, int tint)
 {
     memset(draw, 0, sizeof(*draw));
@@ -60,6 +58,7 @@ int main(int argc, char **argv)
     size_t shader_bytes = 0;
     uint64_t caps;
     unsigned painted = 0, i;
+    uint32_t width = 0, height = 0;
     uint32_t sample = 0;
     int status = 1;
     int fragment;
@@ -74,12 +73,14 @@ int main(int argc, char **argv)
         errno = EINVAL;
         goto done;
     }
+    if (pipe_opengpu_screen_display_size(screen, &width, &height))
+        goto done;
 
     ctx = pipe_opengpu_context_create(screen);
-    color = pipe_opengpu_resource_create(screen, FB_W * FB_H * 4u);
+    color = pipe_opengpu_resource_create_2d(screen, width, height);
     if (!ctx || !color)
         goto done;
-    pipe_opengpu_set_framebuffer(ctx, color, FB_W, FB_H);
+    pipe_opengpu_set_framebuffer(ctx, color, width, height);
 
     if (fragment) {
         if (load_shader(argc > 2 ? argv[2] : "/opengpu_fragment_tint.bin",
@@ -101,7 +102,7 @@ int main(int argc, char **argv)
         goto done;
     pipe_opengpu_fence_reference(&fence, NULL);
 
-    for (i = 0; i < FB_W * FB_H; i++) {
+    for (i = 0; i < width * height; i++) {
         uint32_t pixel = ((uint32_t *)pipe_opengpu_resource_map(color))[i];
 
         if (pixel == 0)

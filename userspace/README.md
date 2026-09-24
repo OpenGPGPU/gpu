@@ -27,10 +27,10 @@ RISC-V source, through private shader and kernarg bindings. It checks that
 the same input rounds to 1 under RNU and 0 under RDN. Pass the shader binary
 as the second argument when running outside the guest.
 
-`examples/triangle` draws a 16x16 test image into its own colour GEM on a
-fixed-function build. The device's display mode may be larger (64x64 by
-default). Pass a DRM node path as the first argument, or use the default
-`/dev/dri/card0`.
+`examples/triangle` draws a native-mode test image into its own colour GEM on
+a fixed-function build (64x64 by default). It obtains the mode through
+`opengpu_display_size`. Pass a DRM node path as the first argument, or use the
+default `/dev/dri/card0`.
 
 `examples/fragment_tint` is the programmable counterpart: it binds the
 corpus `fragment_tint` shader and expects `OPENGPU_CAP_FRAGMENT_CORE`. Pass
@@ -77,6 +77,13 @@ Fixed-function smoke:
 ```sh
 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
   scripts/run_arti_gpu.sh
+```
+
+Vertex+fragment smoke:
+
+```sh
+GPU_FRAG_CORE=1 GPU_VERT_CORE=1 GPU_USERSPACE_EXAMPLES=1 \
+  GPU_USERSPACE_EXAMPLES_ONLY=1 scripts/run_arti_gpu.sh
 ```
 
 Debian interactive (same binaries on the OPENGPU ISO):

@@ -282,47 +282,11 @@ void pipe_opengpu_resource_destroy(struct pipe_opengpu_screen *screen,
 int pipe_opengpu_screen_display_size(struct pipe_opengpu_screen *screen,
                                      uint32_t *width, uint32_t *height)
 {
-    struct drm_mode_card_res resources = { 0 };
-    struct drm_mode_get_connector connector = { 0 };
-    struct drm_mode_modeinfo mode = { 0 };
-    uint32_t connector_id = 0, crtc_id = 0;
-    uint32_t encoders[8] = { 0 }, framebuffers[8] = { 0 };
-    uint32_t connector_encoders[8] = { 0 }, properties[32] = { 0 };
-    uint64_t property_values[32] = { 0 };
-
     if (!screen || !width || !height) {
         errno = EINVAL;
         return -1;
     }
-    if (ioctl(screen->fd, DRM_IOCTL_MODE_GETRESOURCES, &resources) < 0)
-        return -1;
-    if (resources.count_connectors != 1 || resources.count_crtcs != 1 ||
-        resources.count_encoders > 8 || resources.count_fbs > 8) {
-        errno = ENODEV;
-        return -1;
-    }
-    resources.connector_id_ptr = (uintptr_t)&connector_id;
-    resources.crtc_id_ptr = (uintptr_t)&crtc_id;
-    resources.encoder_id_ptr = (uintptr_t)encoders;
-    resources.fb_id_ptr = (uintptr_t)framebuffers;
-    if (ioctl(screen->fd, DRM_IOCTL_MODE_GETRESOURCES, &resources) < 0)
-        return -1;
-    connector.connector_id = connector_id;
-    if (ioctl(screen->fd, DRM_IOCTL_MODE_GETCONNECTOR, &connector) < 0 ||
-        connector.count_modes != 1 || connector.count_encoders > 8 ||
-        connector.count_props > 32) {
-        errno = ENODEV;
-        return -1;
-    }
-    connector.modes_ptr = (uintptr_t)&mode;
-    connector.encoders_ptr = (uintptr_t)connector_encoders;
-    connector.props_ptr = (uintptr_t)properties;
-    connector.prop_values_ptr = (uintptr_t)property_values;
-    if (ioctl(screen->fd, DRM_IOCTL_MODE_GETCONNECTOR, &connector) < 0)
-        return -1;
-    *width = mode.hdisplay;
-    *height = mode.vdisplay;
-    return 0;
+    return opengpu_display_size(screen->fd, width, height);
 }
 
 void pipe_opengpu_set_framebuffer(struct pipe_opengpu_context *ctx,
