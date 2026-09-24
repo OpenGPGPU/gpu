@@ -33,6 +33,11 @@ the same kernel the guest boots and drops `gpu_drv.ko` in `$DRIVER_OUTPUT`:
 scripts/run_arti_gpu.sh
 ```
 
+Loading `gpu_drv.ko` registers the GPU and DRM/KMS device without running a
+render self-test. In the Debian guest, run `/root/load_opengpu.sh test` only
+when you want the separate DRM regression suite. The legacy triangle self-test
+is also available through `OPENGPU_IOCTL_SUBMIT` on `/dev/opengpu0`.
+
 To build by hand against the prepared tree instead:
 
 ```sh

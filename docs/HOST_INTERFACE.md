@@ -269,7 +269,13 @@ framebuffers after their write fences. Display starts disabled and does not
 borrow the execution self-test buffer. `opengpu,render-only` omits KMS setup
 while retaining GEM, render and syncobj services.
 
+Under ARTI/QEMU the chosen display model is guest-memory scanout: the
+embedded device watches `SCANOUT_BASE` / `STRIDE` / `CONTROL` / `WIDTH` /
+`HEIGHT` and refreshes the QEMU console from guest RAM (`source:
+guest-memory` in `gpu_integration.yaml`). Soft/timer vblank remains in the
+Linux driver; a hardware vblank IRQ is future work.
+
 Host validation: `python3 scripts/test_driver.py`. Linux integration:
 `bash scripts/run_arti_gpu.sh` (FlashSim by default; `GPU_SIM=verilator` for
-Verilator). Status:
+Verilator). Visual scanout: `bash scripts/run_arti_display.sh`. Status:
 [GRAPHICS_ROADMAP.md](GRAPHICS_ROADMAP.md).

@@ -27,9 +27,10 @@ RISC-V source, through private shader and kernarg bindings. It checks that
 the same input rounds to 1 under RNU and 0 under RDN. Pass the shader binary
 as the second argument when running outside the guest.
 
-`examples/triangle` draws to a 16x16 colour GEM on a fixed-function
-build. It requires a device configured for 16x16 pixels, with no fragment or vertex core. Pass a DRM node path as the first
-argument, or use the default `/dev/dri/card0`.
+`examples/triangle` draws a 16x16 test image into its own colour GEM on a
+fixed-function build. The device's display mode may be larger (64x64 by
+default). Pass a DRM node path as the first argument, or use the default
+`/dev/dri/card0`.
 
 `examples/fragment_tint` is the programmable counterpart: it binds the
 corpus `fragment_tint` shader and expects `OPENGPU_CAP_FRAGMENT_CORE`. Pass

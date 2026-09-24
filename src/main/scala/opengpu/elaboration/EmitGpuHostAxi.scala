@@ -18,10 +18,9 @@ import opengpu.system.GpuHostAxi
   * Arguments (after the optional target directory):
   *   --frag-core        fragment shader runs on the SIMT core
   *   --vert-core        vertex shader runs on the SIMT core (needs --frag-core)
-  *   --width N          render target width in pixels (default 16)
-  *   --height N         render target height in pixels (default 16)
-  * The resolution must be a power of two (the mip-chain and self-test
-  * geometry assume it) and at least 16x16, matching the guest self-test.
+  *   --width N          render target width in pixels (default 64)
+  *   --height N         render target height in pixels (default 64)
+  * The resolution must be at least 16x16.
   */
 object EmitGpuHostAxi {
   def main(args: Array[String]): Unit = {
@@ -40,11 +39,8 @@ object EmitGpuHostAxi {
         Some(rest(i + 1).toInt)
       }
     }
-    val width = intOption("--width").getOrElse(16)
-    val height = intOption("--height").getOrElse(16)
-    def isPow2(n: Int): Boolean = n > 0 && (n & (n - 1)) == 0
-    require(isPow2(width) && isPow2(height),
-      s"resolution must be powers of two, got ${width}x${height}")
+    val width = intOption("--width").getOrElse(64)
+    val height = intOption("--height").getOrElse(64)
     require(width >= 16 && height >= 16,
       s"resolution must be at least 16x16, got ${width}x${height}")
 

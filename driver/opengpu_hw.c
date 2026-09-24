@@ -1478,8 +1478,9 @@ int opengpu_hw_display_commit(struct opengpu_device *gpu,
          !scanout->stride || !scanout->width || !scanout->height))
         return -EINVAL;
 
-    /* Disable first and publish BASE last. ARTI uses the BASE write as the
-     * point at which a new guest-memory scanout becomes visible. */
+    /* Disable first and publish BASE last. ARTI guest-memory display watches
+     * CONTROL (enable), WIDTH/HEIGHT, STRIDE and BASE; the BASE write is the
+     * visibility latch, and CONTROL bit0 gates presentation. */
     opengpu_reg_write(gpu, GPU_REG_SCANOUT_CONTROL, 0);
     opengpu_reg_write(gpu, GPU_REG_SCANOUT_STRIDE, scanout->stride);
     opengpu_reg_write(gpu, GPU_REG_SCANOUT_WIDTH, scanout->width);

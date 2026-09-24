@@ -24,13 +24,11 @@ object EmitGpuHostSystemAxi {
       }
     }
 
-    val width = intOption("--width").getOrElse(16)
-    val height = intOption("--height").getOrElse(16)
+    val width = intOption("--width").getOrElse(64)
+    val height = intOption("--height").getOrElse(64)
     val computeUnits = intOption("--compute-units").getOrElse(1)
     val memoryAxiDataBytes = intOption("--memory-axi-data-bytes").getOrElse(8)
     def isPow2(n: Int): Boolean = n > 0 && (n & (n - 1)) == 0
-    require(isPow2(width) && isPow2(height),
-      s"resolution must be powers of two, got ${width}x${height}")
     require(width >= 16 && height >= 16,
       s"resolution must be at least 16x16, got ${width}x${height}")
     require(computeUnits > 0,

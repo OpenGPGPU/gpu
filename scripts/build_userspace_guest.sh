@@ -25,6 +25,10 @@ CFLAGS=(-static -std=c11 -O2 -Wall -Wextra -Werror
 
 echo "=== Build OpenGPU guest userspace → $DRIVER_OUTPUT (FRAG=$GPU_FRAG_CORE) ==="
 
+"$CROSS_GCC" "${CFLAGS[@]}" \
+    -o "$DRIVER_OUTPUT/opengpu_kms_present" \
+    "$GPU_DIR/userspace/examples/kms_present.c"
+
 "$RISCV_GCC" -march=rv32imv_zicsr -mabi=ilp32 -c \
     -o "$DRIVER_OUTPUT/opengpu_compute_shader.o" \
     "$GPU_DIR/userspace/shaders/round_modes.S"

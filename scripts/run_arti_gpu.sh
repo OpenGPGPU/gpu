@@ -17,17 +17,31 @@ INTEGRATION_CONFIG="${INTEGRATION_CONFIG:-$GPU_DIR/driver/gpu_integration.yaml}"
 ARTI_WORK="${ARTI_WORK:-$(cd "$GPU_DIR/.." && pwd)/arti-work}"
 mkdir -p "$ARTI_WORK"
 export ARTI_WORK
+# Route c++/clang through ccache when Homebrew (or Linux distro) wrappers exist.
+# First hit wins for FlashSim's build_embedded.sh and any other host compiles.
+for _ccache_libexec in \
+    /opt/homebrew/opt/ccache/libexec \
+    /usr/local/opt/ccache/libexec \
+    /usr/lib/ccache \
+    /usr/lib64/ccache; do
+    if [ -d "$_ccache_libexec" ]; then
+        export PATH="$_ccache_libexec:$PATH"
+        break
+    fi
+done
+unset _ccache_libexec
 LINUX_BUILD="${LINUX_BUILD:-$ARTI_WORK/arti-linux-build}"
 LINUX_HEADERS="${LINUX_HEADERS:-$ARTI_WORK/linux-headers}"
 DRIVER_OUTPUT="${DRIVER_OUTPUT:-$ARTI_WORK/opengpu-driver}"
+GPU_RTL_DIR="${GPU_RTL_DIR:-$GPU_DIR/generated/host}"
 QEMU_TOOLS="${QEMU_TOOLS:-$ARTI_WORK/qemu-build-tools}"
 ARTI_SETUP_WORK="${WORK_DIR:-$ARTI_WORK}"
 QEMU_BUILD="${QEMU_BUILD:-$ARTI_SETUP_WORK/qemu-arti-build}"
 QEMU_DISPLAY="${QEMU_DISPLAY:-none}"
 GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}"
 GPU_VERT_CORE="${GPU_VERT_CORE:-0}"
-GPU_WIDTH="${GPU_WIDTH:-16}"
-GPU_HEIGHT="${GPU_HEIGHT:-16}"
+GPU_WIDTH="${GPU_WIDTH:-64}"
+GPU_HEIGHT="${GPU_HEIGHT:-64}"
 # Compat alias: pipe spike means fragment-core userspace apps.
 if [ "${GPU_PIPE_SPIKE:-0}" = "1" ]; then
     GPU_USERSPACE_EXAMPLES=1
@@ -96,9 +110,6 @@ echo "ARTI work   : $ARTI_WORK"
     fail "GPU_VERT_CORE must be 0 or 1"
 [ "$GPU_VERT_CORE" = "0" ] || [ "$GPU_FRAG_CORE" = "1" ] || \
     fail "GPU_VERT_CORE=1 requires GPU_FRAG_CORE=1"
-pow2() { [ "$1" -ge 1 ] && [ "$(($1 & ($1 - 1)))" = "0" ]; }
-pow2 "$GPU_WIDTH" && pow2 "$GPU_HEIGHT" || \
-    fail "GPU_WIDTH/GPU_HEIGHT must be powers of two"
 [ "$GPU_WIDTH" -ge 16 ] && [ "$GPU_HEIGHT" -ge 16 ] || \
     fail "GPU_WIDTH/GPU_HEIGHT must be at least 16"
 
@@ -204,40 +215,42 @@ echo "Linux source: $LINUX_SRC (valid)"
 
 echo "=== 1/4 Emit GpuHostSystemAxi RTL ==="
 if [ "${SKIP_RTL_EMIT:-0}" = "1" ]; then
-    echo "Skipping RTL emit (SKIP_RTL_EMIT=1); reusing generated/host"
+    echo "Skipping RTL emit (SKIP_RTL_EMIT=1); reusing $GPU_RTL_DIR"
     if [ "$GPU_VERT_CORE" = "1" ] || [ "$GPU_FRAG_CORE" = "1" ]; then
         TIMEOUT="${TIMEOUT:-3600}"
     else
-        TIMEOUT="${TIMEOUT:-300}"
+        # FF + MSAA/persistent-depth DRM suite needs ~5+ minutes under FlashSim.
+        TIMEOUT="${TIMEOUT:-600}"
     fi
 elif [ "$GPU_VERT_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
-        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --frag-core --vert-core --width $GPU_WIDTH --height $GPU_HEIGHT")
+        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi $GPU_RTL_DIR --frag-core --vert-core --width $GPU_WIDTH --height $GPU_HEIGHT")
     TIMEOUT="${TIMEOUT:-3600}"
 elif [ "$GPU_FRAG_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
-        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --frag-core --width $GPU_WIDTH --height $GPU_HEIGHT")
+        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi $GPU_RTL_DIR --frag-core --width $GPU_WIDTH --height $GPU_HEIGHT")
     # The 3-draw fragment stencil job has a 15x watchdog; allow the full
     # userspace suite to continue after that job completes.
     TIMEOUT="${TIMEOUT:-2400}"
 else
     (cd "$GPU_DIR" && \
-        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi generated/host --width $GPU_WIDTH --height $GPU_HEIGHT")
-    TIMEOUT="${TIMEOUT:-300}"
+        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi $GPU_RTL_DIR --width $GPU_WIDTH --height $GPU_HEIGHT")
+    # FF + MSAA/persistent-depth DRM suite needs ~5+ minutes under FlashSim.
+    TIMEOUT="${TIMEOUT:-600}"
 fi
-[ -f "$GPU_DIR/generated/host/GpuHostSystemAxi.sv" ] || \
-    fail "RTL emission did not produce generated/host/GpuHostSystemAxi.sv"
-[ -f "$GPU_DIR/generated/host/filelist.f" ] || \
-    fail "RTL emission did not produce generated/host/filelist.f"
+[ -f "$GPU_RTL_DIR/GpuHostSystemAxi.sv" ] || \
+    fail "RTL emission did not produce $GPU_RTL_DIR/GpuHostSystemAxi.sv"
+[ -f "$GPU_RTL_DIR/filelist.f" ] || \
+    fail "RTL emission did not produce $GPU_RTL_DIR/filelist.f"
 
-ARTI_RTL_SOURCE_LIST="$GPU_DIR/generated/host/GpuHostSystemAxi.sv"
+ARTI_RTL_SOURCE_LIST="$GPU_RTL_DIR/GpuHostSystemAxi.sv"
 while IFS= read -r rtl_source; do
     [ -n "$rtl_source" ] || continue
     [ "$rtl_source" = "GpuHostSystemAxi.sv" ] && continue
-    rtl_source="$GPU_DIR/generated/host/$rtl_source"
+    rtl_source="$GPU_RTL_DIR/$rtl_source"
     [ -f "$rtl_source" ] || fail "RTL dependency from filelist.f is missing: $rtl_source"
     ARTI_RTL_SOURCE_LIST="${ARTI_RTL_SOURCE_LIST:+$ARTI_RTL_SOURCE_LIST,}$rtl_source"
-done < "$GPU_DIR/generated/host/filelist.f"
+done < "$GPU_RTL_DIR/filelist.f"
 [ -n "$ARTI_RTL_SOURCE_LIST" ] || fail "generated RTL file list is empty"
 
 # ARTI releases that narrow the generated AXI-Lite address temporary to eight
@@ -275,7 +288,7 @@ INTEGRATION_CONFIG="$INTEGRATION_CONFIG" \
 ARTI_DIR="$ARTI_DIR" \
 ARTI_RTL_BACKEND="$GPU_SIM" \
 ARTI_RTL_TOP=GpuHostSystemAxi \
-ARTI_RTL_SOURCE="$GPU_DIR/generated/host/GpuHostSystemAxi.sv" \
+ARTI_RTL_SOURCE="$GPU_RTL_DIR/GpuHostSystemAxi.sv" \
 FLASHSIM_DIR="$FLASHSIM_DIR" \
 LINUX_BUILD="$LINUX_BUILD" \
 LINUX_SRC="$LINUX_SRC" \
@@ -382,6 +395,10 @@ GUEST_DRM_TEST="$DRIVER_OUTPUT/opengpu_drm_test"
     -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" \
     -DTEST_WIDTH="$GPU_WIDTH" -DTEST_HEIGHT="$GPU_HEIGHT" \
     -o "$GUEST_DRM_TEST" "$GPU_DIR/driver/tests/opengpu_drm_test.c"
+if [ "${BUILD_ONLY:-0}" = "1" ]; then
+    echo "ARTI GPU build ready: QEMU=$QEMU_BUILD/qemu-system-aarch64 DRIVER=$DRIVER_KO TEST=$GUEST_DRM_TEST"
+    exit 0
+fi
 
 # ARTI's generic runner deliberately owns initramfs construction. Use a
 # temporary harness view with our external-driver init, while keeping ARTI
@@ -390,8 +407,6 @@ WORK="${WORK:-$ARTI_WORK/linux-test}"
 mkdir -p "$WORK"
 cp "$GUEST_DRM_TEST" "$WORK/opengpu_drm_test"
 if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
-    [ "$GPU_WIDTH" = "16" ] && [ "$GPU_HEIGHT" = "16" ] || \
-        fail "userspace examples require 16x16"
     if [ "$GPU_FRAG_CORE" = "1" ]; then
         # Programmable GPU path: tint shader + pipe clear/draw_vbo.
         python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \

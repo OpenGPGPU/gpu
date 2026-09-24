@@ -30,7 +30,8 @@ A passing sim is not silicon; a completed tool run is not timing closure.
   compute, fragment and vertex code use private executable windows. Host
   vertex→fragment translation and instruction-fault recovery are covered.
   VM-enabled mapping failures abort the operation.
-- External display hardware owns scanout and signal generation.
+- ARTI guest-memory GraphicHwOps owns QEMU scanout from SCANOUT_* registers;
+  external display PHY remains out of scope.
 
 ## Capability status
 
@@ -192,8 +193,38 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    ```
    (`BUILD_USERSPACE=0` skips the cross-build.) Mesa only if NIR stays small;
    see [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md).
-   Scanout remains simulation-only — apps validate by reading colour GEMs.
-   Replace virtual vblank/scanout after choosing display hardware.
+   **Display hardware is ARTI guest-memory GraphicHwOps** (`gpu_integration.yaml`:
+   SCANOUT BASE/STRIDE/CONTROL/WIDTH/HEIGHT + `refresh_hz`). KMS programs those
+   registers; QEMU presents guest GEM memory. Soft/timer vblank remains in the
+   Linux driver until a hardware vblank IRQ exists (phase 2). The operational
+   RTL, driver, and ARTI display defaults are 64x64 at 30 Hz. Build the
+   interactive Debian model once, then boot it:
+   ```sh
+   scripts/build_arti_debian_display.sh
+   QEMU_DISPLAY=cocoa scripts/run_arti_debian.sh
+   ```
+   The standalone DRM scanout check remains available with
+   `scripts/run_arti_display.sh`. An earlier direct boot of the FlashSim QEMU
+   and DRM initramfs produced a
+   16x16 PPM with 120 rendered green pixels; pixel (1,1) was `00fe00`, matching
+   the guest's expected framebuffer value. The Debian runner enables
+   `opengpu-boot-display.service` by default: on boot it loads the driver and
+   keeps a small KMS gradient framebuffer active. A headless Debian boot
+   previously confirmed `/dev/dri/card0`, an active service, and a 16x16
+   scanout PPM. Set `OPENGPU_AUTO_DISPLAY=0` for manual loading. The next
+   display milestone is a real graphics client.
+   Cocoa uses `zoom-to-fit=on`; an already-running window
+   can enable **View → Zoom To Fit** and then be resized.
+   Apps may still validate by reading colour GEMs; the QEMU window / PPM dump
+   is the primary scanout path under ARTI.
+   On 2026-09-24, the 64x64 Verilator model built with `--threads 4` and
+   four parallel C++ compile jobs completed a 32 KiB hardware fill in a
+   median 0.112 s (25,637 model ticks over five runs). The same RTL with
+   `--threads 1` took a median 0.268 s: 2.39x slower for this operation.
+   The ARTI wrapper advances about 20,000 idle ticks after this fill, so the
+   0.23 MHz total-tick rate is workload and wrapper specific. A headless
+   Debian boot registered DRM at mode 64x64 and produced a nonblack 64x64
+   scanout PPM.
 2. **Keep the submission contract covered** — every submission-path change
    must exercise descriptor errors, reset-during-work, delayed writes,
    completion backpressure, recovery and mixed sample modes. Boundary edits
@@ -276,7 +307,9 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
 - Qualification gate is boundary suites + workload sweep, not the full Scala
   suite.
 - No parent-level per-interface timing budgets.
-- Display/scanout is simulation-only.
+- Display/scanout under ARTI is guest-memory GraphicHwOps (BASE/STRIDE/
+  CONTROL/WIDTH/HEIGHT + refresh timer). Soft/timer vblank in Linux remains
+  until a hardware vblank IRQ lands.
 - ASID-0 identity mappings remain read/write and non-executable for Bare
   bring-up (`opengpu_hw_enable_mmu`). Resolve and line-invalidate submit
   physical invalidate addresses; engine/resolve traffic uses private DMA VAs

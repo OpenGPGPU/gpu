@@ -62,6 +62,7 @@ class RasterizerSpec extends AnyFlatSpec {
       dut.reset.poke(false.B)
       dut.io.sampleMode.poke(0.U)
       dut.io.pixel.ready.poke(true.B)
+      dut.io.cullMode.poke(0.U)
       dut.io.draw.valid.poke(true.B)
       dut.io.draw.bits.v0.x.poke(v0._1.S)
       dut.io.draw.bits.v0.y.poke(v0._2.S)
@@ -112,6 +113,43 @@ class RasterizerSpec extends AnyFlatSpec {
         if (inside(x, y)) Some((x, y)) else None
       } }.toSet
       assert(covered == expected, s"coverage mismatch: ${(covered -- expected)} vs ${(expected -- covered)}")
+    }
+  }
+
+  it should "clip at a non-power-of-two screen edge" in {
+    val config = GraphicsConfig(screenWidth = 320, screenHeight = 240, subPixelBits = 8)
+    simulate(new TriangleRasterizer(config)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.sampleMode.poke(0.U)
+      dut.io.pixel.ready.poke(true.B)
+      dut.io.cullMode.poke(0.U)
+      dut.io.draw.valid.poke(true.B)
+      dut.io.draw.bits.v0.x.poke(config.toFixed(318).S)
+      dut.io.draw.bits.v0.y.poke(config.toFixed(238).S)
+      dut.io.draw.bits.v1.x.poke(config.toFixed(324).S)
+      dut.io.draw.bits.v1.y.poke(config.toFixed(238).S)
+      dut.io.draw.bits.v2.x.poke(config.toFixed(318).S)
+      dut.io.draw.bits.v2.y.poke(config.toFixed(244).S)
+      dut.clock.step()
+      dut.io.draw.valid.poke(false.B)
+
+      var covered = Set.empty[(Int, Int)]
+      var cycles = 0
+      while (!dut.io.draw.ready.peek().litToBoolean && cycles < 1000) {
+        if (dut.io.pixel.valid.peek().litToBoolean) {
+          val x = dut.io.pixel.bits.x.peek().litValue.toInt
+          val y = dut.io.pixel.bits.y.peek().litValue.toInt
+          covered += ((x, y))
+        }
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(cycles < 1000)
+      assert(covered.nonEmpty)
+      assert(covered.forall { case (x, y) => x < 320 && y < 240 })
+      assert(covered.exists { case (x, y) => x >= 318 && y >= 238 })
     }
   }
 

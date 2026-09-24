@@ -12,7 +12,7 @@ are separate:
 | `opengpu_mmu.c` | Page tables, ASIDs, VA windows, shootdown |
 | `opengpu_compute.c` | Contexts, binding validation, job preparation, opcodes |
 | `opengpu_scheduler.c` | One scheduler, reservation/syncobj deps, common retirement |
-| `opengpu_display.c` | Connector, pipe, atomic modeset, page flips, virtual vblank |
+| `opengpu_display.c` | Connector, pipe, atomic modeset, page flips; soft/timer vblank (ARTI owns QEMU scanout) |
 
 Validation happens before scheduler submission. On success the scheduler owns
 the job and retained GEM references; the common free callback releases staged
@@ -58,7 +58,9 @@ TLBs.
 
 CPU/GPU visibility uses DMA allocation/cache sync, GPU line invalidate and
 reservation fences. KMS waits for render/resolve destination write fences.
-Virtual vblank is simulation pacing; real scanout/PHY remain external.
+Under ARTI, guest-memory GraphicHwOps presents SCANOUT_* (see
+`driver/gpu_integration.yaml`); soft/timer vblank paces flips until a
+hardware vblank IRQ exists. Real display PHY remains external / out of scope.
 
 Validate with `python3 scripts/test_driver.py`. Guest path:
 `scripts/run_arti_gpu.sh`. Status: [GRAPHICS_ROADMAP.md](GRAPHICS_ROADMAP.md).

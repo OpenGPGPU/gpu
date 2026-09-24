@@ -19,9 +19,9 @@
          * the elaborated RTL resolution (EmitGpuHostAxi --width/--height);
          * the ARTI-generated node omits these and the driver then falls back
          * to its OPENGPU_DEFAULT_WIDTH/HEIGHT compile-time defaults. */
-        opengpu,width = <16>;
-        opengpu,height = <16>;
-        opengpu,stride = <0x40>;                /* 16 * 4 */
+        opengpu,width = <64>;
+        opengpu,height = <64>;
+        opengpu,stride = <0x100>;               /* 64 * 4 */
         #address-cells = <1>;
         #size-cells = <1>;
     };

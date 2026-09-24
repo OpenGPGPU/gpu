@@ -104,6 +104,8 @@ static void opengpu_pipe_disable(struct drm_simple_display_pipe *pipe)
 
 static int opengpu_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
 {
+    /* Soft timer until an RTL/ARTI hardware vblank IRQ exists (phase 2).
+     * ARTI guest-memory GraphicHwOps owns QEMU scanout independently. */
     return drm_crtc_vblank_helper_enable_vblank_timer(&pipe->crtc);
 }
 

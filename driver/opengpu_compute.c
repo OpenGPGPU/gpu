@@ -31,16 +31,19 @@ static u32 opengpu_fragment_batch_capacity(struct opengpu_device *gpu);
 static void opengpu_fill_test_command(struct opengpu_device *gpu)
 {
     struct gpu_draw_record *r = gpu->compute.cmd.cpu;
+    s32 clip_x_extent = (s32)(0x20000u * 16u / gpu->width);
+    s32 clip_y_extent = (s32)(0x20000u * 16u / gpu->height);
 
     BUILD_BUG_ON(sizeof(*r) != GPU_DRAW_WORDS * sizeof(u32));
 
     memset(gpu->compute.cmd.cpu, 0, sizeof(*r));
-    /* Prefer the hardware clear engine for the depth plane; the CPU loop
-     * stays as the fallback for engines without GPU_CAP_CLEAR_ENGINE or with
-     * a misaligned self-test buffer.  D24S8: stencil 0 under the far depth.
-     * The caller guarantees no draw is in flight, matching the
-     * explicit-sync contract. */
-    if (opengpu_hw_clear(gpu,
+    /* The explicit legacy test draws a 16x16 triangle even when scanout is
+     * larger. Avoid clearing the entire depth plane through simulated cycles;
+     * the CPU initializes it before the first draw instead. Small modes
+     * continue to exercise the hardware clear engine. D24S8: stencil 0
+     * under the far depth. The test caller holds the compute lock. */
+    if (gpu->width > 16 || gpu->height > 16 ||
+        opengpu_hw_clear(gpu,
                          lower_32_bits(gpu->compute.depth.dma),
                          (u32)gpu->compute.depth.size, 0x00ffffffu)) {
         u32 *word = gpu->compute.depth.cpu;
@@ -54,9 +57,9 @@ static void opengpu_fill_test_command(struct opengpu_device *gpu)
 
     r->v0[0] = -0x10000; r->v0[1] = -0x10000;
     r->v0[2] = 0; r->v0[3] = 0x10000;
-    r->v1[0] =  0x10000; r->v1[1] = -0x10000;
+    r->v1[0] = -0x10000 + clip_x_extent; r->v1[1] = -0x10000;
     r->v1[2] = 0; r->v1[3] = 0x10000;
-    r->v2[0] = -0x10000; r->v2[1] =  0x10000;
+    r->v2[0] = -0x10000; r->v2[1] = -0x10000 + clip_y_extent;
     r->v2[2] = 0; r->v2[3] = 0x10000;
 
     r->c0[0] = 255; r->c0[1] = 0; r->c0[2] = 0;
@@ -3027,10 +3030,8 @@ static long opengpu_compute_ioctl(struct file *file, unsigned int cmd,
     compute = container_of(misc, struct opengpu_compute, misc);
     gpu = container_of(compute, struct opengpu_device, compute);
     mutex_lock(&compute->lock);
-    ret = opengpu_submit_test(gpu);
+    ret = opengpu_self_test(gpu);
     mutex_unlock(&compute->lock);
-    if (!ret)
-        dev_info(gpu->dev, "GPU userspace submit complete\n");
     return ret;
 }
 
@@ -3072,14 +3073,6 @@ int opengpu_compute_init(struct opengpu_device *gpu)
             goto err_shader;
     }
 
-    if (gpu->hw.capabilities & GPU_CAP_VERTEX_CORE) {
-        dev_info(gpu->dev,
-                 "vertex-core present; legacy triangle self-test disabled\n");
-    } else {
-        ret = opengpu_self_test(gpu);
-        if (ret)
-            goto err_shader;
-    }
     ret = opengpu_sched_init(gpu);
     if (ret)
         goto err_shader;

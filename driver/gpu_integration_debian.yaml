@@ -4,8 +4,7 @@
 # control slave, and services its AXI4 memory master from guest physical RAM.
 # `scripts/run_arti_gpu.sh` selects the embedded RTL backend with GPU_SIM=
 # flashsim (default) or verilator.
-# This profile keeps the integration metadata next to the driver so it can be
-# copied into any project.
+# Debian display profile: modest native mode for interactive simulation.
 #
 # A hardware SoC attaches the same standard master port to its L2/DRAM fabric.
 project:
@@ -17,7 +16,7 @@ rtl:
   top_module: GpuHostSystemAxi
   # Emitted by the Chisel flow:
   #   sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi"
-  source_files: [../generated/host/GpuHostSystemAxi.sv]
+  source_files: [../generated/debian-64x64/GpuHostSystemAxi.sv]
   clk_freq_mhz: 100
 
 bridge:

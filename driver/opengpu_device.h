@@ -42,10 +42,10 @@ struct opengpu_drm;
  * Must match the elaborated RTL resolution; the runner passes
  * -DOPENGPU_DEFAULT_WIDTH/HEIGHT to keep them in lockstep. */
 #ifndef OPENGPU_DEFAULT_WIDTH
-#define OPENGPU_DEFAULT_WIDTH   16
+#define OPENGPU_DEFAULT_WIDTH   64
 #endif
 #ifndef OPENGPU_DEFAULT_HEIGHT
-#define OPENGPU_DEFAULT_HEIGHT  16
+#define OPENGPU_DEFAULT_HEIGHT  64
 #endif
 #define OPENGPU_IOCTL_SUBMIT    _IO('G', 0x01)
 
