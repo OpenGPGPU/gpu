@@ -269,10 +269,17 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    under that backend. The separate full `opengpu_drm_test` failed on both
    backends with `short resolve stride accepted`; its timing is excluded from
    the passing comparison. That A/B used the existing 2026-09-24 modules ISO,
-   while the host-built driver and test were refreshed on 2026-09-25; rebuild
-   the ISO and rerun the full test before treating that failure as a current
-   driver regression. Raw serial logs and host timing JSON are under
-   `../arti-work/bench/debian-ab-20260925/` in the local work tree.
+   while the host-built driver and test were refreshed on 2026-09-25. After
+   refreshing the ISO, the full 64x64 Debian `opengpu_drm_test` passed with
+   the eight-thread Verilator backend and QEMU powered off (451.90 s
+   launch-to-poweroff). Consecutive KMS flip intervals were 33.085 ms and
+   32.981 ms. The earlier resolve failure did not reproduce with the current
+   guest artifacts. A passing A/B repeat with the refreshed ISO took 179.93 s
+   on FlashSim versus 91.60 s on Verilator from launch to poweroff; the 1 KiB
+   blit took 1.67 s versus 18.06 s, and the 64x64 draw/present took 143.24 s
+   versus 32.42 s. Raw serial logs and host
+   timing JSON are under `../arti-work/bench/debian-ab-20260925/` in the
+   local work tree.
 2. **Keep the submission contract covered** — every submission-path change
    must exercise descriptor errors, reset-during-work, delayed writes,
    completion backpressure, recovery and mixed sample modes. Boundary edits
