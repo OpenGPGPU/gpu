@@ -814,6 +814,42 @@ int main(void)
     program[1] = vector_alu(0x00, 1, 2, 1, 1); /* floating vv is excluded */
     assert(!opengpu_shader_validate_words(program, 3, 288, 8));
 
+    /* FP32 VFUNARY1 (OPFVV funct6=0x13): vs1 encodes vfsqrt/vfrec7/vfrsqrt7/vfclass. */
+    {
+        const uint32_t vfunary1_valid[] = {
+            vsetivli(1),
+            addi(5, 1, 0),
+            vle32(2, 5),
+            0x4e201157u, /* vfsqrt.v v2, v2 */
+            0x4e221157u, /* vfrec7.v v2, v2 */
+            0x4e229157u, /* vfrsqrt7.v v2, v2 */
+            0x4e281157u, /* vfclass.v v2, v2 */
+            vse32(2, 5),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t vfunary1_bad_op[] = {
+            vsetivli(1),
+            addi(5, 1, 0),
+            vle32(2, 5),
+            0x4e211157u, /* reserved VFUNARY1 vs1=2 */
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t vfunary1_masked[] = {
+            vsetivli(1),
+            addi(5, 1, 0),
+            vle32(2, 5),
+            0x4c201157u, /* vfsqrt masked */
+            OPENGPU_SHADER_CEASE,
+        };
+
+        assert(opengpu_compute_shader_validate_words(
+            vfunary1_valid, 9, 64, 1));
+        assert(!opengpu_compute_shader_validate_words(
+            vfunary1_bad_op, 5, 64, 1));
+        assert(!opengpu_compute_shader_validate_words(
+            vfunary1_masked, 5, 64, 1));
+    }
+
     program[1] = vector_alu(0x00, 4, 2, 1, 10); /* undefined scalar x10 */
     assert(!opengpu_shader_validate_words(program, 3, 288, 8));
 

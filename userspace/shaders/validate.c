@@ -35,6 +35,7 @@ static int validate(const char *path, int profile)
     case 2: valid = opengpu_vertex_shader_validate_words(words, count, 512, 8); break;
     case 3: valid = opengpu_shader_validate_words_with_texture(
                 words, count, 288, 8, true); break;
+    case 4: valid = opengpu_compute_shader_validate_words(words, count, 64, 4); break;
     default: return 1;
     }
     if (!valid) {
@@ -52,7 +53,8 @@ int main(int argc, char **argv)
     if (argc < 3 || ((argc - 1) & 1)) {
         fprintf(stderr,
                 "usage: %s <bin profile>...\n"
-                "profiles: 0=compute 1=fragment 2=vertex 3=fragment+texture\n",
+                "profiles: 0=compute 1=fragment 2=vertex 3=fragment+texture "
+                "4=compute/local4\n",
                 argv[0]);
         return 2;
     }

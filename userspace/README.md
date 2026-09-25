@@ -27,6 +27,10 @@ RISC-V source, through private shader and kernarg bindings. It checks that
 the same input rounds to 1 under RNU and 0 under RDN. Pass the shader binary
 as the second argument when running outside the guest.
 
+`examples/fp_unary` loads the corpus `fp_unary` shader and checks exact RTL
+reference results for `vfsqrt` / `vfrsqrt7` / `vfrec7` / `vfclass` (default
+`/opengpu_fp_unary.bin`).
+
 `examples/triangle` draws a native-mode test image into its own colour GEM on
 a fixed-function build (64x64 by default). It obtains the mode through
 `opengpu_display_size`. Pass a DRM node path as the first argument, or use the
@@ -107,12 +111,12 @@ run the DRM guest regression before the apps. The full release gate remains
 Run `python3 scripts/validate_shader_corpus.py` from the repository root. It
 assembles `compute_copy.S`, `round_modes.S`, `masked_ops.S`, `fixed_width.S`
 (lane-local `vsext`/`vzext`/`vnclip`/`vsmul` with `vxrm`), `widen_alu.S`
-(lane-local `vwadd`/`vwsub`/`vwmul`) and `fragment_texture.S` (`vtex.sample`
-plus warp discard / `vquad.dfdx`), and compiles three small C shaders with
-`riscv64-unknown-elf-gcc`, adapts the C argument base to OpenGPU's direct `x1`
-kernarg convention, and replaces the C return with the OpenGPU cease
-instruction. The script checks every binary with the production compute,
-fragment, fragment+texture or vertex shader validator. It rejects compiler
-output with labels or indirect memory operands, rather than assuming arbitrary
-C is a valid shader. Set `RISCV_GCC` and `RISCV_OBJCOPY` for another RISC-V
-toolchain.
+(lane-local `vwadd`/`vwsub`/`vwmul`), `fragment_texture.S` (`vtex.sample`
+plus warp discard / `vquad.dfdx`) and `fp_unary.S` (FP32 VFUNARY1), and compiles
+three small C shaders with `riscv64-unknown-elf-gcc`, adapts the C argument
+base to OpenGPU's direct `x1` kernarg convention, and replaces the C return
+with the OpenGPU cease instruction. The script checks every binary with the
+production compute, fragment, fragment+texture or vertex shader validator. It
+rejects compiler output with labels or indirect memory operands, rather than
+assuming arbitrary C is a valid shader. Set `RISCV_GCC` and `RISCV_OBJCOPY`
+for another RISC-V toolchain.

@@ -164,12 +164,12 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
 1. **ARTI as a usable GPU** — `scripts/qualify_functional.sh` already boots
    fixed-function and vertex+fragment guests with `opengpu_drm_test`.
    Userspace apps on top of that API:
-   - Fixed-function (`GPU_FRAG_CORE=0`): compute, triangle, `triangle_present`,
+   - Fixed-function (`GPU_FRAG_CORE=0`): compute, `fp_unary`, triangle, `triangle_present`,
      `pipe_present`, `pipe_clear_draw`,
      `pipe_compute`, `pipe_blit`, `pipe_strided_blit`, `pipe_resolve`,
      `pipe_texture_draw`, `pipe_depth_pass`, `pipe_msaa_draw`.
    - Fragment core (`GPU_FRAG_CORE=1`, `GPU_VERT_CORE=0`): `fragment_tint`,
-     `triangle_present`, `pipe_present`, `pipe_clear_draw`, `pipe_compute`,
+     `fp_unary`, `triangle_present`, `pipe_present`, `pipe_clear_draw`, `pipe_compute`,
      `pipe_blit`, `pipe_strided_blit`, `pipe_resolve`, `pipe_texture_draw`
      (`vtex.sample` corpus binary staged as `/opengpu_fragment_texture.bin`),
      `pipe_depth_pass`, `pipe_msaa_draw`, `pipe_vertex_draw` (skips without a
@@ -318,16 +318,21 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    also submits physical addresses but keeps the context ASID (satp unused).
    The symbolic corpus also validates fixed-profile
    `vsext`/`vzext`/`vnclip`/`vsmul` (`fixed_width.S`),
-   `vwadd`/`vwsub`/`vwmul` (`widen_alu.S`), and the programmable
+   `vwadd`/`vwsub`/`vwmul` (`widen_alu.S`), the programmable
    `vtex.sample` fragment path (`fragment_texture.S`, exercised by
-   `examples/pipe_texture_draw` under `GPU_FRAG_CORE=1`).
+   `examples/pipe_texture_draw` under `GPU_FRAG_CORE=1`), and FP32 VFUNARY1
+   (`fp_unary.S` / `examples/fp_unary`).
    Remaining ASID-0 identity use is Bare bring-up (`opengpu_hw_enable_mmu`).
 6. **Workload-driven ISA** — FP32 VFUNARY1 (`vfsqrt`/`vfrec7`/`vfrsqrt7`/`vfclass`)
-   is complete in RTL; grow the **validator + corpus** when a shader needs those
-   ops (vector FP is not yet admitted on opcode `0x57`). Integer widening
-   (`vwadd`/`vwsub`/`vwmul`) is covered by `userspace/shaders/widen_alu.S`.
-   Add further VFUNARY0 / widening beyond the fixed SEW=32 profile only with a
-   motivating shader, validator rules and execution/guest coverage together.
+   is complete in RTL and admitted by the shader validator; the corpus shader
+   `fp_unary.S` and `examples/fp_unary` exercise it under ARTI with
+   `local_items=4` so every CU lane sees a defined `vs2` (VL=1 left inactive
+   `vfsqrt` lanes on garbage and hung the guest). Grow further **validator +
+   corpus** when a shader needs more vector FP (binary OPFVV is still
+   rejected). Integer widening (`vwadd`/`vwsub`/`vwmul`) is covered by
+   `userspace/shaders/widen_alu.S`. Add further VFUNARY0 / widening beyond the
+   fixed SEW=32 profile only with a motivating shader, validator rules and
+   execution/guest coverage together.
 7. **Graphics feature decision** — measure target scenes before adding
    centroid or per-sample interpolation or framebuffer compression. Record
    the observed quality or bandwidth gap, expected benefit and verification

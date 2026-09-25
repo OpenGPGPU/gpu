@@ -15,11 +15,12 @@ FLAGS = ["-march=rv32im_zicsr", "-mabi=ilp32", "-O2", "-ffreestanding",
          "-fno-pic", "-fno-asynchronous-unwind-tables"]
 
 ASSEMBLY = ("compute_copy", "round_modes", "masked_ops", "fixed_width",
-            "widen_alu", "fragment_texture")
+            "widen_alu", "fragment_texture", "fp_unary")
 COMPILED = ("compute_increment", "fragment_tint", "vertex_offset")
 ALL = ASSEMBLY + COMPILED
-# validate.c profiles: 0=compute, 1=fragment, 2=vertex, 3=fragment+texture
-PROFILES = (0, 0, 0, 0, 0, 3, 0, 1, 2)
+# validate.c profiles: 0=compute, 1=fragment, 2=vertex, 3=fragment+texture,
+# 4=compute with local_items=4 (FP VFUNARY1 needs all CU lanes defined)
+PROFILES = (0, 0, 0, 0, 0, 3, 4, 0, 1, 2)
 
 
 def run(args):

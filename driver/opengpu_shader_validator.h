@@ -253,6 +253,14 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
                (funct6 >= 0x20 && funct6 <= 0x27);
     case 6: /* multiply/divide vx */
         return funct6 >= 0x20 && funct6 <= 0x27;
+    case 1: { /* OPFVV: admit FP32 VFUNARY1 only (vs1 encodes the op) */
+        opengpu_shader_u32 vs1 = (insn >> 15) & 0x1f;
+
+        if (funct6 != 0x13)
+            return false;
+        /* vfsqrt / vfrec7 / vfrsqrt7 / vfclass — unmasked; vs1 is not a VGPR. */
+        return vs1 == 0 || vs1 == 4 || vs1 == 5 || vs1 == 16;
+    }
     case 3: /* integer vi */
         switch (funct6) {
         case 0x00: /* vadd */
@@ -344,18 +352,18 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * divide and remainder forms, vssrl/vssra rounded scaling shifts,
  * masked lane-local integer arithmetic, comparisons, reductions, gathers,
  * slides and extensions, fixed-profile vnsrl/vnsra narrowing shifts over even/odd
- * register pairs, vnclipu/vnclip rounded saturating narrowing, and masked
- * or unmasked unit-, constant-stride, and
- * trusted-local-index word memory operations. Defined-register
- * tracking prevents stale SGPR/VGPR data from being exported. A small abstract
- * interpreter recognizes x1 +
- * 4*x8 + constant, where x8 is the trusted warp localLinearBase, and proves
- * every active vector lane remains in kernarg; each profile selects the
- * writable portion. The fragment profile restricts stores to colour/depth/
- * validity slices, while general compute permits the whole explicitly bound
- * kernarg range. The bounded vector texture sample requires a validated
- * texture binding. Backward branches, jumps, atomics and all other custom
- * instructions remain rejected. */
+ * register pairs, vnclipu/vnclip rounded saturating narrowing, unmasked FP32
+ * VFUNARY1 (`vfsqrt`/`vfrec7`/`vfrsqrt7`/`vfclass`), and masked or unmasked
+ * unit-, constant-stride, and trusted-local-index word memory operations.
+ * Defined-register tracking prevents stale SGPR/VGPR data from being exported.
+ * A small abstract interpreter recognizes x1 + 4*x8 + constant, where x8 is
+ * the trusted warp localLinearBase, and proves every active vector lane
+ * remains in kernarg; each profile selects the writable portion. The fragment
+ * profile restricts stores to colour/depth/validity slices, while general
+ * compute permits the whole explicitly bound kernarg range. The bounded
+ * vector texture sample requires a validated texture binding. Backward
+ * branches, jumps, atomics and all other custom instructions remain rejected.
+ */
 static inline bool opengpu_shader_validate_words_profile(
     const opengpu_shader_u32 *words, opengpu_shader_u32 word_count,
     opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity,
@@ -526,13 +534,15 @@ static inline bool opengpu_shader_validate_words_profile(
             if (end > output_end)
                 return false;
             break;
-        case 0x57: /* vsetivli or allow-listed vector integer ALU */
+        case 0x57: /* vsetivli or allow-listed vector ALU (int + VFUNARY1) */
             if ((insn & 0xfff07fffu) == 0xc1007057u) {
                 state.vector_length = rs1;
                 if (!state.vector_length ||
                     state.vector_length > batch_capacity)
                     return false;
             } else {
+                bool vfunary1 = funct3 == 1 && (insn >> 26) == 0x13;
+
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
                     !vector_defined[rs2] ||
@@ -549,7 +559,9 @@ static inline bool opengpu_shader_validate_words_profile(
                     ((funct3 == 0 || funct3 == 2) && (insn >> 26) != 0x12 &&
                      !vector_defined[rs1]) ||
                     ((funct3 == 4 || funct3 == 6) &&
-                     !scalar_defined[rs1]))
+                     !scalar_defined[rs1]) ||
+                    /* VFUNARY1 encodes the op in vs1; reject masked forms. */
+                    (vfunary1 && !(insn & (1u << 25))))
                     return false;
                 state.vector_local_indices &= ~(1u << rd);
                 state.vector_local_bytes &= ~(1u << rd);

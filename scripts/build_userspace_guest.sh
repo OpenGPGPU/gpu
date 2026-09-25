@@ -44,6 +44,11 @@ rm -f "$DRIVER_OUTPUT/opengpu_compute_shader.o"
 "$CROSS_GCC" "${CFLAGS[@]}" \
     -o "$DRIVER_OUTPUT/opengpu_compute_example" \
     "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/compute.c"
+python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+    --emit fp_unary "$DRIVER_OUTPUT/opengpu_fp_unary.bin"
+"$CROSS_GCC" "${CFLAGS[@]}" \
+    -o "$DRIVER_OUTPUT/opengpu_fp_unary" \
+    "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/fp_unary.c"
 "$CROSS_GCC" "${CFLAGS[@]}" \
     -o "$DRIVER_OUTPUT/opengpu_triangle_example" \
     "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/triangle.c"
@@ -73,6 +78,7 @@ ls -1 "$DRIVER_OUTPUT"/opengpu_kms_present \
     "$DRIVER_OUTPUT"/opengpu_triangle_present \
     "$DRIVER_OUTPUT"/opengpu_pipe_* \
     "$DRIVER_OUTPUT"/opengpu_compute_example \
+    "$DRIVER_OUTPUT"/opengpu_fp_unary* \
     "$DRIVER_OUTPUT"/opengpu_triangle_example \
     "$DRIVER_OUTPUT"/opengpu_compute_shader.bin \
     "$DRIVER_OUTPUT"/opengpu_fragment_tint* \
