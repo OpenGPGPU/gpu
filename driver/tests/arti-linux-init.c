@@ -117,6 +117,9 @@ int main(void)
                run_program("/opengpu_triangle_present") < 0 ||
                run_program("/opengpu_pipe_present") < 0 ||
                run_program("/opengpu_pipe_clear_draw") < 0 ||
+               run_program("/opengpu_pipe_compute") < 0 ||
+               run_program("/opengpu_pipe_blit") < 0 ||
+               run_program("/opengpu_pipe_strided_blit") < 0 ||
                run_program("/opengpu_pipe_resolve") < 0 ||
                run_program("/opengpu_pipe_texture_draw") < 0 ||
                run_program("/opengpu_pipe_depth_pass") < 0 ||

@@ -434,6 +434,27 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
             -o "$WORK/opengpu_pipe_clear_draw" \
             "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
             "$GPU_DIR/userspace/examples/pipe_clear_draw.c"
+        "${RISCV_GCC:-riscv64-unknown-elf-gcc}" -march=rv32imv_zicsr \
+            -mabi=ilp32 -c -o "$WORK/opengpu_compute_shader.o" \
+            "$GPU_DIR/userspace/shaders/round_modes.S"
+        "${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}" -O binary \
+            --only-section=.text "$WORK/opengpu_compute_shader.o" \
+            "$WORK/opengpu_compute_shader.bin"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_pipe_compute" \
+            "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
+            "$GPU_DIR/userspace/examples/pipe_compute.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_pipe_blit" \
+            "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
+            "$GPU_DIR/userspace/examples/pipe_blit.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_pipe_strided_blit" \
+            "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
+            "$GPU_DIR/userspace/examples/pipe_strided_blit.c"
         "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
             -o "$WORK/opengpu_pipe_resolve" \
