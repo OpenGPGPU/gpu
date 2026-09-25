@@ -202,9 +202,10 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    registers; QEMU presents guest GEM memory. ARTI uses the DRM soft timer with
    a nominal 30 Hz period to match `refresh_hz`: its RTL clock advances during
    transactions and IRQ polls, so a 100 MHz hardware period cannot track wall
-   time. The fixed 64x64 guest measured two consecutive flip intervals of
-   2.21 s under emulation; this is a functional path, not a 30 Hz throughput
-   result. Continuously clocked devices use hardware vblank
+   time. Rewriting only `SCANOUT_BASE` on same-mode flips reduced measured
+   fixed 64x64 guest intervals from 2.21 s to 251 ms; vertex+fragment flips
+   fell from 2.69–2.76 s to 293–297 ms. The remaining model cost is still
+   above the 30 Hz target. Continuously clocked devices use hardware vblank
    (`GPU_CAP_HW_VBLANK`, `SCANOUT_PERIOD`, IRQ bit2). The operational
    RTL, driver, and ARTI display defaults are 64x64 at 30 Hz. Build the
    interactive Debian model once, then boot it:

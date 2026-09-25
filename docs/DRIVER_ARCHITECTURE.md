@@ -62,7 +62,9 @@ Under ARTI, guest-memory GraphicHwOps presents SCANOUT_* (see
 `driver/gpu_integration.yaml`); ARTI uses the DRM soft timer because its RTL
 clock advances on transactions and IRQ polls. Continuously clocked devices use
 the shared hardware vblank IRQ when `GPU_CAP_HW_VBLANK` is set. Real display PHY
-remains external / out of scope.
+remains external / out of scope. For an unchanged mode, KMS rewrites only
+`SCANOUT_BASE` on a page flip; full modesets still program and validate all
+scanout registers. Rewriting the same base also refreshes ARTI's headless view.
 
 Validate with `python3 scripts/test_driver.py`. Guest path:
 `scripts/run_arti_gpu.sh`. Status: [GRAPHICS_ROADMAP.md](GRAPHICS_ROADMAP.md).

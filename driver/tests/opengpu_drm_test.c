@@ -1775,10 +1775,14 @@ int main(void)
 
         for (unsigned i = 0; i < 2; i++) {
             uint64_t current_us, interval_us;
+            uint64_t flip_start_ms = monotonic_ms();
+            uint64_t ioctl_ms, wait_ms;
 
             CHECK(atomic_page_flip(fd, &ids, i ? second.fb_id : first.fb_id),
                   "paced atomic page flip");
+            ioctl_ms = monotonic_ms() - flip_start_ms;
             CHECK(wait_flip_event(fd, &event), "paced flip event");
+            wait_ms = monotonic_ms() - flip_start_ms - ioctl_ms;
             current_us = (uint64_t)event.tv_sec * 1000000u + event.tv_usec;
             interval_us = current_us > previous_us ? current_us - previous_us : 0;
             if (event.sequence <= previous_sequence || interval_us < 10000u) {
@@ -1789,8 +1793,11 @@ int main(void)
                         (unsigned long long)interval_us);
                 return 1;
             }
-            printf("OPENGPU FLIP INTERVAL: sequence=%u interval=%llu us\n",
-                   event.sequence, (unsigned long long)interval_us);
+            printf("OPENGPU FLIP INTERVAL: sequence=%u interval=%llu us "
+                   "ioctl=%llu ms wait=%llu ms\n",
+                   event.sequence, (unsigned long long)interval_us,
+                   (unsigned long long)ioctl_ms,
+                   (unsigned long long)wait_ms);
             previous_sequence = event.sequence;
             previous_us = current_us;
         }

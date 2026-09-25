@@ -1491,6 +1491,21 @@ int opengpu_hw_display_commit(struct opengpu_device *gpu,
          !scanout->stride || !scanout->width || !scanout->height))
         return -EINVAL;
 
+    /* A page flip changes only BASE.  Avoid reprogramming the mode and
+     * toggling CONTROL while an unchanged scanout is already active. */
+    if (scanout->enable && gpu->display.enabled &&
+        gpu->display.stride == scanout->stride &&
+        gpu->display.width == scanout->width &&
+        gpu->display.height == scanout->height &&
+        gpu->display.format == scanout->format) {
+        /* Rewriting BASE also invalidates ARTI's one-shot scanout view when
+         * a client updates the same framebuffer in place. */
+        opengpu_reg_write(gpu, GPU_REG_SCANOUT_BASE,
+                          lower_32_bits(scanout->base));
+        gpu->display.scanout = scanout->base;
+        return 0;
+    }
+
     /* Disable first and publish BASE last. ARTI guest-memory display watches
      * CONTROL (enable), WIDTH/HEIGHT, STRIDE and BASE; the BASE write is the
      * visibility latch, and CONTROL bit0 gates presentation. */
@@ -1514,8 +1529,16 @@ int opengpu_hw_display_commit(struct opengpu_device *gpu,
         opengpu_reg_write(gpu, GPU_REG_SCANOUT_CONTROL, control);
     }
     if (!!(opengpu_reg_read(gpu, GPU_REG_SCANOUT_STATUS) &
-           GPU_SCANOUT_ACTIVE) != scanout->enable)
+           GPU_SCANOUT_ACTIVE) != scanout->enable) {
+        gpu->display.enabled = false;
         return -EIO;
+    }
+    gpu->display.scanout = scanout->base;
+    gpu->display.stride = scanout->stride;
+    gpu->display.width = scanout->width;
+    gpu->display.height = scanout->height;
+    gpu->display.format = scanout->format;
+    gpu->display.enabled = scanout->enable;
     return 0;
 }
 
