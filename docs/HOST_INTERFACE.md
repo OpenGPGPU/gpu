@@ -283,5 +283,6 @@ the hardware IRQ when the capability is present.
 Host validation: `python3 scripts/test_driver.py`. Linux integration:
 `bash scripts/run_arti_gpu.sh` (Verilator with eight simulation threads by
 default; `GPU_SIM=flashsim` for FlashSim). Visual scanout:
-`bash scripts/run_arti_display.sh`. Status:
+`bash scripts/run_arti_display.sh` captures the first rendered DRM modeset
+after the initial console scanout and checks its green sample pixel. Status:
 [GRAPHICS_ROADMAP.md](GRAPHICS_ROADMAP.md).

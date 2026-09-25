@@ -210,9 +210,11 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    scripts/build_arti_debian_display.sh
    OPENGPU_AUTO_DISPLAY=triangle QEMU_DISPLAY=cocoa scripts/run_arti_debian.sh
    ```
-   The standalone DRM scanout check remains available with
-   `scripts/run_arti_display.sh`. An earlier direct boot of the FlashSim QEMU
-   and DRM initramfs produced a
+   The standalone DRM scanout check uses `scripts/run_arti_display.sh` to
+   capture the rendered modeset after the initial console scanout. The 64x64
+   Verilator guest produced 2,016 green pixels, including `00fe00` at (1,1),
+   and powered off after the DRM test. An earlier direct boot of the FlashSim
+   QEMU and DRM initramfs produced a
    16x16 PPM with 120 rendered green pixels; pixel (1,1) was `00fe00`, matching
    the guest's expected framebuffer value. The Debian runner enables
    `opengpu-boot-display.service` by default: on boot it loads the driver,

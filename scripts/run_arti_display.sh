@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Boot the OpenGPU DRM guest with ARTI guest-memory scanout.
 #
-# Default path is headless but verifies present by dumping the first enabled
-# scanout framebuffer to a PPM (ARTI_DISPLAY_DUMP). Set QEMU_DISPLAY=cocoa|gtk
+# Default path is headless but verifies the first rendered DRM modeset by
+# dumping its scanout framebuffer to a PPM (ARTI_DISPLAY_DUMP). The first
+# enabled scanout belongs to the DRM console. Set QEMU_DISPLAY=cocoa|gtk
 # to also open a window (and optionally ARTI_DISPLAY_REFRESH_HZ=60).
 set -euo pipefail
 
@@ -16,6 +17,8 @@ mkdir -p "$ARTI_WORK"
 # Continuous refresh is for interactive windows only; PPM dump is one-shot.
 : "${ARTI_DISPLAY_REFRESH_HZ:=0}"
 : "${ARTI_DISPLAY_DUMP:=$ARTI_WORK/linux-test/scanout.ppm}"
+: "${ARTI_DISPLAY_DUMP_ENABLE:=2}"
+: "${ARTI_DISPLAY_DUMP_PIXEL:=00fe00}"
 : "${QEMU_DISPLAY:=none}"
 case "$QEMU_DISPLAY" in
     cocoa) QEMU_DISPLAY="cocoa,zoom-to-fit=on" ;;
@@ -30,7 +33,8 @@ mkdir -p "$(dirname "$ARTI_DISPLAY_DUMP")"
 rm -f "$ARTI_DISPLAY_DUMP"
 
 export QEMU_DISPLAY HOLD_AFTER_TEST TIMEOUT
-export ARTI_DISPLAY_REFRESH_HZ ARTI_DISPLAY_DUMP
+export ARTI_DISPLAY_REFRESH_HZ ARTI_DISPLAY_DUMP ARTI_DISPLAY_DUMP_ENABLE
+export ARTI_DISPLAY_DUMP_PIXEL
 
 set +e
 "$SCRIPT_DIR/run_arti_gpu.sh"
@@ -65,6 +69,9 @@ if size != expected_size or len(pixels) != size[0] * size[1] * 3:
     sys.exit(f"FAIL: scanout dump has wrong dimensions or length ({size}, {len(pixels)} bytes)")
 if not any(pixels):
     sys.exit("FAIL: scanout is entirely black; rendered pixels were not presented")
+sample = pixels[3 * (size[0] + 1):3 * (size[0] + 2)]
+if sample != b"\x00\xfe\x00":
+    sys.exit(f"FAIL: pixel (1,1) is {sample.hex()}, expected 00fe00")
 print(f"OPENGPU DISPLAY PRESENT PASS: {path} ({size[0]}x{size[1]}, {len(data)} bytes)")
 PY
 exit 0
