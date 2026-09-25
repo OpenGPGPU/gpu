@@ -33,26 +33,32 @@ static int validate(const char *path, int profile)
     case 0: valid = opengpu_compute_shader_validate_words(words, count, 64, 1); break;
     case 1: valid = opengpu_shader_validate_words(words, count, 288, 8); break;
     case 2: valid = opengpu_vertex_shader_validate_words(words, count, 512, 8); break;
+    case 3: valid = opengpu_shader_validate_words_with_texture(
+                words, count, 288, 8, true); break;
     default: return 1;
     }
     if (!valid) {
         fprintf(stderr, "%s: rejected by profile %d\n", path, profile);
         return 1;
     }
-    printf("%s: PASS (%zu instructions)\n", path, count);
+    printf("%s: PASS (%zu instructions, profile %d)\n", path, count, profile);
     return 0;
 }
 
 int main(int argc, char **argv)
 {
-    if (argc != 9) {
+    int i;
+
+    if (argc < 3 || ((argc - 1) & 1)) {
         fprintf(stderr,
-                "usage: %s copy round masked fixed widen compute fragment vertex\n",
+                "usage: %s <bin profile>...\n"
+                "profiles: 0=compute 1=fragment 2=vertex 3=fragment+texture\n",
                 argv[0]);
         return 2;
     }
-    return validate(argv[1], 0) || validate(argv[2], 0) ||
-           validate(argv[3], 0) || validate(argv[4], 0) ||
-           validate(argv[5], 0) || validate(argv[6], 0) ||
-           validate(argv[7], 1) || validate(argv[8], 2);
+    for (i = 1; i + 1 < argc; i += 2) {
+        if (validate(argv[i], atoi(argv[i + 1])))
+            return 1;
+    }
+    return 0;
 }

@@ -14,9 +14,12 @@ HOST_CC = os.environ.get("CC", "cc")
 FLAGS = ["-march=rv32im_zicsr", "-mabi=ilp32", "-O2", "-ffreestanding",
          "-fno-pic", "-fno-asynchronous-unwind-tables"]
 
-ASSEMBLY = ("compute_copy", "round_modes", "masked_ops", "fixed_width", "widen_alu")
+ASSEMBLY = ("compute_copy", "round_modes", "masked_ops", "fixed_width",
+            "widen_alu", "fragment_texture")
 COMPILED = ("compute_increment", "fragment_tint", "vertex_offset")
 ALL = ASSEMBLY + COMPILED
+# validate.c profiles: 0=compute, 1=fragment, 2=vertex, 3=fragment+texture
+PROFILES = (0, 0, 0, 0, 0, 3, 0, 1, 2)
 
 
 def run(args):
@@ -79,7 +82,10 @@ def validate_all(out):
     validator = out / "validate"
     run([HOST_CC, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
          str(SHADERS / "validate.c"), "-o", str(validator)])
-    run([str(validator), *map(str, paths)])
+    args = [str(validator)]
+    for path, profile in zip(paths, PROFILES):
+        args.extend([str(path), str(profile)])
+    run(args)
 
 
 def main():

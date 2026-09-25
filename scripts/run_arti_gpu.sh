@@ -409,9 +409,11 @@ mkdir -p "$WORK"
 cp "$GUEST_DRM_TEST" "$WORK/opengpu_drm_test"
 if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
     if [ "$GPU_FRAG_CORE" = "1" ]; then
-        # Programmable GPU path: tint shader + pipe clear/draw_vbo.
+        # Programmable GPU path: tint + vtex.sample texture draw + pipe demos.
         python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
             --emit fragment_tint "$WORK/opengpu_fragment_tint.bin"
+        python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+            --emit fragment_texture "$WORK/opengpu_fragment_texture.bin"
         "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
             -o "$WORK/opengpu_fragment_tint" \
@@ -437,6 +439,11 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
             -o "$WORK/opengpu_pipe_resolve" \
             "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
             "$GPU_DIR/userspace/examples/pipe_resolve.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_pipe_texture_draw" \
+            "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
+            "$GPU_DIR/userspace/examples/pipe_texture_draw.c"
         "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
             -o "$WORK/opengpu_pipe_vertex_draw" \

@@ -170,9 +170,9 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
      `pipe_texture_draw`, `pipe_depth_pass`, `pipe_msaa_draw`.
    - Fragment core (`GPU_FRAG_CORE=1`, `GPU_VERT_CORE=0`): `fragment_tint`, `triangle_present`,
      `pipe_present`, `pipe_clear_draw`,
-     `pipe_resolve`, `pipe_vertex_draw` (skips without a vertex core;
-     corpus tint binary staged as
-     `/opengpu_fragment_tint.bin`).
+     `pipe_resolve`, `pipe_texture_draw` (`vtex.sample` corpus binary staged as
+     `/opengpu_fragment_texture.bin`), `pipe_vertex_draw` (skips without a vertex
+     core; corpus tint binary staged as `/opengpu_fragment_tint.bin`).
    - Vertex+fragment cores: `pipe_vertex_draw`, `pipe_resolve`.
    Preferred programmable bring-up:
    ```sh
@@ -316,8 +316,10 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    base (`UCMD_PATTERN`) because host invalidate is PA-tagged. Line-invalidate
    also submits physical addresses but keeps the context ASID (satp unused).
    The symbolic corpus also validates fixed-profile
-   `vsext`/`vzext`/`vnclip`/`vsmul` (`fixed_width.S`) and
-   `vwadd`/`vwsub`/`vwmul` (`widen_alu.S`).
+   `vsext`/`vzext`/`vnclip`/`vsmul` (`fixed_width.S`),
+   `vwadd`/`vwsub`/`vwmul` (`widen_alu.S`), and the programmable
+   `vtex.sample` fragment path (`fragment_texture.S`, exercised by
+   `examples/pipe_texture_draw` under `GPU_FRAG_CORE=1`).
    Remaining ASID-0 identity use is Bare bring-up (`opengpu_hw_enable_mmu`).
 6. **Workload-driven ISA** — FP32 VFUNARY1 (`vfsqrt`/`vfrec7`/`vfrsqrt7`/`vfclass`)
    is complete in RTL; grow the **validator + corpus** when a shader needs those

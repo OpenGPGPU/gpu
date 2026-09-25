@@ -60,6 +60,8 @@ done
 if [ "$GPU_FRAG_CORE" = "1" ]; then
     python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
         --emit fragment_tint "$DRIVER_OUTPUT/opengpu_fragment_tint.bin"
+    python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+        --emit fragment_texture "$DRIVER_OUTPUT/opengpu_fragment_texture.bin"
     "$CROSS_GCC" "${CFLAGS[@]}" \
         -o "$DRIVER_OUTPUT/opengpu_fragment_tint" \
         "$GPU_DIR/userspace/opengpu.c" \
@@ -73,4 +75,5 @@ ls -1 "$DRIVER_OUTPUT"/opengpu_kms_present \
     "$DRIVER_OUTPUT"/opengpu_compute_example \
     "$DRIVER_OUTPUT"/opengpu_triangle_example \
     "$DRIVER_OUTPUT"/opengpu_compute_shader.bin \
-    "$DRIVER_OUTPUT"/opengpu_fragment_tint* 2>/dev/null | sed 's/^/  /' || true
+    "$DRIVER_OUTPUT"/opengpu_fragment_tint* \
+    "$DRIVER_OUTPUT"/opengpu_fragment_texture* 2>/dev/null | sed 's/^/  /' || true

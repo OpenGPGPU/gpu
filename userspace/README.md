@@ -58,8 +58,10 @@ CPU-filled source then copies with `pipe_opengpu_strided_blit`.
 bound depth GEM and `OPENGPU_SUBMIT_DEPTH_LOAD`.
 `examples/pipe_msaa_draw` draws at 2x then resolves.
 `examples/pipe_resolve` averages a CPU-filled 2x
-MSAA buffer. `examples/pipe_texture_draw` binds a mip chain and draws a
-textured triangle on the fixed-function path. `examples/pipe_vertex_draw`
+MSAA buffer. `examples/pipe_texture_draw` binds a mip chain and draws a textured
+triangle: fixed-function uses the HW sampler; fragment-core loads the corpus
+`fragment_texture` (`vtex.sample`) binary (default
+`/opengpu_fragment_texture.bin`). `examples/pipe_vertex_draw`
 exercises vertex+fragment cores (`GPU_VERT_CORE=1`).
 `examples/pipe_present` allocates a mode-sized 2D colour GEM, clears, draws,
 and presents via `pipe_opengpu_present` (same `--hold` / tint rules as
@@ -104,12 +106,13 @@ run the DRM guest regression before the apps. The full release gate remains
 
 Run `python3 scripts/validate_shader_corpus.py` from the repository root. It
 assembles `compute_copy.S`, `round_modes.S`, `masked_ops.S`, `fixed_width.S`
-(lane-local `vsext`/`vzext`/`vnclip`/`vsmul` with `vxrm`) and `widen_alu.S`
-(lane-local `vwadd`/`vwsub`/`vwmul`), and
-compiles three small C shaders with `riscv64-unknown-elf-gcc`, adapts the C
-argument base to OpenGPU's direct `x1` kernarg convention, and replaces the C
-return with the OpenGPU cease instruction. The script checks every binary with
-the production compute, fragment or vertex shader validator. It rejects
-compiler output with labels or indirect memory operands, rather than assuming
-arbitrary C is a valid shader. Set `RISCV_GCC` and `RISCV_OBJCOPY` for another
-RISC-V toolchain.
+(lane-local `vsext`/`vzext`/`vnclip`/`vsmul` with `vxrm`), `widen_alu.S`
+(lane-local `vwadd`/`vwsub`/`vwmul`) and `fragment_texture.S` (`vtex.sample`
+plus warp discard / `vquad.dfdx`), and compiles three small C shaders with
+`riscv64-unknown-elf-gcc`, adapts the C argument base to OpenGPU's direct `x1`
+kernarg convention, and replaces the C return with the OpenGPU cease
+instruction. The script checks every binary with the production compute,
+fragment, fragment+texture or vertex shader validator. It rejects compiler
+output with labels or indirect memory operands, rather than assuming arbitrary
+C is a valid shader. Set `RISCV_GCC` and `RISCV_OBJCOPY` for another RISC-V
+toolchain.

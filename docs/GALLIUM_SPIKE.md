@@ -20,7 +20,7 @@ Out-of-tree winsys in-tree under `userspace/`:
 | `examples/pipe_depth_pass` | persistent depth clear + `DEPTH_LOAD` continuation (FF) |
 | `examples/pipe_msaa_draw` | 2x MSAA clear/draw + `resolve` (FF) |
 | `examples/pipe_resolve` | CPU-fill 2x MSAA GEM + `resolve` average check |
-| `examples/pipe_texture_draw` | `bind_texture` + textured `draw_vbo` (fixed-function) |
+| `examples/pipe_texture_draw` | `bind_texture` + textured `draw_vbo` (FF or `vtex.sample` FS) |
 | `examples/pipe_vertex_draw` | VS/VB bind + `draw_vertex` (vertex+fragment cores) |
 | `examples/pipe_present` | mode-sized clear + draw + `pipe_opengpu_present` |
 

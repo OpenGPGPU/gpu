@@ -1,14 +1,20 @@
 /* SPDX-License-Identifier: MIT */
-/* Gallium spike: bind a 4x4 mip chain and draw a textured triangle (FF). */
+/* Gallium spike: bind a 4x4 mip chain and draw a textured triangle.
+ * Fixed-function uses the HW sampler; fragment-core loads the corpus
+ * vtex.sample shader (/opengpu_fragment_texture.bin, override argv[2]). */
 #include "../pipe_opengpu.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 enum { TEX_WORDS = 21 };
 
-static void fill_textured_triangle(struct drm_opengpu_draw *draw)
+static void fill_textured_triangle(struct drm_opengpu_draw *draw,
+                                   uint32_t width, uint32_t height,
+                                   int fragment)
 {
     memset(draw, 0, sizeof(*draw));
     draw->v0[0] = -0x10000;
@@ -22,19 +28,47 @@ static void fill_textured_triangle(struct drm_opengpu_draw *draw)
     draw->c0[1] = draw->c1[1] = draw->c2[1] = 255;
     draw->c0[2] = draw->c1[2] = draw->c2[2] = 255;
     draw->d0 = draw->d1 = draw->d2 = 0x10;
-    /* Eight UV repeats over 16 pixels => mip 1 on a 4x4 base. */
-    draw->uv0[0] = 0;
-    draw->uv0[1] = 0;
-    draw->uv1[0] = 0x80000;
-    draw->uv1[1] = 0;
-    draw->uv2[0] = 0;
-    draw->uv2[1] = 0x80000;
+    if (fragment) {
+        /* Match opengpu_drm_test / pipe_vertex_draw: half-extent UVs select
+         * mip 1 (solid red) under the programmable sampler. */
+        draw->uv0[0] = 0;
+        draw->uv0[1] = 0;
+        draw->uv1[0] = (width / 2) << 16;
+        draw->uv1[1] = 0;
+        draw->uv2[0] = 0;
+        draw->uv2[1] = (height / 2) << 16;
+    } else {
+        /* Eight UV repeats over 16 pixels => mip 1 on a 4x4 base (FF). */
+        draw->uv0[0] = 0;
+        draw->uv0[1] = 0;
+        draw->uv1[0] = 0x80000;
+        draw->uv1[1] = 0;
+        draw->uv2[0] = 0;
+        draw->uv2[1] = 0x80000;
+    }
     draw->state = OPENGPU_DRAW_STATE_OVERRIDE |
         OPENGPU_DRAW_STATE_DEPTH_TEST |
         OPENGPU_DRAW_STATE_DEPTH_WRITE |
         OPENGPU_DRAW_STATE_TEX_ENABLE |
         OPENGPU_DRAW_STATE_TEX_CLAMP |
         (2u << OPENGPU_DRAW_STATE_MAX_MIP_SHIFT);
+}
+
+static int load_shader(const char *path, uint8_t *buf, size_t cap, size_t *out)
+{
+    int fd = open(path, O_RDONLY);
+    ssize_t n;
+
+    if (fd < 0)
+        return -1;
+    n = read(fd, buf, cap);
+    close(fd);
+    if (n <= 0 || (size_t)n > cap || (n & 3)) {
+        errno = EINVAL;
+        return -1;
+    }
+    *out = (size_t)n;
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -44,20 +78,25 @@ int main(int argc, char **argv)
     struct pipe_opengpu_resource *color = NULL, *tex = NULL;
     struct pipe_opengpu_fence *fence = NULL;
     struct drm_opengpu_draw draw;
+    uint8_t shader[128];
+    size_t shader_bytes = 0;
     uint32_t *texels;
     uint64_t caps;
     unsigned painted = 0, i;
     uint32_t sample = 0;
     uint32_t width = 0, height = 0;
+    uint32_t expected;
     int status = 1;
+    int fragment;
 
     screen = pipe_opengpu_screen_create(argc > 1 ? argv[1] : NULL);
     if (!screen)
         goto done;
     caps = pipe_opengpu_screen_capabilities(screen);
-    if (caps & OPENGPU_CAP_FRAGMENT_CORE) {
-        puts("pipe texture_draw skipped; fixed-function path only");
-        status = 0;
+    fragment = !!(caps & OPENGPU_CAP_FRAGMENT_CORE);
+    if ((caps & OPENGPU_CAP_VERTEX_CORE) && !fragment) {
+        fprintf(stderr, "pipe_texture_draw: unexpected vertex-only config\n");
+        errno = EINVAL;
         goto done;
     }
     if (pipe_opengpu_screen_display_size(screen, &width, &height))
@@ -77,8 +116,15 @@ int main(int argc, char **argv)
     texels[20] = 0x0000ffffu;
 
     pipe_opengpu_set_framebuffer(ctx, color, width, height);
-    if (pipe_opengpu_bind_fs(ctx, NULL, 0) ||
-        pipe_opengpu_bind_texture(ctx, tex, 4, 4, TEX_WORDS * 4u,
+    if (fragment) {
+        if (load_shader(argc > 2 ? argv[2] : "/opengpu_fragment_texture.bin",
+                        shader, sizeof(shader), &shader_bytes) ||
+            pipe_opengpu_bind_fs(ctx, shader, shader_bytes))
+            goto done;
+    } else if (pipe_opengpu_bind_fs(ctx, NULL, 0)) {
+        goto done;
+    }
+    if (pipe_opengpu_bind_texture(ctx, tex, 4, 4, TEX_WORDS * 4u,
                                   OPENGPU_RESOURCE_TEXTURE_CLAMP |
                                       (2u << OPENGPU_RESOURCE_TEXTURE_MAX_MIP_SHIFT) |
                                       OPENGPU_RESOURCE_UNCACHED))
@@ -89,7 +135,7 @@ int main(int argc, char **argv)
         goto done;
     pipe_opengpu_fence_reference(&fence, NULL);
 
-    fill_textured_triangle(&draw);
+    fill_textured_triangle(&draw, width, height, fragment);
     if (pipe_opengpu_draw_vbo(ctx, &draw, &fence) ||
         pipe_opengpu_fence_finish(ctx, fence, 300000))
         goto done;
@@ -109,10 +155,11 @@ int main(int argc, char **argv)
         }
         painted++;
     }
-    /* Matches opengpu_drm_test fixed-function textured expectation. */
-    if (!painted || sample != 0x00fe00ffu) {
-        fprintf(stderr, "texture_draw coloured=%u sample=0x%08x\n", painted,
-                sample);
+    /* FF filters toward 0x00fe00ff; programmable samples solid mip-1 red. */
+    expected = fragment ? 0xff0000ffu : 0x00fe00ffu;
+    if (!painted || sample != expected) {
+        fprintf(stderr, "texture_draw coloured=%u sample=0x%08x expected=0x%08x\n",
+                painted, sample, expected);
         errno = EIO;
         goto done;
     }
