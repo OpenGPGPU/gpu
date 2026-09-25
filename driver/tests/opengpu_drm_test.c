@@ -1765,6 +1765,36 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL queued texture result");
         return 1;
     }
+    /* Flip between completed buffers twice without GPU work in between.
+     * Check timer-paced progress and report the measured guest intervals;
+     * emulator MMIO overhead can delay delivery beyond the nominal 30 Hz. */
+    {
+        uint64_t previous_us = (uint64_t)event.tv_sec * 1000000u +
+                               event.tv_usec;
+        uint32_t previous_sequence = event.sequence;
+
+        for (unsigned i = 0; i < 2; i++) {
+            uint64_t current_us, interval_us;
+
+            CHECK(atomic_page_flip(fd, &ids, i ? second.fb_id : first.fb_id),
+                  "paced atomic page flip");
+            CHECK(wait_flip_event(fd, &event), "paced flip event");
+            current_us = (uint64_t)event.tv_sec * 1000000u + event.tv_usec;
+            interval_us = current_us > previous_us ? current_us - previous_us : 0;
+            if (event.sequence <= previous_sequence || interval_us < 10000u) {
+                fprintf(stderr,
+                        "OPENGPU USERSPACE DRM FAIL flip pacing: "
+                        "sequence=%u->%u interval=%llu us\n",
+                        previous_sequence, event.sequence,
+                        (unsigned long long)interval_us);
+                return 1;
+            }
+            printf("OPENGPU FLIP INTERVAL: sequence=%u interval=%llu us\n",
+                   event.sequence, (unsigned long long)interval_us);
+            previous_sequence = event.sequence;
+            previous_us = current_us;
+        }
+    }
     if (!(capabilities & OPENGPU_CAP_CLEAR_ENGINE)) {
         errno = EOPNOTSUPP;
         perror("OPENGPU USERSPACE DRM FAIL fill capability");

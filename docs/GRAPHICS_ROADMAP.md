@@ -199,10 +199,12 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    see [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md).
    **Display hardware is ARTI guest-memory GraphicHwOps** (`gpu_integration.yaml`:
    SCANOUT BASE/STRIDE/CONTROL/WIDTH/HEIGHT + `refresh_hz`). KMS programs those
-   registers; QEMU presents guest GEM memory. ARTI uses the DRM soft timer to
-   pace flips at 30 Hz to match `refresh_hz`: its RTL clock advances during
+   registers; QEMU presents guest GEM memory. ARTI uses the DRM soft timer with
+   a nominal 30 Hz period to match `refresh_hz`: its RTL clock advances during
    transactions and IRQ polls, so a 100 MHz hardware period cannot track wall
-   time. Continuously clocked devices use hardware vblank
+   time. The fixed 64x64 guest measured two consecutive flip intervals of
+   2.21 s under emulation; this is a functional path, not a 30 Hz throughput
+   result. Continuously clocked devices use hardware vblank
    (`GPU_CAP_HW_VBLANK`, `SCANOUT_PERIOD`, IRQ bit2). The operational
    RTL, driver, and ARTI display defaults are 64x64 at 30 Hz. Build the
    interactive Debian model once, then boot it:

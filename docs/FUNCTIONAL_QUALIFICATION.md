@@ -22,12 +22,17 @@ stages pass. The guest runner builds the RTL model, QEMU integration, Linux
 driver and initramfs as needed, so a first run can take substantially longer
 than a cached run.
 
-The userspace example apps, including `triangle_present` and `pipe_present`,
+The guest DRM test also checks that consecutive KMS flip events advance their
+sequence, records their interval and rejects events less than 10 ms apart;
+emulated MMIO can delay them beyond the nominal 30 Hz period. The fixed 64x64
+guest measured about 2.21 s for each of two consecutive flips; the
+vertex+fragment guest measured 2.76 s and 2.69 s. The display
+check in `scripts/run_arti_display.sh` verifies a rendered scanout pixel. The
+userspace example apps, including `triangle_present` and `pipe_present`,
 are opt-in. Run the fixed-function and programmable example paths separately
 with `GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1` and the desired
 `GPU_FRAG_CORE` / `GPU_VERT_CORE` settings. The default gate checks DRM flip
-events but does not measure repeated-flip timing or inspect the displayed
-frame in a QEMU window.
+events but does not inspect the displayed frame in a QEMU window.
 
 Prerequisites are sbt, a JDK, a host C compiler, the AArch64 cross compiler,
 FlashSim (or Verilator), and the sibling ARTI checkout.
