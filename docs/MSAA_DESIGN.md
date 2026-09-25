@@ -417,7 +417,10 @@ single-sample scanout BO. Resolve is never implicit after every draw.
 Persistent depth: `drm_opengpu_submit.depth_handle`/`depth_offset` plus
 `OPENGPU_SUBMIT_DEPTH_LOAD` continue a pass across submissions
 (`OPENGPU_CAP_PERSISTENT_DEPTH`, bit 19). First submission may clear; later
-ones load. FlashSim does not yet expose the prior depth write; Verilator does.
+ones load. FlashSim historically missed AXI master input pokes during settle
+(`combo_pump` skipped `poke_inputs` while the control slave was idle), so the
+prior depth write was not visible to the next submission; Verilator always
+poked. FlashSim `arti_model.py` now always pokes after `mem_drive`.
 
 ## Performance
 
@@ -444,7 +447,7 @@ memory-port utilisation under 2x and 4x workloads.
 | Coverage/depth | Mode-specific LUT, scalar/quad masks, expanded bounds, shared triangle gradients and sample depth implemented | Broaden edge and precision regression coverage |
 | Programmable fragment path | Coverage/depth staging, ABI-1 output-control interpretation and per-pixel shading implemented, advertised through bit 7 on fragment-core builds, and exercised by the guest MSAA round trip | Physical timing closure of the fragment stage (separate PPA gate) |
 | Expansion/OM | Backpressured expander, sample addresses, address-hazard ordering and acknowledged write drain implemented | Broader integrated multisample regressions |
-| Persistent depth | Caller-owned depth attachment (`drm_opengpu_submit.depth_handle`/`depth_offset`), `OPENGPU_SUBMIT_DEPTH_LOAD` cross-submission continuation, driver range validation (`opengpu_depth_validator.h`, unit-tested) and the `OPENGPU_CAP_PERSISTENT_DEPTH` advertisement implemented; `RenderHostSpec` covers a queued two-submission pass and the guest DRM test repeats it under Verilator | Broader ARTI multisample pass-continuation coverage; FlashSim does not yet expose the prior depth write |
+| Persistent depth | Caller-owned depth attachment (`drm_opengpu_submit.depth_handle`/`depth_offset`), `OPENGPU_SUBMIT_DEPTH_LOAD` cross-submission continuation, driver range validation (`opengpu_depth_validator.h`, unit-tested) and the `OPENGPU_CAP_PERSISTENT_DEPTH` advertisement implemented; guest DRM covers clear/load under ARTI (Verilator + FlashSim after settle poke fix) | Broader ARTI multisample pass-continuation coverage |
 | Resolve | `MsaaResolveEngine` backend, the `GPU_UCMD_OP_RESOLVE` router path through the shared L2, unified MMIO staging (`UCMD_SAMPLE_MODE`), the validated range rules and command builder, the `DRM_IOCTL_OPENGPU_RESOLVE` UAPI, the scheduler-backed ioctl with source read / destination write reservations and output syncobj, and KMS ordering via the standard implicit-sync path; guest DRM walks every advertised sample mode on a CPU-filled source | Multi-row resolve remains covered in RTL (`GpuSystemSpec` / `GpuHostSystemAxiSpec`); further ARTI scenes optional |
 
 ## Verification
