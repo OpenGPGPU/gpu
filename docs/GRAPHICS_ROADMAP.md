@@ -247,7 +247,29 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    Debian boot registered DRM at mode 64x64 and produced a nonblack 64x64
    scanout PPM.
    New builds default to `--threads 8`; the 0.112 s measurement above is for
-   four threads and does not predict the eight-thread result.
+   four threads and does not predict the eight-thread result. On 2026-09-25,
+   a matched 64x64 Debian A/B used the same generated RTL, kernel, modules
+   ISO, persistent-disk snapshot, QEMU arguments, and guest programs. The
+   Verilator model was built with `--threads 8`. Each backend booted Debian
+   twice, ran `opengpu_pipe_blit` (verified 1 KiB clear/blit), then ran
+   `opengpu_pipe_present` (verified 64x64 draw and present with 2,016 painted
+   pixels), and powered off. Host monotonic wall-time medians were:
+
+   | Stage | FlashSim | Verilator 8 threads |
+   | --- | ---: | ---: |
+   | Launch to root shell | 26.54 s | 36.43 s |
+   | Blit | 1.55 s | 18.81 s |
+   | Draw + present | 151.74 s | 32.90 s |
+   | Launch to poweroff | 179.93 s | 88.24 s |
+
+   All eight guest program invocations passed. For this Debian graphics
+   workflow, Verilator finishes about 2.04x sooner overall, although FlashSim
+   is about 12.1x faster on the small blit. Both FlashSim draw runs emitted
+   guest RCU stall warnings, so the draw result also reflects guest behavior
+   under that backend. The separate full `opengpu_drm_test` failed on both
+   backends with `short resolve stride accepted`; its timing is excluded from
+   the passing comparison. Raw serial logs and host timing JSON are under
+   `../arti-work/bench/debian-ab-20260925/` in the local work tree.
 2. **Keep the submission contract covered** — every submission-path change
    must exercise descriptor errors, reset-during-work, delayed writes,
    completion backpressure, recovery and mixed sample modes. Boundary edits
