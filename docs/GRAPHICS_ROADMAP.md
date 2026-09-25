@@ -268,7 +268,10 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    guest RCU stall warnings, so the draw result also reflects guest behavior
    under that backend. The separate full `opengpu_drm_test` failed on both
    backends with `short resolve stride accepted`; its timing is excluded from
-   the passing comparison. Raw serial logs and host timing JSON are under
+   the passing comparison. That A/B used the existing 2026-09-24 modules ISO,
+   while the host-built driver and test were refreshed on 2026-09-25; rebuild
+   the ISO and rerun the full test before treating that failure as a current
+   driver regression. Raw serial logs and host timing JSON are under
    `../arti-work/bench/debian-ab-20260925/` in the local work tree.
 2. **Keep the submission contract covered** — every submission-path change
    must exercise descriptor errors, reset-during-work, delayed writes,
