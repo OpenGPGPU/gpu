@@ -119,6 +119,8 @@ int main(void)
                run_program("/opengpu_pipe_clear_draw") < 0 ||
                run_program("/opengpu_pipe_resolve") < 0 ||
                run_program("/opengpu_pipe_texture_draw") < 0 ||
+               run_program("/opengpu_pipe_depth_pass") < 0 ||
+               run_program("/opengpu_pipe_msaa_draw") < 0 ||
                run_program("/opengpu_pipe_vertex_draw") < 0) {
         putstr("OPENGPU USERSPACE EXAMPLES FAIL\r\n");
 #elif defined(OPENGPU_RUN_USERSPACE_EXAMPLES)

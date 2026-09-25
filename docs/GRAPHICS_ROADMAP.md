@@ -171,8 +171,9 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    - Fragment core (`GPU_FRAG_CORE=1`, `GPU_VERT_CORE=0`): `fragment_tint`, `triangle_present`,
      `pipe_present`, `pipe_clear_draw`,
      `pipe_resolve`, `pipe_texture_draw` (`vtex.sample` corpus binary staged as
-     `/opengpu_fragment_texture.bin`), `pipe_vertex_draw` (skips without a vertex
-     core; corpus tint binary staged as `/opengpu_fragment_tint.bin`).
+     `/opengpu_fragment_texture.bin`), `pipe_depth_pass`, `pipe_msaa_draw`,
+     `pipe_vertex_draw` (skips without a vertex core; corpus tint binary staged
+     as `/opengpu_fragment_tint.bin`).
    - Vertex+fragment cores: `pipe_vertex_draw`, `pipe_resolve`.
    Preferred programmable bring-up:
    ```sh

@@ -446,6 +446,16 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
             "$GPU_DIR/userspace/examples/pipe_texture_draw.c"
         "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_pipe_depth_pass" \
+            "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
+            "$GPU_DIR/userspace/examples/pipe_depth_pass.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_pipe_msaa_draw" \
+            "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
+            "$GPU_DIR/userspace/examples/pipe_msaa_draw.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
             -o "$WORK/opengpu_pipe_vertex_draw" \
             "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \
             "$GPU_DIR/userspace/examples/pipe_vertex_draw.c"

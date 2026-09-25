@@ -54,9 +54,9 @@ OPENGPU_AUTO_DISPLAY=triangle QEMU_DISPLAY=cocoa scripts/run_arti_debian.sh
 covers `launch_grid`. `examples/pipe_blit` clears a source GEM and copies it
 with `pipe_opengpu_blit`. `examples/pipe_strided_blit` invalidates a
 CPU-filled source then copies with `pipe_opengpu_strided_blit`.
-`examples/pipe_depth_pass` continues a FF render across submissions with a
-bound depth GEM and `OPENGPU_SUBMIT_DEPTH_LOAD`.
-`examples/pipe_msaa_draw` draws at 2x then resolves.
+`examples/pipe_depth_pass` continues a render across submissions with a
+bound depth GEM and `OPENGPU_SUBMIT_DEPTH_LOAD` (fixed-function or tint).
+`examples/pipe_msaa_draw` draws at 2x then resolves (fixed-function or tint).
 `examples/pipe_resolve` averages a CPU-filled 2x
 MSAA buffer. `examples/pipe_texture_draw` binds a mip chain and draws a textured
 triangle: fixed-function uses the HW sampler; fragment-core loads the corpus

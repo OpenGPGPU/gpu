@@ -1,14 +1,19 @@
 /* SPDX-License-Identifier: MIT */
-/* Gallium spike: 2x MSAA draw then resolve through pipe_opengpu. */
+/* Gallium spike: 2x MSAA draw then resolve through pipe_opengpu.
+ * Fixed-function paints a solid red triangle; fragment-core loads
+ * /opengpu_fragment_tint.bin (override argv[2]). ABI-1 control/depth stay on
+ * the staged defaults (emit covered lanes; use raster sample depths). */
 #include "../pipe_opengpu.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 enum { MODE = 1 }; /* 2x */
 
-static void fill_triangle(struct drm_opengpu_draw *draw)
+static void fill_triangle(struct drm_opengpu_draw *draw, int tint)
 {
     memset(draw, 0, sizeof(*draw));
     draw->v0[0] = -0x10000;
@@ -18,8 +23,31 @@ static void fill_triangle(struct drm_opengpu_draw *draw)
     draw->v2[0] = -0x10000;
     draw->v2[1] = 0x10000;
     draw->v0[3] = draw->v1[3] = draw->v2[3] = 0x10000;
-    draw->c0[0] = draw->c1[0] = draw->c2[0] = 255;
+    if (tint) {
+        draw->c0[0] = draw->c1[0] = draw->c2[0] = 0xfe;
+        draw->c0[1] = draw->c1[1] = draw->c2[1] = 0x00;
+        draw->c0[2] = draw->c1[2] = draw->c2[2] = 0xff;
+    } else {
+        draw->c0[0] = draw->c1[0] = draw->c2[0] = 255;
+    }
     draw->d0 = draw->d1 = draw->d2 = 0x10;
+}
+
+static int load_shader(const char *path, uint8_t *buf, size_t cap, size_t *out)
+{
+    int fd = open(path, O_RDONLY);
+    ssize_t n;
+
+    if (fd < 0)
+        return -1;
+    n = read(fd, buf, cap);
+    close(fd);
+    if (n <= 0 || (size_t)n > cap || (n & 3)) {
+        errno = EINVAL;
+        return -1;
+    }
+    *out = (size_t)n;
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -29,12 +57,15 @@ int main(int argc, char **argv)
     struct pipe_opengpu_resource *msaa = NULL, *resolved = NULL;
     struct pipe_opengpu_fence *fence = NULL;
     struct drm_opengpu_draw draw;
+    uint8_t shader[128];
+    size_t shader_bytes = 0;
     uint32_t samples = 1u << MODE;
     uint32_t width = 0, height = 0, src_stride, dst_stride;
     uint64_t caps;
     uint32_t max_mode;
     unsigned painted = 0, empty = 0, i;
     int status = 1;
+    int fragment;
 
     screen = pipe_opengpu_screen_create(argc > 1 ? argv[1] : NULL);
     if (!screen)
@@ -52,10 +83,10 @@ int main(int argc, char **argv)
         status = 0;
         goto done;
     }
-    if (caps & OPENGPU_CAP_FRAGMENT_CORE) {
-        /* Keep the first MSAA pipe smoke on the fixed-function path. */
-        puts("pipe msaa_draw skipped; fixed-function path only");
-        status = 0;
+    fragment = !!(caps & OPENGPU_CAP_FRAGMENT_CORE);
+    if ((caps & OPENGPU_CAP_VERTEX_CORE) && !fragment) {
+        fprintf(stderr, "pipe_msaa_draw: unexpected vertex-only config\n");
+        errno = EINVAL;
         goto done;
     }
     if (pipe_opengpu_screen_display_size(screen, &width, &height))
@@ -72,16 +103,23 @@ int main(int argc, char **argv)
     memset(pipe_opengpu_resource_map(msaa), 0, src_stride * height);
     memset(pipe_opengpu_resource_map(resolved), 0, dst_stride * height);
     pipe_opengpu_set_framebuffer(ctx, msaa, width, height);
-    if (pipe_opengpu_set_sample_mode(ctx, MODE) ||
-        pipe_opengpu_bind_fs(ctx, NULL, 0))
+    if (pipe_opengpu_set_sample_mode(ctx, MODE))
         goto done;
+    if (fragment) {
+        if (load_shader(argc > 2 ? argv[2] : "/opengpu_fragment_tint.bin",
+                        shader, sizeof(shader), &shader_bytes) ||
+            pipe_opengpu_bind_fs(ctx, shader, shader_bytes))
+            goto done;
+    } else if (pipe_opengpu_bind_fs(ctx, NULL, 0)) {
+        goto done;
+    }
 
     if (pipe_opengpu_clear(ctx, 0u, &fence) ||
         pipe_opengpu_fence_finish(ctx, fence, 300000))
         goto done;
     pipe_opengpu_fence_reference(&fence, NULL);
 
-    fill_triangle(&draw);
+    fill_triangle(&draw, fragment);
     if (pipe_opengpu_draw_vbo(ctx, &draw, &fence) ||
         pipe_opengpu_fence_finish(ctx, fence, 300000))
         goto done;
@@ -106,8 +144,8 @@ int main(int argc, char **argv)
         errno = EIO;
         goto done;
     }
-    printf("pipe msaa_draw completed; mode=2x painted=%u empty=%u\n", painted,
-           empty);
+    printf("pipe msaa_draw completed; mode=2x%s painted=%u empty=%u\n",
+           fragment ? " tint" : "", painted, empty);
     status = 0;
 done:
     if (status)
