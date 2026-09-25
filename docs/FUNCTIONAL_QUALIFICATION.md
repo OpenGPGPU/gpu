@@ -23,11 +23,12 @@ driver and initramfs as needed, so a first run can take substantially longer
 than a cached run.
 
 The guest DRM test also checks that consecutive KMS flip events advance their
-sequence, records their interval and rejects events less than 10 ms apart;
-emulated MMIO can delay them beyond the nominal 30 Hz period. Rewriting only
-`SCANOUT_BASE` for an unchanged mode cut fixed 64x64 guest intervals from
-about 2.21 s to 251 ms, and vertex+fragment intervals from 2.69–2.76 s to
-293–297 ms. The display check in `scripts/run_arti_display.sh` verifies a
+sequence, records their interval and rejects events less than 10 ms apart.
+Rewriting only `SCANOUT_BASE` for an unchanged mode cut fixed 64x64 guest
+intervals from about 2.21 s to 251 ms, and vertex+fragment intervals from
+2.69–2.76 s to 293–297 ms. ARTI's shorter post-MMIO settle for display-base
+writes then measured 33.61–33.76 ms and 33.29–33.74 ms respectively. The
+display check in `scripts/run_arti_display.sh` verifies a
 rendered scanout pixel. The userspace example apps, including
 `triangle_present` and `pipe_present`,
 are opt-in. Run the fixed-function and programmable example paths separately

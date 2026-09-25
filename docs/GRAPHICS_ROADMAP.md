@@ -204,8 +204,10 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    transactions and IRQ polls, so a 100 MHz hardware period cannot track wall
    time. Rewriting only `SCANOUT_BASE` on same-mode flips reduced measured
    fixed 64x64 guest intervals from 2.21 s to 251 ms; vertex+fragment flips
-   fell from 2.69–2.76 s to 293–297 ms. The remaining model cost is still
-   above the 30 Hz target. Continuously clocked devices use hardware vblank
+   fell from 2.69–2.76 s to 293–297 ms. ARTI then shortened its post-MMIO
+   settle for guest-memory `SCANOUT_BASE` writes only, yielding 33.61–33.76 ms
+   and 33.29–33.74 ms respectively. Other registers retain the full settle.
+   Continuously clocked devices use hardware vblank
    (`GPU_CAP_HW_VBLANK`, `SCANOUT_PERIOD`, IRQ bit2). The operational
    RTL, driver, and ARTI display defaults are 64x64 at 30 Hz. Build the
    interactive Debian model once, then boot it:
