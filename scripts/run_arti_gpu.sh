@@ -416,6 +416,10 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
             --emit fragment_texture "$WORK/opengpu_fragment_texture.bin"
         python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
             --emit fp_unary "$WORK/opengpu_fp_unary.bin"
+        python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+            --emit widen_alu "$WORK/opengpu_widen_alu.bin"
+        python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+            --emit fixed_width "$WORK/opengpu_fixed_width.bin"
         "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
             -o "$WORK/opengpu_fragment_tint" \
@@ -426,6 +430,16 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
             -o "$WORK/opengpu_fp_unary" \
             "$GPU_DIR/userspace/opengpu.c" \
             "$GPU_DIR/userspace/examples/fp_unary.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_widen_alu" \
+            "$GPU_DIR/userspace/opengpu.c" \
+            "$GPU_DIR/userspace/examples/widen_alu.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_fixed_width" \
+            "$GPU_DIR/userspace/opengpu.c" \
+            "$GPU_DIR/userspace/examples/fixed_width.c"
         "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
             -o "$WORK/opengpu_triangle_present" \
@@ -507,6 +521,18 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
             -o "$WORK/opengpu_fp_unary" \
             "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/fp_unary.c"
+        python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+            --emit widen_alu "$WORK/opengpu_widen_alu.bin"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_widen_alu" \
+            "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/widen_alu.c"
+        python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+            --emit fixed_width "$WORK/opengpu_fixed_width.bin"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_fixed_width" \
+            "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/fixed_width.c"
         "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" \
             -o "$WORK/opengpu_triangle_example" \

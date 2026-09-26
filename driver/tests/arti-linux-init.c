@@ -115,6 +115,8 @@ int main(void)
 #elif defined(OPENGPU_RUN_USERSPACE_FRAG)
     } else if (run_program("/opengpu_fragment_tint") < 0 ||
                run_program("/opengpu_fp_unary") < 0 ||
+               run_program("/opengpu_widen_alu") < 0 ||
+               run_program("/opengpu_fixed_width") < 0 ||
                run_program("/opengpu_triangle_present") < 0 ||
                run_program("/opengpu_pipe_present") < 0 ||
                run_program("/opengpu_pipe_clear_draw") < 0 ||
@@ -130,6 +132,8 @@ int main(void)
 #elif defined(OPENGPU_RUN_USERSPACE_EXAMPLES)
     } else if (run_program("/opengpu_compute_example") < 0 ||
                run_program("/opengpu_fp_unary") < 0 ||
+               run_program("/opengpu_widen_alu") < 0 ||
+               run_program("/opengpu_fixed_width") < 0 ||
                run_program("/opengpu_triangle_example") < 0 ||
                run_program("/opengpu_triangle_present") < 0 ||
                run_program("/opengpu_pipe_present") < 0 ||
