@@ -30,6 +30,9 @@ as the second argument when running outside the guest.
 `examples/fp_unary` loads the corpus `fp_unary` shader and checks exact RTL
 reference results for `vfsqrt` / `vfrsqrt7` / `vfrec7` / `vfclass` (default
 `/opengpu_fp_unary.bin`).
+`examples/fp_binary` loads `fp_binary` and checks unmasked OPFVV
+`vfadd` / `vfsub` / `vfmul` / `vfmin` / `vfmax` / `vfsgnj` (default
+`/opengpu_fp_binary.bin`).
 
 `examples/widen_alu` loads the corpus `widen_alu` shader and checks lane-local
 `vwadd` / `vwsub` / `vwmul` (default `/opengpu_widen_alu.bin`).
@@ -118,7 +121,8 @@ assembles `compute_copy.S`, `round_modes.S`, `masked_ops.S`, `fixed_width.S`
 (lane-local `vsext`/`vzext`/`vnclip`/`vsmul` with `vxrm`; guest
 `examples/fixed_width`), `widen_alu.S` (lane-local `vwadd`/`vwsub`/`vwmul`;
 guest `examples/widen_alu`), `fragment_texture.S` (`vtex.sample` plus warp
-discard / `vquad.dfdx`) and `fp_unary.S` (FP32 VFUNARY1), and compiles three
+discard / `vquad.dfdx`), `fp_unary.S` (FP32 VFUNARY1) and `fp_binary.S`
+(unmasked OPFVV `vfadd`/`vfsub`/`vfmul`/`vfmin`/`vfmax`/`vfsgnj`), and compiles three
 small C shaders with `riscv64-unknown-elf-gcc`, adapts the C argument base to
 OpenGPU's direct `x1` kernarg convention, and replaces the C return with the
 OpenGPU cease instruction. The script checks every binary with the production

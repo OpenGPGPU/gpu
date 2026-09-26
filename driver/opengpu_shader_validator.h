@@ -253,13 +253,26 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
                (funct6 >= 0x20 && funct6 <= 0x27);
     case 6: /* multiply/divide vx */
         return funct6 >= 0x20 && funct6 <= 0x27;
-    case 1: { /* OPFVV: admit FP32 VFUNARY1 only (vs1 encodes the op) */
+    case 1: { /* OPFVV: FP32 VFUNARY1 plus unmasked binary FVV */
         opengpu_shader_u32 vs1 = (insn >> 15) & 0x1f;
 
-        if (funct6 != 0x13)
+        if (funct6 == 0x13) {
+            /* vfsqrt / vfrec7 / vfrsqrt7 / vfclass; vs1 is not a VGPR. */
+            return vs1 == 0 || vs1 == 4 || vs1 == 5 || vs1 == 16;
+        }
+        switch (funct6) {
+        case 0x00: /* vfadd */
+        case 0x02: /* vfsub */
+        case 0x04: /* vfmin */
+        case 0x06: /* vfmax */
+        case 0x08: /* vfsgnj */
+        case 0x09: /* vfsgnjn */
+        case 0x0a: /* vfsgnjx */
+        case 0x24: /* vfmul */
+            return true;
+        default:
             return false;
-        /* vfsqrt / vfrec7 / vfrsqrt7 / vfclass — unmasked; vs1 is not a VGPR. */
-        return vs1 == 0 || vs1 == 4 || vs1 == 5 || vs1 == 16;
+        }
     }
     case 3: /* integer vi */
         switch (funct6) {
@@ -353,7 +366,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * masked lane-local integer arithmetic, comparisons, reductions, gathers,
  * slides and extensions, fixed-profile vnsrl/vnsra narrowing shifts over even/odd
  * register pairs, vnclipu/vnclip rounded saturating narrowing, unmasked FP32
- * VFUNARY1 (`vfsqrt`/`vfrec7`/`vfrsqrt7`/`vfclass`), and masked or unmasked
+ * VFUNARY1 (`vfsqrt`/`vfrec7`/`vfrsqrt7`/`vfclass`), unmasked OPFVV
+ * `vfadd`/`vfsub`/`vfmul`/`vfmin`/`vfmax`/`vfsgnj`/`vfsgnjn`/`vfsgnjx`, and
+ * masked or unmasked
  * unit-, constant-stride, and trusted-local-index word memory operations.
  * Defined-register tracking prevents stale SGPR/VGPR data from being exported.
  * A small abstract interpreter recognizes x1 + 4*x8 + constant, where x8 is
@@ -534,14 +549,15 @@ static inline bool opengpu_shader_validate_words_profile(
             if (end > output_end)
                 return false;
             break;
-        case 0x57: /* vsetivli or allow-listed vector ALU (int + VFUNARY1) */
+        case 0x57: /* vsetivli or allow-listed vector ALU (int + OPFVV) */
             if ((insn & 0xfff07fffu) == 0xc1007057u) {
                 state.vector_length = rs1;
                 if (!state.vector_length ||
                     state.vector_length > batch_capacity)
                     return false;
             } else {
-                bool vfunary1 = funct3 == 1 && (insn >> 26) == 0x13;
+                bool opfvv = funct3 == 1;
+                bool vfunary1 = opfvv && (insn >> 26) == 0x13;
 
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
@@ -558,10 +574,12 @@ static inline bool opengpu_shader_validate_words_profile(
                     ((insn >> 26) == 0x0e && !vector_defined[rd]) ||
                     ((funct3 == 0 || funct3 == 2) && (insn >> 26) != 0x12 &&
                      !vector_defined[rs1]) ||
+                    /* Binary OPFVV reads vs1; VFUNARY1 encodes the op there. */
+                    (opfvv && !vfunary1 && !vector_defined[rs1]) ||
                     ((funct3 == 4 || funct3 == 6) &&
                      !scalar_defined[rs1]) ||
-                    /* VFUNARY1 encodes the op in vs1; reject masked forms. */
-                    (vfunary1 && !(insn & (1u << 25))))
+                    /* OPFVV stays unmasked; vs1 is not a predicate. */
+                    (opfvv && !(insn & (1u << 25))))
                     return false;
                 state.vector_local_indices &= ~(1u << rd);
                 state.vector_local_bytes &= ~(1u << rd);

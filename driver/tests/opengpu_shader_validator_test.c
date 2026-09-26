@@ -811,7 +811,7 @@ int main(void)
     program[1] = vector_alu(0x24, 0, 2, 1, 1); /* no integer vv form */
     assert(!opengpu_shader_validate_words(program, 3, 288, 8));
 
-    program[1] = vector_alu(0x00, 1, 2, 1, 1); /* floating vv is excluded */
+    program[1] = vector_alu(0x00, 1, 2, 3, 3); /* vfadd with undefined v3 */
     assert(!opengpu_shader_validate_words(program, 3, 288, 8));
 
     /* FP32 VFUNARY1 (OPFVV funct6=0x13): vs1 encodes vfsqrt/vfrec7/vfrsqrt7/vfclass. */
@@ -848,6 +848,58 @@ int main(void)
             vfunary1_bad_op, 5, 64, 1));
         assert(!opengpu_compute_shader_validate_words(
             vfunary1_masked, 5, 64, 1));
+    }
+
+    /* Unmasked OPFVV vfadd/vfsub/vfmul; vs1 is a defined VGPR. */
+    {
+        const uint32_t opfvv_valid[] = {
+            vsetivli(4),
+            addi(5, 1, 0),
+            vle32(2, 5),
+            addi(5, 1, 16),
+            vle32(3, 5),
+            vector_alu(0x00, 1, 4, 2, 3), /* vfadd.vv v4, v2, v3 */
+            vector_alu(0x02, 1, 5, 2, 3), /* vfsub.vv v5, v2, v3 */
+            vector_alu(0x24, 1, 6, 2, 3), /* vfmul.vv v6, v2, v3 */
+            vector_alu(0x04, 1, 7, 2, 3), /* vfmin.vv v7, v2, v3 */
+            vector_alu(0x06, 1, 8, 2, 3), /* vfmax.vv v8, v2, v3 */
+            vector_alu(0x08, 1, 9, 2, 3), /* vfsgnj.vv v9, v2, v3 */
+            vector_alu(0x09, 1, 10, 2, 3), /* vfsgnjn.vv v10, v2, v3 */
+            vector_alu(0x0a, 1, 11, 2, 3), /* vfsgnjx.vv v11, v2, v3 */
+            addi(5, 1, 32),
+            vse32(4, 5),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t opfvv_bad_op[] = {
+            vsetivli(4),
+            addi(5, 1, 0),
+            vle32(2, 5),
+            vector_alu(0x18, 1, 3, 2, 2), /* vmfeq still excluded */
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t opfvv_masked[] = {
+            vsetivli(4),
+            addi(5, 1, 0),
+            vle32(2, 5),
+            vector_alu(0x00, 1, 3, 2, 2) & ~(1u << 25),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t opfvv_undef_vs1[] = {
+            vsetivli(4),
+            addi(5, 1, 0),
+            vle32(2, 5),
+            vector_alu(0x00, 1, 3, 2, 4), /* v4 undefined */
+            OPENGPU_SHADER_CEASE,
+        };
+
+        assert(opengpu_compute_shader_validate_words(
+            opfvv_valid, 16, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(
+            opfvv_bad_op, 5, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(
+            opfvv_masked, 5, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(
+            opfvv_undef_vs1, 5, 64, 4));
     }
 
     program[1] = vector_alu(0x00, 4, 2, 1, 10); /* undefined scalar x10 */

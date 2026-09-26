@@ -47,15 +47,21 @@ rm -f "$DRIVER_OUTPUT/opengpu_compute_shader.o"
 python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
     --emit fp_unary "$DRIVER_OUTPUT/opengpu_fp_unary.bin"
 python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+    --emit fp_binary "$DRIVER_OUTPUT/opengpu_fp_binary.bin"
+python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
     --emit widen_alu "$DRIVER_OUTPUT/opengpu_widen_alu.bin"
 python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
     --emit fixed_width "$DRIVER_OUTPUT/opengpu_fixed_width.bin"
 rm -f "$DRIVER_OUTPUT"/opengpu_fp_unary.o \
+    "$DRIVER_OUTPUT"/opengpu_fp_binary.o \
     "$DRIVER_OUTPUT"/opengpu_widen_alu.o \
     "$DRIVER_OUTPUT"/opengpu_fixed_width.o
 "$CROSS_GCC" "${CFLAGS[@]}" \
     -o "$DRIVER_OUTPUT/opengpu_fp_unary" \
     "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/fp_unary.c"
+"$CROSS_GCC" "${CFLAGS[@]}" \
+    -o "$DRIVER_OUTPUT/opengpu_fp_binary" \
+    "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/fp_binary.c"
 "$CROSS_GCC" "${CFLAGS[@]}" \
     -o "$DRIVER_OUTPUT/opengpu_widen_alu" \
     "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/widen_alu.c"
@@ -92,6 +98,7 @@ ls -1 "$DRIVER_OUTPUT"/opengpu_kms_present \
     "$DRIVER_OUTPUT"/opengpu_pipe_* \
     "$DRIVER_OUTPUT"/opengpu_compute_example \
     "$DRIVER_OUTPUT"/opengpu_fp_unary* \
+    "$DRIVER_OUTPUT"/opengpu_fp_binary* \
     "$DRIVER_OUTPUT"/opengpu_widen_alu* \
     "$DRIVER_OUTPUT"/opengpu_fixed_width* \
     "$DRIVER_OUTPUT"/opengpu_triangle_example \
