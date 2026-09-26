@@ -7,8 +7,8 @@ RISCV_GCC ?= riscv64-unknown-elf-gcc
 RISCV_OBJCOPY ?= riscv64-unknown-elf-objcopy
 
 EXAMPLES := examples/compute examples/triangle examples/fragment_tint \
-	examples/fp_unary examples/fp_binary examples/widen_alu \
-	examples/fixed_width \
+	examples/fp_unary examples/fp_binary examples/fp_fma \
+	examples/widen_alu examples/fixed_width \
 	examples/triangle_present \
 	examples/pipe_clear_draw examples/pipe_compute examples/pipe_blit \
 	examples/pipe_resolve examples/pipe_texture_draw examples/pipe_vertex_draw \
@@ -36,6 +36,9 @@ examples/fp_unary: examples/fp_unary.c opengpu.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< opengpu.o
 
 examples/fp_binary: examples/fp_binary.c opengpu.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< opengpu.o
+
+examples/fp_fma: examples/fp_fma.c opengpu.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< opengpu.o
 
 examples/widen_alu: examples/widen_alu.c opengpu.o

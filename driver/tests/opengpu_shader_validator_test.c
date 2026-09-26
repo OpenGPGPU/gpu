@@ -268,10 +268,14 @@ int main(void)
     program[2] = addi(5, 1, 0);
     assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
 
-    /* Scaling shifts need one source, accept odd registers and in-place vd. */
+    /* Scaling shifts need one source, accept odd registers and in-place vd.
+     * Skip OPFVV (form 1): 0x2a/0x2b are fused FMA there, covered below. */
     for (unsigned int fn = 0x2a; fn <= 0x2b; fn++) {
         for (unsigned int form = 0; form < 8; form++) {
             bool legal = form == 0 || form == 3 || form == 4;
+
+            if (form == 1)
+                continue;
             program[0] = vsetivli(4);
             program[1] = vector_alu(0x00, 3, 31, 1, 0);
             program[2] = vector_alu(fn, form, 31, 31, 1);
@@ -900,6 +904,51 @@ int main(void)
             opfvv_masked, 5, 64, 4));
         assert(!opengpu_compute_shader_validate_words(
             opfvv_undef_vs1, 5, 64, 4));
+    }
+
+    /* Unmasked OPFVV fused FMA; old vd must be defined. */
+    {
+        const uint32_t opfvv_fma_valid[] = {
+            vsetivli(4),
+            addi(5, 1, 0),
+            vle32(2, 5),
+            addi(5, 1, 16),
+            vle32(3, 5),
+            addi(5, 1, 32),
+            vle32(4, 5),
+            vector_alu(0x28, 1, 4, 2, 3), /* vfmadd.vv v4, v3, v2 */
+            vector_alu(0x2c, 1, 4, 2, 3), /* vfmacc.vv v4, v3, v2 */
+            addi(5, 1, 48),
+            vse32(4, 5),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t opfvv_fma_undef_vd[] = {
+            vsetivli(4),
+            addi(5, 1, 0),
+            vle32(2, 5),
+            addi(5, 1, 16),
+            vle32(3, 5),
+            vector_alu(0x28, 1, 4, 2, 3), /* v4 undefined */
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t opfvv_fma_masked[] = {
+            vsetivli(4),
+            addi(5, 1, 0),
+            vle32(2, 5),
+            addi(5, 1, 16),
+            vle32(3, 5),
+            addi(5, 1, 32),
+            vle32(4, 5),
+            vector_alu(0x28, 1, 4, 2, 3) & ~(1u << 25),
+            OPENGPU_SHADER_CEASE,
+        };
+
+        assert(opengpu_compute_shader_validate_words(
+            opfvv_fma_valid, 12, 80, 4));
+        assert(!opengpu_compute_shader_validate_words(
+            opfvv_fma_undef_vd, 7, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(
+            opfvv_fma_masked, 9, 64, 4));
     }
 
     program[1] = vector_alu(0x00, 4, 2, 1, 10); /* undefined scalar x10 */

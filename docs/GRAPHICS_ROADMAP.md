@@ -165,13 +165,13 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    fixed-function and vertex+fragment guests with `opengpu_drm_test`.
    Userspace apps on top of that API:
    - Fixed-function (`GPU_FRAG_CORE=0`): compute, `fp_unary`, `fp_binary`,
-     `widen_alu`, `fixed_width`, triangle, `triangle_present`, `pipe_present`,
-     `pipe_clear_draw`,
+     `fp_fma`, `widen_alu`, `fixed_width`, triangle, `triangle_present`,
+     `pipe_present`, `pipe_clear_draw`,
      `pipe_compute`, `pipe_blit`, `pipe_strided_blit`, `pipe_resolve`,
      `pipe_texture_draw`, `pipe_depth_pass`, `pipe_msaa_draw`.
    - Fragment core (`GPU_FRAG_CORE=1`, `GPU_VERT_CORE=0`): `fragment_tint`,
-     `fp_unary`, `fp_binary`, `widen_alu`, `fixed_width`, `triangle_present`,
-     `pipe_present`,
+     `fp_unary`, `fp_binary`, `fp_fma`, `widen_alu`, `fixed_width`,
+     `triangle_present`, `pipe_present`,
      `pipe_clear_draw`, `pipe_compute`,
      `pipe_blit`, `pipe_strided_blit`, `pipe_resolve`, `pipe_texture_draw`
      (`vtex.sample` corpus binary staged as `/opengpu_fragment_texture.bin`),
@@ -326,7 +326,8 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    `examples/pipe_texture_draw` under `GPU_FRAG_CORE=1`), and FP32 VFUNARY1
    (`fp_unary.S` / `examples/fp_unary`), and unmasked OPFVV
    `vfadd`/`vfsub`/`vfmul`/`vfmin`/`vfmax`/`vfsgnj*` (`fp_binary.S` /
-   `examples/fp_binary`).
+   `examples/fp_binary`), and the eight fused FMA forms (`fp_fma.S` /
+   `examples/fp_fma`).
    Remaining ASID-0 identity use is Bare bring-up (`opengpu_hw_enable_mmu`).
 6. **Workload-driven ISA** — FP32 VFUNARY1 (`vfsqrt`/`vfrec7`/`vfrsqrt7`/`vfclass`)
    is complete in RTL and admitted by the shader validator; the corpus shader
@@ -334,11 +335,13 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    `local_items=4` so every CU lane sees a defined `vs2` (VL=1 left inactive
    `vfsqrt` lanes on garbage and hung the guest). Unmasked OPFVV
    `vfadd`/`vfsub`/`vfmul`/`vfmin`/`vfmax`/`vfsgnj`/`vfsgnjn`/`vfsgnjx` is
-   now admitted (`fp_binary.S` / `examples/fp_binary`). Fixed-profile integer
-   widen/narrow (`widen_alu` / `fixed_width`) has the same guest compute path.
-   Grow further **validator + corpus** when a shader needs more vector FP
-   (FVF, compare, FMA, and remaining OPFVV forms are still rejected). Add
-   further VFUNARY0 / widening beyond the fixed SEW=32 profile only with a
+   now admitted (`fp_binary.S` / `examples/fp_binary`), as are the eight
+   fused FMA forms (`fp_fma.S` / `examples/fp_fma`; old `vd` must be
+   defined). Fixed-profile integer widen/narrow (`widen_alu` /
+   `fixed_width`) has the same guest compute path. Grow further
+   **validator + corpus** when a shader needs more vector FP (FVF, compare,
+   divide, and remaining OPFVV forms are still rejected). Add further
+   VFUNARY0 / widening beyond the fixed SEW=32 profile only with a
    motivating shader, validator rules and execution/guest coverage together.
 7. **Graphics feature decision** — measure target scenes before adding
    centroid or per-sample interpolation or framebuffer compression. Record

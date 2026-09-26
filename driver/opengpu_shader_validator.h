@@ -269,6 +269,14 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x09: /* vfsgnjn */
         case 0x0a: /* vfsgnjx */
         case 0x24: /* vfmul */
+        case 0x28: /* vfmadd */
+        case 0x29: /* vfnmadd */
+        case 0x2a: /* vfmsub */
+        case 0x2b: /* vfnmsub */
+        case 0x2c: /* vfmacc */
+        case 0x2d: /* vfnmacc */
+        case 0x2e: /* vfmsac */
+        case 0x2f: /* vfnmsac */
             return true;
         default:
             return false;
@@ -367,7 +375,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * slides and extensions, fixed-profile vnsrl/vnsra narrowing shifts over even/odd
  * register pairs, vnclipu/vnclip rounded saturating narrowing, unmasked FP32
  * VFUNARY1 (`vfsqrt`/`vfrec7`/`vfrsqrt7`/`vfclass`), unmasked OPFVV
- * `vfadd`/`vfsub`/`vfmul`/`vfmin`/`vfmax`/`vfsgnj`/`vfsgnjn`/`vfsgnjx`, and
+ * `vfadd`/`vfsub`/`vfmul`/`vfmin`/`vfmax`/`vfsgnj`/`vfsgnjn`/`vfsgnjx` and
+ * the eight fused FMA forms, and
  * masked or unmasked
  * unit-, constant-stride, and trusted-local-index word memory operations.
  * Defined-register tracking prevents stale SGPR/VGPR data from being exported.
@@ -576,6 +585,9 @@ static inline bool opengpu_shader_validate_words_profile(
                      !vector_defined[rs1]) ||
                     /* Binary OPFVV reads vs1; VFUNARY1 encodes the op there. */
                     (opfvv && !vfunary1 && !vector_defined[rs1]) ||
+                    /* Fused FMA forms read the old destination. */
+                    (opfvv && (insn >> 26) >= 0x28 && (insn >> 26) <= 0x2f &&
+                     !vector_defined[rd]) ||
                     ((funct3 == 4 || funct3 == 6) &&
                      !scalar_defined[rs1]) ||
                     /* OPFVV stays unmasked; vs1 is not a predicate. */

@@ -116,6 +116,7 @@ int main(void)
     } else if (run_program("/opengpu_fragment_tint") < 0 ||
                run_program("/opengpu_fp_unary") < 0 ||
                run_program("/opengpu_fp_binary") < 0 ||
+               run_program("/opengpu_fp_fma") < 0 ||
                run_program("/opengpu_widen_alu") < 0 ||
                run_program("/opengpu_fixed_width") < 0 ||
                run_program("/opengpu_triangle_present") < 0 ||
@@ -134,6 +135,7 @@ int main(void)
     } else if (run_program("/opengpu_compute_example") < 0 ||
                run_program("/opengpu_fp_unary") < 0 ||
                run_program("/opengpu_fp_binary") < 0 ||
+               run_program("/opengpu_fp_fma") < 0 ||
                run_program("/opengpu_widen_alu") < 0 ||
                run_program("/opengpu_fixed_width") < 0 ||
                run_program("/opengpu_triangle_example") < 0 ||

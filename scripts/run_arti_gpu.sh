@@ -419,6 +419,8 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
         python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
             --emit fp_binary "$WORK/opengpu_fp_binary.bin"
         python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+            --emit fp_fma "$WORK/opengpu_fp_fma.bin"
+        python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
             --emit widen_alu "$WORK/opengpu_widen_alu.bin"
         python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
             --emit fixed_width "$WORK/opengpu_fixed_width.bin"
@@ -437,6 +439,11 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
             -o "$WORK/opengpu_fp_binary" \
             "$GPU_DIR/userspace/opengpu.c" \
             "$GPU_DIR/userspace/examples/fp_binary.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_fp_fma" \
+            "$GPU_DIR/userspace/opengpu.c" \
+            "$GPU_DIR/userspace/examples/fp_fma.c"
         "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
             -o "$WORK/opengpu_widen_alu" \
@@ -534,6 +541,12 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
             -o "$WORK/opengpu_fp_binary" \
             "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/fp_binary.c"
+        python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+            --emit fp_fma "$WORK/opengpu_fp_fma.bin"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_fp_fma" \
+            "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/examples/fp_fma.c"
         python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
             --emit widen_alu "$WORK/opengpu_widen_alu.bin"
         "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
