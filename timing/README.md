@@ -29,6 +29,8 @@ clean commit before treating them as the baseline.
 
 | Run | Scope | Core Fmax | Worst setup | Note |
 |---|---|---:|---:|---|
+| `gpu-system-4f7cf7d` | synthesis | 861.42 MHz | -160.88 ps | FVF operand read after pending-`flw` check; limiter `l2.request_address` → `resolveEngine.result` (-40.01 ps in `ec2887e`, RTL unchanged); FVF paths +331.53 ps; area 168085 µm² |
+| `gpu-system-ec2887e` | synthesis | 905.83 MHz | -103.97 ps | clean baseline, reproduces `wgmul`; limiter `fsqrtAlu.quotient`; area 167786 µm² |
 | `gpu-system-fsqrtpost` _(dirty, rejected)_ | synthesis | 873.75 MHz | -144.49 ps | Extra sqrt result stage regressed integrated timing; source differs from `wgmul` only in `Fp32SqrtLane` |
 | `fma-lane-cspipe` _(dirty)_ | synthesis | **1193.57 MHz** | **+162.17 ps** | FMA CS partials registered before assemble; **PASS** |
 | `gpu-system-wgmul` _(dirty)_ | synthesis | 905.83 MHz | -103.97 ps | + workgroup Z mul split; limiter `fsqrtAlu.quotient` → `result` |
