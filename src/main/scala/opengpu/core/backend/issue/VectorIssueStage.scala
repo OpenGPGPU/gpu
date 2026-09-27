@@ -75,19 +75,20 @@ class VectorIssueStage(
   io.scalarRead.warpId := io.in.bits.warpId
   io.scalarRead.rs1 := vs1
   io.scalarRead.rs2 := vs2
-  io.scalarFpRead.warpId := io.in.bits.warpId
-  io.scalarFpRead.rs1 := vs1
-  io.scalarFpRead.rs2 := 0.U
-  io.scalarFpRead.rs3 := 0.U
-
   private val inValid = RegInit(false.B)
   private val inDecode = Reg(new VectorDecodeResponse(config))
   private val inScalarRs1Data = Reg(UInt(config.xLen.W))
   private val inScalarRs2Data = Reg(UInt(config.xLen.W))
-  private val inScalarFpData = Reg(UInt(32.W))
   private val skidVs1 = inDecode.instruction(19, 15)
   private val skidVs2 = inDecode.instruction(24, 20)
   private val skidVd = inDecode.instruction(11, 7)
+
+  // The FVF operand is read from the skid, where the pending-write check
+  // below applies; the FP RF forwards the write that clears that hazard.
+  io.scalarFpRead.warpId := inDecode.warpId
+  io.scalarFpRead.rs1 := skidVs1
+  io.scalarFpRead.rs2 := 0.U
+  io.scalarFpRead.rs3 := 0.U
 
   io.in.ready := !inValid
   when(io.in.fire) {
@@ -95,7 +96,6 @@ class VectorIssueStage(
     inDecode := io.in.bits
     inScalarRs1Data := io.scalarRs1Data
     inScalarRs2Data := io.scalarRs2Data
-    inScalarFpData := io.scalarFpData
   }
 
   private val metadataCanAccept = metadata.io.enq.ready
@@ -114,7 +114,7 @@ class VectorIssueStage(
   metadata.io.enq.bits.decode := inDecode
   metadata.io.enq.bits.scalarRs1Data := inScalarRs1Data
   metadata.io.enq.bits.scalarRs2Data := inScalarRs2Data
-  metadata.io.enq.bits.scalarFpData := inScalarFpData
+  metadata.io.enq.bits.scalarFpData := io.scalarFpData
   reservationQueue.io.enq.valid :=
     inValid && metadataCanAccept && !scalarFpHazard
   reservationQueue.io.enq.bits.warpId := inDecode.warpId

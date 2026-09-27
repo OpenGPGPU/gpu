@@ -69,8 +69,8 @@ fused FMA forms (`fp_fma.S`; old `vd` required), `vfdiv` (`fp_div.S`), and
 OPFVV compares (`fp_compare.S`). FVF forms remain excluded: the ARTI host
 system (`EmitGpuHostSystemAxi`) is built without `enableFpuBackend`, so
 scalar `flw` stalls on a tied-off FPU port and FVF reads a zero scalar operand.
-Enabling FVF also needs `VectorIssueStage` to sample the scalar FP operand
-after its busy check (it currently captures it one stage earlier).
+`VectorIssueStage` reads the FVF operand in its skid stage, after the
+pending-`flw` busy check, relying on the FP register file's write bypass.
 The fixed SEW=32 profile implements
 `vsext.vf2/vf4/vf8` and `vzext.vf2/vf4/vf8` as lane-local integer widening
 operations: the low 16, 8, or 4 bits of each source lane are sign- or

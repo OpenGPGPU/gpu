@@ -558,7 +558,9 @@ class VectorBackendSpec extends AnyFlatSpec {
       initialize(2, Seq(0x3f800000, 0x40400000)) // 1.0, 3.0
       initialize(3, Seq(0x11111111, 0x22222222))
 
-      // vfadd.vf v3, v2, f1
+      // vfadd.vf v3, v2, f1 while a pending flw still owns f1.
+      dut.io.scalarFpBusy(0).poke((BigInt(1) << 1).U)
+      dut.io.scalarFpData.poke("h3f800000".U) // stale 1.0
       val addInstruction =
         (BigInt(1) << 25) | (BigInt(2) << 20) | (BigInt(1) << 15) |
           (BigInt(5) << 12) | (BigInt(3) << 7) | 0x57
@@ -580,6 +582,13 @@ class VectorBackendSpec extends AnyFlatSpec {
       dut.io.in.ready.expect(true.B)
       dut.clock.step()
       dut.io.in.valid.poke(false.B)
+      for (_ <- 0 until 6) {
+        dut.io.committedVectorWriteback.valid.expect(false.B)
+        dut.clock.step()
+      }
+      // The flw writeback clears busy and presents the new f1 together.
+      dut.io.scalarFpData.poke("h40000000".U) // 2.0
+      dut.io.scalarFpBusy(0).poke(0.U)
 
       var cycles = 0
       while (
