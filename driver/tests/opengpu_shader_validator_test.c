@@ -88,6 +88,17 @@ static uint32_t vector_alu(unsigned int funct6, unsigned int form,
            (vd & 0x1f) << 7 | 0x57;
 }
 
+static uint32_t flw(unsigned int rd, unsigned int rs1, int offset)
+{
+    return ((uint32_t)offset & 0xfff) << 20 | (rs1 & 0x1f) << 15 |
+           2u << 12 | (rd & 0x1f) << 7 | 0x07;
+}
+
+static bool fpu_valid(const uint32_t *words, uint32_t count)
+{
+    return opengpu_compute_shader_validate_words_fpu(words, count, 64, 4, true);
+}
+
 static uint32_t branch(unsigned int funct3, unsigned int rs1,
                        unsigned int rs2, int offset)
 {
@@ -968,6 +979,95 @@ int main(void)
 
         assert(opengpu_compute_shader_validate_words(
             opfvv_fma_odd_vs2, 5, 64, 4));
+    }
+
+    /* OPFVF reads a scalar FP register that must come from flw imm(x1),
+     * and only compute CUs with the scalar FPU admit flw. */
+    {
+        const uint32_t opfvf_valid[] = {
+            vsetivli(4),
+            flw(1, 1, 0),
+            addi(5, 1, 16),
+            vle32(2, 5),
+            vector_alu(0x00, 5, 4, 2, 1), /* vfadd.vf v4, v2, f1 */
+            vector_alu(0x21, 5, 5, 2, 1), /* vfrdiv.vf v5, v2, f1 */
+            vector_alu(0x27, 5, 6, 2, 1), /* vfrsub.vf v6, v2, f1 */
+            vector_alu(0x2c, 5, 4, 2, 1), /* vfmacc.vf v4, f1, v2 */
+            vector_alu(0x1d, 5, 0, 2, 1), /* vmfgt.vf v0, v2, f1 */
+            vector_alu(0x1f, 5, 5, 2, 1) & ~(1u << 25), /* masked vmfge */
+            addi(5, 1, 32),
+            vse32(4, 5),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t flw_only[] = {
+            flw(1, 1, 0),
+            OPENGPU_SHADER_CEASE,
+        };
+        uint32_t fvf[6];
+
+        assert(fpu_valid(opfvf_valid, 13));
+        assert(!opengpu_compute_shader_validate_words(opfvf_valid, 13, 64, 4));
+        assert(fpu_valid(flw_only, 2));
+        assert(!opengpu_compute_shader_validate_words(flw_only, 2, 64, 4));
+        assert(!opengpu_shader_validate_words(flw_only, 2, 288, 8));
+        assert(!opengpu_vertex_shader_validate_words(flw_only, 2, 512, 8));
+        /* masked vmfge needs a defined old vd */
+        fvf[0] = vsetivli(4);
+        fvf[1] = flw(1, 1, 0);
+        fvf[2] = vle32(2, 1);
+        fvf[3] = vector_alu(0x1d, 5, 0, 2, 1);
+        fvf[4] = vector_alu(0x1f, 5, 7, 2, 1) & ~(1u << 25);
+        fvf[5] = OPENGPU_SHADER_CEASE;
+        assert(!fpu_valid(fvf, 6));
+        /* undefined scalar FP operand */
+        fvf[1] = addi(5, 1, 0);
+        fvf[3] = vector_alu(0x00, 5, 4, 2, 1);
+        fvf[4] = OPENGPU_SHADER_CEASE;
+        assert(!fpu_valid(fvf, 5));
+        /* flw defines only its own destination */
+        fvf[1] = flw(2, 1, 0);
+        assert(!fpu_valid(fvf, 5));
+        fvf[1] = flw(1, 1, 0);
+        assert(fpu_valid(fvf, 5));
+        /* non-compare OPFVF stays unmasked */
+        fvf[3] = vector_alu(0x00, 5, 4, 2, 1) & ~(1u << 25);
+        assert(!fpu_valid(fvf, 5));
+        /* vfmerge/vfmv and VFUNARY encodings are not admitted as FVF */
+        fvf[3] = vector_alu(0x17, 5, 4, 2, 1);
+        assert(!fpu_valid(fvf, 5));
+        fvf[3] = vector_alu(0x13, 5, 4, 2, 1);
+        assert(!fpu_valid(fvf, 5));
+        /* FVF FMA reads the old destination */
+        fvf[3] = vector_alu(0x28, 5, 4, 2, 1);
+        assert(!fpu_valid(fvf, 5));
+        fvf[3] = vector_alu(0x28, 5, 2, 2, 1);
+        assert(fpu_valid(fvf, 5));
+        /* flw stays an aligned x1-relative kernarg read */
+        fvf[3] = vector_alu(0x00, 5, 4, 2, 1);
+        fvf[1] = flw(1, 1, 60);
+        assert(fpu_valid(fvf, 5));
+        fvf[1] = flw(1, 1, 64);
+        assert(!fpu_valid(fvf, 5));
+        fvf[1] = flw(1, 1, 2);
+        assert(!fpu_valid(fvf, 5));
+        fvf[1] = flw(1, 1, -4);
+        assert(!fpu_valid(fvf, 5));
+        fvf[1] = flw(1, 5, 0);
+        assert(!fpu_valid(fvf, 5));
+    }
+
+    /* flw on one branch path leaves f1 undefined after the merge. */
+    {
+        const uint32_t fvf_branch[] = {
+            vsetivli(4),
+            branch(0, 0, 0, 8), /* skip the flw */
+            flw(1, 1, 0),
+            vle32(2, 1),
+            vector_alu(0x00, 5, 4, 2, 1),
+            OPENGPU_SHADER_CEASE,
+        };
+
+        assert(!fpu_valid(fvf_branch, 6));
     }
 
     program[1] = vector_alu(0x00, 4, 2, 1, 10); /* undefined scalar x10 */

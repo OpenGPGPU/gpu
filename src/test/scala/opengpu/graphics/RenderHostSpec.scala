@@ -244,6 +244,20 @@ class RenderHostSpec extends AnyFlatSpec {
     }
   }
 
+  it should "advertise the compute scalar FPU only when elaborated with it" in {
+    for (scalarFpu <- Seq(false, true)) {
+      simulate(new RenderHost(
+        gpuConfig = GpuConfig(lanes = 4, warps = 2),
+        computeScalarFpu = scalarFpu)) { dut =>
+        dut.io.externalCompletion.poke(false.B)
+        dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+        val bit = (regRead(dut, RenderHostRegs.CAPABILITIES) >>
+          GpuCapabilities.ComputeScalarFpu) & 1L
+        assert(bit == (if (scalarFpu) 1L else 0L))
+      }
+    }
+  }
+
   it should "latch an external completion in the shared IRQ pending bit" in {
     simulate(new RenderHost(gpuConfig = GpuConfig(lanes = 4, warps = 2))) {
       dut =>

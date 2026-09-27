@@ -2914,9 +2914,10 @@ int opengpu_compute_launch_ioctl(struct drm_device *drm, void *data,
                   OPENGPU_SHADER_MAX_INSTRUCTIONS);
     program = (const u32 *)((const u8 *)sched_job->shader.cpu +
                             args->shader_offset);
-    if (!opengpu_compute_shader_validate_words(
+    if (!opengpu_compute_shader_validate_words_fpu(
             program, words, kernarg->size - args->kernarg_offset,
-            local_items)) {
+            local_items,
+            !!(gpu->hw.capabilities & GPU_CAP_COMPUTE_SCALAR_FPU))) {
         ret = -EINVAL;
         goto out_job;
     }

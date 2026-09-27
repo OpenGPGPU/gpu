@@ -52,7 +52,8 @@ class GpuHostAxi(
   externalCompletionIrq: Boolean = false,
   unifiedCommandMmio: Boolean = false,
   commandIdWidth: Int = 8,
-  textureFaultReporting: Boolean = false
+  textureFaultReporting: Boolean = false,
+  computeScalarFpu: Boolean = false
 ) extends Module {
   override def desiredName: String = "GpuHostAxi"
 
@@ -150,7 +151,8 @@ class GpuHostAxi(
       config, gpuConfig, fragCore, vertCore, deviceId, version,
       unifiedCommands = unifiedCommandMmio,
       textureFaultReporting = textureFaultReporting,
-      commandIdWidth = commandIdWidth))
+      commandIdWidth = commandIdWidth,
+      computeScalarFpu = computeScalarFpu))
     host.io.textureFault.foreach(_ := io.textureFault.get)
     io.graphicsDrained := host.io.drained
     io.performance := host.io.performance

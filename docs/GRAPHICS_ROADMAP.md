@@ -168,12 +168,14 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    fixed-function and vertex+fragment guests with `opengpu_drm_test`.
    Userspace apps on top of that API:
    - Fixed-function (`GPU_FRAG_CORE=0`): compute, `fp_unary`, `fp_binary`,
-     `fp_fma`, `fp_div`, `fp_compare`, `widen_alu`, `fixed_width`, triangle,
+     `fp_fma`, `fp_div`, `fp_compare`, `fp_scalar`, `widen_alu`,
+     `fixed_width`, triangle,
      `triangle_present`, `pipe_present`, `pipe_clear_draw`,
      `pipe_compute`, `pipe_blit`, `pipe_strided_blit`, `pipe_resolve`,
      `pipe_texture_draw`, `pipe_depth_pass`, `pipe_msaa_draw`.
    - Fragment core (`GPU_FRAG_CORE=1`, `GPU_VERT_CORE=0`): `fragment_tint`,
-     `fp_unary`, `fp_binary`, `fp_fma`, `fp_div`, `fp_compare`, `widen_alu`,
+     `fp_unary`, `fp_binary`, `fp_fma`, `fp_div`, `fp_compare`, `fp_scalar`,
+     `widen_alu`,
      `fixed_width`, `triangle_present`, `pipe_present`,
      `pipe_clear_draw`, `pipe_compute`,
      `pipe_blit`, `pipe_strided_blit`, `pipe_resolve`, `pipe_texture_draw`
@@ -345,12 +347,15 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    OPFVV compares (`vmfeq`/`vmfle`/`vmflt`/`vmfne`) are covered by
    `fp_compare.S` / `examples/fp_compare`. Fixed-profile integer widen/narrow
    (`widen_alu` / `fixed_width`) has the same guest compute path. Grow further
-   **validator + corpus** when a shader needs more vector FP. FVF forms such as
-   `vfrdiv`/`vfadd.vf` are blocked on hardware: the ARTI host system is built
-   without the scalar FPU backend (an `flw` shader hung the guest). That must
-   change before the validator admits `flw` and FVF. `VectorIssueStage` now
-   reads the FVF operand after its pending-`flw` check (covered by
-   `VectorBackendSpec`). Add further VFUNARY0 /
+   **validator + corpus** when a shader needs more vector FP. OPFVF forms
+   (`vfadd.vf`, `vfrsub`, `vfrdiv`, `vfmacc.vf`, `vmfgt`/`vmfge`, ...) are
+   admitted for compute shaders only on hardware advertising
+   `GPU_CAP_COMPUTE_SCALAR_FPU` (bit22), with the scalar operand loaded by a
+   validated `flw imm(x1)` (`fp_scalar.S` / `examples/fp_scalar`, which skips
+   without the bit). The ARTI host system now builds its compute CUs with the
+   scalar FPU backend; without it an `flw` shader hangs the CU. Fragment and
+   vertex shader CUs have no scalar FPU. `vfmerge`/`vfmv.v.f` and scalar FP
+   arithmetic remain excluded. Add further VFUNARY0 /
    widening beyond the fixed SEW=32 profile only with a motivating shader,
    validator rules and execution/guest coverage together.
 7. **Graphics feature decision** — measure target scenes before adding

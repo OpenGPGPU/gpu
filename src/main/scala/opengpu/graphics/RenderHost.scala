@@ -122,7 +122,8 @@ class RenderHost(
   version: Int = 0x0001,
   unifiedCommands: Boolean = false,
   textureFaultReporting: Boolean = false,
-  commandIdWidth: Int = 8
+  commandIdWidth: Int = 8,
+  computeScalarFpu: Boolean = false
 ) extends Module {
   override def desiredName: String = "RenderHost"
   private val maxSampleMode = log2Ceil(config.maxSampleCount)
@@ -396,6 +397,7 @@ class RenderHost(
       (1 << GpuCapabilities.PersistentDepth) |
       (if (unifiedCommands) (1 << GpuCapabilities.UnifiedRender) else 0) |
       (1 << GpuCapabilities.HwVblank) |
+      (if (computeScalarFpu) (1 << GpuCapabilities.ComputeScalarFpu) else 0) |
       (gpuConfig.warps * gpuConfig.lanes << GpuCapabilities.FragmentBatchShift))
       .U(32.W)
 

@@ -41,6 +41,7 @@ struct opengpu_shader_state {
     struct opengpu_shader_value values[32];
     bool scalar_defined[32];
     bool vector_defined[32];
+    bool fp_defined[32];
     opengpu_shader_u32 vector_local_indices;
     opengpu_shader_u32 vector_local_bytes;
     opengpu_shader_u32 vector_length;
@@ -61,6 +62,7 @@ static inline void opengpu_shader_merge_state(
     for (reg = 0; reg < 32; reg++) {
         state->scalar_defined[reg] &= incoming->scalar_defined[reg];
         state->vector_defined[reg] &= incoming->vector_defined[reg];
+        state->fp_defined[reg] &= incoming->fp_defined[reg];
         if (!state->scalar_defined[reg] ||
             state->values[reg].kind != incoming->values[reg].kind ||
             state->values[reg].offset != incoming->values[reg].offset) {
@@ -191,7 +193,10 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
              funct6 >= 0x18 && funct6 <= 0x1f) ||
             (form == 1 &&
              (funct6 == 0x18 || funct6 == 0x19 || funct6 == 0x1b ||
-              funct6 == 0x1c));
+              funct6 == 0x1c)) ||
+            (form == 5 &&
+             (funct6 == 0x18 || funct6 == 0x19 || funct6 == 0x1b ||
+              funct6 == 0x1c || funct6 == 0x1d || funct6 == 0x1f));
         bool reduction = form == 2 && funct6 <= 0x07;
         bool gather = (form == 0 || form == 3 || form == 4) &&
                       funct6 == 0x0c;
@@ -291,6 +296,37 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
             return false;
         }
     }
+    case 5: /* OPFVF: rs1 names a scalar FP register */
+        switch (funct6) {
+        case 0x00: /* vfadd */
+        case 0x02: /* vfsub */
+        case 0x04: /* vfmin */
+        case 0x06: /* vfmax */
+        case 0x08: /* vfsgnj */
+        case 0x09: /* vfsgnjn */
+        case 0x0a: /* vfsgnjx */
+        case 0x18: /* vmfeq */
+        case 0x19: /* vmfle */
+        case 0x1b: /* vmflt */
+        case 0x1c: /* vmfne */
+        case 0x1d: /* vmfgt */
+        case 0x1f: /* vmfge */
+        case 0x20: /* vfdiv */
+        case 0x21: /* vfrdiv */
+        case 0x24: /* vfmul */
+        case 0x27: /* vfrsub */
+        case 0x28: /* vfmadd */
+        case 0x29: /* vfnmadd */
+        case 0x2a: /* vfmsub */
+        case 0x2b: /* vfnmsub */
+        case 0x2c: /* vfmacc */
+        case 0x2d: /* vfnmacc */
+        case 0x2e: /* vfmsac */
+        case 0x2f: /* vfnmsac */
+            return true;
+        default:
+            return false;
+        }
     case 3: /* integer vi */
         switch (funct6) {
         case 0x00: /* vadd */
@@ -377,7 +413,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * to four. Paths may reconverge or terminate independently in CEASE; every
  * reachable path must terminate. x1 remains the immutable kernarg base.
  * Scalar lw/sw retain the v1
- * bounds. The RVV profile admits vsetivli e32,m1, the implemented lane-local
+ * bounds; when the scalar FPU is enabled, flw is limited to aligned imm(x1)
+ * reads inside kernarg. The RVV profile admits vsetivli e32,m1, the implemented lane-local
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
  * divide and remainder forms, vssrl/vssra rounded scaling shifts,
  * masked lane-local integer arithmetic, comparisons, reductions, gathers,
@@ -385,8 +422,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
  * register pairs, vnclipu/vnclip rounded saturating narrowing, unmasked FP32
  * VFUNARY1 (`vfsqrt`/`vfrec7`/`vfrsqrt7`/`vfclass`), unmasked OPFVV
  * `vfadd`/`vfsub`/`vfmul`/`vfdiv`/`vfmin`/`vfmax`/`vfsgnj`/`vfsgnjn`/`vfsgnjx`,
- * OPFVV compares (`vmfeq`/`vmfle`/`vmflt`/`vmfne`), and the eight fused FMA
- * forms, and
+ * OPFVV compares (`vmfeq`/`vmfle`/`vmflt`/`vmfne`), the eight fused FMA
+ * forms, the matching OPFVF forms plus `vfrdiv`/`vfrsub`/`vmfgt`/`vmfge`
+ * whose scalar operand must come from a validated flw, and
  * masked or unmasked
  * unit-, constant-stride, and trusted-local-index word memory operations.
  * Defined-register tracking prevents stale SGPR/VGPR data from being exported.
@@ -403,7 +441,7 @@ static inline bool opengpu_shader_validate_words_profile(
     opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity,
     opengpu_shader_u32 output_start_slice,
     opengpu_shader_u32 output_end_slice, bool fragment_ops_enabled,
-    bool texture_enabled, bool all_kernarg_writable)
+    bool texture_enabled, bool all_kernarg_writable, bool scalar_fpu_enabled)
 {
     opengpu_shader_u64 stride, output_start, output_end;
     struct opengpu_shader_state state = { 0 };
@@ -576,16 +614,20 @@ static inline bool opengpu_shader_validate_words_profile(
                     return false;
             } else {
                 bool opfvv = funct3 == 1;
+                bool opfvf = funct3 == 5;
+                bool fp = opfvv || opfvf;
                 bool vfunary1 = opfvv && (insn >> 26) == 0x13;
-                bool opfvv_compare =
-                    opfvv &&
+                bool fp_compare =
+                    fp &&
                     ((insn >> 26) == 0x18 || (insn >> 26) == 0x19 ||
-                     (insn >> 26) == 0x1b || (insn >> 26) == 0x1c);
+                     (insn >> 26) == 0x1b || (insn >> 26) == 0x1c ||
+                     (opfvf && ((insn >> 26) == 0x1d ||
+                                (insn >> 26) == 0x1f)));
 
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
                     !vector_defined[rs2] ||
-                    (!opfvv && (insn >> 26) >= 0x2c && (insn >> 26) <= 0x2f &&
+                    (!fp && (insn >> 26) >= 0x2c && (insn >> 26) <= 0x2f &&
                      !vector_defined[rs2 + 1]) ||
                     (!(insn & (1u << 25)) &&
                      (!vector_defined[0] || !vector_defined[rd])) ||
@@ -599,13 +641,14 @@ static inline bool opengpu_shader_validate_words_profile(
                      !vector_defined[rs1]) ||
                     /* Binary OPFVV reads vs1; VFUNARY1 encodes the op there. */
                     (opfvv && !vfunary1 && !vector_defined[rs1]) ||
+                    (opfvf && !state.fp_defined[rs1]) ||
                     /* Fused FMA forms read the old destination. */
-                    (opfvv && (insn >> 26) >= 0x28 && (insn >> 26) <= 0x2f &&
+                    (fp && (insn >> 26) >= 0x28 && (insn >> 26) <= 0x2f &&
                      !vector_defined[rd]) ||
                     ((funct3 == 4 || funct3 == 6) &&
                      !scalar_defined[rs1]) ||
-                    /* Non-compare OPFVV stays unmasked. */
-                    (opfvv && !opfvv_compare && !(insn & (1u << 25))))
+                    /* Non-compare FP vector ops stay unmasked. */
+                    (fp && !fp_compare && !(insn & (1u << 25))))
                     return false;
                 state.vector_local_indices &= ~(1u << rd);
                 state.vector_local_bytes &= ~(1u << rd);
@@ -617,13 +660,22 @@ static inline bool opengpu_shader_validate_words_profile(
                 vector_defined[rd] = true;
             }
             break;
-        case 0x07: { /* unit-stride vle32.v or scalar-stride vlse32.v */
+        case 0x07: { /* flw imm(x1), vle32.v, vlse32.v, or indexed vector load */
             bool strided =
                 (insn & 0xfc00707fu) == 0x08006007u;
             bool indexed =
                 (insn & 0xfc00707fu) == 0x04006007u ||
                 (insn & 0xfc00707fu) == 0x0c006007u;
 
+            if (funct3 == 2) {
+                imm = (opengpu_shader_s32)insn >> 20;
+                end = (opengpu_shader_u64)(opengpu_shader_u32)imm + 4;
+                if (!scalar_fpu_enabled || rs1 != 1 || imm < 0 ||
+                    (imm & 3) || end > kernarg_size)
+                    return false;
+                state.fp_defined[rd] = true;
+                break;
+            }
             if ((!strided && !indexed &&
                  (insn & 0xfdf0707fu) != 0x00006007u) ||
                 !scalar_defined[rs1] ||
@@ -729,7 +781,7 @@ static inline bool opengpu_shader_validate_words_with_texture(
 {
     return opengpu_shader_validate_words_profile(
         words, word_count, kernarg_size, batch_capacity,
-        6, 9, true, texture_enabled, false);
+        6, 9, true, texture_enabled, false, false);
 }
 
 static inline bool opengpu_shader_validate_words(
@@ -749,19 +801,30 @@ static inline bool opengpu_vertex_shader_validate_words(
 {
     return opengpu_shader_validate_words_profile(
         words, word_count, kernarg_size, batch_capacity,
-        8, 16, false, false, false);
+        8, 16, false, false, false, false);
 }
 
 /* General-compute profile: retain the bounded instruction and address
  * analysis, reject fragment-only operations, and permit writes anywhere
- * inside the explicitly bound kernarg range. */
+ * inside the explicitly bound kernarg range. scalar_fpu_enabled admits flw
+ * and OPFVF; pass it only when GPU_CAP_COMPUTE_SCALAR_FPU is advertised, since
+ * flw never completes on compute CUs built without the scalar FPU. */
+static inline bool opengpu_compute_shader_validate_words_fpu(
+    const opengpu_shader_u32 *words, opengpu_shader_u32 word_count,
+    opengpu_shader_u64 kernarg_size, opengpu_shader_u32 local_items,
+    bool scalar_fpu_enabled)
+{
+    return opengpu_shader_validate_words_profile(
+        words, word_count, kernarg_size, local_items,
+        0, 0, false, false, true, scalar_fpu_enabled);
+}
+
 static inline bool opengpu_compute_shader_validate_words(
     const opengpu_shader_u32 *words, opengpu_shader_u32 word_count,
     opengpu_shader_u64 kernarg_size, opengpu_shader_u32 local_items)
 {
-    return opengpu_shader_validate_words_profile(
-        words, word_count, kernarg_size, local_items,
-        0, 0, false, false, true);
+    return opengpu_compute_shader_validate_words_fpu(
+        words, word_count, kernarg_size, local_items, false);
 }
 
 #endif /* OPENGPU_SHADER_VALIDATOR_H */

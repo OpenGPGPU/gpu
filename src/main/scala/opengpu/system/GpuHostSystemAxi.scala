@@ -176,7 +176,8 @@ class GpuHostSystemAxi(
       graphicsConfig, gpuConfig, fragCore, vertCore,
       deviceId = deviceId, version = version,
       unifiedCommandMmio = true, commandIdWidth = commandIdWidth,
-      textureFaultReporting = true))
+      textureFaultReporting = true,
+      computeScalarFpu = enableFpuBackend && gpuConfig.enableFpu))
     val system = Module(new GpuSystem(
       gpuConfig,
       numComputeUnits = numComputeUnits,

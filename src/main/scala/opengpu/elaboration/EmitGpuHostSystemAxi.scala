@@ -45,6 +45,7 @@ object EmitGpuHostSystemAxi {
         numComputeUnits = computeUnits,
         fragCore = fragCore,
         vertCore = vertCore,
+        enableFpuBackend = true,
         memoryAxiDataBytes = memoryAxiDataBytes),
       Array("--target-dir", targetDir),
       Array("--lowering-options=disallowLocalVariables,disallowPackedArrays")

@@ -42,4 +42,7 @@ object GpuCapabilities {
   val UnifiedRender = 20
   /** Scanout-gated period counter raises vblank on the shared IRQ (bit21). */
   val HwVblank = 21
+  /** Compute CUs execute scalar FP32 (`flw` and RVV `.vf` operands) (bit22).
+    * Fragment and vertex shader CUs never have the scalar FPU. */
+  val ComputeScalarFpu = 22
 }

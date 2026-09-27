@@ -39,6 +39,10 @@ forms (default `/opengpu_fp_fma.bin`).
 `/opengpu_fp_div.bin`).
 `examples/fp_compare` loads `fp_compare` and checks `vmfeq` / `vmflt` via a
 masked integer add (default `/opengpu_fp_compare.bin`).
+`examples/fp_scalar` loads `fp_scalar`, which reads `f1` with `flw` from
+kernarg and checks `vfadd` / `vfrsub` / `vfrdiv` / `vfmul` / `vfmacc` /
+`vmfgt` in their `.vf` forms (default `/opengpu_fp_scalar.bin`). It skips
+unless the device advertises `OPENGPU_CAP_COMPUTE_SCALAR_FPU`.
 
 `examples/widen_alu` loads the corpus `widen_alu` shader and checks lane-local
 `vwadd` / `vwsub` / `vwmul` (default `/opengpu_widen_alu.bin`).
@@ -129,8 +133,9 @@ assembles `compute_copy.S`, `round_modes.S`, `masked_ops.S`, `fixed_width.S`
 guest `examples/widen_alu`), `fragment_texture.S` (`vtex.sample` plus warp
 discard / `vquad.dfdx`), `fp_unary.S` (FP32 VFUNARY1), `fp_binary.S`
 (unmasked OPFVV `vfadd`/`vfsub`/`vfmul`/`vfmin`/`vfmax`/`vfsgnj`), and
-`fp_fma.S` (eight fused FMA forms), `fp_div.S` (`vfdiv`) and
-`fp_compare.S` (`vmfeq`/`vmflt`), and compiles three
+`fp_fma.S` (eight fused FMA forms), `fp_div.S` (`vfdiv`),
+`fp_compare.S` (`vmfeq`/`vmflt`) and `fp_scalar.S` (`flw` plus OPFVF,
+validated with the scalar-FPU compute profile), and compiles three
 small C shaders with `riscv64-unknown-elf-gcc`, adapts the C argument base to
 OpenGPU's direct `x1` kernarg convention, and replaces the C return with the
 OpenGPU cease instruction. The script checks every binary with the production

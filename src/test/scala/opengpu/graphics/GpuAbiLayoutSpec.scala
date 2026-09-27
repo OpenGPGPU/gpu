@@ -160,6 +160,7 @@ class GpuAbiLayoutSpec extends AnyFlatSpec {
       "GPU_CAP_PERSISTENT_DEPTH" -> (1L << GpuCapabilities.PersistentDepth),
       "GPU_CAP_UNIFIED_RENDER" -> (1L << GpuCapabilities.UnifiedRender),
       "GPU_CAP_HW_VBLANK" -> (1L << GpuCapabilities.HwVblank),
+      "GPU_CAP_COMPUTE_SCALAR_FPU" -> (1L << GpuCapabilities.ComputeScalarFpu),
       "GPU_CAP_MSAA" -> (1L << GpuCapabilities.Msaa),
       "GPU_CAP_MSAA_MAX_MODE_SHIFT" -> GpuCapabilities.MsaaMaxModeShift.toLong,
       "GPU_CAP_MSAA_MAX_MODE_MASK" ->

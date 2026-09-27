@@ -201,6 +201,8 @@ typedef int32_t s32;
 #define GPU_CAP_UNIFIED_RENDER  (1u << 20)
 /* Scanout-gated period counter raises vblank on the shared IRQ (bit21). */
 #define GPU_CAP_HW_VBLANK       (1u << 21)
+/* Compute CUs execute scalar FP32: flw and RVV .vf operands (bit22). */
+#define GPU_CAP_COMPUTE_SCALAR_FPU (1u << 22)
 
 #define GPU_SCANOUT_FORMAT_RGBA8888 0u
 #define GPU_SCANOUT_FORMAT_XRGB8888 1u
