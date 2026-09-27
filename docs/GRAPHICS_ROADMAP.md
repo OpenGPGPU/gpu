@@ -137,6 +137,9 @@ second TLB client) or a wider word fabric.
 | Guest DRM, default (`GPU_FRAG_CORE=0`) | pass on `cfc045a` (private fill/blit/strided DMA VAs); powers off |
 | Guest DRM, fragment-core (`GPU_FRAG_CORE=1`) | pass on `cfc045a`; powers off |
 | Guest DRM, vertex+fragment (`GPU_FRAG_CORE=1` `GPU_VERT_CORE=1`) | pass on `cfc045a`; powers off |
+| `scripts/qualify_functional.sh` (full Scala suite, host driver, fixed-function and vertex+fragment guest DRM) | pass on `adba326` (2026-09-27): 556/556 Scala tests |
+| Guest userspace examples, fragment-core / vertex+fragment | pass on `adba326` (2026-09-27), including `fp_*`, `widen_alu`, `fixed_width` |
+| Guest userspace examples, fixed-function | pass on `be2a887` (2026-09-27) |
 
 Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0).
 `flat_16_1x` is 4975 cycles after omInflight/pendingDepth 16. Programmable
