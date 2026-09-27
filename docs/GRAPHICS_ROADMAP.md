@@ -342,8 +342,11 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    OPFVV compares (`vmfeq`/`vmfle`/`vmflt`/`vmfne`) are covered by
    `fp_compare.S` / `examples/fp_compare`. Fixed-profile integer widen/narrow
    (`widen_alu` / `fixed_width`) has the same guest compute path. Grow further
-   **validator + corpus** when a shader needs more vector FP (FVF forms such as
-   `vfrdiv`/`vfadd.vf` still need scalar-FP tracking). Add further VFUNARY0 /
+   **validator + corpus** when a shader needs more vector FP. FVF forms such as
+   `vfrdiv`/`vfadd.vf` are blocked on hardware: the ARTI host system is built
+   without the scalar FPU backend (an `flw` shader hung the guest), and
+   `VectorIssueStage` samples the scalar FP operand before its busy check.
+   Both must be fixed before the validator admits `flw` and FVF. Add further VFUNARY0 /
    widening beyond the fixed SEW=32 profile only with a motivating shader,
    validator rules and execution/guest coverage together.
 7. **Graphics feature decision** — measure target scenes before adding

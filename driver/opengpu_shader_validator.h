@@ -206,7 +206,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         return false;
     if (funct6 == 0x12 && vd == vs2) /* widening source/destination overlap */
         return false;
-    if ((funct6 >= 0x2c && funct6 <= 0x2f) &&
+    if ((form == 0 || form == 3 || form == 4) &&
+        (funct6 >= 0x2c && funct6 <= 0x2f) &&
         ((vs2 & 1) || vd == vs2 || vd == vs2 + 1))
         return false; /* narrowing needs an even vs2 pair disjoint from vd */
     switch (form) {
@@ -584,7 +585,7 @@ static inline bool opengpu_shader_validate_words_profile(
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
                     !vector_defined[rs2] ||
-                    (((insn >> 26) >= 0x2c && (insn >> 26) <= 0x2f) &&
+                    (!opfvv && (insn >> 26) >= 0x2c && (insn >> 26) <= 0x2f &&
                      !vector_defined[rs2 + 1]) ||
                     (!(insn & (1u << 25)) &&
                      (!vector_defined[0] || !vector_defined[rd])) ||

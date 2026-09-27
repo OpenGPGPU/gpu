@@ -956,6 +956,20 @@ int main(void)
             opfvv_fma_masked, 9, 64, 4));
     }
 
+    /* OPFVV FMA ignores integer narrowing pair rules: odd vs2, vd == vs2. */
+    {
+        const uint32_t opfvv_fma_odd_vs2[] = {
+            vsetivli(4),
+            addi(5, 1, 0),
+            vle32(3, 5),
+            vector_alu(0x2c, 1, 3, 3, 3), /* vfmacc.vv v3, v3, v3 */
+            OPENGPU_SHADER_CEASE,
+        };
+
+        assert(opengpu_compute_shader_validate_words(
+            opfvv_fma_odd_vs2, 5, 64, 4));
+    }
+
     program[1] = vector_alu(0x00, 4, 2, 1, 10); /* undefined scalar x10 */
     assert(!opengpu_shader_validate_words(program, 3, 288, 8));
 
