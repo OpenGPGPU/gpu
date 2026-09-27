@@ -413,6 +413,8 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
         python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
             --emit fragment_tint "$WORK/opengpu_fragment_tint.bin"
         python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+            --emit fragment_fp "$WORK/opengpu_fragment_fp.bin"
+        python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
             --emit fragment_texture "$WORK/opengpu_fragment_texture.bin"
         python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
             --emit fp_unary "$WORK/opengpu_fp_unary.bin"
@@ -435,6 +437,11 @@ if [ "${GPU_USERSPACE_EXAMPLES:-0}" = "1" ]; then
             -o "$WORK/opengpu_fragment_tint" \
             "$GPU_DIR/userspace/opengpu.c" \
             "$GPU_DIR/userspace/examples/fragment_tint.c"
+        "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
+            -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
+            -o "$WORK/opengpu_fragment_fp" \
+            "$GPU_DIR/userspace/opengpu.c" \
+            "$GPU_DIR/userspace/examples/fragment_fp.c"
         "$CROSS_GCC" -static -std=c11 -O2 -Wall -Wextra -Werror \
             -I"$LINUX_HEADERS/include" -I"$GPU_DIR/driver" -I"$GPU_DIR/userspace" \
             -o "$WORK/opengpu_fp_unary" \

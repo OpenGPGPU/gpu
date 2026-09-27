@@ -58,6 +58,10 @@ default `/dev/dri/card0`.
 corpus `fragment_tint` shader and expects `OPENGPU_CAP_FRAGMENT_CORE`. Pass
 the DRM node and optional shader binary path (default
 `/opengpu_fragment_tint.bin`).
+`examples/fragment_fp` runs the corpus `fragment_fp` shader, which computes
+6.0f per lane with `vfmul` / `vfdiv` / `vfmacc` on the fragment shader CU and
+XORs it into the interpolated colour; every painted pixel must be
+`0xbec0ffff` (default `/opengpu_fragment_fp.bin`).
 
 `examples/triangle_present` draws into the native KMS mode buffer (64x64 on
 the Debian display profile) and programs the CRTC so ARTI/QEMU scanout shows
@@ -131,7 +135,8 @@ assembles `compute_copy.S`, `round_modes.S`, `masked_ops.S`, `fixed_width.S`
 (lane-local `vsext`/`vzext`/`vnclip`/`vsmul` with `vxrm`; guest
 `examples/fixed_width`), `widen_alu.S` (lane-local `vwadd`/`vwsub`/`vwmul`;
 guest `examples/widen_alu`), `fragment_texture.S` (`vtex.sample` plus warp
-discard / `vquad.dfdx`), `fp_unary.S` (FP32 VFUNARY1), `fp_binary.S`
+discard / `vquad.dfdx`), `fragment_fp.S` (fragment-profile OPFVV; guest
+`examples/fragment_fp`), `fp_unary.S` (FP32 VFUNARY1), `fp_binary.S`
 (unmasked OPFVV `vfadd`/`vfsub`/`vfmul`/`vfmin`/`vfmax`/`vfsgnj`), and
 `fp_fma.S` (eight fused FMA forms), `fp_div.S` (`vfdiv`),
 `fp_compare.S` (`vmfeq`/`vmflt`) and `fp_scalar.S` (`flw` plus OPFVF,

@@ -2,7 +2,8 @@
 # Cross-build static aarch64 userspace examples into the ARTI driver output
 # directory so build_cloudinit.sh can stage them on the OPENGPU modules ISO.
 #
-# Default: fixed-function set. With GPU_FRAG_CORE=1 also emit fragment_tint.
+# Default: fixed-function set. With GPU_FRAG_CORE=1 also emit fragment_tint
+# and fragment_fp.
 set -euo pipefail
 
 GPU_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -110,10 +111,16 @@ if [ "$GPU_FRAG_CORE" = "1" ]; then
         --emit fragment_tint "$DRIVER_OUTPUT/opengpu_fragment_tint.bin"
     python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
         --emit fragment_texture "$DRIVER_OUTPUT/opengpu_fragment_texture.bin"
+    python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+        --emit fragment_fp "$DRIVER_OUTPUT/opengpu_fragment_fp.bin"
     "$CROSS_GCC" "${CFLAGS[@]}" \
         -o "$DRIVER_OUTPUT/opengpu_fragment_tint" \
         "$GPU_DIR/userspace/opengpu.c" \
         "$GPU_DIR/userspace/examples/fragment_tint.c"
+    "$CROSS_GCC" "${CFLAGS[@]}" \
+        -o "$DRIVER_OUTPUT/opengpu_fragment_fp" \
+        "$GPU_DIR/userspace/opengpu.c" \
+        "$GPU_DIR/userspace/examples/fragment_fp.c"
 fi
 
 echo "Guest binaries:"
@@ -132,4 +139,5 @@ ls -1 "$DRIVER_OUTPUT"/opengpu_kms_present \
     "$DRIVER_OUTPUT"/opengpu_triangle_example \
     "$DRIVER_OUTPUT"/opengpu_compute_shader.bin \
     "$DRIVER_OUTPUT"/opengpu_fragment_tint* \
+    "$DRIVER_OUTPUT"/opengpu_fragment_fp* \
     "$DRIVER_OUTPUT"/opengpu_fragment_texture* 2>/dev/null | sed 's/^/  /' || true

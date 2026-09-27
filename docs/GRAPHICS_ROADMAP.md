@@ -174,6 +174,7 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
      `pipe_compute`, `pipe_blit`, `pipe_strided_blit`, `pipe_resolve`,
      `pipe_texture_draw`, `pipe_depth_pass`, `pipe_msaa_draw`.
    - Fragment core (`GPU_FRAG_CORE=1`, `GPU_VERT_CORE=0`): `fragment_tint`,
+     `fragment_fp`,
      `fp_unary`, `fp_binary`, `fp_fma`, `fp_div`, `fp_compare`, `fp_scalar`,
      `widen_alu`,
      `fixed_width`, `triangle_present`, `pipe_present`,
@@ -333,7 +334,9 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    `vfadd`/`vfsub`/`vfmul`/`vfmin`/`vfmax`/`vfsgnj*` (`fp_binary.S` /
    `examples/fp_binary`), the eight fused FMA forms (`fp_fma.S` /
    `examples/fp_fma`), `vfdiv` (`fp_div.S` / `examples/fp_div`), and OPFVV
-   compares (`fp_compare.S` / `examples/fp_compare`).
+   compares (`fp_compare.S` / `examples/fp_compare`). Fragment shaders use
+   the same vector FP units on the shader CU (`fragment_fp.S` /
+   `examples/fragment_fp`: `vfmul`/`vfdiv`/`vfmacc` into the output colour).
    Remaining ASID-0 identity use is Bare bring-up (`opengpu_hw_enable_mmu`).
 6. **Workload-driven ISA** — FP32 VFUNARY1 (`vfsqrt`/`vfrec7`/`vfrsqrt7`/`vfclass`)
    is complete in RTL and admitted by the shader validator; the corpus shader
