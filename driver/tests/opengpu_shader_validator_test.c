@@ -865,11 +865,16 @@ int main(void)
             vector_alu(0x00, 1, 4, 2, 3), /* vfadd.vv v4, v2, v3 */
             vector_alu(0x02, 1, 5, 2, 3), /* vfsub.vv v5, v2, v3 */
             vector_alu(0x24, 1, 6, 2, 3), /* vfmul.vv v6, v2, v3 */
-            vector_alu(0x04, 1, 7, 2, 3), /* vfmin.vv v7, v2, v3 */
-            vector_alu(0x06, 1, 8, 2, 3), /* vfmax.vv v8, v2, v3 */
-            vector_alu(0x08, 1, 9, 2, 3), /* vfsgnj.vv v9, v2, v3 */
-            vector_alu(0x09, 1, 10, 2, 3), /* vfsgnjn.vv v10, v2, v3 */
-            vector_alu(0x0a, 1, 11, 2, 3), /* vfsgnjx.vv v11, v2, v3 */
+            vector_alu(0x20, 1, 7, 2, 3), /* vfdiv.vv v7, v2, v3 */
+            vector_alu(0x04, 1, 8, 2, 3), /* vfmin.vv v8, v2, v3 */
+            vector_alu(0x06, 1, 9, 2, 3), /* vfmax.vv v9, v2, v3 */
+            vector_alu(0x08, 1, 10, 2, 3), /* vfsgnj.vv v10, v2, v3 */
+            vector_alu(0x09, 1, 11, 2, 3), /* vfsgnjn.vv v11, v2, v3 */
+            vector_alu(0x0a, 1, 12, 2, 3), /* vfsgnjx.vv v12, v2, v3 */
+            vector_alu(0x18, 1, 0, 2, 3), /* vmfeq.vv v0, v2, v3 */
+            vector_alu(0x19, 1, 0, 2, 3), /* vmfle.vv v0, v2, v3 */
+            vector_alu(0x1b, 1, 0, 2, 3), /* vmflt.vv v0, v2, v3 */
+            vector_alu(0x1c, 1, 0, 2, 3), /* vmfne.vv v0, v2, v3 */
             addi(5, 1, 32),
             vse32(4, 5),
             OPENGPU_SHADER_CEASE,
@@ -878,7 +883,7 @@ int main(void)
             vsetivli(4),
             addi(5, 1, 0),
             vle32(2, 5),
-            vector_alu(0x18, 1, 3, 2, 2), /* vmfeq still excluded */
+            vector_alu(0x1d, 1, 0, 2, 2), /* vmfgt is FVF-only */
             OPENGPU_SHADER_CEASE,
         };
         const uint32_t opfvv_masked[] = {
@@ -897,7 +902,7 @@ int main(void)
         };
 
         assert(opengpu_compute_shader_validate_words(
-            opfvv_valid, 16, 64, 4));
+            opfvv_valid, 21, 64, 4));
         assert(!opengpu_compute_shader_validate_words(
             opfvv_bad_op, 5, 64, 4));
         assert(!opengpu_compute_shader_validate_words(

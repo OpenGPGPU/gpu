@@ -65,8 +65,9 @@ steps. FP32 VFUNARY1 (`vfsqrt.v`, `vfrec7.v`, `vfrsqrt7.v`, `vfclass.v`) is
 implemented in RTL and admitted unmasked by the driver validator (corpus
 `fp_unary.S`). Unmasked OPFVV `vfadd`/`vfsub`/`vfmul`/`vfmin`/`vfmax`/
 `vfsgnj`/`vfsgnjn`/`vfsgnjx` is admitted (`fp_binary.S`), as are the eight
-fused FMA forms (`fp_fma.S`; old `vd` required). FVF, compare and divide
-encodings remain excluded.
+fused FMA forms (`fp_fma.S`; old `vd` required), `vfdiv` (`fp_div.S`), and
+OPFVV compares (`fp_compare.S`). FVF forms remain excluded until the
+validator tracks scalar FP loads.
 The fixed SEW=32 profile implements
 `vsext.vf2/vf4/vf8` and `vzext.vf2/vf4/vf8` as lane-local integer widening
 operations: the low 16, 8, or 4 bits of each source lane are sign- or

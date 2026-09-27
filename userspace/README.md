@@ -35,6 +35,10 @@ reference results for `vfsqrt` / `vfrsqrt7` / `vfrec7` / `vfclass` (default
 `/opengpu_fp_binary.bin`).
 `examples/fp_fma` loads `fp_fma` and checks all eight unmasked fused FMA
 forms (default `/opengpu_fp_fma.bin`).
+`examples/fp_div` loads `fp_div` and checks unmasked `vfdiv` (default
+`/opengpu_fp_div.bin`).
+`examples/fp_compare` loads `fp_compare` and checks `vmfeq` / `vmflt` via a
+masked integer add (default `/opengpu_fp_compare.bin`).
 
 `examples/widen_alu` loads the corpus `widen_alu` shader and checks lane-local
 `vwadd` / `vwsub` / `vwmul` (default `/opengpu_widen_alu.bin`).
@@ -125,7 +129,8 @@ assembles `compute_copy.S`, `round_modes.S`, `masked_ops.S`, `fixed_width.S`
 guest `examples/widen_alu`), `fragment_texture.S` (`vtex.sample` plus warp
 discard / `vquad.dfdx`), `fp_unary.S` (FP32 VFUNARY1), `fp_binary.S`
 (unmasked OPFVV `vfadd`/`vfsub`/`vfmul`/`vfmin`/`vfmax`/`vfsgnj`), and
-`fp_fma.S` (eight fused FMA forms), and compiles three
+`fp_fma.S` (eight fused FMA forms), `fp_div.S` (`vfdiv`) and
+`fp_compare.S` (`vmfeq`/`vmflt`), and compiles three
 small C shaders with `riscv64-unknown-elf-gcc`, adapts the C argument base to
 OpenGPU's direct `x1` kernarg convention, and replaces the C return with the
 OpenGPU cease instruction. The script checks every binary with the production

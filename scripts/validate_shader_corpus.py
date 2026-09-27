@@ -16,12 +16,12 @@ FLAGS = ["-march=rv32im_zicsr", "-mabi=ilp32", "-O2", "-ffreestanding",
 
 ASSEMBLY = ("compute_copy", "round_modes", "masked_ops", "fixed_width",
             "widen_alu", "fragment_texture", "fp_unary", "fp_binary",
-            "fp_fma")
+            "fp_fma", "fp_div", "fp_compare")
 COMPILED = ("compute_increment", "fragment_tint", "vertex_offset")
 ALL = ASSEMBLY + COMPILED
 # validate.c profiles: 0=compute, 1=fragment, 2=vertex, 3=fragment+texture,
 # 4=compute/local4 with 128-byte kernarg (FP FMA stores past 64)
-PROFILES = (0, 0, 0, 0, 0, 3, 4, 4, 4, 0, 1, 2)
+PROFILES = (0, 0, 0, 0, 0, 3, 4, 4, 4, 4, 4, 0, 1, 2)
 
 
 def run(args):
