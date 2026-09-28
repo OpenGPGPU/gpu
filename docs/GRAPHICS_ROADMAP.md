@@ -288,7 +288,7 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    pixels. Launch to that first GPU-present was 50 s host, of which the guest
    spent 18.30 s to the `mode=320x240` probe and 46.71 s to the last serial
    line, so clear + a 38k-pixel triangle + fence + SETCRTC is on the order of
-   tens of seconds. A full-screen 320x240 redraw is 76,800 px at 18.8
+   tens of seconds.    A full-screen 320x240 redraw is 76,800 px at 18.8
    cycles/px, about 1.44M cycles, so it is a minutes-per-frame path, not a
    real-time one. Getting the size to take effect needed the resolution to
    stop being duplicated: it used to live in six places, and the
@@ -297,6 +297,27 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    `build_arti_debian_display.sh` names each work tree after the mode instead
    of hardcoding `debian-64x64`. A zero-variable
    `scripts/run_arti_debian.sh` then reached the same render in 70 s host.
+   **What a frame costs, measured (2026-09-28).** `bench_arti_model.py
+   --render WxH` submits one full-screen fixed-function triangle (descriptor
+   plus a 40-word draw record, `GPU_UCMD_OP_RENDER`, bare identity mapping)
+   and checks the centre pixel, so the render path is timed directly instead
+   of being inferred from a DMA engine. On the 320x240 Verilator model:
+
+   | Scene | Pixels | Wall | Per pixel |
+   |---|---:|---:|---:|
+   | 16x16 | 256 | 2.28 s | 8915 us |
+   | 64x64 | 4,096 | 3.9-6.4 s | 963-1551 us |
+   | 320x240 | 76,800 | **14.25 s** | 186 us |
+
+   Per-pixel cost falls with area, so a whole frame costs far less than
+   repeating a small one, and 30 Hz at 320x240 is still about 430x out of
+   reach. Two corrections to the numbers above follow from this: a *clear* is
+   several MMIO transactions and the Verilator model charges its full idle
+   budget to each, so the 0.97 s "5.8 kcycles/s" clear figure measured
+   transaction overhead rather than cycles, and the fixed-function frame cost
+   is far better than that figure implied. Treat the earlier
+   FlashSim-side active rate as the conservative number and the render
+   measurement as the one that bounds a game.
    The tick rates above are obsolete. They were measured against an older
    ARTI whose settle loop charged a fixed 20,000 idle cycles to every host MMIO,
    so the 0.23 MHz figure described settle overhead rather than model speed.
@@ -304,21 +325,23 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    AXI queue occupancy, `ARTI_MODEL_IDLE_GRACE 16`) and pumps up to
    `ARTI_MODEL_IRQ_PUMP_CYCLES 262144` per 100 us IRQ poll while a job is live.
    `scripts/bench_arti_model.py` links the embedded model directly (no QEMU,
-   no guest) and measures the two rates that matter. On the 64x64 **FlashSim**
-   model:
+   no guest) and measures a quiet register read, a hardware clear and a
+   full-screen render. On the 64x64 **FlashSim** model:
 
    | Settle kind | Wall | Rate |
    |---|---:|---:|
    | idle (one quiet register read, 256 cycles) | 60-120 us | ~2-3 MHz |
    | active (32 KiB hardware clear, 5656 cycles) | 9-15 s | **~0.4-0.6 MHz** |
 
-   and on the 320x240 **Verilator** model the same probe reports a 32 KiB
-   clear in 0.97 s, about 5.8 kcycles/s, with an idle settle of 181 ms because
-   the Verilator settle still charges its full idle budget per quiet MMIO.
-    Runtime `--threads 8` changes neither figure: a hardware clear does not
-    present enough parallel work to use the pool. Verilator is therefore about
-    **10x FlashSim on active work and 1500x worse on idle MMIO**, so pick the
-    backend by whether the run is GPU-bound or latency-bound.
+   and on the 320x240 **Verilator** model a 4 KiB clear takes 0.94 s and an
+   idle settle 181 ms, because the Verilator settle still charges its full
+   idle budget to every quiet MMIO and a clear is five transactions. That
+   means the Verilator clear figure measures transaction overhead, not
+   cycles: the render measurement above is the one to use.
+   Runtime `--threads 8` changes neither figure: a hardware clear does not
+   present enough parallel work to use the pool. Verilator is therefore about
+   **10x FlashSim on active work and 1500x worse on idle MMIO**, so pick the
+   backend by whether the run is GPU-bound or latency-bound.
     Verilator multithreading is already in effect and needs no runtime flag:
     the NBA phase is split into 8 tasks dispatched across the pool
     (`VGpuHostSystemAxi___024root___eval_nba` hands `__Vthread__nba__s0__t0`
@@ -540,7 +563,8 @@ python3 scripts/test_driver.py
 python3 scripts/test_test_selection.py
 python3 scripts/test_display_config.py
 python3 scripts/benchmark_gpu.py
-# ARTI model throughput, no QEMU or guest boot. Add --instrument for the
-# dirty-list width and dirty-page count behind the active-rate figure.
-python3 scripts/bench_arti_model.py --instrument
+# ARTI model timing, no QEMU or guest boot. --render times the path a game
+# frame actually uses; --instrument adds the FlashSim dirty-page counters.
+python3 scripts/bench_arti_model.py --render 320x240
+python3 scripts/bench_arti_model.py --model-dir "$ARTI_WORK/debian-64x64/arti-embedded-gen/generated/embedded" --instrument
 ```

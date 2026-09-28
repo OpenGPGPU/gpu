@@ -40,7 +40,11 @@ PROBE = r"""
 
 static uint8_t *mem;
 static const uint64_t MEM_BASE = 0x40000000ull;
-static const uint64_t MEM_SIZE = 1ull << 26;
+static const uint64_t MEM_SIZE = 1ull << 30;
+
+/* From driver/gpu_abi.h: 40 words per draw record, 16 per render descriptor. */
+#define GPU_DRAW_WORDS 40u
+#define GPU_JOB_WORDS 16u
 
 /* Write mask is a per-byte strobe for the `size` bytes at `addr`; a nonzero
  * return is reported to the DUT as a SLVERR. */
@@ -59,6 +63,18 @@ static int mem_write(uint64_t addr, const uint8_t *data, unsigned size,
   for (unsigned i = 0; i < size; i++)
     if (mask & (1ull << i)) p[i] = data[i];
   return 0;
+}
+
+static void mem_write(uint64_t addr, const uint8_t *data, unsigned size,
+                      uint64_t mask) {
+  if (addr < MEM_BASE || addr + size > MEM_BASE + MEM_SIZE) {
+    fprintf(stderr, "staging address 0x%llx outside the backing store\n",
+            (unsigned long long)addr);
+    exit(9);
+  }
+  uint8_t *p = mem + (addr - MEM_BASE);
+  for (unsigned i = 0; i < size; i++)
+    if (mask & (1ull << i)) p[i] = data[i];
 }
 
 static double now_s(void) {
@@ -87,6 +103,9 @@ int main(int argc, char **argv) {
   unsigned idle_reads = argc > 1 ? (unsigned)strtoul(argv[1], nullptr, 0) : 200;
   unsigned fill_bytes = argc > 2 ? (unsigned)strtoul(argv[2], nullptr, 0) : 32768;
   unsigned fill_reps = argc > 3 ? (unsigned)strtoul(argv[3], nullptr, 0) : 1;
+  unsigned render_width = argc > 4 ? (unsigned)strtoul(argv[4], nullptr, 0) : 0;
+  unsigned render_height = argc > 5 ? (unsigned)strtoul(argv[5], nullptr, 0) : 0;
+  unsigned render_reps = argc > 6 ? (unsigned)strtoul(argv[6], nullptr, 0) : 1;
 
   mem = (uint8_t *)calloc(1, MEM_SIZE);
   if (!mem) return 3;
@@ -131,6 +150,105 @@ int main(int argc, char **argv) {
     return 1;
   }
   printf("fill_ms %.3f\n", fill_s * 1e3);
+
+  /* ---- render phase -----------------------------------------------------
+   * A hardware clear only exercises the DMA engines. A render is what a game
+   * actually does per frame, and it wakes the whole pipeline, so it is the
+   * rate that matters. Everything below mirrors what the guest driver writes
+   * for one fixed-function triangle: a 16-word render descriptor and one
+   * 40-word draw record, submitted as GPU_UCMD_OP_RENDER. Addresses are bare
+   * (no satp), so a VA is its own PA, which is the identity mapping the Bare
+   * bring-up path uses.
+   */
+  if (render_width && render_height) {
+    if (render_width < 16 || render_height < 16) {
+      fprintf(stderr, "render must be at least 16x16\n");
+      return 5;
+    }
+    const uint64_t colour_base = MEM_BASE;
+    const uint64_t depth_base = 0x41000000ull;
+    const uint64_t desc_base = 0x42000000ull;
+    const uint64_t cmd_base = 0x42001000ull;
+    const uint32_t stride = render_width * 4u;
+    const uint32_t pixels = render_width * render_height;
+
+    /* Clear the colour and depth planes the way a frame start would. */
+    reg_write(0x088, (uint32_t)colour_base);
+    reg_write(0x08c, stride * render_height);
+    reg_write(0x090, 0x00000000u);
+    reg_write(0x094, 1u);
+    if (reg_read(0x008) & 0x8u) { fprintf(stderr, "colour clear busy\n"); return 4; }
+    reg_write(0x088, (uint32_t)depth_base);
+    reg_write(0x08c, stride * render_height);
+    reg_write(0x090, 0x00ffffffu);
+    reg_write(0x094, 1u);
+    if (reg_read(0x008) & 0x8u) { fprintf(stderr, "depth clear busy\n"); return 4; }
+
+    /* One full-screen triangle in clip space, Q16.16, w = 1. */
+    uint32_t cmd[GPU_DRAW_WORDS];
+    memset(cmd, 0, sizeof(cmd));
+    const int32_t q = 1 << 16;
+    const int32_t verts[3][4] = {{-q, -q, 0, q}, {q, -q, 0, q}, {-q, q, 0, q}};
+    for (int v = 0; v < 3; v++) {
+      for (int k = 0; k < 4; k++) cmd[v * 4 + k] = (uint32_t)verts[v][k];
+      /* One 8-bit channel per word, r/g/b, per the fixed-function path. */
+      cmd[12 + v * 3 + 0] = 255u;
+      cmd[12 + v * 3 + 1] = 128u;
+      cmd[12 + v * 3 + 2] = 64u;
+      cmd[21 + v] = 0x10u;                 /* depth, compared as-is */
+    }
+    mem_write(cmd_base, (const uint8_t *)cmd, sizeof(cmd), ~0ull);
+
+    /* header = (record count << 16) | id; state bit0 depth test, bits 9:8
+     * cull; colour and depth planes come next, then the framebuffer stride. */
+    uint32_t desc[GPU_JOB_WORDS];
+    memset(desc, 0, sizeof(desc));
+    desc[0] = (1u << 16) | 0u;
+    desc[1] = (uint32_t)cmd_base;
+    desc[2] = (uint32_t)colour_base;
+    desc[3] = (uint32_t)depth_base;
+    desc[4] = stride;
+    desc[5] = 1u;                          /* depth test on, no write, no cull */
+    mem_write(desc_base, (const uint8_t *)desc, sizeof(desc), ~0ull);
+
+    double t4 = now_s();
+    for (unsigned r = 0; r < render_reps; r++) {
+      reg_write(0x00c, 1u);               /* IRQ enable */
+      reg_write(0x0c4, 1u);               /* UCMD_ID */
+      reg_write(0x0c8, 6u);               /* UCMD_OPCODE = render */
+      reg_write(0x0f4, (uint32_t)desc_base); /* UCMD_SOURCE = descriptor VA */
+      reg_write(0x0fc, 64u);              /* UCMD_BYTES */
+      reg_write(0x11c, 1u);               /* UCMD_SUBMIT */
+      for (unsigned spin = 0; spin < 200000; spin++) {
+        uint32_t status = reg_read(0x008);
+        if (status & 0x2u) break;         /* STATUS.DONE */
+        if (spin == 199999) {
+          fprintf(stderr, "FAIL: render did not complete (status 0x%08x)\n",
+                  status);
+          return 6;
+        }
+      }
+      if (reg_read(0x008) & 0x4u) {       /* STATUS.ERROR */
+        fprintf(stderr, "FAIL: render reported an error\n");
+        return 7;
+      }
+      /* The completion slot is single-use; pop before resubmitting. */
+      (void)reg_read(0x124);
+      reg_write(0x130, 1u);
+    }
+    double t5 = now_s();
+    double render_s = (t5 - t4) / (render_reps ? render_reps : 1);
+    uint32_t centre;
+    memcpy(&centre, mem + (size_t)(render_height / 2) * stride +
+           (size_t)(render_width / 2) * 4, sizeof(centre));
+    printf("render_ms %.3f\n", render_s * 1e3);
+    printf("render_px %u\n", pixels);
+    printf("render_centre 0x%08x\n", centre);
+    if (render_reps && centre == 0u) {
+      fprintf(stderr, "FAIL: centre pixel is still the clear colour\n");
+      return 8;
+    }
+  }
 
   /* Flush the model's own throttled [artistats] line (it prints on call 256). */
   for (unsigned i = 0; i < 300; i++) arti_rtl_model_check_irq(0);
@@ -297,12 +415,14 @@ def build(model_dir, build_dir, compiler, counters, threads):
     return binary
 
 
-def run(binary, idle_reads, fill_bytes, fill_reps, debug):
+def run(binary, idle_reads, fill_bytes, fill_reps, debug,
+        render_width=0, render_height=0, render_reps=1):
     env = dict(os.environ)
     if debug:
         env["ARTI_MODEL_DEBUG"] = "1"
     proc = subprocess.run(
-        [str(binary), str(idle_reads), str(fill_bytes), str(fill_reps)],
+        [str(binary), str(idle_reads), str(fill_bytes), str(fill_reps),
+         str(render_width), str(render_height), str(render_reps)],
         text=True, capture_output=True, env=env)
     sys.stdout.write(proc.stdout)
     sys.stderr.write(proc.stderr)
@@ -322,6 +442,12 @@ def main():
     parser.add_argument("--idle-reads", type=int, default=200)
     parser.add_argument("--fill-bytes", type=int, default=32768)
     parser.add_argument("--fill-reps", type=int, default=1)
+    parser.add_argument("--render", default="",
+                        help="WxH for a full-screen fixed-function triangle. "
+                             "Exercises the raster/fragment/output-merge path "
+                             "rather than only the DMA engines, so it is the "
+                             "rate a game frame is bounded by")
+    parser.add_argument("--render-reps", type=int, default=1)
     parser.add_argument("--instrument", action="store_true",
                         help="also report dirty-list width and dirty pages. "
                              "FlashSim only, and it scans 707 pages per tick, "
@@ -348,14 +474,30 @@ def main():
     if args.threads:
         os.environ["ARTI_PROBE_THREADS"] = str(args.threads)
         print(f"threads: {args.threads}")
+    width = height = 0
+    if args.render:
+        match = re.fullmatch(r"(\d+)[xX](\d+)", args.render)
+        if not match:
+            raise SystemExit("--render wants WxH, e.g. --render 320x240")
+        width, height = int(match.group(1)), int(match.group(2))
     fields = run(binary, args.idle_reads, args.fill_bytes, args.fill_reps,
-                 args.instrument)
+                 args.instrument, width, height, args.render_reps)
     idle_us = float(fields["idle_us"])
     fill_ms = float(fields["fill_ms"])
     print()
     print(f"idle settle   {idle_us:8.1f} us/MMIO")
-    print(f"active settle {fill_ms / 1e3:8.3f} s for a {args.fill_bytes} B "
-          "hardware clear")
+    # A clear is several MMIO transactions, and on the Verilator model each one
+    # pays the full idle budget, so a small clear measures transaction overhead
+    # rather than cycles. Only compare fills at equal byte counts.
+    print(f"clear         {fill_ms / 1e3:8.3f} s for a {args.fill_bytes} B "
+          f"hardware clear ({args.fill_bytes / 1024:.0f} KiB, 5 MMIO)")
+    if "render_ms" in fields:
+        render_ms = float(fields["render_ms"])
+        pixels = int(fields["render_px"])
+        print(f"render        {render_ms / 1e3:8.3f} s for a {args.render} "
+              f"full-screen triangle ({pixels} px, "
+              f"{render_ms * 1e3 / pixels:.3f} us/px), centre "
+              f"0x{fields['render_centre']}")
     print("A frame rate is cycles x (cycles/s). The active rate is the one that "
           "bounds it;\nsee scripts/benchmark_gpu.py for per-workload cycle counts.")
     if not args.keep and not args.build_dir:
