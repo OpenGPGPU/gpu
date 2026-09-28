@@ -70,7 +70,15 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   })
 
   private val emit = Module(new KernelEmit(config))
-  private val cu = Module(new GpuComputeUnit(config, finishOnTrap = true))
+  // The shader CU needs the scalar FP backend so a fragment or vertex shader
+  // can read f-registers, which is what a `uniform float` lowers to. Without
+  // it FpuBackend is absent, flw never retires and the CU hangs. This widens
+  // GpuCore's completion arbiter from 3 to 4 inputs and adds a second FP cone
+  // to the design; the software admission gate is
+  // GPU_CAP_COMPUTE_SCALAR_FPU, so the validator still rejects these
+  // instructions for the graphics profiles until that is threaded through.
+  private val cu = Module(new GpuComputeUnit(
+    config, enableFpuBackend = true, finishOnTrap = true))
 
   io.launch.ready := cu.io.kernel.ready
   cu.io.kernel.valid := io.launch.valid
