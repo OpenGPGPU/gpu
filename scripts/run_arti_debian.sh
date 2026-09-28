@@ -42,8 +42,18 @@ GPU_SIM="${GPU_SIM:-verilator}"
 ARTI_WORK="${ARTI_WORK:-$(cd "$GPU_DIR/.." && pwd)/arti-work}"
 mkdir -p "$ARTI_WORK"
 export ARTI_WORK
-DISPLAY_WORK="${DISPLAY_WORK:-$ARTI_WORK/debian-64x64}"
 INTEGRATION_CONFIG="${INTEGRATION_CONFIG:-$GPU_DIR/driver/gpu_integration_debian.yaml}"
+if [ ! -f "$INTEGRATION_CONFIG" ]; then
+    echo "FAIL: integration profile not found: $INTEGRATION_CONFIG" >&2
+    exit 1
+fi
+# The profile owns the resolution, and the work tree is named after it so the
+# right build is picked up without having to pass its name in.
+eval "$(python3 "$GPU_DIR/scripts/gpu_display_config.py" --shell \
+    "$INTEGRATION_CONFIG")"
+export GPU_WIDTH GPU_HEIGHT GPU_STRIDE GPU_FRAMEBUFFER_SIZE GPU_MODE
+DISPLAY_WORK="${DISPLAY_WORK:-$ARTI_WORK/debian-${GPU_MODE}}"
+echo "  Mode     : $GPU_MODE (from $(basename "$INTEGRATION_CONFIG"))"
 
 LINUX_BUILD="${LINUX_BUILD:-$ARTI_WORK/arti-linux-build}"
 DRIVER_OUTPUT="${DRIVER_OUTPUT:-$DISPLAY_WORK/opengpu-driver}"

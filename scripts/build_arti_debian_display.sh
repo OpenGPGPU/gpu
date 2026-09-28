@@ -6,19 +6,23 @@ set -euo pipefail
 
 GPU_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ARTI_WORK="${ARTI_WORK:-$(cd "$GPU_DIR/.." && pwd)/arti-work}"
-GPU_WIDTH="${GPU_WIDTH:-64}"
-GPU_HEIGHT="${GPU_HEIGHT:-64}"
+INTEGRATION_CONFIG="${INTEGRATION_CONFIG:-$GPU_DIR/driver/gpu_integration_debian.yaml}"
+[ -f "$INTEGRATION_CONFIG" ] || {
+    echo "FAIL: integration profile not found: $INTEGRATION_CONFIG" >&2; exit 1; }
+# The profile owns the resolution; these names follow from it.
+eval "$(python3 "$GPU_DIR/scripts/gpu_display_config.py" --shell \
+    "$INTEGRATION_CONFIG")"
 # Each size needs its own work tree: the generated RTL, the embedded model and
 # the QEMU build are all sized from it.
-DISPLAY_WORK="${DISPLAY_WORK:-$ARTI_WORK/debian-${GPU_WIDTH}x${GPU_HEIGHT}}"
+DISPLAY_WORK="${DISPLAY_WORK:-$ARTI_WORK/debian-${GPU_MODE}}"
 
 export ARTI_WORK
 export GPU_WIDTH GPU_HEIGHT
 export WORK_DIR="$DISPLAY_WORK"
 export QEMU_BUILD="${QEMU_BUILD:-$DISPLAY_WORK/qemu-arti-build}"
 export DRIVER_OUTPUT="${DRIVER_OUTPUT:-$DISPLAY_WORK/opengpu-driver}"
-export GPU_RTL_DIR="${GPU_RTL_DIR:-$GPU_DIR/generated/debian-${GPU_WIDTH}x${GPU_HEIGHT}}"
-export INTEGRATION_CONFIG="${INTEGRATION_CONFIG:-$GPU_DIR/driver/gpu_integration_debian.yaml}"
+export GPU_RTL_DIR="${GPU_RTL_DIR:-$GPU_DIR/generated/debian-${GPU_MODE}}"
+export INTEGRATION_CONFIG
 export GPU_SIM="${GPU_SIM:-verilator}"
 export ARTI_VERILATOR_THREADS="${ARTI_VERILATOR_THREADS:-8}"
 export ARTI_VERILATOR_BUILD_JOBS="${ARTI_VERILATOR_BUILD_JOBS:-4}"
@@ -33,7 +37,7 @@ fi
 export BUILD_ONLY=1
 
 "$GPU_DIR/scripts/run_arti_gpu.sh"
-printf '%sx%s backend=%s verilator_threads=%s\n' \
-    "$GPU_WIDTH" "$GPU_HEIGHT" "$GPU_SIM" "$ARTI_VERILATOR_THREADS" \
+printf 'mode=%s backend=%s verilator_threads=%s\n' \
+    "$GPU_MODE" "$GPU_SIM" "$ARTI_VERILATOR_THREADS" \
     > "$DISPLAY_WORK/display-mode.txt"
-echo "${GPU_WIDTH}x${GPU_HEIGHT} Debian GPU ready. Boot with scripts/run_arti_debian.sh"
+echo "$GPU_MODE Debian GPU ready. Boot with scripts/run_arti_debian.sh"

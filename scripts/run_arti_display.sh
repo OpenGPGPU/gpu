@@ -11,6 +11,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GPU_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ARTI_WORK="${ARTI_WORK:-$(cd "$GPU_DIR/.." && pwd)/arti-work}"
 mkdir -p "$ARTI_WORK"
+INTEGRATION_CONFIG="${INTEGRATION_CONFIG:-$GPU_DIR/driver/gpu_integration.yaml}"
+
+# The expected dump geometry comes from the same profile the build uses, so
+# the check cannot drift from the mode that was actually programmed.
+eval "$(python3 "$GPU_DIR/scripts/gpu_display_config.py" --shell \
+    "$INTEGRATION_CONFIG")"
 
 : "${HOLD_AFTER_TEST:=1}"
 : "${TIMEOUT:=600}"
@@ -52,7 +58,7 @@ if [ ! -f "$ARTI_DISPLAY_DUMP" ]; then
     exit 1
 fi
 
-python3 - "$ARTI_DISPLAY_DUMP" "${GPU_WIDTH:-64}" "${GPU_HEIGHT:-64}" <<'PY'
+python3 - "$ARTI_DISPLAY_DUMP" "$GPU_WIDTH" "$GPU_HEIGHT" <<'PY'
 import pathlib
 import re
 import sys

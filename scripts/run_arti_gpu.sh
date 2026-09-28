@@ -41,8 +41,18 @@ QEMU_BUILD="${QEMU_BUILD:-$ARTI_SETUP_WORK/qemu-arti-build}"
 QEMU_DISPLAY="${QEMU_DISPLAY:-none}"
 GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}"
 GPU_VERT_CORE="${GPU_VERT_CORE:-0}"
-GPU_WIDTH="${GPU_WIDTH:-64}"
-GPU_HEIGHT="${GPU_HEIGHT:-64}"
+# The integration profile is the single source of the resolution. ARTI derives
+# its QEMU scanout constants from it, so the elaboration, the driver default
+# mode and the work-tree names have to come from the same place; a variable
+# that disagreed with the profile would size the RTL differently from the
+# window it is presented in. Switch size by switching INTEGRATION_CONFIG.
+if [ ! -f "$INTEGRATION_CONFIG" ]; then
+    echo "FAIL: integration profile not found: $INTEGRATION_CONFIG" >&2
+    exit 1
+fi
+eval "$(python3 "$GPU_DIR/scripts/gpu_display_config.py" --shell \
+    "$INTEGRATION_CONFIG")"
+export GPU_WIDTH GPU_HEIGHT GPU_STRIDE GPU_FRAMEBUFFER_SIZE GPU_MODE
 # Compat alias: pipe spike means fragment-core userspace apps.
 if [ "${GPU_PIPE_SPIKE:-0}" = "1" ]; then
     GPU_USERSPACE_EXAMPLES=1
@@ -81,7 +91,6 @@ fail() {
 [ -d "$ARTI_DIR" ] || fail "ARTI repository not found at $ARTI_DIR (set ARTI_DIR)"
 [ -f "$ARTI_DIR/examples/linux_arti_driver/setup_env.sh" ] || \
     fail "ARTI Linux setup script not found under $ARTI_DIR"
-[ -f "$INTEGRATION_CONFIG" ] || fail "integration profile not found: $INTEGRATION_CONFIG"
 command -v sbt >/dev/null 2>&1 || fail "sbt is required to emit GpuHostSystemAxi RTL"
 case "$GPU_SIM" in
     verilator)
@@ -111,53 +120,8 @@ echo "ARTI work   : $ARTI_WORK"
     fail "GPU_VERT_CORE must be 0 or 1"
 [ "$GPU_VERT_CORE" = "0" ] || [ "$GPU_FRAG_CORE" = "1" ] || \
     fail "GPU_VERT_CORE=1 requires GPU_FRAG_CORE=1"
-[ "$GPU_WIDTH" -ge 16 ] && [ "$GPU_HEIGHT" -ge 16 ] || \
-    fail "GPU_WIDTH/GPU_HEIGHT must be at least 16"
-
-# ARTI's QEMU device sizes its scanout from display.width/height in the
-# integration profile and truncates any larger mode to those compile-time
-# constants, so the profile has to follow GPU_WIDTH/GPU_HEIGHT. Without this
-# a wider build still renders only a GPU_WIDTH x GPU_HEIGHT corner of a 64x64
-# window, because nothing else propagates the RTL size to the display. Derive
-# a copy next to the work directory instead of editing the tracked profile.
-INTEGRATION_CONFIG_SOURCE="$INTEGRATION_CONFIG"
-write_integration_config() {
-    mkdir -p "$ARTI_SETUP_WORK"
-    local out="$ARTI_SETUP_WORK/gpu_integration_display.yaml"
-    python3 - "$INTEGRATION_CONFIG_SOURCE" "$out" \
-        "$GPU_WIDTH" "$GPU_HEIGHT" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-source, dest, width, height = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-lines = Path(source).read_text().splitlines(keepends=True)
-start = next((i for i, line in enumerate(lines) if line.rstrip() == "display:"), None)
-if start is None:
-    raise SystemExit("integration profile has no display: block")
-# The block runs to the first line that is neither blank nor indented; it may
-# be the last block in the file.
-end = start + 1
-while end < len(lines) and (not lines[end].strip() or lines[end][:1].isspace()):
-    end += 1
-body = "".join(lines[start:end])
-# Replace whole lines so a stale trailing comment cannot survive; *_register
-# keys do not match because the colon must follow the bare key name.
-for key, value in (("width", width), ("height", height),
-                   ("framebuffer_size", hex(width * height * 4))):
-    body, count = re.subn(rf"^(\s*){key}:[ \t]*.*$", rf"\g<1>{key}: {value}",
-                          body, flags=re.M)
-    if count != 1:
-        raise SystemExit(f"expected one display {key} entry, found {count}")
-lines[start:end] = [body]
-Path(dest).write_text("".join(lines))
-print(f"integration display: {width}x{height} "
-      f"framebuffer 0x{width * height * 4:x}")
-PY
-    INTEGRATION_CONFIG="$out"
-    export INTEGRATION_CONFIG
-}
-write_integration_config
+# The 16x16 minimum and the framebuffer-size cross-check live in
+# gpu_display_config.py, so the profile is validated once, in one place.
 
 # ARTI supports an isolated Ninja install under QEMU_TOOLS. Prefer the system
 # executable when one is already available; this avoids an unnecessary pip
