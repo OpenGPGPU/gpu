@@ -180,10 +180,11 @@ INSTR = [
 ]
 
 
-# Runtime thread count. The generated model calls commandArgs() with no
-# arguments, so it runs single threaded even when verilator was invoked with
-# --threads 8; QEMU has the same gap. Splice a settable count into the model
-# init so a probe can be compared against a guest run at the same parallelism.
+# Runtime thread count. Verilator already defaults m_threads to the process's
+# available parallelism, so the pool exists without any flag; this only lets a
+# probe pin the size, which is useful for capping barrier overhead on small
+# jobs. It cannot go below the model's verilated --threads value or Verilator
+# aborts, and it cannot add parallelism beyond the tasks codegen emitted.
 THREADS = [
     ('    const char *argv[] = {nullptr};\n    g_ctx->commandArgs(0, argv);',
      '    const char *threads_env = getenv("ARTI_PROBE_THREADS");\n'
@@ -326,10 +327,10 @@ def main():
                              "FlashSim only, and it scans 707 pages per tick, "
                              "so it inflates the timings")
     parser.add_argument("--threads", type=int, default=0,
-                        help="runtime simulation threads. The generated model "
-                             "passes no arguments to commandArgs(), so it runs "
-                             "single threaded unless this is set, even when "
-                             "verilator was invoked with --threads")
+                        help="pin the runtime pool size. Verilator already "
+                             "defaults it to process parallelism, so this only "
+                             "caps barrier overhead; it must not go below the "
+                             "model's verilated --threads value")
     parser.add_argument("--keep", action="store_true",
                         help="keep the build directory for reuse")
     args = parser.parse_args()

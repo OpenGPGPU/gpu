@@ -308,14 +308,25 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    and on the 320x240 **Verilator** model the same probe reports a 32 KiB
    clear in 0.97 s, about 5.8 kcycles/s, with an idle settle of 181 ms because
    the Verilator settle still charges its full idle budget per quiet MMIO.
-   Runtime `--threads 8` changes neither figure: a hardware clear does not
-   present enough parallel work to use the pool. Verilator is therefore about
-   **10x FlashSim on active work and 1500x worse on idle MMIO**, so pick the
-   backend by whether the run is GPU-bound or latency-bound. The generated
-   model calls `commandArgs()` with no arguments, so it runs single threaded
-   even though verilator was invoked with `--threads 8`; the probe's
-   `--threads` splices a settable count in to make that measurable, and QEMU
-   has the same gap.
+    Runtime `--threads 8` changes neither figure: a hardware clear does not
+    present enough parallel work to use the pool. Verilator is therefore about
+    **10x FlashSim on active work and 1500x worse on idle MMIO**, so pick the
+    backend by whether the run is GPU-bound or latency-bound.
+    Verilator multithreading is already in effect and needs no runtime flag:
+    the NBA phase is split into 8 tasks dispatched across the pool
+    (`VGpuHostSystemAxi___024root___eval_nba` hands `__Vthread__nba__s0__t0`
+    through `t7` to seven pool workers plus the calling thread and joins on
+    `waitUntilUpstreamDone`), and `VerilatedContext` defaults `m_threads` to
+    the process's available parallelism, so the pool already holds more
+    workers than the model's `--threads 8` needs. A fill still does not speed
+    up because Verilator partitions the logic graph, not memory traffic: with
+    only the fill FSM and the memory AXI awake most tasks have nothing to do
+    and only the barrier is left. Raising `ARTI_VERILATOR_THREADS`
+    re-partitions the logic and needs a re-verilate; `contextp()->threads(n)`
+    only sizes the pool and hard-aborts if it is below the model's `--threads`
+    value, so it caps overhead on small jobs rather than adding parallelism.
+    The binding limit is parallel *work*: the design defaults to one compute
+    unit, and one draw is serial (raster, then fragment, then output merge).
 
    Run-to-run spread on a loaded host is wide (this is one shared machine), so
    quote the order of
