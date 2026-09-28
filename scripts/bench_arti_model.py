@@ -23,6 +23,7 @@ import argparse
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -179,13 +180,26 @@ INSTR = [
 ]
 
 
+# Runtime thread count. The generated model calls commandArgs() with no
+# arguments, so it runs single threaded even when verilator was invoked with
+# --threads 8; QEMU has the same gap. Splice a settable count into the model
+# init so a probe can be compared against a guest run at the same parallelism.
+THREADS = [
+    ('    const char *argv[] = {nullptr};\n    g_ctx->commandArgs(0, argv);',
+     '    const char *threads_env = getenv("ARTI_PROBE_THREADS");\n'
+     '    if (threads_env && *threads_env) g_ctx->threads(atoi(threads_env));\n'
+     '    const char *argv[] = {nullptr};\n    g_ctx->commandArgs(0, argv);'),
+]
+
+
 def find_model_dir(explicit):
     if explicit:
         return Path(explicit)
     work = Path(os.environ.get("ARTI_WORK", ROOT.parent / "arti-work"))
     found = sorted(
         p for p in work.glob("*/arti-embedded-gen/generated/embedded")
-        if (p / "libarti_rtl_model.a").is_file())
+        if (p / "libarti_rtl_model.a").is_file() or
+           (p / "verilated" / "libarti_rtl_model.a").is_file())
     if not found:
         raise SystemExit(
             f"no embedded ARTI model under {work}; build one with "
@@ -193,44 +207,92 @@ def find_model_dir(explicit):
     return found[0]
 
 
-def instrument(model_dir, source, dest):
-    """Copy arti_rtl_model.cpp with dirty-width/page instrumentation spliced in."""
-    pages = re.search(r"uint32_t _seq_seen\[(\d+)\]", (model_dir / "dut.h").read_text())
-    if not pages:
-        raise SystemExit("cannot read _seq_seen size from dut.h")
-    count = int(pages.group(1))
-    for old, new in INSTR:
-        if old.count("g_rtl->tick_nba();") and "%d" in new:
-            new = new % count
+def model_layout(model_dir):
+    """Return (archive, backend). FlashSim keeps a monolithic archive next to
+    dut_*.o; Verilator keeps one under verilated/ and needs its runtime."""
+    monolithic = model_dir / "libarti_rtl_model.a"
+    if monolithic.is_file():
+        return monolithic, "flashsim"
+    verilated = model_dir / "verilated" / "libarti_rtl_model.a"
+    if verilated.is_file():
+        return verilated, "verilator"
+    raise SystemExit(f"no libarti_rtl_model.a under {model_dir}")
+
+
+def splice_model(model_dir, source, dest, counters, threads):
+    """Copy arti_rtl_model.cpp with the requested patches spliced in.
+
+    counters adds the dirty-list/page instrumentation, which only exists in
+    the FlashSim model. threads adds a runtime-settable thread count, which
+    both backends need because the generated init passes no arguments.
+    """
+    patches = []
+    if counters:
+        if not (model_dir / "dut.h").is_file():
+            raise SystemExit("--instrument needs the FlashSim model: dut.h and "
+                             "the change-detection pages are FlashSim-only")
+        pages = re.search(r"uint32_t _seq_seen\[(\d+)\]",
+                          (model_dir / "dut.h").read_text())
+        if not pages:
+            raise SystemExit("cannot read _seq_seen size from dut.h")
+        count = int(pages.group(1))
+        patches += [(old, new % count if "%d" in new else new)
+                    for old, new in INSTR]
+    if threads:
+        patches += THREADS
+    for old, new in patches:
         if source.count(old) != 1:
             raise SystemExit(f"unexpected model shape for {old!r}")
         source = source.replace(old, new)
     dest.write_text(source)
 
 
-def build(model_dir, build_dir, compiler, instrumented):
-    archive = model_dir / "libarti_rtl_model.a"
+def verilator_include():
+    """Verilator's runtime headers; the model .cpp needs them to be recompiled."""
+    explicit = os.environ.get("VERILATOR_INC")
+    if explicit:
+        return explicit
+    found = shutil.which("verilator")
+    if found:
+        candidate = str(Path(found).resolve().parent.parent / "share/verilator/include")
+        if Path(candidate, "verilated.h").is_file():
+            return candidate
+    for candidate in ("/opt/homebrew/share/verilator/include",
+                      "/usr/local/share/verilator/include",
+                      "/usr/share/verilator/include"):
+        if Path(candidate, "verilated.h").is_file():
+            return candidate
+    raise SystemExit("set VERILATOR_INC to the directory holding verilated.h")
+
+
+def build(model_dir, build_dir, compiler, counters, threads):
+    archive, backend = model_layout(model_dir)
     (build_dir / "probe.cpp").write_text(PROBE)
-    if not list(model_dir.glob("dut_*.o")):
+    if backend == "flashsim" and not list(model_dir.glob("dut_*.o")):
         raise SystemExit(f"no dut_*.o in {model_dir}; run build_embedded.sh first")
     link = [str(archive)]
-    if instrumented:
-        # The archive also carries arti_rtl_model.o; listing the instrumented
-        # copy first satisfies the same symbols so the member is never pulled.
-        instrument(model_dir, (model_dir / "arti_rtl_model.cpp").read_text(),
-                   build_dir / "model_instr.cpp")
-        obj = build_dir / "model_instr.o"
-        subprocess.run([compiler, "-std=gnu++17", "-fPIC", "-fPIE", "-w",
-                        "-Wno-parentheses-equality", "-fbracket-depth=4096",
-                        f"-I{model_dir}", "-O1", "-c",
-                        str(build_dir / "model_instr.cpp"), "-o", str(obj)],
-                       check=True)
+    if counters or threads:
+        # The archive also carries arti_rtl_model.o; listing the spliced copy
+        # first satisfies the same symbols so the member is never pulled.
+        src = build_dir / "model_spliced.cpp"
+        splice_model(model_dir, (model_dir / "arti_rtl_model.cpp").read_text(),
+                     src, counters, threads)
+        obj = build_dir / "model_spliced.o"
+        flags = ["-fPIC", "-fPIE", "-w", "-Wno-parentheses-equality",
+                 "-fbracket-depth=4096", f"-I{model_dir}"]
+        if backend == "verilator":
+            # VGpuHostSystemAxi.h lives in the verilated/ Mdir.
+            flags += [f"-I{model_dir / 'verilated'}",
+                      f"-I{verilator_include()}"]
+        subprocess.run([compiler, "-std=gnu++17", *flags, "-O1", "-c",
+                        str(src), "-o", str(obj)], check=True)
         link.insert(0, str(obj))
-    binary = build_dir / ("probe_instr" if instrumented else "probe")
+    binary = build_dir / ("probe_spliced" if (counters or threads) else "probe")
     subprocess.run([compiler, "-std=gnu++17", "-O2", "-w",
                     "-fbracket-depth=4096", f"-I{model_dir}",
-                    str(build_dir / "probe.cpp"), *link, "-o", str(binary)],
-                   check=True)
+                    str(build_dir / "probe.cpp"), *link,
+                    *(["-lpthread"] if backend == "verilator" else []),
+                    "-o", str(binary)], check=True)
     return binary
 
 
@@ -261,9 +323,13 @@ def main():
     parser.add_argument("--fill-reps", type=int, default=1)
     parser.add_argument("--instrument", action="store_true",
                         help="also report dirty-list width and dirty pages. "
-                             "This scans 707 pages per tick, so it inflates "
-                             "the timings; use it for the counters, not for "
-                             "wall-clock numbers")
+                             "FlashSim only, and it scans 707 pages per tick, "
+                             "so it inflates the timings")
+    parser.add_argument("--threads", type=int, default=0,
+                        help="runtime simulation threads. The generated model "
+                             "passes no arguments to commandArgs(), so it runs "
+                             "single threaded unless this is set, even when "
+                             "verilator was invoked with --threads")
     parser.add_argument("--keep", action="store_true",
                         help="keep the build directory for reuse")
     args = parser.parse_args()
@@ -272,10 +338,15 @@ def main():
     build_dir = Path(args.build_dir) if args.build_dir else Path(
         tempfile.mkdtemp(prefix="opengpu-arti-probe."))
     build_dir.mkdir(parents=True, exist_ok=True)
-    binary = build(model_dir, build_dir, args.compiler, args.instrument)
-
+    archive, backend = model_layout(model_dir)
     print(f"model  : {model_dir}")
+    print(f"backend: {backend}")
+    binary = build(model_dir, build_dir, args.compiler, args.instrument,
+                   bool(args.threads))
     print(f"probe  : {binary}")
+    if args.threads:
+        os.environ["ARTI_PROBE_THREADS"] = str(args.threads)
+        print(f"threads: {args.threads}")
     fields = run(binary, args.idle_reads, args.fill_bytes, args.fill_reps,
                  args.instrument)
     idle_us = float(fields["idle_us"])
