@@ -15,13 +15,17 @@
         reg-names = "ctrl";
         interrupts = <180>;                 /* completion (wired by ARTI) */
         interrupt-parent = <&intc>;
-        /* Optional boot-time mode used by the self-test draw.  It must match
-         * the elaborated RTL resolution (EmitGpuHostAxi --width/--height);
-         * the ARTI-generated node omits these and the driver then falls back
-         * to its OPENGPU_DEFAULT_WIDTH/HEIGHT compile-time defaults. */
+        /* Optional boot-time mode. It must match the elaborated RTL
+         * resolution (EmitGpuHostSystemAxi --width/--height) and the
+         * integration profile's display block, which is the single source of
+         * the resolution; scripts/gpu_display_config.py reads it and
+         * scripts/test_driver.py checks the values below still agree.
+         * The ARTI-generated node omits these properties, so today the driver
+         * falls back to its OPENGPU_DEFAULT_WIDTH/HEIGHT compile-time
+         * defaults, which the build derives from the same profile. */
         opengpu,width = <64>;
         opengpu,height = <64>;
-        opengpu,stride = <0x100>;               /* 64 * 4 */
+        opengpu,stride = <0x100>;               /* width * 4 */
         #address-cells = <1>;
         #size-cells = <1>;
     };
