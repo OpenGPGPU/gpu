@@ -484,8 +484,26 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    `GPU_CAP_COMPUTE_SCALAR_FPU` (bit22), with the scalar operand loaded by a
    validated `flw imm(x1)` (`fp_scalar.S` / `examples/fp_scalar`, which skips
    without the bit). The ARTI host system now builds its compute CUs with the
-   scalar FPU backend; without it an `flw` shader hangs the CU. Fragment and
-   vertex shader CUs have no scalar FPU. `vfmerge`/`vfmv.v.f` and scalar FP
+   scalar FPU backend; without it an `flw` shader hangs the CU.
+   The fragment and vertex shader CU is built the same way as of
+   2026-09-28: `KernelShaderStage` passes `enableFpuBackend = true`, so `flw`
+   decodes and issues its kernarg load there
+   (`KernelShaderStageSpec`, "retire a scalar FP load from kernarg on the
+   shader CU"). Vertex and fragment share that one CU, so it covers both.
+   The driver still admits none of this for graphics: bit22 is computed from
+   the compute CUs, and the two graphics validators do not take a
+   `scalar_fpu_enabled` argument, so a fragment `flw` is still rejected in
+   software. Two gaps block the value from being observable, and both are
+   worth fixing before the validator is widened:
+   - `GpuComputeUnit` ties `fpuInitialize` invalid (it is not in the wrapper's
+     io), so no CU ever initialises fflags/frm per workgroup. The standalone
+     `Gpu` class does expose the port; the SoC does not use it.
+   - `committedFpuWriteback` leaves the core but `KernelShaderStage` never
+     consumes it, so a value loaded by `flw` cannot be read back by a
+     following scalar f-register instruction. Reading it as a vector `.vf`
+     operand uses the separate `fpu.fvfRead` sideband and is unaffected,
+     which is the path a compiler needs first.
+   `vfmerge`/`vfmv.v.f` and scalar FP
    arithmetic remain excluded. Add further VFUNARY0 /
    widening beyond the fixed SEW=32 profile only with a motivating shader,
    validator rules and execution/guest coverage together.

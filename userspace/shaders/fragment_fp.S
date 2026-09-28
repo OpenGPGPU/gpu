@@ -1,7 +1,9 @@
 /* Programmable fragment vector FP: build 1.5f and 2.0f per lane, compute
  * vfmul (3.0), vfdiv (1.5) and vfmacc (1.5 * 2.0 + 3.0 = 6.0 = 0x40c00000),
- * then XOR the result into the interpolated colour. Runs on the fragment
- * shader CU, which has the vector FP units but no scalar FPU. */
+ * then XOR the result into the interpolated colour. This needs only the
+ * vector FP units, so it does not exercise the scalar FPU on the fragment
+ * shader CU (see fp_scalar.S for the flw-based corpus shader, which the
+ * driver still admits for the compute profile only). */
     .option norvc
     .text
     .globl shader
