@@ -527,10 +527,30 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    that is bit22 set. `validate_shader_corpus.py` checks the shader against a
    new fragment profile 6, the vertex counterpart is profile 7.
 
-   `fsw` is a separate latent bug: a scalar FP store issues its write to the
-   right line and byte offset, but the warp then traps illegal at the next PC.
-   The validator's scalar path has no `case 0x27`, so no guest shader can reach
-   it today and the bug is masked. Recorded rather than fixed here.
+   `fsw` was recorded here as a latent hardware bug on the strength of a probe
+   that served 8 bytes per fetch response and so decoded zeros for the rest of
+   the instruction line. That was a harness artefact and the claim is
+   withdrawn. With whole lines served, a scalar FP store round trips:
+   `KernelShaderStageSpec` ("round trip a float through an f-register with fsw
+   on the shader CU") does `flw f4, 4(x1)`, `addi x2, x0, 0x100`,
+   `fsw f4, 0(x2)` and reads 5.0f back out of 0x104. The f-register read the
+   store depends on is the same file the `.vf` path uses, so the two now share
+   one tested route rather than one of them being inferred.
+
+   The store's *encoding* is a real defect, and it is what a compiler hits
+   next. `FpuIssueStage` reads `rs2` from instruction bits 24:20, which is the
+   source f-register for a store, while `FpuMemoryUnit` builds the offset as
+   `sext(instruction(31, 20))`. The two fields overlap: the source register
+   number *is* the low five bits of the store's own offset. A store's offset
+   is therefore not independently encodable, and a 4-byte store only stays
+   aligned when the register index is a multiple of four, which is why the test
+   above stores f4 rather than f1. A fragment shader writing a colour to a
+   storage buffer at an arbitrary byte offset cannot be expressed. Nothing
+   emits `fsw` yet, so the format can still be changed freely; the natural fix
+   is the RISC-V S-type layout, `imm[11:5]` into 31:25 and `imm[4:0]` into
+   11:7, which leaves 24:20 free for `rs2` and matches the rest of the
+   encoding family. Recorded rather than changed here because it is an
+   instruction-format decision.
 
    One open observation, not asserted anywhere: a `VL=4` `vse32.v` produced a
    `0xfff` byte mask, three lanes rather than four, on a bare
