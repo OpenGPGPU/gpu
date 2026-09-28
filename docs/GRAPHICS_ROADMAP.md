@@ -131,15 +131,23 @@ second TLB client) or a wider word fabric.
 
 | Gate | Result |
 |---|---|
-| Boundary suites (roadmap Reproduce `testOnly` list + `GpuCommandMmioSpec`) | 136/136 pass on `e2e155e` |
-| `scripts/test_driver.py` + `scripts/test_test_selection.py` | pass |
+| Boundary suites (roadmap Reproduce `testOnly` list + `GpuCommandMmioSpec`) | 144/144 pass on `2eeb289` (2026-09-28) |
+| `scripts/test_driver.py` + `scripts/test_test_selection.py` | pass on `2eeb289` (2026-09-28) |
+| Shader corpus (`scripts/validate_shader_corpus.py`) | pass on `2eeb289` (2026-09-28), all profiles |
 | Workload sweep (`scripts/benchmark_gpu.py`, 12 cases incl. `app_16_4x`) | 11-case baseline on `e2e155e`; `app_16_4x` measured on this tree |
 | Guest DRM, default (`GPU_FRAG_CORE=0`) | pass on `cfc045a` (private fill/blit/strided DMA VAs); powers off |
 | Guest DRM, fragment-core (`GPU_FRAG_CORE=1`) | pass on `cfc045a`; powers off |
 | Guest DRM, vertex+fragment (`GPU_FRAG_CORE=1` `GPU_VERT_CORE=1`) | pass on `cfc045a`; powers off |
-| `scripts/qualify_functional.sh` (full Scala suite, host driver, fixed-function and vertex+fragment guest DRM) | pass on `adba326` (2026-09-27): 556/556 Scala tests |
-| Guest userspace examples, fragment-core / vertex+fragment | pass on `adba326` (2026-09-27), including `fp_*`, `widen_alu`, `fixed_width` |
-| Guest userspace examples, fixed-function | pass on `be2a887` (2026-09-27) |
+| `scripts/qualify_functional.sh` (full Scala suite, host driver, fixed-function and vertex+fragment guest DRM) | pass on `2eeb289` (2026-09-28): 557/557 Scala tests; both guests `OPENGPU USERSPACE DRM PASS` (vblank sequences 48 / 37) and power off |
+| Guest userspace examples, fixed-function / fragment-core / vertex+fragment | all three pass on `2eeb289` (2026-09-28) with `OPENGPU USERSPACE EXAMPLES PASS`, including `fp_*`, `widen_alu`, `fixed_width`; `pipe_vertex_draw` correctly skips without a vertex core |
+
+`2eeb289` adds the MSAA resolve read-use stage (`MsaaResolve.scala`: 9-state
+FSM, `sReadResp` captures into `readData` and `sReadUse` accumulates), so these
+runs are the functional coverage for that rewrite. `GpuAbiLayoutSpec` and the
+guests exercise `typed resolve across advertised sample modes`. No `src/`
+change landed between `2eeb289` and `675ffc9`, so the result carries to the
+current tree; the dirty-tree display-size work in `scripts/run_arti_gpu.sh` is
+not covered by these runs.
 
 Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0).
 `flat_16_1x` is 4975 cycles after omInflight/pendingDepth 16. Programmable
@@ -219,12 +227,14 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    and 33.29–33.74 ms respectively. Other registers retain the full settle.
    Continuously clocked devices use hardware vblank
    (`GPU_CAP_HW_VBLANK`, `SCANOUT_PERIOD`, IRQ bit2). The operational
-   RTL, driver, and ARTI display defaults are 64x64 at 30 Hz. Note that 64x64
-   is also a hard clamp in ARTI's QEMU device, not just a default:
-   `hw/misc/arti-rtl.c` truncates any programmed mode to the compile-time
-   `ARTI_FB_WIDTH` / `ARTI_FB_HEIGHT` and copies rows through a 64-entry
-   on-stack buffer, so a larger mode needs a change in the ARTI tree. Lowering
-   `clk_freq_mhz` in the integration YAML does not help anything: ARTI ticks
+   RTL, driver, and ARTI display defaults are 64x64 at 30 Hz. ARTI's QEMU
+   device truncates any programmed mode to the compile-time `ARTI_FB_WIDTH` /
+   `ARTI_FB_HEIGHT` in `hw/misc/arti-rtl.c` and copies rows through a
+   same-width on-stack buffer, so a larger mode is only possible if those
+   constants follow: `run_arti_gpu.sh` now derives the profile's `display:`
+   block from `GPU_WIDTH`/`GPU_HEIGHT`, which lifts the clamp (verified at
+   320x240 below). Lowering `clk_freq_mhz` in the integration YAML does not
+   help anything: ARTI ticks
    the model from `eval()` calls with no wall-time pacing, so the field only
    sets a SystemC period literal, and the driver independently hardcodes
    100 MHz for `SCANOUT_PERIOD` (`opengpu_hw.c`) while skipping it entirely
@@ -263,25 +273,57 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    `--threads 1` took a median 0.268 s: 2.39x slower for this operation.
    A headless Debian boot registered DRM at mode 64x64 and produced a nonblack
    64x64 scanout PPM.
-   **The tick rates above are obsolete.** They were measured against an older
+   **320x240 (2026-09-28).** `GPU_WIDTH=320 GPU_HEIGHT=240
+   scripts/build_arti_debian_display.sh` builds the RTL, the Verilator model
+   and QEMU at 320x240; the Debian runner then boots, registers DRM at
+   `stride=1280 mode=320x240`, runs a fixed-function clear plus
+   `opengpu_triangle_present`, and ARTI dumps a 320x240 P6 PPM whose pixel
+   (1,1) is `ff0000` with 38,160 red triangle pixels against 38,640 clear
+   pixels. Launch to that first GPU-present was 50 s host, of which the guest
+   spent 18.30 s to the `mode=320x240` probe and 46.71 s to the last serial
+   line, so clear + a 38k-pixel triangle + fence + SETCRTC is on the order of
+   tens of seconds. A full-screen 320x240 redraw is 76,800 px at 18.8
+   cycles/px, about 1.44M cycles, so it is a minutes-per-frame path, not a
+   real-time one. Two things were needed to make the size actually take
+   effect: `GPU_WIDTH`/`GPU_HEIGHT` now derive the integration profile's
+   `display:` block (previously they sized the RTL, the driver default and the
+   guest test but left ARTI at 64x64, so a wider build rendered a
+   64x64 corner), and `build_arti_debian_display.sh` now gives each size its
+   own work tree instead of hardcoding `debian-64x64`.
+   The tick rates above are obsolete. They were measured against an older
    ARTI whose settle loop charged a fixed 20,000 idle cycles to every host MMIO,
    so the 0.23 MHz figure described settle overhead rather than model speed.
    The current model exits on real quiescence (`gpu_active()` = change flag +
    AXI queue occupancy, `ARTI_MODEL_IDLE_GRACE 16`) and pumps up to
    `ARTI_MODEL_IRQ_PUMP_CYCLES 262144` per 100 us IRQ poll while a job is live.
-   `scripts/bench_arti_model.py` links the embedded model directly and measures
-   the two rates that matter on the 64x64 Debian FlashSim model:
+   `scripts/bench_arti_model.py` links the embedded model directly (no QEMU,
+   no guest) and measures the two rates that matter. On the 64x64 **FlashSim**
+   model:
 
    | Settle kind | Wall | Rate |
    |---|---:|---:|
    | idle (one quiet register read, 256 cycles) | 60-120 us | ~2-3 MHz |
    | active (32 KiB hardware clear, 5656 cycles) | 9-15 s | **~0.4-0.6 MHz** |
 
+   and on the 320x240 **Verilator** model the same probe reports a 32 KiB
+   clear in 0.97 s, about 5.8 kcycles/s, with an idle settle of 181 ms because
+   the Verilator settle still charges its full idle budget per quiet MMIO.
+   Runtime `--threads 8` changes neither figure: a hardware clear does not
+   present enough parallel work to use the pool. Verilator is therefore about
+   **10x FlashSim on active work and 1500x worse on idle MMIO**, so pick the
+   backend by whether the run is GPU-bound or latency-bound. The generated
+   model calls `commandArgs()` with no arguments, so it runs single threaded
+   even though verilator was invoked with `--threads 8`; the probe's
+   `--threads` splices a settable count in to make that measurable, and QEMU
+   has the same gap.
+
    Run-to-run spread on a loaded host is wide (this is one shared machine), so
-   quote the order of magnitude, not the fourth digit. The
-   3-order-of-magnitude gap is per-cycle evaluation cost while the design
-   is awake, not settle policy, so `ARTI_MODEL_IDLE_GRACE` and
-   `ARTI_MODEL_MMIO_ADVANCE` do not move it. `dut_commit.cpp` is compiled at
+   quote the order of
+   magnitude, not the fourth digit. The
+   order-of-magnitude gap between idle and active on either backend is
+   per-cycle evaluation cost while the design is awake, not settle policy, so
+   `ARTI_MODEL_IDLE_GRACE` and `ARTI_MODEL_MMIO_ADVANCE` do not move it.
+   `dut_commit.cpp` is compiled at
    `-O0` and its `_commit()` switch has 9,127 cases, which looks like the
    suspect; it is not. Recompiling that TU at `-O1` takes 1m52s and measures
    neutral over three interleaved trials, because the dirty list is nearly
@@ -291,10 +333,13 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    every cycle of a *quiescent* design, 542 during a clear. Recovering the
    missing factor is a FlashSim emitter task, not a change here.
    **Consequence for anything that redraws.** A 64x64 frame is ~79k cycles
-   (`flat_32_1x` at 18.8 cycles/px), which is 32 s at ~2.4 kcycles/s. End to
-   end that matches the 143 s FlashSim / 32 s Verilator draw+present figures
-   below. A 30 Hz 64x64 target needs 2.4 MHz, about 1000x away, and 30 Hz is
-   unreachable at any resolution. Redraw on demand and pace on the completion
+   (`flat_32_1x` at 18.8 cycles/px). The 2026-09-25 draw+present A/B below
+   put that at 143 s on FlashSim and 32 s on Verilator, but those numbers are
+   from an older model and no longer describe either backend. A measured
+   320x240 run on the current Verilator model is the better reference: see
+   the 320x240 entry below. 30 Hz remains out of reach at any resolution
+   because a full-screen redraw needs tens of thousands of cycles per frame.
+   Redraw on demand and pace on the completion
    fence instead of the vblank timer. A hardware clear is ~0.18 cycles/byte
    against the rasterizer's ~4.8, so 2D work should use fill/strided blit
    rather than the raster path.
