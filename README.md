@@ -22,6 +22,8 @@ package that is incrementally verifiable.
 - `docs/HOST_INTERFACE.md` — AXI registers and shared-memory layouts
 - `docs/DRIVER_ARCHITECTURE.md` — Linux driver ownership split
 - `userspace/` — small DRM userspace library and compute/graphics examples
+- `scripts/bench_arti_model.py` — ARTI model throughput probe (idle vs active
+  settle rate, no QEMU boot), used to size what a redraw costs under simulation
 - `docs/MSAA_DESIGN.md`, `docs/STENCIL_BLEND_DESIGN.md` — feature contracts
 - `timing/README.md` — current ASAP7 PPA status
 

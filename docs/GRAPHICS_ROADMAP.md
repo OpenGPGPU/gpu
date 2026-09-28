@@ -219,7 +219,16 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    and 33.29–33.74 ms respectively. Other registers retain the full settle.
    Continuously clocked devices use hardware vblank
    (`GPU_CAP_HW_VBLANK`, `SCANOUT_PERIOD`, IRQ bit2). The operational
-   RTL, driver, and ARTI display defaults are 64x64 at 30 Hz. Build the
+   RTL, driver, and ARTI display defaults are 64x64 at 30 Hz. Note that 64x64
+   is also a hard clamp in ARTI's QEMU device, not just a default:
+   `hw/misc/arti-rtl.c` truncates any programmed mode to the compile-time
+   `ARTI_FB_WIDTH` / `ARTI_FB_HEIGHT` and copies rows through a 64-entry
+   on-stack buffer, so a larger mode needs a change in the ARTI tree. Lowering
+   `clk_freq_mhz` in the integration YAML does not help anything: ARTI ticks
+   the model from `eval()` calls with no wall-time pacing, so the field only
+   sets a SystemC period literal, and the driver independently hardcodes
+   100 MHz for `SCANOUT_PERIOD` (`opengpu_hw.c`) while skipping it entirely
+   under the `arti,rtl` compatible. Build the
    interactive Debian model once, then boot it:
    ```sh
    scripts/build_arti_debian_display.sh
@@ -252,16 +261,49 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    four parallel C++ compile jobs completed a 32 KiB hardware fill in a
    median 0.112 s (25,637 model ticks over five runs). The same RTL with
    `--threads 1` took a median 0.268 s: 2.39x slower for this operation.
-   The ARTI wrapper advances about 20,000 idle ticks after this fill, so the
-   0.23 MHz total-tick rate is workload and wrapper specific. A headless
-   Debian boot registered DRM at mode 64x64 and produced a nonblack 64x64
-   scanout PPM.
-   New builds default to `--threads 8`; the 0.112 s measurement above is for
-   four threads and does not predict the eight-thread result. On 2026-09-25,
-   a matched 64x64 Debian A/B used the same generated RTL, kernel, modules
-   ISO, persistent-disk snapshot, QEMU arguments, and guest programs. The
-   Verilator model was built with `--threads 8`. Each backend booted Debian
-   twice, ran `opengpu_pipe_blit` (verified 1 KiB clear/blit), then ran
+   A headless Debian boot registered DRM at mode 64x64 and produced a nonblack
+   64x64 scanout PPM.
+   **The tick rates above are obsolete.** They were measured against an older
+   ARTI whose settle loop charged a fixed 20,000 idle cycles to every host MMIO,
+   so the 0.23 MHz figure described settle overhead rather than model speed.
+   The current model exits on real quiescence (`gpu_active()` = change flag +
+   AXI queue occupancy, `ARTI_MODEL_IDLE_GRACE 16`) and pumps up to
+   `ARTI_MODEL_IRQ_PUMP_CYCLES 262144` per 100 us IRQ poll while a job is live.
+   `scripts/bench_arti_model.py` links the embedded model directly and measures
+   the two rates that matter on the 64x64 Debian FlashSim model:
+
+   | Settle kind | Wall | Rate |
+   |---|---:|---:|
+   | idle (one quiet register read, 256 cycles) | 60-120 us | ~2-3 MHz |
+   | active (32 KiB hardware clear, 5656 cycles) | 9-15 s | **~0.4-0.6 MHz** |
+
+   Run-to-run spread on a loaded host is wide (this is one shared machine), so
+   quote the order of magnitude, not the fourth digit. The
+   3-order-of-magnitude gap is per-cycle evaluation cost while the design
+   is awake, not settle policy, so `ARTI_MODEL_IDLE_GRACE` and
+   `ARTI_MODEL_MMIO_ADVANCE` do not move it. `dut_commit.cpp` is compiled at
+   `-O0` and its `_commit()` switch has 9,127 cases, which looks like the
+   suspect; it is not. Recompiling that TU at `-O1` takes 1m52s and measures
+   neutral over three interleaved trials, because the dirty list is nearly
+   empty (`--instrument` reports width 6.2 mean / 28 max during a clear, but
+   note it scans every page per tick and so inflates its own timings).
+   Change detection is what fails to prune: 453 of 707 pages re-evaluate on
+   every cycle of a *quiescent* design, 542 during a clear. Recovering the
+   missing factor is a FlashSim emitter task, not a change here.
+   **Consequence for anything that redraws.** A 64x64 frame is ~79k cycles
+   (`flat_32_1x` at 18.8 cycles/px), which is 32 s at ~2.4 kcycles/s. End to
+   end that matches the 143 s FlashSim / 32 s Verilator draw+present figures
+   below. A 30 Hz 64x64 target needs 2.4 MHz, about 1000x away, and 30 Hz is
+   unreachable at any resolution. Redraw on demand and pace on the completion
+   fence instead of the vblank timer. A hardware clear is ~0.18 cycles/byte
+   against the rasterizer's ~4.8, so 2D work should use fill/strided blit
+   rather than the raster path.
+   On 2026-09-25, a matched 64x64 Debian A/B used the same generated RTL,
+   kernel, modules ISO, persistent-disk snapshot, QEMU arguments, and guest
+   programs. The Verilator model was built with `--threads 8` (new builds
+   default to 8; the 0.112 s Verilator fill above is a four-thread number).
+   Each backend booted Debian twice, ran `opengpu_pipe_blit` (verified 1 KiB
+   clear/blit), then ran
    `opengpu_pipe_present` (verified 64x64 draw and present with 2,016 painted
    pixels), and powered off. Host monotonic wall-time medians were:
 
@@ -434,4 +476,7 @@ sbt -batch 'testOnly opengpu.graphics.GpuAbiLayoutSpec opengpu.graphics.RenderHo
 python3 scripts/test_driver.py
 python3 scripts/test_test_selection.py
 python3 scripts/benchmark_gpu.py
+# ARTI model throughput, no QEMU or guest boot. Add --instrument for the
+# dirty-list width and dirty-page count behind the active-rate figure.
+python3 scripts/bench_arti_model.py --instrument
 ```

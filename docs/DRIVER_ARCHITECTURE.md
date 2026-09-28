@@ -60,7 +60,11 @@ CPU/GPU visibility uses DMA allocation/cache sync, GPU line invalidate and
 reservation fences. KMS waits for render/resolve destination write fences.
 Under ARTI, guest-memory GraphicHwOps presents SCANOUT_* (see
 `driver/gpu_integration.yaml`); ARTI uses the DRM soft timer because its RTL
-clock advances on transactions and IRQ polls. Continuously clocked devices use
+clock advances on transactions and IRQ polls. The 30 Hz timer is the refresh
+cadence, not a render rate: the model runs roughly 0.6 MHz while a job is live
+against ~3.4 MHz while quiescent, so a frame that needs tens of thousands of
+cycles takes seconds (`scripts/bench_arti_model.py`). Continuously clocked
+devices use
 the shared hardware vblank IRQ when `GPU_CAP_HW_VBLANK` is set. Real display PHY
 remains external / out of scope. For an unchanged mode, KMS rewrites only
 `SCANOUT_BASE` on a page flip; full modesets still program and validate all
