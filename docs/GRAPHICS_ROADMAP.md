@@ -493,16 +493,25 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    The driver still admits none of this for graphics: bit22 is computed from
    the compute CUs, and the two graphics validators do not take a
    `scalar_fpu_enabled` argument, so a fragment `flw` is still rejected in
-   software. Two gaps block the value from being observable, and both are
-   worth fixing before the validator is widened:
+   software.
+   The path a compiler needs first works: `flw` reads the uniform into an
+   f-register and a vector op consumes it through the `.vf` operand sideband,
+   verified end to end in `KernelShaderStageSpec` ("feed a scalar FP load into
+   a vector .vf operand on the shader CU"), which stores 3.0f plus a 2.0f
+   uniform as 5.0f. The integer scalar register file is not on that path, so
+   `uniform float` does not depend on the two gaps below.
    - `GpuComputeUnit` ties `fpuInitialize` invalid (it is not in the wrapper's
      io), so no CU ever initialises fflags/frm per workgroup. The standalone
      `Gpu` class does expose the port; the SoC does not use it.
    - `committedFpuWriteback` leaves the core but `KernelShaderStage` never
      consumes it, so a value loaded by `flw` cannot be read back by a
-     following scalar f-register instruction. Reading it as a vector `.vf`
-     operand uses the separate `fpu.fvfRead` sideband and is unaffected,
-     which is the path a compiler needs first.
+     following *scalar* f-register instruction.
+
+   `fsw` is a separate latent bug: a scalar FP store issues its write to the
+   right line and byte offset, but the warp then traps illegal at the next PC.
+   The validator's scalar path has no `case 0x27`, so no guest shader can reach
+   it today and the bug is masked. Recorded rather than fixed here.
+
    `vfmerge`/`vfmv.v.f` and scalar FP
    arithmetic remain excluded. Add further VFUNARY0 /
    widening beyond the fixed SEW=32 profile only with a motivating shader,

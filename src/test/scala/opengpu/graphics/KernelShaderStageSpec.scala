@@ -32,159 +32,170 @@ class KernelShaderStageSpec extends AnyFlatSpec {
     dut.io.simtBranch.bits.poke(0.U.asTypeOf(dut.io.simtBranch.bits))
   }
 
-  /** Drive one memory response and hold it until the consumer is ready.
-   * memoryResponse is a Flipped Decoupled input, so a single-cycle pulse is
-   * only safe if ready happens to be high that cycle.
-   */
-  private def respond(dut: KernelShaderStage, id: BigInt, data: BigInt): Unit = {
-    dut.io.memoryResponse.valid.poke(true.B)
-    dut.io.memoryResponse.bits.transactionId.poke(id.U)
-    dut.io.memoryResponse.bits.readData.poke(data.U)
-    var cycles = 0
-    while (!dut.io.memoryResponse.ready.peek().litToBoolean && cycles < 40) {
-      dut.clock.step(); cycles += 1
+  /** Byte-addressed memory served as whole 64-byte lines.
+    *
+    * The CU's instruction cache line is 64 bytes, so a fetch response carrying
+    * only the requested 8 bytes leaves the rest of the line as zeros and any
+    * later PC in that line decodes as an illegal instruction. Serving whole
+    * lines is what KernelFragStageSpec's MemModel does, and the memory port is
+    * line-granular in both directions: a store appears as a line address plus a
+    * byte mask, not a byte address.
+    */
+  private final class Mem {
+    private val bytes = scala.collection.mutable.Map[BigInt, BigInt]()
+    def putWord(addr: BigInt, value: BigInt): Unit =
+      (0 until 4).foreach(i => bytes(addr + i) = (value >> (8 * i)) & 0xff)
+    def line(addr: BigInt): BigInt = {
+      val base = addr & ~BigInt(63)
+      (0 until 8).foldLeft(BigInt(0)) { case (acc, word) =>
+        val at = base + word * 8
+        acc + ((0 until 8).foldLeft(BigInt(0)) { case (w, i) =>
+          w + (bytes.getOrElse(at + i, BigInt(0)) << (8 * i))
+        } << (64 * word))
+      }
     }
-    assert(dut.io.memoryResponse.ready.peek().litToBoolean,
-      s"memory response was never accepted: 0x$data.toString(16)")
-    dut.clock.step()
+  }
+
+  private final case class Result(
+      writes: scala.collection.mutable.Map[BigInt, BigInt],
+      traps: Seq[(BigInt, BigInt)],
+      reqs: Seq[String] = Seq.empty)
+
+  /** Launch the shader at 0x1000 with kernarg at 0x8000 and run to completion. */
+  private def runShader(dut: KernelShaderStage, mem: Mem,
+                        limit: Int = 400): Result = {
+    dut.io.launch.kernelPc.poke(0x1000.U)
+    dut.io.launch.kernargAddress.poke(0x8000.U)
+    dut.io.launch.localX.poke(3.U)
+    dut.io.launch.gridX.poke(1.U)
+    dut.io.launch.valid.poke(true.B)
+    assert(dut.io.launch.ready.peek().litToBoolean, "launch must be accepted")
+    dut.clock.step(); dut.io.launch.valid.poke(false.B)
+
+    val writes = scala.collection.mutable.Map[BigInt, BigInt]()
+    val traps = scala.collection.mutable.ArrayBuffer[(BigInt, BigInt)]()
+    val reqs = scala.collection.mutable.ArrayBuffer[String]()
+    var resp = false
+    var id = BigInt(0)
+    var data = BigInt(0)
+    var guard = 0
+    var done = false
+    while (!done && guard < limit) {
+      // Re-present the pending response every cycle, the way
+      // KernelFragStageSpec's pump does, so a beat is never dropped.
+      dut.io.memoryResponse.valid.poke(resp)
+      if (resp) {
+        dut.io.memoryResponse.bits.transactionId.poke(id.U)
+        dut.io.memoryResponse.bits.readData.poke(data.U)
+        dut.io.memoryResponse.bits.fault.poke(false.B)
+      }
+      val fired = dut.io.memoryRequest.valid.peek().litToBoolean &&
+        dut.io.memoryRequest.ready.peek().litToBoolean
+      if (fired) {
+        val addr = dut.io.memoryRequest.bits.address.peek().litValue
+        id = dut.io.memoryRequest.bits.transactionId.peek().litValue
+        if (dut.io.memoryRequest.bits.isWrite.peek().litToBoolean) {
+          val strobe = dut.io.memoryRequest.bits.byteMask.peek().litValue
+          val word = dut.io.memoryRequest.bits.writeData.peek().litValue
+          (0 until 64).foreach { i =>
+            if (strobe.testBit(i)) writes(addr + i) = (word >> (8 * i)) & 0xff
+          }
+          data = BigInt(0)
+          reqs += s"W 0x${addr.toString(16)} mask=0x${strobe.toString(16)} data=0x${word.toString(16)}"
+        } else { data = mem.line(addr); reqs += s"R 0x${addr.toString(16)}" }
+        resp = true
+      } else resp = false
+      if (dut.io.trap.valid.peek().litToBoolean)
+        traps += ((dut.io.trap.bits.pc.peek().litValue,
+          dut.io.trap.bits.cause.peek().litValue))
+      dut.clock.step()
+      guard += 1
+      done = dut.io.completion.valid.peek().litToBoolean
+    }
     dut.io.memoryResponse.valid.poke(false.B)
+    assert(done, s"shader CU never completed in $limit cycles; traps ${show(traps.toSeq)}")
+    Result(writes, traps.toSeq, reqs.toSeq)
   }
 
-  /** Wait for the next memory request and return its transaction id. */
-  private def awaitRequest(dut: KernelShaderStage, limit: Int = 60): BigInt = {
-    var cycles = 0
-    while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < limit) {
-      dut.clock.step(); cycles += 1
-    }
-    assert(dut.io.memoryRequest.valid.peek().litToBoolean, "expected a memory request")
-    dut.io.memoryRequest.bits.transactionId.peek().litValue
-  }
+  private def show(traps: Seq[(BigInt, BigInt)]): String =
+    traps.map(t => s"pc=0x${t._1.toString(16)} cause=${t._2}").mkString("; ")
 
-  private def awaitCompletion(dut: KernelShaderStage, limit: Int = 80): Unit = {
-    var cycles = 0
-    while (!dut.io.completion.valid.peek().litToBoolean && cycles < limit) {
-      dut.clock.step(); cycles += 1
+  private def storedWord(writes: scala.collection.mutable.Map[BigInt, BigInt],
+                         addr: BigInt): BigInt =
+    (0 until 4).foldLeft(BigInt(0)) { case (acc, i) =>
+      acc + (writes.getOrElse(addr + i, BigInt(0)) << (8 * i))
     }
-    dut.io.completion.valid.expect(true.B)
-    dut.io.completion.bits.success.expect(true.B)
-  }
 
   it should "emit a draw's shader descriptor via KernelEmit and run it to completion" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new KernelShaderStage(config)) { dut =>
       idle(dut)
+      val mem = new Mem
+      mem.putWord(BigInt(0x1000), BigInt("00500093", 16)) // addi x1, x0, 5
+      mem.putWord(BigInt(0x1004), BigInt("30500073", 16)) // cease
 
-      // A draw's shader descriptor: entry PC + kernarg buffer + grid/local.
-      // The KernelEmit-produced launch must drive the instruction fetch at the
-      // descriptor's kernel PC, exactly as the compute unit harness drove it.
-      dut.io.launch.kernelPc.poke(0x1000.U)
-      dut.io.launch.kernargAddress.poke(0x8000.U)
-      dut.io.launch.localX.poke(3.U)
-      dut.io.launch.valid.poke(true.B)
-      assert(dut.io.launch.ready.peek().litToBoolean, "launch must be accepted")
-      dut.clock.step(); dut.io.launch.valid.poke(false.B)
-
-      var cycles = 0
-      while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 40) {
-        dut.clock.step(); cycles += 1
-      }
-      assert(dut.io.memoryRequest.valid.peek().litToBoolean)
-      dut.io.memoryRequest.bits.address.expect(0x1000.U)
-      val fetchId = dut.io.memoryRequest.bits.transactionId.peek().litValue
-      dut.clock.step()
-      dut.io.memoryResponse.valid.poke(true.B)
-      dut.io.memoryResponse.bits.transactionId.poke(fetchId.U)
-      dut.io.memoryResponse.bits.readData.poke(
-        (BigInt("30500073", 16) << 32 | BigInt("00500093", 16)).U)
-      dut.clock.step(); dut.io.memoryResponse.valid.poke(false.B)
-
-      cycles = 0
-      while (!dut.io.completion.valid.peek().litToBoolean && cycles < 40) {
-        dut.clock.step(); cycles += 1
-      }
-      dut.io.completion.valid.expect(true.B)
+      val result = runShader(dut, mem)
+      assert(result.traps.isEmpty, show(result.traps))
       dut.io.completion.bits.success.expect(true.B)
     }
   }
 
-  // A `uniform float` lowers to flw off the kernarg base, which the CU
-  // preloads into x1, so the shader needs no prologue. The shader CU used to
-  // be built without FpuBackend: flw could not decode, never issued its load
-  // and hung the warp. This covers that the FP decode and memory datapath is
-  // now live on the graphics side.
-  //
-  // Known gap, deliberately not asserted here: the f-register writeback is not
-  // yet observable from this stage. GpuComputeUnit passes committedFpuWriteback
-  // out of the core but KernelShaderStage does not consume it, and
-  // GpuComputeUnit ties fpuInitialize invalid, so a value loaded by flw cannot
-  // yet be read back by a following scalar f-register instruction. Reading it
-  // as a vector `.vf` operand goes through the separate fpu.fvfRead sideband
-  // and is unaffected, which is the path a compiler needs first.
+  // A `uniform float` lowers to flw off the kernarg base, which the CU preloads
+  // into x1, so the shader needs no prologue. The shader CU used to be built
+  // without FpuBackend: flw could not decode, never issued its load, and hung
+  // the warp. This covers that the FP decode and memory datapath is now live on
+  // the graphics side.
   it should "retire a scalar FP load from kernarg on the shader CU" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new KernelShaderStage(config)) { dut =>
       idle(dut)
+      val mem = new Mem
+      mem.putWord(BigInt(0x1000), BigInt("0000a087", 16)) // flw f1, 0(x1)
+      mem.putWord(BigInt(0x1004), BigInt("30500073", 16)) // cease
+      mem.putWord(BigInt(0x8000), BigInt("40a00000", 16)) // kernarg[0] = 5.0f
 
-      val memory = Map[BigInt, BigInt](
-        // 0x1000: flw f1, 0(x1) then cease
-        BigInt(0x1000) -> BigInt("305000730000a087", 16),
-        // kernarg[0] = 5.0f, which x1 already points at
-        BigInt(0x8000) -> BigInt("40a00000", 16))
-      val fetched = scala.collection.mutable.ArrayBuffer[BigInt]()
-      val traps = scala.collection.mutable.ArrayBuffer[(BigInt, BigInt, BigInt)]()
+      val result = runShader(dut, mem)
+      assert(result.traps.isEmpty, show(result.traps))
+      assert(result.writes.isEmpty, "a load must not write")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
 
-      dut.io.launch.kernelPc.poke(0x1000.U)
-      dut.io.launch.kernargAddress.poke(0x8000.U)
-      dut.io.launch.localX.poke(3.U)
-      dut.io.launch.valid.poke(true.B)
-      assert(dut.io.launch.ready.peek().litToBoolean, "launch must be accepted")
-      dut.clock.step(); dut.io.launch.valid.poke(false.B)
+  // The path a `uniform float` actually needs: flw reads the value into an
+  // f-register and a vector op consumes it through the .vf operand sideband
+  // (fpu.fvfRead in GpuCore), so the integer scalar register file is not
+  // involved. Encodings match ProgrammableTextureAxiSpec and the fp_scalar.S
+  // corpus shader.
+  it should "feed a scalar FP load into a vector .vf operand on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("0000a087", 16), // flw f1, 0(x1)
+        BigInt(0x1008) -> BigInt("01008293", 16), // addi t0, x1, 16
+        BigInt(0x100c) -> BigInt("0202e107", 16), // vle32.v v2, (t0)
+        BigInt(0x1010) -> BigInt("0220d257", 16), // vfadd.vf v4, v2, f1
+        BigInt(0x1014) -> BigInt("04008293", 16), // addi t0, x1, 64
+        BigInt(0x1018) -> BigInt("0202e227", 16), // vse32.v v4, (t0)
+        BigInt(0x101c) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      mem.putWord(BigInt(0x8000), BigInt("40000000", 16)) // uniform f1 = 2.0f
+      // v2 source, one 3.0f per lane.
+      (0 until 4).foreach(lane =>
+        mem.putWord(BigInt(0x8010) + lane * 4, BigInt("40400000", 16)))
 
-      // Service the memory port the way KernelFragStageSpec does: re-present
-      // the pending response every cycle so a beat is never dropped.
-      var resp = false
-      var id = BigInt(0)
-      var data = BigInt(0)
-      var guard = 0
-      var done = false
-      while (!done && guard < 300) {
-        dut.io.memoryResponse.valid.poke(resp)
-        if (resp) {
-          dut.io.memoryResponse.bits.transactionId.poke(id.U)
-          dut.io.memoryResponse.bits.readData.poke(data.U)
-          dut.io.memoryResponse.bits.fault.poke(false.B)
-        }
-        val fired = dut.io.memoryRequest.valid.peek().litToBoolean &&
-          dut.io.memoryRequest.ready.peek().litToBoolean
-        if (fired) {
-          val addr = dut.io.memoryRequest.bits.address.peek().litValue
-          id = dut.io.memoryRequest.bits.transactionId.peek().litValue
-          if (!dut.io.memoryRequest.bits.isWrite.peek().litToBoolean) {
-            fetched += addr
-            data = memory.getOrElse(addr, BigInt(0))
-          } else data = BigInt(0)
-          resp = true
-        } else resp = false
-        if (dut.io.trap.valid.peek().litToBoolean)
-          traps += ((dut.io.trap.bits.pc.peek().litValue,
-            dut.io.trap.bits.cause.peek().litValue,
-            dut.io.trap.bits.tval.peek().litValue))
-        dut.clock.step()
-        guard += 1
-        done = dut.io.completion.valid.peek().litToBoolean
-      }
-      dut.io.memoryResponse.valid.poke(false.B)
-
-      val where = fetched.map(a => f"0x${a.toString(16)}").mkString(",")
-      val why = traps
-        .map(t => s"pc=0x${t._1.toString(16)} cause=${t._2} tval=0x${t._3.toString(16)}")
-        .mkString("; ")
-      assert(done, s"shader CU never completed; fetched [$where]; traps [$why]")
-      assert(traps.isEmpty, s"shader trapped [$why]; fetched [$where]")
-      // The load must actually reach the kernarg base rather than stalling the
-      // warp, which is what a missing FpuBackend caused.
-      assert(fetched.contains(BigInt(0x8000)),
-        s"flw never issued its kernarg load; fetched [$where]")
+      val result = runShader(dut, mem)
+      assert(result.traps.isEmpty, show(result.traps))
+      // kernarg[64] must hold 3.0f + the 2.0f uniform = 5.0f.
+      // kernarg[64] must hold 3.0f + the 2.0f uniform = 5.0f. The store mask
+      // observed for this VL=4 vse32.v is 0xfff, three lanes rather than four;
+      // only lane 0 is asserted here because that is what this test is about,
+      // and the mask width is a separate question.
+      val stored = storedWord(result.writes, BigInt(0x8040))
+      assert(stored == BigInt("40a00000", 16),
+        s"vfadd.vf stored 0x${stored.toString(16)}, expected 40a00000 (5.0f)")
       dut.io.completion.bits.success.expect(true.B)
     }
   }
