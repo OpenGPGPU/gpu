@@ -226,14 +226,20 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    settle for guest-memory `SCANOUT_BASE` writes only, yielding 33.61–33.76 ms
    and 33.29–33.74 ms respectively. Other registers retain the full settle.
    Continuously clocked devices use hardware vblank
-   (`GPU_CAP_HW_VBLANK`, `SCANOUT_PERIOD`, IRQ bit2). The operational
-   RTL, driver, and ARTI display defaults are 64x64 at 30 Hz. ARTI's QEMU
+   (`GPU_CAP_HW_VBLANK`, `SCANOUT_PERIOD`, IRQ bit2). ARTI's QEMU
    device truncates any programmed mode to the compile-time `ARTI_FB_WIDTH` /
    `ARTI_FB_HEIGHT` in `hw/misc/arti-rtl.c` and copies rows through a
-   same-width on-stack buffer, so a larger mode is only possible if those
-   constants follow: `run_arti_gpu.sh` now derives the profile's `display:`
-   block from `GPU_WIDTH`/`GPU_HEIGHT`, which lifts the clamp (verified at
-   320x240 below). Lowering `clk_freq_mhz` in the integration YAML does not
+   same-width on-stack buffer, so those constants have to follow the mode.
+   The integration profile's `display:` block is the single source of the
+   resolution: `scripts/gpu_display_config.py` reads it, and the scripts derive
+   the elaboration, the driver default mode, the work-tree names and the PPM
+   check from it, so the scanout cannot end up sized differently from the RTL.
+   Change the mode by editing the profile rather than by setting a variable,
+   and `scripts/test_display_config.py` guards the literals in
+   `driver/gpu.dtsi` against it. `driver/gpu_integration_debian.yaml` is
+   320x240 at 30 Hz; `driver/gpu_integration.yaml`, the reference profile the
+   fast qualification runs use, is 64x64. Lowering `clk_freq_mhz` in the
+   integration YAML does not
    help anything: ARTI ticks
    the model from `eval()` calls with no wall-time pacing, so the field only
    sets a SystemC period literal, and the driver independently hardcodes
@@ -273,9 +279,9 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    `--threads 1` took a median 0.268 s: 2.39x slower for this operation.
    A headless Debian boot registered DRM at mode 64x64 and produced a nonblack
    64x64 scanout PPM.
-   **320x240 (2026-09-28).** `GPU_WIDTH=320 GPU_HEIGHT=240
-   scripts/build_arti_debian_display.sh` builds the RTL, the Verilator model
-   and QEMU at 320x240; the Debian runner then boots, registers DRM at
+   **320x240 (2026-09-28).** `scripts/build_arti_debian_display.sh` with no
+   resolution variables builds the RTL, the Verilator model and QEMU at the
+   profile's 320x240; the Debian runner then boots, registers DRM at
    `stride=1280 mode=320x240`, runs a fixed-function clear plus
    `opengpu_triangle_present`, and ARTI dumps a 320x240 P6 PPM whose pixel
    (1,1) is `ff0000` with 38,160 red triangle pixels against 38,640 clear
@@ -284,12 +290,13 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    line, so clear + a 38k-pixel triangle + fence + SETCRTC is on the order of
    tens of seconds. A full-screen 320x240 redraw is 76,800 px at 18.8
    cycles/px, about 1.44M cycles, so it is a minutes-per-frame path, not a
-   real-time one. Two things were needed to make the size actually take
-   effect: `GPU_WIDTH`/`GPU_HEIGHT` now derive the integration profile's
-   `display:` block (previously they sized the RTL, the driver default and the
-   guest test but left ARTI at 64x64, so a wider build rendered a
-   64x64 corner), and `build_arti_debian_display.sh` now gives each size its
-   own work tree instead of hardcoding `debian-64x64`.
+   real-time one. Getting the size to take effect needed the resolution to
+   stop being duplicated: it used to live in six places, and the
+   `GPU_WIDTH`/`GPU_HEIGHT` variables reached only some of them, so a wider
+   build rendered a 64x64 corner of a 64x64 window. It now has one source, and
+   `build_arti_debian_display.sh` names each work tree after the mode instead
+   of hardcoding `debian-64x64`. A zero-variable
+   `scripts/run_arti_debian.sh` then reached the same render in 70 s host.
    The tick rates above are obsolete. They were measured against an older
    ARTI whose settle loop charged a fixed 20,000 idle cycles to every host MMIO,
    so the 0.23 MHz figure described settle overhead rather than model speed.
@@ -531,6 +538,7 @@ sbt -batch 'testOnly opengpu.graphics.GpuAbiLayoutSpec opengpu.graphics.RenderHo
    opengpu.dma.StridedCopyEngineSpec'
 python3 scripts/test_driver.py
 python3 scripts/test_test_selection.py
+python3 scripts/test_display_config.py
 python3 scripts/benchmark_gpu.py
 # ARTI model throughput, no QEMU or guest boot. Add --instrument for the
 # dirty-list width and dirty-page count behind the active-rate figure.
