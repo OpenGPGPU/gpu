@@ -36,7 +36,8 @@ class RenderCore(
   config: GraphicsConfig = GraphicsConfig(),
   gpuConfig: GpuConfig = GpuConfig(),
   fragCore: Boolean = false,
-  vertCore: Boolean = false
+  vertCore: Boolean = false,
+  graphicsScalarFpu: Boolean = true
 ) extends Module {
   val io = IO(new Bundle {
     val cmdBase = Input(UInt(32.W))
@@ -104,7 +105,8 @@ class RenderCore(
   // core mode words 0..6 describe a vertex buffer and vertex shader rather
   // than containing three inline clip-space vertices.
   private val cb = Module(new CommandBufferStage(config, vertCore))
-  private val rp = Module(new RenderPipeline(config, gpuConfig, fragCore, vertCore))
+  private val rp = Module(new RenderPipeline(
+    config, gpuConfig, fragCore, vertCore, graphicsScalarFpu))
   // RenderHost snapshots the legacy registers and queue ownership on the
   // same edge that it presents start.  Delay the parser start one cycle so
   // the selected command configuration is visible at the parser boundary.

@@ -34,7 +34,10 @@ import opengpu.dispatch.KernelCompletion
   * (fetch/decode/issue/RF/ALU/FPU/commit) are reused instead of a private
   * shader core.
   */
-class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
+class KernelShaderStage(
+  config: GpuConfig = GpuConfig(),
+  enableScalarFpu: Boolean = true
+) extends Module {
   val io = IO(new Bundle {
     val instructionSatp = Input(UInt(32.W))
     val instructionTlbFlush = Flipped(Valid(new opengpu.core.memory.VectorTlbFlush(config)))
@@ -74,11 +77,10 @@ class KernelShaderStage(config: GpuConfig = GpuConfig()) extends Module {
   // can read f-registers, which is what a `uniform float` lowers to. Without
   // it FpuBackend is absent, flw never retires and the CU hangs. This widens
   // GpuCore's completion arbiter from 3 to 4 inputs and adds a second FP cone
-  // to the design; the software admission gate is
-  // GPU_CAP_COMPUTE_SCALAR_FPU, so the validator still rejects these
-  // instructions for the graphics profiles until that is threaded through.
+  // to the design. The software admission gate is
+  // GPU_CAP_COMPUTE_SCALAR_FPU, which is only advertised when this is set.
   private val cu = Module(new GpuComputeUnit(
-    config, enableFpuBackend = true, finishOnTrap = true))
+    config, enableFpuBackend = enableScalarFpu, finishOnTrap = true))
 
   io.launch.ready := cu.io.kernel.ready
   cu.io.kernel.valid := io.launch.valid

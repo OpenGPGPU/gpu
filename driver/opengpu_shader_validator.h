@@ -774,22 +774,28 @@ static inline bool opengpu_shader_validate_words_profile(
     return false;
 }
 
+/* Fragment/vertex profile. scalar_fpu_enabled admits flw, which is what a
+ * `uniform float` lowers to. Pass it only when GPU_CAP_COMPUTE_SCALAR_FPU is
+ * advertised: the graphics shader CU is built with the FP backend whenever that
+ * capability is set, and without it flw never completes and hangs the warp. */
 static inline bool opengpu_shader_validate_words_with_texture(
     const opengpu_shader_u32 *words, opengpu_shader_u32 word_count,
     opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity,
-    bool texture_enabled)
+    bool texture_enabled, bool scalar_fpu_enabled)
 {
     return opengpu_shader_validate_words_profile(
         words, word_count, kernarg_size, batch_capacity,
-        6, 9, true, texture_enabled, false, false);
+        6, 9, true, texture_enabled, false, scalar_fpu_enabled);
 }
 
 static inline bool opengpu_shader_validate_words(
     const opengpu_shader_u32 *words, opengpu_shader_u32 word_count,
-    opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity)
+    opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity,
+    bool scalar_fpu_enabled)
 {
     return opengpu_shader_validate_words_with_texture(
-        words, word_count, kernarg_size, batch_capacity, false);
+        words, word_count, kernarg_size, batch_capacity, false,
+        scalar_fpu_enabled);
 }
 
 /* Vertex profile: the fixed-function stage owns input slices 0..7 and reads
@@ -797,11 +803,12 @@ static inline bool opengpu_shader_validate_words(
  * derivative instructions are not meaningful during a vertex launch. */
 static inline bool opengpu_vertex_shader_validate_words(
     const opengpu_shader_u32 *words, opengpu_shader_u32 word_count,
-    opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity)
+    opengpu_shader_u64 kernarg_size, opengpu_shader_u32 batch_capacity,
+    bool scalar_fpu_enabled)
 {
     return opengpu_shader_validate_words_profile(
         words, word_count, kernarg_size, batch_capacity,
-        8, 16, false, false, false, false);
+        8, 16, false, false, false, scalar_fpu_enabled);
 }
 
 /* General-compute profile: retain the bounded instruction and address

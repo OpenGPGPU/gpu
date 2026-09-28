@@ -490,10 +490,6 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    decodes and issues its kernarg load there
    (`KernelShaderStageSpec`, "retire a scalar FP load from kernarg on the
    shader CU"). Vertex and fragment share that one CU, so it covers both.
-   The driver still admits none of this for graphics: bit22 is computed from
-   the compute CUs, and the two graphics validators do not take a
-   `scalar_fpu_enabled` argument, so a fragment `flw` is still rejected in
-   software.
    The path a compiler needs first works: `flw` reads the uniform into an
    f-register and a vector op consumes it through the `.vf` operand sideband,
    verified end to end in `KernelShaderStageSpec` ("feed a scalar FP load into
@@ -507,10 +503,26 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
      consumes it, so a value loaded by `flw` cannot be read back by a
      following *scalar* f-register instruction.
 
+   The driver admits it for graphics as of 2026-09-28: both graphics
+   validators take a `scalar_fpu_enabled` argument and it is derived from
+   bit22, which now requires the FP backend on the compute CUs *and* the
+   graphics shader CU (`graphicsScalarFpu` is plumbed from `GpuHostSystemAxi`
+   through `GpuHostAxi`, `RenderHost`, `RenderCore` and `RenderPipeline` into
+   `KernelShaderStage`). A `.vf` operand with an undefined f-register is still
+   rejected by the defined-register analysis.
+
    `fsw` is a separate latent bug: a scalar FP store issues its write to the
    right line and byte offset, but the warp then traps illegal at the next PC.
    The validator's scalar path has no `case 0x27`, so no guest shader can reach
    it today and the bug is masked. Recorded rather than fixed here.
+
+   One open observation, not asserted anywhere: a `VL=4` `vse32.v` produced a
+   `0xfff` byte mask, three lanes rather than four, on a bare
+   `KernelShaderStage` harness. A bit sweep of the `vsetvli` word did not
+   isolate the field, and the same encoding produces pixel-correct output
+   through the fragment path under ARTI, so this is unresolved: it is either a
+   harness artefact or specific to the fragment-batch lane count. Worth a
+   dedicated test before trusting CU-level vector stores.
 
    `vfmerge`/`vfmv.v.f` and scalar FP
    arithmetic remain excluded. Add further VFUNARY0 /

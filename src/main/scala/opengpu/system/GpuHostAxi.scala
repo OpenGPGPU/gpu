@@ -53,7 +53,8 @@ class GpuHostAxi(
   unifiedCommandMmio: Boolean = false,
   commandIdWidth: Int = 8,
   textureFaultReporting: Boolean = false,
-  computeScalarFpu: Boolean = false
+  computeScalarFpu: Boolean = false,
+  graphicsScalarFpu: Boolean = true
 ) extends Module {
   override def desiredName: String = "GpuHostAxi"
 
@@ -152,7 +153,8 @@ class GpuHostAxi(
       unifiedCommands = unifiedCommandMmio,
       textureFaultReporting = textureFaultReporting,
       commandIdWidth = commandIdWidth,
-      computeScalarFpu = computeScalarFpu))
+      computeScalarFpu = computeScalarFpu,
+      graphicsScalarFpu = graphicsScalarFpu))
     host.io.textureFault.foreach(_ := io.textureFault.get)
     io.graphicsDrained := host.io.drained
     io.performance := host.io.performance

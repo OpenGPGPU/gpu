@@ -1085,6 +1085,14 @@ static u32 opengpu_fragment_batch_capacity(struct opengpu_device *gpu)
            GPU_CAP_FRAGMENT_BATCH_SHIFT;
 }
 
+/* flw is admitted for every shader profile from the same capability: the
+ * compute CUs and the graphics shader CU are both built with the FP backend
+ * whenever bit22 is advertised, and neither can retire flw without it. */
+static bool opengpu_shader_scalar_fpu_enabled(struct opengpu_device *gpu)
+{
+    return !!(gpu->hw.capabilities & GPU_CAP_COMPUTE_SCALAR_FPU);
+}
+
 static bool opengpu_validate_shader(
     struct opengpu_device *gpu, struct opengpu_buffer *shader,
     u64 kernarg_size, u32 entry, bool texture_enabled)
@@ -1101,7 +1109,8 @@ static bool opengpu_validate_shader(
     program = (const u32 *)((const u8 *)shader->cpu + entry);
     return opengpu_shader_validate_words_with_texture(
         program, words, kernarg_size,
-        opengpu_fragment_batch_capacity(gpu), texture_enabled);
+        opengpu_fragment_batch_capacity(gpu), texture_enabled,
+        opengpu_shader_scalar_fpu_enabled(gpu));
 }
 
 static bool opengpu_validate_vertex_shader(
@@ -1120,7 +1129,8 @@ static bool opengpu_validate_vertex_shader(
     program = (const u32 *)((const u8 *)shader->cpu + entry);
     return opengpu_vertex_shader_validate_words(
         program, words, kernarg_size,
-        opengpu_fragment_batch_capacity(gpu));
+        opengpu_fragment_batch_capacity(gpu),
+        opengpu_shader_scalar_fpu_enabled(gpu));
 }
 
 static bool opengpu_validate_kernarg_binding(

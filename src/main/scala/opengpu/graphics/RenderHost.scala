@@ -123,7 +123,8 @@ class RenderHost(
   unifiedCommands: Boolean = false,
   textureFaultReporting: Boolean = false,
   commandIdWidth: Int = 8,
-  computeScalarFpu: Boolean = false
+  computeScalarFpu: Boolean = false,
+  graphicsScalarFpu: Boolean = true
 ) extends Module {
   override def desiredName: String = "RenderHost"
   private val maxSampleMode = log2Ceil(config.maxSampleCount)
@@ -176,7 +177,8 @@ class RenderHost(
     val performance = Output(new GraphicsPerformanceEvents)
   })
 
-  private val core = Module(new RenderCore(config, gpuConfig, fragCore, vertCore))
+  private val core = Module(new RenderCore(
+    config, gpuConfig, fragCore, vertCore, graphicsScalarFpu))
   core.io.instructionSatp := io.instructionSatp
   core.io.instructionTlbFlush := io.instructionTlbFlush
   core.io.vectorSatp := io.vectorSatp
@@ -397,7 +399,11 @@ class RenderHost(
       (1 << GpuCapabilities.PersistentDepth) |
       (if (unifiedCommands) (1 << GpuCapabilities.UnifiedRender) else 0) |
       (1 << GpuCapabilities.HwVblank) |
-      (if (computeScalarFpu) (1 << GpuCapabilities.ComputeScalarFpu) else 0) |
+      // One bit covers every shader profile: flw is admitted for the
+      // graphics validators only when the shader CU carries the FP
+      // backend too, so both halves have to be present.
+      (if (computeScalarFpu && graphicsScalarFpu)
+        (1 << GpuCapabilities.ComputeScalarFpu) else 0) |
       (gpuConfig.warps * gpuConfig.lanes << GpuCapabilities.FragmentBatchShift))
       .U(32.W)
 

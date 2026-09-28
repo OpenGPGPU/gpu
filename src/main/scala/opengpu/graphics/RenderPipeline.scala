@@ -65,7 +65,8 @@ class RenderPipeline(
   config: GraphicsConfig = GraphicsConfig(),
   gpuConfig: GpuConfig = GpuConfig(),
   fragCore: Boolean = false,
-  vertCore: Boolean = false
+  vertCore: Boolean = false,
+  graphicsScalarFpu: Boolean = true
 ) extends Module {
   // Vertex and fragment bridges each retain four local IDs.  The shared
   // external port carries the stage-select bit plus that local ID.
@@ -398,7 +399,7 @@ class RenderPipeline(
 
   if (fragCore || vertCore) {
     val kernelFrag = Module(new KernelFragStage(gpuConfig, config))
-    val kernelShader = Module(new KernelShaderStage(gpuConfig))
+    val kernelShader = Module(new KernelShaderStage(gpuConfig, graphicsScalarFpu))
     kernelShader.io.instructionSatp := io.instructionSatp
     kernelShader.io.instructionTlbFlush := io.instructionTlbFlush
     kernelShader.io.vectorSatp := io.vectorSatp
