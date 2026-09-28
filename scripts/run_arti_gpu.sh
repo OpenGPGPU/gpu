@@ -114,6 +114,51 @@ echo "ARTI work   : $ARTI_WORK"
 [ "$GPU_WIDTH" -ge 16 ] && [ "$GPU_HEIGHT" -ge 16 ] || \
     fail "GPU_WIDTH/GPU_HEIGHT must be at least 16"
 
+# ARTI's QEMU device sizes its scanout from display.width/height in the
+# integration profile and truncates any larger mode to those compile-time
+# constants, so the profile has to follow GPU_WIDTH/GPU_HEIGHT. Without this
+# a wider build still renders only a GPU_WIDTH x GPU_HEIGHT corner of a 64x64
+# window, because nothing else propagates the RTL size to the display. Derive
+# a copy next to the work directory instead of editing the tracked profile.
+INTEGRATION_CONFIG_SOURCE="$INTEGRATION_CONFIG"
+write_integration_config() {
+    mkdir -p "$ARTI_SETUP_WORK"
+    local out="$ARTI_SETUP_WORK/gpu_integration_display.yaml"
+    python3 - "$INTEGRATION_CONFIG_SOURCE" "$out" \
+        "$GPU_WIDTH" "$GPU_HEIGHT" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+source, dest, width, height = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+lines = Path(source).read_text().splitlines(keepends=True)
+start = next((i for i, line in enumerate(lines) if line.rstrip() == "display:"), None)
+if start is None:
+    raise SystemExit("integration profile has no display: block")
+# The block runs to the first line that is neither blank nor indented; it may
+# be the last block in the file.
+end = start + 1
+while end < len(lines) and (not lines[end].strip() or lines[end][:1].isspace()):
+    end += 1
+body = "".join(lines[start:end])
+# Replace whole lines so a stale trailing comment cannot survive; *_register
+# keys do not match because the colon must follow the bare key name.
+for key, value in (("width", width), ("height", height),
+                   ("framebuffer_size", hex(width * height * 4))):
+    body, count = re.subn(rf"^(\s*){key}:[ \t]*.*$", rf"\g<1>{key}: {value}",
+                          body, flags=re.M)
+    if count != 1:
+        raise SystemExit(f"expected one display {key} entry, found {count}")
+lines[start:end] = [body]
+Path(dest).write_text("".join(lines))
+print(f"integration display: {width}x{height} "
+      f"framebuffer 0x{width * height * 4:x}")
+PY
+    INTEGRATION_CONFIG="$out"
+    export INTEGRATION_CONFIG
+}
+write_integration_config
+
 # ARTI supports an isolated Ninja install under QEMU_TOOLS. Prefer the system
 # executable when one is already available; this avoids an unnecessary pip
 # download and works around Python installations whose ninja wheel omits the
