@@ -168,6 +168,42 @@ class VectorConfigurationUnitSpec extends AnyFlatSpec {
     }
   }
 
+  it should "clear frm and fflags with the warp on reuse" in {
+    simulate(new VectorConfigurationUnit(config)) { dut =>
+      dut.reset.poke(true.B)
+      defaults(dut)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      // A kernel sets a non-default rounding mode and raises sticky flags.
+      dut.io.csrWrite.valid.poke(true.B)
+      dut.io.csrWrite.bits.warpId.poke(1.U)
+      dut.io.csrWrite.bits.address.poke("h002".U) // frm
+      dut.io.csrWrite.bits.data.poke(3.U)
+      dut.clock.step()
+      dut.io.csrWrite.valid.poke(false.B)
+      dut.io.flagsWrite.valid.poke(true.B)
+      dut.io.flagsWrite.bits.warpId.poke(1.U)
+      dut.io.flagsWrite.bits.flags.poke("h15".U)
+      dut.clock.step()
+      dut.io.flagsWrite.valid.poke(false.B)
+      dut.io.queryWarpId.poke(1.U)
+      dut.io.frmByWarp(1).expect(3.U)
+      dut.io.state.fflags.expect("h15".U)
+
+      // GpuCore asserts clearWarp when the next kernel launches on this warp.
+      dut.io.clearWarp.valid.poke(true.B)
+      dut.io.clearWarp.bits.poke(1.U)
+      dut.clock.step()
+      dut.io.clearWarp.valid.poke(false.B)
+      dut.io.frmByWarp(1).expect(0.U)
+      dut.io.state.fflags.expect(0.U)
+      // Only the named warp is reset.
+      dut.io.queryWarpId.poke(2.U)
+      dut.io.state.fflags.expect(0.U)
+    }
+  }
+
   it should "hold its result under output backpressure" in {
     simulate(new VectorConfigurationUnit(config)) { dut =>
       dut.reset.poke(true.B)

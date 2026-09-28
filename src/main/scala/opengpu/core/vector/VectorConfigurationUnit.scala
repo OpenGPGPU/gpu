@@ -175,7 +175,13 @@ class VectorConfigurationUnit(config: GpuConfig = GpuConfig()) extends Module {
       io.shaderCsrWrite.bits.data(1, 0))
   }
   when(io.clearWarp.valid) {
+    // GpuCore drives clearWarp from the launch fire, so this is the per
+    // workgroup reset. frm and fflags are per-warp state that nothing else
+    // clears, so without this a warp reused by a second kernel would inherit
+    // the previous kernel's rounding mode and sticky exception flags.
     writeWarp(vxrm, io.clearWarp.bits, 0.U(2.W))
+    writeWarp(frm, io.clearWarp.bits, 0.U(3.W))
+    writeWarp(fflags, io.clearWarp.bits, 0.U(5.W))
   }
 
   when(io.flagsWrite.valid) {

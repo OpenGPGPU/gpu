@@ -495,13 +495,21 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    verified end to end in `KernelShaderStageSpec` ("feed a scalar FP load into
    a vector .vf operand on the shader CU"), which stores 3.0f plus a 2.0f
    uniform as 5.0f. The integer scalar register file is not on that path, so
-   `uniform float` does not depend on the two gaps below.
-   - `GpuComputeUnit` ties `fpuInitialize` invalid (it is not in the wrapper's
-     io), so no CU ever initialises fflags/frm per workgroup. The standalone
-     `Gpu` class does expose the port; the SoC does not use it.
+   `uniform float` does not depend on the gap below.
    - `committedFpuWriteback` leaves the core but `KernelShaderStage` never
      consumes it, so a value loaded by `flw` cannot be read back by a
      following *scalar* f-register instruction.
+
+   `frm` and `fflags` are per-warp state in `VectorConfigurationUnit`, and the
+   per-workgroup reset already existed: `GpuCore` drives `clearWarp` from the
+   launch fire, but the handler only cleared `vxrm`, so a warp reused by a
+   second kernel inherited the first kernel's rounding mode and sticky
+   exception flags. It now clears all three, covered by
+   `VectorConfigurationUnitSpec` ("clear frm and fflags with the warp on
+   reuse"), which fails without the change. This is the gap that mattered once
+   fragment shaders could actually execute floating-point work; the
+   `fpuInitialize` port on `GpuComputeUnit` stays tied invalid because the
+   clear belongs on the vector configuration state, not the f-register file.
 
    The driver admits it for graphics as of 2026-09-28: both graphics
    validators take a `scalar_fpu_enabled` argument and it is derived from
