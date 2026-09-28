@@ -8,6 +8,7 @@ RISCV_OBJCOPY ?= riscv64-unknown-elf-objcopy
 
 EXAMPLES := examples/compute examples/triangle examples/fragment_tint \
 	examples/fragment_fp \
+	examples/fragment_fp_scalar \
 	examples/fp_unary examples/fp_binary examples/fp_fma examples/fp_div \
 	examples/fp_compare examples/fp_scalar examples/widen_alu \
 	examples/fixed_width \
@@ -35,6 +36,9 @@ examples/fragment_tint: examples/fragment_tint.c opengpu.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< opengpu.o
 
 examples/fragment_fp: examples/fragment_fp.c opengpu.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< opengpu.o
+
+examples/fragment_fp_scalar: examples/fragment_fp_scalar.c opengpu.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< opengpu.o
 
 examples/fp_unary: examples/fp_unary.c opengpu.o

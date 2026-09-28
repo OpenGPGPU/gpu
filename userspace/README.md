@@ -62,6 +62,11 @@ the DRM node and optional shader binary path (default
 6.0f per lane with `vfmul` / `vfdiv` / `vfmacc` on the fragment shader CU and
 XORs it into the interpolated colour; every painted pixel must be
 `0xbec0ffff` (default `/opengpu_fragment_fp.bin`).
+`examples/fragment_fp_scalar` is the `uniform float` case: the corpus
+`fragment_fp_scalar` shader reads a per-draw uniform with `flw` and broadcasts
+it with `vfadd.vf`, so it needs the scalar FPU on the fragment shader CU. It
+skips unless `OPENGPU_CAP_COMPUTE_SCALAR_FPU` is advertised (default
+`/opengpu_fragment_fp_scalar.bin`); every painted pixel must be `0xbea0ffff`.
 
 `examples/triangle_present` draws into the native KMS mode buffer (64x64 on
 the Debian display profile) and programs the CRTC so ARTI/QEMU scanout shows

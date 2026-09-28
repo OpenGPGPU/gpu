@@ -511,6 +511,14 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    `KernelShaderStage`). A `.vf` operand with an undefined f-register is still
    rejected by the defined-register analysis.
 
+   Covered end to end under ARTI on the fragment-core build: the corpus shader
+   `fragment_fp_scalar.S` (flw off the kernarg base, broadcast with vfadd.vf)
+   and `examples/fragment_fp_scalar` are in the guest run list, and the run
+   reported `fragment_fp_scalar completed; flw uniform 0x40a00000 through
+   vfadd.vf, pixels: 2016 sample=0xbea0ffff` with capabilities 0x007e08f9,
+   that is bit22 set. `validate_shader_corpus.py` checks the shader against a
+   new fragment profile 6, the vertex counterpart is profile 7.
+
    `fsw` is a separate latent bug: a scalar FP store issues its write to the
    right line and byte offset, but the warp then traps illegal at the next PC.
    The validator's scalar path has no `case 0x27`, so no guest shader can reach

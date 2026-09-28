@@ -31,13 +31,17 @@ static int validate(const char *path, int profile)
     }
     switch (profile) {
     case 0: valid = opengpu_compute_shader_validate_words(words, count, 64, 1); break;
-    case 1: valid = opengpu_shader_validate_words(words, count, 288, 8); break;
-    case 2: valid = opengpu_vertex_shader_validate_words(words, count, 512, 8); break;
+    case 1: valid = opengpu_shader_validate_words(words, count, 288, 8, false); break;
+    case 2: valid = opengpu_vertex_shader_validate_words(words, count, 512, 8, false); break;
     case 3: valid = opengpu_shader_validate_words_with_texture(
-                words, count, 288, 8, true); break;
+                words, count, 288, 8, true, false); break;
     case 4: valid = opengpu_compute_shader_validate_words(words, count, 128, 4); break;
     case 5: valid = opengpu_compute_shader_validate_words_fpu(
                 words, count, 128, 4, true); break;
+    /* Fragment profile on hardware advertising the scalar FPU: the shader CU
+     * carries the FP backend whenever bit22 is set, so flw is admissible. */
+    case 6: valid = opengpu_shader_validate_words(words, count, 320, 8, true); break;
+    case 7: valid = opengpu_vertex_shader_validate_words(words, count, 320, 8, true); break;
     default: return 1;
     }
     if (!valid) {

@@ -113,6 +113,9 @@ if [ "$GPU_FRAG_CORE" = "1" ]; then
         --emit fragment_texture "$DRIVER_OUTPUT/opengpu_fragment_texture.bin"
     python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
         --emit fragment_fp "$DRIVER_OUTPUT/opengpu_fragment_fp.bin"
+    python3 "$GPU_DIR/scripts/validate_shader_corpus.py" \
+        --emit fragment_fp_scalar \
+        "$DRIVER_OUTPUT/opengpu_fragment_fp_scalar.bin"
     "$CROSS_GCC" "${CFLAGS[@]}" \
         -o "$DRIVER_OUTPUT/opengpu_fragment_tint" \
         "$GPU_DIR/userspace/opengpu.c" \
@@ -121,6 +124,10 @@ if [ "$GPU_FRAG_CORE" = "1" ]; then
         -o "$DRIVER_OUTPUT/opengpu_fragment_fp" \
         "$GPU_DIR/userspace/opengpu.c" \
         "$GPU_DIR/userspace/examples/fragment_fp.c"
+    "$CROSS_GCC" "${CFLAGS[@]}" \
+        -o "$DRIVER_OUTPUT/opengpu_fragment_fp_scalar" \
+        "$GPU_DIR/userspace/opengpu.c" \
+        "$GPU_DIR/userspace/examples/fragment_fp_scalar.c"
 fi
 
 echo "Guest binaries:"
@@ -140,4 +147,5 @@ ls -1 "$DRIVER_OUTPUT"/opengpu_kms_present \
     "$DRIVER_OUTPUT"/opengpu_compute_shader.bin \
     "$DRIVER_OUTPUT"/opengpu_fragment_tint* \
     "$DRIVER_OUTPUT"/opengpu_fragment_fp* \
+    "$DRIVER_OUTPUT"/opengpu_fragment_fp_scalar* \
     "$DRIVER_OUTPUT"/opengpu_fragment_texture* 2>/dev/null | sed 's/^/  /' || true
