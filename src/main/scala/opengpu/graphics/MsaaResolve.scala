@@ -44,8 +44,8 @@ class MsaaResolveEngine(maxSampleCount: Int = 4) extends Module {
     }
   })
 
-  private val sIdle :: sPrep :: sReadReq :: sReadResp :: sWriteReq :: sWriteResp :: sWriteUse :: sDone :: Nil =
-    Enum(8)
+  private val sIdle :: sPrep :: sReadReq :: sReadResp :: sReadUse :: sWriteReq :: sWriteResp :: sWriteUse :: sDone :: Nil =
+    Enum(9)
   private val state = RegInit(sIdle)
 
   // Configuration latched at start so the host may reprogram immediately.
@@ -61,6 +61,7 @@ class MsaaResolveEngine(maxSampleCount: Int = 4) extends Module {
   private val s = RegInit(0.U(2.W))
   private val acc = RegInit(VecInit(Seq.fill(4)(0.U(32.W))))
   private val result = Reg(UInt(32.W))
+  private val readData = Reg(UInt(32.W))
   // Scanline bases avoid a y*stride multiply on the request-address path.
   private val srcRowBase = Reg(UInt(32.W))
   private val dstRowBase = Reg(UInt(32.W))
@@ -146,17 +147,23 @@ class MsaaResolveEngine(maxSampleCount: Int = 4) extends Module {
     is(sReadResp) {
       io.mem.resp.ready := true.B
       when(io.mem.resp.fire) {
-        val data = io.mem.resp.bits.data
-        acc := VecInit((0 until 4).map(c => nextAcc(c, data)))
-        when(s === samples - 1.U) {
-          result := average(data)
-          reqAddr := destAddr(x)
-          state := sWriteReq
-        }.otherwise {
-          s := s + 1.U
-          reqAddr := sampleAddr(x, s + 1.U)
-          state := sReadReq
-        }
+        // Capture only; accumulating in the response edge put the L2
+        // request-address cone in front of the average (resolve limiter).
+        readData := io.mem.resp.bits.data
+        state := sReadUse
+      }
+    }
+
+    is(sReadUse) {
+      acc := VecInit((0 until 4).map(c => nextAcc(c, readData)))
+      when(s === samples - 1.U) {
+        result := average(readData)
+        reqAddr := destAddr(x)
+        state := sWriteReq
+      }.otherwise {
+        s := s + 1.U
+        reqAddr := sampleAddr(x, s + 1.U)
+        state := sReadReq
       }
     }
 
