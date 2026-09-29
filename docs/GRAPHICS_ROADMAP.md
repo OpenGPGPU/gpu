@@ -537,20 +537,31 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    store depends on is the same file the `.vf` path uses, so the two now share
    one tested route rather than one of them being inferred.
 
-   The store's *encoding* is a real defect, and it is what a compiler hits
+   The store's *encoding* was a real defect, and it is what a compiler hits
    next. `FpuIssueStage` reads `rs2` from instruction bits 24:20, which is the
-   source f-register for a store, while `FpuMemoryUnit` builds the offset as
-   `sext(instruction(31, 20))`. The two fields overlap: the source register
-   number *is* the low five bits of the store's own offset. A store's offset
-   is therefore not independently encodable, and a 4-byte store only stays
-   aligned when the register index is a multiple of four, which is why the test
-   above stores f4 rather than f1. A fragment shader writing a colour to a
-   storage buffer at an arbitrary byte offset cannot be expressed. Nothing
-   emits `fsw` yet, so the format can still be changed freely; the natural fix
-   is the RISC-V S-type layout, `imm[11:5]` into 31:25 and `imm[4:0]` into
-   11:7, which leaves 24:20 free for `rs2` and matches the rest of the
-   encoding family. Recorded rather than changed here because it is an
-   instruction-format decision.
+   source f-register for a store, while `FpuMemoryUnit` built the offset as
+   `sext(instruction(31, 20))`. The two fields overlapped: the source register
+   number *was* the low five bits of the store's own offset. A store's offset
+   was not independently encodable, and a 4-byte store only stayed aligned when
+   the register index was a multiple of four, which is why the first version of
+   the round-trip test had to store f4 rather than f1.
+
+   That is fixed. A store now uses the S-type layout, with `imm[11:5]` in
+   31:25 and `imm[4:0]` in 11:7, leaving 24:20 free for the source register.
+   This is what RISC-V specifies for stores, and `flw` was already correct as
+   I-type, so the two now differ exactly as they do in the base ISA. Only the
+   immediate assembly in `FpuMemoryUnit` changed: the decoder constrains just
+   `funct3` and the opcode, so it admitted the new layout untouched. Two cases
+   cover it, storing f1 at a 0x10 offset, which was not encodable before, and a
+   single program taking a 0x7fc offset to exercise the bits above the low five
+   and a -4 offset to exercise the sign reaching 31:25.
+
+   Still not reachable from a guest shader. The validator sandboxes `flw` to
+   `imm(x1)` with a non-negative, 4-aligned offset that stays inside
+   `kernarg_size`, and its scalar path has no `case 0x27` at all, so admitting
+   `fsw` means giving it the same treatment on the write side, bounded to the
+   fragment output window the vector store path already uses. That is a sandbox
+   change rather than a decode change, so it is left alone here.
 
    One open observation, not asserted anywhere: a `VL=4` `vse32.v` produced a
    `0xfff` byte mask, three lanes rather than four, on a bare

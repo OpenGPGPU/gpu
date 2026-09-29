@@ -72,9 +72,25 @@ class FpuMemoryUnit(
 
   when(io.in.fire) {
     instruction := io.in.bits
-    val immediate = Cat(
+    // A load uses the I-type layout, with the whole offset in 31:20 and the
+    // destination in 11:7. A store uses the S-type layout, which splits the
+    // offset across 31:25 and 11:7 and leaves 24:20 for the source f-register
+    // that FpuIssueStage reads from. Reading a store's offset out of 31:20
+    // would alias the two fields and make the register number the low five
+    // bits of the offset.
+    val storeImmediate = Cat(
+      Fill(20, io.in.bits.decode.instruction(31)),
+      io.in.bits.decode.instruction(31, 25),
+      io.in.bits.decode.instruction(11, 7)
+    )
+    val loadImmediate = Cat(
       Fill(20, io.in.bits.decode.instruction(31)),
       io.in.bits.decode.instruction(31, 20)
+    )
+    val immediate = Mux(
+      io.in.bits.decode.decoded.memoryWrite,
+      storeImmediate,
+      loadImmediate
     )
     val effectiveAddress = io.in.bits.scalarRs1Data + immediate
     address := effectiveAddress

@@ -200,31 +200,58 @@ class KernelShaderStageSpec extends AnyFlatSpec {
     }
   }
 
-  // A scalar FP store reads its source operand out of the f-register file,
-  // which is a different path from the .vf sideband the case above covers.
-  // FSW cannot be encoded the way it reads: rs2 is the source f-register and
-  // is also the low five bits of the 12-bit offset immediate, so the two
-  // cannot be chosen independently. The register index therefore fixes the
-  // low five bits of the offset, and a 4-byte store only stays aligned when
-  // that index is a multiple of four. f4 with x2 as the base works, landing
-  // the store at 0x100 + 4.
+  // A scalar FP store reads its source operand back out of the f-register
+  // file, which is a different path from the .vf sideband the case above
+  // covers. The store offset is S-type, split across 31:25 and 11:7 so that
+  // 24:20 can hold the source register.
   it should "round trip a float through an f-register with fsw on the shader CU" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new KernelShaderStage(config)) { dut =>
       idle(dut)
       val mem = new Mem
       val program = Seq(
-        BigInt(0x1000) -> BigInt("0040a207", 16),         BigInt(0x1004) -> BigInt("10000113", 16), // addi x2, x0, 0x100
-        BigInt(0x1008) -> BigInt("00412027", 16), // fsw f4, 0(x2) -> [0x104]
+        BigInt(0x1000) -> BigInt("0040a087", 16), // flw f1, 4(x1)
+        BigInt(0x1004) -> BigInt("10000113", 16), // addi x2, x0, 0x100
+        BigInt(0x1008) -> BigInt("00112827", 16), // fsw f1, 0x10(x2) -> [0x110]
         BigInt(0x100c) -> BigInt("30500073", 16)) // cease
       program.foreach { case (addr, word) => mem.putWord(addr, word) }
       mem.putWord(BigInt(0x8004), BigInt("40a00000", 16)) // kernarg[1] = 5.0f
 
       val result = runShader(dut, mem)
       assert(result.traps.isEmpty, show(result.traps))
-      val stored = storedWord(result.writes, BigInt(0x104))
+      val stored = storedWord(result.writes, BigInt(0x110))
       assert(stored == BigInt("40a00000", 16),
         s"fsw stored 0x${stored.toString(16)}, expected 40a00000 (5.0f)")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
+  // The S-type offset is two fields, so exercise each half and the sign. A
+  // 0x7fc offset needs bits above the low five; -4 needs the sign to reach
+  // bits 31:25. Storing from f1 at an offset that is not a multiple of four
+  // was not encodable before, which is what made the earlier case pick f4.
+  it should "honour both halves and the sign of a scalar FP store offset" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("0040a087", 16), // flw f1, 4(x1)
+        BigInt(0x1004) -> BigInt("40000113", 16), // addi x2, x0, 0x400
+        BigInt(0x1008) -> BigInt("7e112e27", 16), // fsw f1, 0x7fc(x2) -> [0xbfc]
+        BigInt(0x100c) -> BigInt("fe112e27", 16), // fsw f1, -4(x2)   -> [0x3fc]
+        BigInt(0x1010) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      mem.putWord(BigInt(0x8004), BigInt("40a00000", 16)) // kernarg[1] = 5.0f
+
+      val result = runShader(dut, mem)
+      assert(result.traps.isEmpty, show(result.traps))
+      for (addr <- Seq(BigInt(0xbfc), BigInt(0x3fc))) {
+        val stored = storedWord(result.writes, addr)
+        assert(stored == BigInt("40a00000", 16),
+          s"fsw to 0x${addr.toString(16)} stored 0x${stored.toString(16)}, " +
+            "expected 40a00000 (5.0f)")
+      }
       dut.io.completion.bits.success.expect(true.B)
     }
   }
