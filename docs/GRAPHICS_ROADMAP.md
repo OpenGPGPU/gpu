@@ -556,6 +556,39 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    single program taking a 0x7fc offset to exercise the bits above the low five
    and a -4 offset to exercise the sign reaching 31:25.
 
+   Masked vector load and store are already implemented and wired, which is
+   worth stating because it is easy to assume otherwise: `VectorBackend`
+   builds `memoryMask` as `decode.activeMask & vlMask & Mux(vm, allLanes,
+   predicateMask)`, and `VectorRegisterBank.predicateMask` is the architectural
+   v0 read port (the low `lanes` bits of v0's flat data). Every unit folds the
+   mask in the same place, so the memory unit needs no v0 port of its own. A
+   `vmsltu` result feeding masked loads and stores is therefore expressible
+   today; what is untested is the chain end to end.
+
+   The gap that does block it is the per-lane index. Lowering a guarded scalar
+   loop the obvious way needs the thread id:
+
+       int i = blockIdx.x * blockDim.x + threadIdx.x;
+       if (i < n) c[i] = a[i] + b[i];
+
+   `n` and the base are warp-uniform and fine in scalar registers, but the
+   predicate is per-thread, so the mask has to be built from `i`.
+   `WarpContextInitializer` is specified to publish `v1 = localLinearBase +
+   lane` for exactly this, and `WarpContextInitializerSpec` asserts it. On the
+   graphics shader CU, though, `v1` reads back as uninitialized data: a program
+   that stores `v1` to memory after launch returns unrelated values, and a
+   following `vmsltu` against a small scalar correctly compares that garbage
+   and yields an all-zero mask. The wiring exists at every level checked
+   (`SingleCuKernelController` line 33, `GpuComputeUnit` line 96, and
+   `KernelShaderStage` instantiates `GpuComputeUnit`), so the fault is inside
+   that path rather than a missing connection, and it is not yet located.
+
+   This has gone unnoticed because the fragment and vertex ABIs do not need
+   `v1`: their SoA arrays are fetched with unit-stride vector loads, where the
+   lane-to-element mapping comes from the load's own stride. A shader only
+   needs an explicit index for a predicated or indexed access, which is
+   exactly the case a compiler meets as soon as it emits a bounds check.
+
    Still not reachable from a guest shader. The validator sandboxes `flw` to
    `imm(x1)` with a non-negative, 4-aligned offset that stays inside
    `kernarg_size`, and its scalar path has no `case 0x27` at all, so admitting
