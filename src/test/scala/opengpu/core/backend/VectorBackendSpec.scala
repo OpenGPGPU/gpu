@@ -100,6 +100,131 @@ class VectorBackendSpec extends AnyFlatSpec {
     }
   }
 
+  it should "commit a vmsltu.vx mask into v0 and predicate the next store" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new VectorBackend(config)) { dut =>
+      dut.reset.poke(true.B)
+      dut.io.in.valid.poke(false.B)
+      dut.io.scalarRs1Data.poke(3.U)
+      dut.io.scalarRs2Data.poke(0.U)
+      dut.io.initialize.valid.poke(false.B)
+      dut.io.scalarWriteback.ready.poke(true.B)
+      dut.io.redirect.ready.poke(true.B)
+      dut.io.memoryRequest.ready.poke(true.B)
+      dut.io.memoryResponse.valid.poke(false.B)
+      dut.io.memoryResponse.bits.faultMask.poke(0.U)
+      dut.io.memoryResponse.bits.pageFault.poke(false.B)
+      for (lane <- 0 until config.lanes)
+        dut.io.memoryResponse.bits.readData(lane).poke(0.U)
+      dut.io.memoryFault.ready.poke(true.B)
+      dut.io.scalarReserve.ready.poke(true.B)
+      dut.io.unimplemented.ready.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      val commits = scala.collection.mutable.ArrayBuffer.empty[(Int, BigInt)]
+      val stores =
+        scala.collection.mutable.ArrayBuffer.empty[(BigInt, Seq[BigInt])]
+      var respond = false
+      def step(): Unit = {
+        dut.io.memoryResponse.valid.poke(respond.B)
+        if (dut.io.committedVectorWriteback.valid.peek().litToBoolean) {
+          commits += (
+            dut.io.committedVectorWriteback.bits.vd.peek().litValue.toInt ->
+              dut.io.committedVectorWriteback.bits.data(0).peek().litValue)
+        }
+        val request = dut.io.memoryRequest.valid.peek().litToBoolean
+        if (request) {
+          stores += (dut.io.memoryRequest.bits.laneMask.peek().litValue ->
+            (0 until config.lanes).map(lane =>
+              dut.io.memoryRequest.bits.writeData(lane).peek().litValue))
+        }
+        if (respond && dut.io.memoryResponse.ready.peek().litToBoolean)
+          respond = false
+        dut.clock.step()
+        if (request) respond = true
+      }
+
+      def issue(instruction: BigInt, unit: VectorUnit.Type,
+                configure: Boolean = false, readsVs2: Boolean = false,
+                readsScalar: Boolean = false, writesVd: Boolean = false,
+                memoryWrite: Boolean = false): Unit = {
+        dut.io.in.valid.poke(true.B)
+        dut.io.in.bits.instruction.poke(instruction.U)
+        dut.io.in.bits.pc.poke(0x1000.U)
+        dut.io.in.bits.warpId.poke(0.U)
+        dut.io.in.bits.activeMask.poke("b1111".U)
+        dut.io.in.bits.decoded.recognized.poke(true.B)
+        dut.io.in.bits.decoded.valid.poke(true.B)
+        dut.io.in.bits.decoded.unit.poke(unit)
+        dut.io.in.bits.decoded.funct6.poke((instruction >> 26).U)
+        dut.io.in.bits.decoded.operandType.poke(((instruction >> 12) & 7).U)
+        dut.io.in.bits.decoded.vm.poke(instruction.testBit(25).B)
+        dut.io.in.bits.decoded.nf.poke((instruction >> 29).U)
+        dut.io.in.bits.decoded.mop.poke(((instruction >> 26) & 3).U)
+        dut.io.in.bits.decoded.elementWidth.poke(((instruction >> 12) & 7).U)
+        dut.io.in.bits.decoded.readsVs1.poke(false.B)
+        dut.io.in.bits.decoded.readsVs2.poke(readsVs2.B)
+        dut.io.in.bits.decoded.readsVs2Pair.poke(false.B)
+        dut.io.in.bits.decoded.readsScalar.poke(readsScalar.B)
+        dut.io.in.bits.decoded.readsFloat.poke(false.B)
+        dut.io.in.bits.decoded.writesVd.poke(writesVd.B)
+        dut.io.in.bits.decoded.memoryRead.poke(false.B)
+        dut.io.in.bits.decoded.memoryWrite.poke(memoryWrite.B)
+        dut.io.in.bits.decoded.configure.poke(configure.B)
+        var waited = 0
+        while (!dut.io.in.ready.peek().litToBoolean && waited < 64) {
+          step(); waited += 1
+        }
+        assert(dut.io.in.ready.peek().litToBoolean, "issue never accepted")
+        step()
+        dut.io.in.valid.poke(false.B)
+      }
+
+      // vsetvli x0, x9(=3), e32,m1
+      issue((BigInt(0x010) << 20) | (BigInt(9) << 15) | (BigInt(7) << 12) |
+        0x57, VectorUnit.configuration, configure = true)
+
+      def initialize(register: Int, values: Seq[BigInt]): Unit = {
+        dut.io.initialize.valid.poke(true.B)
+        dut.io.initialize.bits.warpId.poke(0.U)
+        dut.io.initialize.bits.vd.poke(register.U)
+        values.zipWithIndex.foreach { case (value, lane) =>
+          dut.io.initialize.bits.data(lane).poke(value.U)
+        }
+        var waited = 0
+        while (!dut.io.initialize.ready.peek().litToBoolean && waited < 16) {
+          step(); waited += 1
+        }
+        step()
+        dut.io.initialize.valid.poke(false.B)
+      }
+      initialize(1, Seq(0, 1, 2, 3))
+      initialize(0, Seq(BigInt("b3865eb6", 16), BigInt("549f802d", 16),
+        BigInt("89d37fe6", 16), BigInt("02b6780a", 16)))
+
+      // vmsltu.vx v0, v1, x9; vse32.v v1, (x1), v0.t; vse32.v v0, (x1)
+      issue((BigInt(0x1a) << 26) | (BigInt(1) << 25) | (BigInt(1) << 20) |
+        (BigInt(9) << 15) | (BigInt(4) << 12) | 0x57, VectorUnit.mask,
+        readsVs2 = true, readsScalar = true, writesVd = true)
+      dut.io.scalarRs1Data.poke(0x400.U)
+      issue((BigInt(1) << 15) | (BigInt(6) << 12) | (BigInt(1) << 7) | 0x27,
+        VectorUnit.loadStore, readsScalar = true, memoryWrite = true)
+      issue((BigInt(1) << 25) | (BigInt(1) << 15) | (BigInt(6) << 12) | 0x27,
+        VectorUnit.loadStore, readsScalar = true, memoryWrite = true)
+      for (_ <- 0 until 64) step()
+
+      val trace = s"commits=${commits.map { case (vd, word) =>
+        s"v$vd:0x${word.toString(16)}" }} stores=${stores.map {
+        case (mask, data) => s"${mask.toString(2)}:${data.map(_.toString(16))}" }}"
+      assert(commits.headOption.exists { case (vd, word) =>
+        vd == 0 && (word & 0xf) == 0x7 }, trace)
+      assert(stores.size == 2, trace)
+      assert(stores(0)._1 == 0x7 && stores(0)._2.take(3) == Seq(0, 1, 2), trace)
+      assert((stores(1)._2.head & 0xf) == 0x7, trace)
+    }
+  }
+
   it should "carry vsetvli through issue and commit its scalar vl result" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new VectorBackend(config)) { dut =>

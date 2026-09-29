@@ -200,6 +200,66 @@ class KernelShaderStageSpec extends AnyFlatSpec {
     }
   }
 
+  // A bounds check lowers to a compare against the per-lane index the CU
+  // publishes in v1, then a store predicated on the resulting v0 mask. The
+  // launch has three threads, so lane 3 is inactive and v1 is 0, 1, 2.
+  it should "predicate a store on a vmsltu.vx mask built from v1" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("00200493", 16), // addi x9, x0, 2
+        BigInt(0x1008) -> BigInt("6a14c057", 16), // vmsltu.vx v0, v1, x9
+        BigInt(0x100c) -> BigInt("04008293", 16), // addi t0, x1, 64
+        BigInt(0x1010) -> BigInt("0202e027", 16), // vse32.v v0, (t0)
+        BigInt(0x1014) -> BigInt("08008293", 16), // addi t0, x1, 128
+        BigInt(0x1018) -> BigInt("0002e0a7", 16), // vse32.v v1, (t0), v0.t
+        BigInt(0x101c) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+
+      val result = runShader(dut, mem)
+      val trace = result.reqs.mkString("\n")
+      assert(result.traps.isEmpty, show(result.traps))
+      val mask = storedWord(result.writes, BigInt(0x8040))
+      assert((mask & 0x7) == 0x3,
+        s"v0 stored 0x${mask.toString(16)}, expected low bits 011\n$trace")
+      val guarded = (0 until 3).map(lane =>
+        result.writes.contains(BigInt(0x8080) + lane * 4))
+      assert(guarded == Seq(true, true, false),
+        s"masked store wrote lanes $guarded, expected lanes 0 and 1\n$trace")
+      assert(storedWord(result.writes, BigInt(0x8084)) == 1, trace)
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
+  it should "store a vector load's data when the store follows it directly" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("01008293", 16), // addi t0, x1, 16
+        BigInt(0x1008) -> BigInt("0202e107", 16), // vle32.v v2, (t0)
+        BigInt(0x100c) -> BigInt("0202e127", 16), // vse32.v v2, (t0)
+        BigInt(0x1010) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      (0 until 4).foreach(lane =>
+        mem.putWord(BigInt(0x8010) + lane * 4, BigInt(0x100 + lane)))
+
+      val result = runShader(dut, mem)
+      val trace = result.reqs.mkString("\n")
+      assert(result.traps.isEmpty, show(result.traps))
+      val stored = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8010) + lane * 4))
+      assert(stored == Seq(0x100, 0x101, 0x102).map(BigInt(_)),
+        s"stored ${stored.map(_.toString(16))}\n$trace")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
   // A scalar FP store reads its source operand back out of the f-register
   // file, which is a different path from the .vf sideband the case above
   // covers. The store offset is S-type, split across 31:25 and 11:7 so that
