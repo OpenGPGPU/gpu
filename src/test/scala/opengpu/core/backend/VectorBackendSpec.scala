@@ -9,6 +9,97 @@ import org.scalatest.flatspec.AnyFlatSpec
 class VectorBackendSpec extends AnyFlatSpec {
   behavior of "VectorBackend"
 
+  // Isolate the initialize path from the whole dispatch chain: publish v1
+  // through io.initialize, then store v1 and read the per-lane write data. If
+  // this passes, the loss is upstream in the controller or the initializer's
+  // handshake rather than inside VectorBackend.
+  it should "land a vector initialize write in the register file" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new VectorBackend(config)) { dut =>
+      dut.reset.poke(true.B)
+      dut.io.in.valid.poke(false.B)
+      dut.io.scalarRs1Data.poke(0x400.U)
+      dut.io.scalarRs2Data.poke(0.U)
+      dut.io.initialize.valid.poke(false.B)
+      dut.io.initialize.bits.warpId.poke(0.U)
+      dut.io.initialize.bits.vd.poke(0.U)
+      for (lane <- 0 until config.lanes) {
+        dut.io.initialize.bits.data(lane).poke(0.U)
+      }
+      dut.io.scalarWriteback.ready.poke(false.B)
+      dut.io.redirect.ready.poke(true.B)
+      dut.io.memoryRequest.ready.poke(true.B)
+      dut.io.memoryResponse.valid.poke(false.B)
+      dut.io.memoryFault.ready.poke(true.B)
+      dut.io.memoryResponse.bits.faultMask.poke(0.U)
+      dut.io.memoryResponse.bits.pageFault.poke(false.B)
+      for (lane <- 0 until config.lanes) {
+        dut.io.memoryResponse.bits.readData(lane).poke(0.U)
+      }
+      dut.io.scalarReserve.ready.poke(true.B)
+      dut.io.unimplemented.ready.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      // v1 = lane index, exactly what WarpContextInitializer publishes.
+      dut.io.initialize.valid.poke(true.B)
+      dut.io.initialize.bits.warpId.poke(0.U)
+      dut.io.initialize.bits.vd.poke(1.U)
+      for (lane <- 0 until config.lanes) {
+        dut.io.initialize.bits.data(lane).poke(lane.U)
+      }
+      var waited = 0
+      while (!dut.io.initialize.ready.peek().litToBoolean && waited < 8) {
+        dut.clock.step(); waited += 1
+      }
+      assert(dut.io.initialize.ready.peek().litToBoolean,
+        "initialize must be accepted")
+      dut.clock.step()
+      dut.io.initialize.valid.poke(false.B)
+      dut.clock.step(2)
+
+      // vse32.v v1, (x1), unmasked
+      val storeInstruction =
+        (BigInt(1) << 25) | (BigInt(1) << 15) |
+          (BigInt(6) << 12) | (BigInt(1) << 7) | 0x27
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.instruction.poke(storeInstruction.U)
+      dut.io.in.bits.pc.poke(0x1000.U)
+      dut.io.in.bits.warpId.poke(0.U)
+      dut.io.in.bits.activeMask.poke("b1111".U)
+      dut.io.in.bits.decoded.unit.poke(VectorUnit.loadStore)
+      dut.io.in.bits.decoded.vm.poke(true.B)
+      dut.io.in.bits.decoded.mop.poke(0.U)
+      dut.io.in.bits.decoded.readsVs1.poke(false.B)
+      dut.io.in.bits.decoded.readsVs2.poke(false.B)
+      dut.io.in.bits.decoded.readsVs2Pair.poke(false.B)
+      dut.io.in.bits.decoded.readsScalar.poke(true.B)
+      dut.io.in.bits.decoded.writesVd.poke(false.B)
+      dut.io.in.bits.decoded.memoryRead.poke(false.B)
+      dut.io.in.bits.decoded.memoryWrite.poke(true.B)
+      var cycles = 0
+      while (!dut.io.in.ready.peek().litToBoolean && cycles < 12) {
+        dut.clock.step(); cycles += 1
+      }
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.memoryRequest.valid.peek().litToBoolean && cycles < 12) {
+        dut.clock.step(); cycles += 1
+      }
+      assert(dut.io.memoryRequest.valid.peek().litToBoolean,
+        "store must reach the memory port")
+      assert(dut.io.memoryRequest.bits.isStore.peek().litToBoolean)
+      for (lane <- 0 until config.lanes) {
+        val got = dut.io.memoryRequest.bits.writeData(lane).peek().litValue
+        assert(got == BigInt(lane),
+          s"v1 lane$lane stored 0x${
+            got.toString(16)}, expected ${lane}: the initialize write was lost")
+      }
+    }
+  }
+
   it should "carry vsetvli through issue and commit its scalar vl result" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new VectorBackend(config)) { dut =>

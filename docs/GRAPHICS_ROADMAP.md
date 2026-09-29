@@ -565,29 +565,24 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    `vmsltu` result feeding masked loads and stores is therefore expressible
    today; what is untested is the chain end to end.
 
-   The gap that does block it is the per-lane index. Lowering a guarded scalar
-   loop the obvious way needs the thread id:
+   The per-lane index a compiler needs for a predicated access is available:
+   `WarpContextInitializer` publishes `v1 = localLinearBase + lane`, and
+   measured on the graphics shader CU with a program that only sets `vl` and
+   then stores v1, v1 reads back 0, 1, 2, 3. `VectorBackendSpec` also covers
+   the initialize path on its own, publishing v1 through `io.initialize` and
+   reading the per-lane store data back, so VectorBackend's write into the
+   register file is not in question.
 
-       int i = blockIdx.x * blockDim.x + threadIdx.x;
-       if (i < n) c[i] = a[i] + b[i];
-
-   `n` and the base are warp-uniform and fine in scalar registers, but the
-   predicate is per-thread, so the mask has to be built from `i`.
-   `WarpContextInitializer` is specified to publish `v1 = localLinearBase +
-   lane` for exactly this, and `WarpContextInitializerSpec` asserts it. On the
-   graphics shader CU, though, `v1` reads back as uninitialized data: a program
-   that stores `v1` to memory after launch returns unrelated values, and a
-   following `vmsltu` against a small scalar correctly compares that garbage
-   and yields an all-zero mask. The wiring exists at every level checked
-   (`SingleCuKernelController` line 33, `GpuComputeUnit` line 96, and
-   `KernelShaderStage` instantiates `GpuComputeUnit`), so the fault is inside
-   that path rather than a missing connection, and it is not yet located.
-
-   This has gone unnoticed because the fragment and vertex ABIs do not need
-   `v1`: their SoA arrays are fetched with unit-stride vector loads, where the
-   lane-to-element mapping comes from the load's own stride. A shader only
-   needs an explicit index for a predicated or indexed access, which is
-   exactly the case a compiler meets as soon as it emits a bounds check.
+   What is broken is the integer vector compare, which is what a bounds check
+   needs. `vmsltu.vx v0, v1, x9` leaves v0 at zero and replaces v1 with
+   unrelated data (0xb3865eb6, 0x549f802d, 0x89d37fe6, 0x02b6780a), so it
+   writes neither the packed mask into the destination nor anything derived
+   from the operands. The same program without the compare stores v1
+   correctly, which is what isolates it to the compare. `VectorIntegerAlu`
+   does recognise the opcode, since `outputComparison` spans funct6 0x18 to
+   0x1f and vmsltu is 0x1a, so the fault is in how the compare's operands and
+   destination are routed rather than in decode. Until it is fixed, a compiler
+   cannot emit a data-dependent mask, and masked memory has nothing to consume.
 
    Still not reachable from a guest shader. The validator sandboxes `flw` to
    `imm(x1)` with a non-negative, 4-aligned offset that stays inside
