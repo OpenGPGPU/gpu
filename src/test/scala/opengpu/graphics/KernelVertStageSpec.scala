@@ -99,11 +99,26 @@ class KernelVertStageSpec extends AnyFlatSpec {
     mem.putWord(lineAddr, wordBase + 7, BigInt(texV & 0xffffffffL))
   }
 
-  private def pump(dut: KernelVertStage, mem: MemModel, maxCycles: Int = 20000): Unit = {
+  private def pump(
+      dut: KernelVertStage,
+      mem: MemModel,
+      maxCycles: Int = 20000,
+      captured: Option[scala.collection.mutable.ArrayBuffer[
+          Seq[(BigInt, BigInt, BigInt, BigInt)]]] = None): Unit = {
     var kResp = false; var kId = BigInt(0); var kData = BigInt(0)
     var wResp = false; var wId = BigInt(0); var wData = BigInt(0)
     var cycles = 0
     while (cycles < maxCycles && !dut.io.done.peek().litToBoolean) {
+      for (buffer <- captured; if buffer != null &&
+          dut.io.vertOut.valid.peek().litToBoolean &&
+          dut.io.vertOut.ready.peek().litToBoolean) {
+        buffer += (0 until 3).map { k =>
+          (dut.io.vertOut.bits.clip(k).x.peek().litValue,
+            dut.io.vertOut.bits.clip(k).y.peek().litValue,
+            dut.io.vertOut.bits.uv(k).u.peek().litValue,
+            dut.io.vertOut.bits.uv(k).v.peek().litValue)
+        }
+      }
       dut.io.memResp.valid.poke(kResp)
       if (kResp) {
         dut.io.memResp.bits.transactionId.poke(kId.U)
@@ -247,6 +262,66 @@ class KernelVertStageSpec extends AnyFlatSpec {
         s"vertex 0 clip_z mismatch")
       assert(mem.getWord(kernargBase + 11 * arrayStride) == BigInt(v._4),
         s"vertex 0 clip_w mismatch")
+    }
+  }
+
+  // A scalar shader cannot address its own vertex: x8 is the warp's
+  // localLinearBase (WorkgroupDispatcher derives it as issuedWarps * lanes) and
+  // the scalar register file holds one value per warp, so every lane in a warp
+  // computes the same thing. A vertex shader has to be lane-parallel like the
+  // fragment one: one vertex per lane, each SoA array fetched with a
+  // unit-stride vector load. This covers all three vertices and the texture
+  // coordinates, which nothing asserted before.
+  it should "transform each vertex per lane and swap u with v" in {
+    val mem = new MemModel
+    val outIndex = Seq(8, 9, 10, 11, 12, 13, 15, 14)
+    var pc = 0
+    putInstr(mem, pc, vsetivli(smallConfig.lanes)); pc += 1
+    for (f <- 0 until 8) {
+      putInstr(mem, pc, addi(10, 1, f * arrayStride)); pc += 1
+      putInstr(mem, pc, vle32(10, f + 2)); pc += 1
+      putInstr(mem, pc, addi(11, 1, outIndex(f) * arrayStride)); pc += 1
+      putInstr(mem, pc, vse32(11, f + 2)); pc += 1
+    }
+    putInstr(mem, pc, cease); pc += 1
+
+    val verts = Seq(
+      (0x00010000, 0x00020000, 0x00030000, 0x00010000, 0xff0000ffL, 100, 0x1000, 0x9000),
+      (0x00040000, 0x00050000, 0x00060000, 0x00010000, 0x00ff00ffL, 200, 0x2000, 0xa000),
+      (0x00070000, 0x00080000, 0x00090000, 0x00010000, 0x0000ffffL, 300, 0x3000, 0xb000))
+    for ((v, i) <- verts.zipWithIndex)
+      loadVertex(mem, i, v._1, v._2, v._3, v._4, v._5, v._6, v._7, v._8)
+
+    val emitted =
+      scala.collection.mutable.ArrayBuffer[Seq[(BigInt, BigInt, BigInt, BigInt)]]()
+    simulate(new KernelVertStage(smallConfig)) { dut =>
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      pokeDefaults(dut)
+      dut.io.shaderPc.poke(shaderPc.U)
+      dut.io.kernargBase.poke(kernargBase.U)
+      dut.io.kernargBankStride.poke(0.U)
+      dut.io.vertBufferBase.poke(vbBase.U)
+      dut.io.vertCount.poke(3.U)
+      dut.io.vertStride.poke(vertStride.U)
+      dut.io.fragShaderPc.poke(0x5000.U)
+      dut.io.fragKernarg.poke(0x6000.U)
+      dut.io.start.poke(true.B)
+      dut.clock.step()
+      dut.io.start.poke(false.B)
+
+      pump(dut, mem, captured = Some(emitted))
+    }
+
+    assert(emitted.size == 1, s"expected one triangle, got ${emitted.size}")
+    val tri = emitted.head
+    for (k <- 0 until 3) {
+      val v = verts(k)
+      val got = tri(k)
+      assert(got._1 == BigInt(v._1), s"v$k clip_x ${got._1} != ${v._1}")
+      assert(got._2 == BigInt(v._2), s"v$k clip_y ${got._2} != ${v._2}")
+      // The shader writes tex_u to out_v and tex_v to out_u.
+      assert(got._3 == BigInt(v._8), s"v$k uv.u ${got._3} != ${v._8}")
+      assert(got._4 == BigInt(v._7), s"v$k uv.v ${got._4} != ${v._7}")
     }
   }
 
