@@ -48,3 +48,12 @@ test execution disabled to stay within runner memory limits, plus host driver
 tests for quicker feedback. This command is the full local gate,
 including guest execution; keep its terminal output with the revision being
 qualified.
+
+The Scala stage spends most of its time compiling Verilator models rather than
+simulating them, so `src/test/scala/opengpu/testutil/GpuSim.scala` caches each
+compiled model under `target/chiselsim` by the digest of its Verilog. A cold
+checkout therefore qualifies at the historical speed, and a machine or CI runner
+that keeps `target/chiselsim` qualifies several times faster. CI caches that
+directory per shard. Run `sbt -Dopengpu.simCache=off test` to measure or debug
+against uncached Verilator builds; the two paths run the same elaboration,
+peeking, poking and assertion checks, so only build time differs.

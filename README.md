@@ -16,6 +16,7 @@ package that is incrementally verifiable.
 - `src/main/scala/opengpu/graphics/` — graphics pipeline (rasterizer, interpolators, output merger, geometry, command buffer, unified render descriptors and completions), see `docs/GRAPHICS_ROADMAP.md`
 - `src/main/scala/opengpu/config/` — architectural configuration
 - `src/test/scala/` — tests
+- `src/test/scala/opengpu/testutil/` — shared Scala test harness (cached Verilator simulation)
 - `build.sbt` — Scala and Chisel dependency configuration
 - `docs/GRAPHICS_ROADMAP.md` — implemented surface, capability status, remaining work
 - `docs/FUNCTIONAL_QUALIFICATION.md` — full Scala, host driver and guest gate
@@ -33,6 +34,17 @@ package that is incrementally verifiable.
 2. Run:
    - `sbt compile`
    - `sbt test`
+
+### Test runtime
+
+Compiling the Verilator model, not simulating it, dominates the suite, so specs
+drive their designs through `opengpu.testutil.GpuSim` instead of
+`chisel3.simulator.EphemeralSimulator`. `GpuSim` keeps each compiled model in a
+content-addressed cache under `target/chiselsim`, keyed by the digest of the
+Verilog and the compiler flags, so a design is built once and reused by every
+spec that touches it and by every later run. A cold full run is unchanged; a warm
+one is several times faster. The cache is safe to share between concurrent test
+threads, is dropped by `sbt clean`, and `-Dopengpu.simCache=off` turns it off.
 
 ## Current scope
 
