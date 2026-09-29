@@ -130,6 +130,20 @@ jobs:
       run: |
         rm -rf "${HOME}/.cache/coursier/v1/https/repo1.maven.org/maven2/org/scala-lang/scala2-sbt-bridge/"
         sbt --batch 'show scalaCompilerBridgeBinaryJar'
+    - name: Prepare simulation cache directory
+      run: mkdir -p target/chiselsim
+    - name: Cache compiled simulation models
+      id: simcache
+      # GpuSim keys each Verilator build by the digest of its Verilog, so a
+      # stale entry is never used and the cache key only has to cover the
+      # toolchain.  One entry per shard, with a shared restore key, so shards
+      # keep accumulating their own designs across runs.
+      uses: actions/cache@v4
+      with:
+        path: target/chiselsim
+        key: simcache-${{ steps.verilator-key.outputs.key }}-${{ matrix.shard }}
+        restore-keys: |
+          simcache-${{ steps.verilator-key.outputs.key }}-
     - name: Run shard ${{ matrix.shard }}
       run: |
         # Serial inside each runner: forked/shared-JVM parallelism OOMs under
