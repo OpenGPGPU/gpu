@@ -574,15 +574,23 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    register file is not in question.
 
    What is broken is the integer vector compare, which is what a bounds check
-   needs. `vmsltu.vx v0, v1, x9` leaves v0 at zero and replaces v1 with
-   unrelated data (0xb3865eb6, 0x549f802d, 0x89d37fe6, 0x02b6780a), so it
-   writes neither the packed mask into the destination nor anything derived
-   from the operands. The same program without the compare stores v1
-   correctly, which is what isolates it to the compare. `VectorIntegerAlu`
-   does recognise the opcode, since `outputComparison` spans funct6 0x18 to
-   0x1f and vmsltu is 0x1a, so the fault is in how the compare's operands and
-   destination are routed rather than in decode. Until it is fixed, a compiler
-   cannot emit a data-dependent mask, and masked memory has nothing to consume.
+   needs. Storing v1 immediately before and after `vmsltu.vx v0, v1, x9` gives
+   the initializer's 0, 1, 2, 3 on both sides, so the compare does not disturb
+   v1 and the earlier reading that it did was a probe that stored v0 and v1 to
+   the same address and read back the second store. The compare does target the
+   right register: v0 is the one that changes. What is wrong is the value. v0
+   comes back as 0xb3865eb6, 0x549f802d, 0x89d37fe6, 0x02b6780a instead of the
+   packed mask 0x00000007 for lanes 0 to 2.
+
+   That points at the packing rather than the decode or the destination.
+   `VectorIntegerAlu` recognises the opcode, since `outputComparison` spans
+   funct6 0x18 to 0x1f and vmsltu is 0x1a, and it deliberately leaves `data` as
+   the old destination for a compare while putting the result in `mask`, with
+   `VectorBackend` re-forming the written word through `packedMask` as the
+   mask in the low `lanes` bits and the old destination above. All four words
+   of v0 are unrelated data, so that path is not producing what it should.
+   Until it is fixed a compiler cannot emit a data-dependent mask, and masked
+   memory has nothing to consume.
 
    Still not reachable from a guest shader. The validator sandboxes `flw` to
    `imm(x1)` with a non-negative, 4-aligned offset that stays inside
