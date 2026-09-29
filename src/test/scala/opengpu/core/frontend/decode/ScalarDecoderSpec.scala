@@ -1,8 +1,8 @@
 package opengpu.core.frontend.decode
 
 import chisel3._
-import chisel3.simulator.EphemeralSimulator._
 import opengpu.core.execute.integer.AluOp
+import opengpu.testutil.GpuSim._
 import org.scalatest.flatspec.AnyFlatSpec
 
 class DecoderSpec extends AnyFlatSpec {

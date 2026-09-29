@@ -1,10 +1,10 @@
 package opengpu.system
 
 import chisel3._
-import chisel3.simulator.EphemeralSimulator._
 import opengpu.command.GpuCommandOpcode
 import opengpu.config.GpuConfig
 import opengpu.graphics.{GpuCommandMmioRegs, GraphicsConfig, RenderHostRegs}
+import opengpu.testutil.GpuSim._
 import org.scalatest.flatspec.AnyFlatSpec
 
 import scala.collection.mutable

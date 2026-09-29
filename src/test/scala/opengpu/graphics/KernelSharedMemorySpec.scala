@@ -2,11 +2,11 @@ package opengpu.graphics
 
 import chisel3._
 import chisel3.util._
-import chisel3.simulator.EphemeralSimulator._
 import opengpu.config.GpuConfig
 import opengpu.core.GpuComputeUnit
 import opengpu.core.memory._
 import opengpu.dispatch.{KernelCompletion, KernelLaunch}
+import opengpu.testutil.GpuSim._
 import org.scalatest.flatspec.AnyFlatSpec
 
 /** Composes the compute unit (the SIMT-kernel shader) and the word->line bridge

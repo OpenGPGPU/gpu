@@ -2,10 +2,10 @@ package opengpu.core.backend.issue
 
 import chisel3._
 import chisel3.util._
-import chisel3.simulator.EphemeralSimulator._
 import opengpu.config.GpuConfig
 import opengpu.core.backend.register.ScalarRegisterWrite
 import opengpu.core.frontend.decode.{DecodePipe, DecodeRequest}
+import opengpu.testutil.GpuSim._
 import org.scalatest.flatspec.AnyFlatSpec
 
 private class ScalarIssueHarness(config: GpuConfig) extends Module {

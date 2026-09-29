@@ -1,7 +1,7 @@
 package opengpu.system
 
 import chisel3._
-import chisel3.simulator.EphemeralSimulator._
+import opengpu.testutil.GpuSim._
 
 /** Shared cycle-accurate AXI stimulus for integration tests and workload measurement. */
 trait GpuHostTestSupport {

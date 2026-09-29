@@ -1,7 +1,7 @@
 package opengpu.core.backend.register
 
 import chisel3._
-import chisel3.simulator.EphemeralSimulator._
+import opengpu.testutil.GpuSim._
 import circt.stage.ChiselStage
 import opengpu.config.GpuConfig
 import org.scalatest.flatspec.AnyFlatSpec

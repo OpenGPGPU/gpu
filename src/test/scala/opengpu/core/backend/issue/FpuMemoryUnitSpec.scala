@@ -1,8 +1,8 @@
 package opengpu.core.backend.issue
 
 import chisel3._
-import chisel3.simulator.EphemeralSimulator._
 import opengpu.config.GpuConfig
+import opengpu.testutil.GpuSim._
 import org.scalatest.flatspec.AnyFlatSpec
 
 class FpuMemoryUnitSpec extends AnyFlatSpec {

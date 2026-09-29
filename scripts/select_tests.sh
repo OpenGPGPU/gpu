@@ -47,6 +47,10 @@ for f in "$@"; do
           pkgs+=("opengpu.system.*" "opengpu.graphics.*" "opengpu.command.*") ;;
         "$main_root"/config/*|src/main/scala/yunsuan/*)
           full=1 ;;
+        # Every spec drives its design through the shared simulation harness, so
+        # a change to it can move any test.
+        "$test_root"/testutil/*)
+          full=1 ;;
       esac
       p=$(map_pkg "$f")
       if [ "$p" = "ALL_NEEDED" ]; then

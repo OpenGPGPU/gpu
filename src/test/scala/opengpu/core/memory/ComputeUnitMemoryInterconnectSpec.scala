@@ -1,8 +1,8 @@
 package opengpu.core.memory
 
 import chisel3._
-import chisel3.simulator.EphemeralSimulator._
 import opengpu.config.GpuConfig
+import opengpu.testutil.GpuSim._
 import org.scalatest.flatspec.AnyFlatSpec
 
 class ComputeUnitMemoryInterconnectSpec extends AnyFlatSpec {

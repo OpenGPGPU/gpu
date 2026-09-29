@@ -1,7 +1,7 @@
 package opengpu.core.execute.fpu
 
 import chisel3._
-import chisel3.simulator.EphemeralSimulator._
+import opengpu.testutil.GpuSim._
 import org.scalatest.flatspec.AnyFlatSpec
 
 class Fp32FmaLaneSpec extends AnyFlatSpec {

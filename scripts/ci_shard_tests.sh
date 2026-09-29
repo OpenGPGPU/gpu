@@ -37,6 +37,7 @@ shard_prefixes() {
         "opengpu/dispatch" \
         "opengpu/dma" \
         "opengpu/command" \
+        "opengpu/testutil" \
         "opengpu/util"
       ;;
     *)

@@ -1,9 +1,9 @@
 package opengpu.core.execute.memory
 
 import chisel3._
-import chisel3.simulator.EphemeralSimulator._
 import opengpu.config.GpuConfig
 import opengpu.core.memory.AtomicMemoryOp
+import opengpu.testutil.GpuSim._
 import org.scalatest.flatspec.AnyFlatSpec
 
 class SharedAtomicExecuteStageSpec extends AnyFlatSpec {

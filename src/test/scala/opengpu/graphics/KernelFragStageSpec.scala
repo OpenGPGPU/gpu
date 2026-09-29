@@ -2,7 +2,6 @@ package opengpu.graphics
 
 import chisel3._
 import chisel3.util._
-import chisel3.simulator.EphemeralSimulator._
 import opengpu.config.GpuConfig
 import opengpu.core.memory.{
   CacheLineInvalidate,
@@ -11,6 +10,7 @@ import opengpu.core.memory.{
   SharedAtomicRequest,
   SharedAtomicResponse
 }
+import opengpu.testutil.GpuSim._
 import org.scalatest.flatspec.AnyFlatSpec
 
 /** Test wrapper that provides an external KernelShaderStage to the

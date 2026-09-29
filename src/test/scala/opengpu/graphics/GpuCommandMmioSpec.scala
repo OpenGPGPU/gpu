@@ -1,9 +1,9 @@
 package opengpu.graphics
 
 import chisel3._
-import chisel3.simulator.EphemeralSimulator._
 import opengpu.command.GpuCommandOpcode
 import opengpu.config.GpuConfig
+import opengpu.testutil.GpuSim._
 import org.scalatest.flatspec.AnyFlatSpec
 
 class GpuCommandMmioSpec extends AnyFlatSpec {

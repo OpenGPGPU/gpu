@@ -2,9 +2,9 @@ package opengpu.core.backend
 
 import chisel3._
 import chisel3.util._
-import chisel3.simulator.EphemeralSimulator._
 import opengpu.config.GpuConfig
 import opengpu.core.frontend.decode.{DecodePipe, DecodeRequest}
+import opengpu.testutil.GpuSim._
 import org.scalatest.flatspec.AnyFlatSpec
 
 private class ScalarBackendHarness(config: GpuConfig) extends Module {
