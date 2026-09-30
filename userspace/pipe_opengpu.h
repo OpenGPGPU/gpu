@@ -76,6 +76,12 @@ int pipe_opengpu_launch_grid(struct pipe_opengpu_context *ctx,
 int pipe_opengpu_clear(struct pipe_opengpu_context *ctx, uint32_t pattern,
                        struct pipe_opengpu_fence **out_fence);
 
+/* Fill an arbitrary GEM range. Offset and bytes must be 64-byte aligned. */
+int pipe_opengpu_fill(struct pipe_opengpu_context *ctx,
+                      struct pipe_opengpu_resource *dst,
+                      uint64_t offset, uint64_t bytes, uint32_t pattern,
+                      struct pipe_opengpu_fence **out_fence);
+
 /* Whole-buffer blit (64-byte aligned offset/bytes). Gallium resource_copy. */
 int pipe_opengpu_blit(struct pipe_opengpu_context *ctx,
                       struct pipe_opengpu_resource *dst,

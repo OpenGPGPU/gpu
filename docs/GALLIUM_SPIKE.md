@@ -23,11 +23,12 @@ Out-of-tree winsys in-tree under `userspace/`:
 | `examples/pipe_texture_draw` | `bind_texture` + textured `draw_vbo` (FF or `vtex.sample` FS) |
 | `examples/pipe_vertex_draw` | VS/VB bind + `draw_vertex` (vertex+fragment cores) |
 | `examples/pipe_present` | mode-sized clear + draw + `pipe_opengpu_present` |
+| `examples/pipe_desktop` | GPU-drawn desktop frame (fill, blit, triangle, pointer) + present |
 
-Fixed-function guest apps:
+Fixed-function guest apps (shader cores off):
 
 ```sh
-GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
+GPU_FRAG_CORE=0 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
   scripts/run_arti_gpu.sh
 ```
 
@@ -35,7 +36,7 @@ Fragment-core guest apps (tint + pipe clear/draw — preferred “use the GPU”
 path under ARTI):
 
 ```sh
-GPU_FRAG_CORE=1 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
+GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
   scripts/run_arti_gpu.sh
 ```
 
@@ -95,6 +96,9 @@ Capability bits: `driver/gpu_abi.h` (`GpuAbiLayoutSpec` guards drift).
 2. Optional: real Mesa `pipe_opengpu` that calls this winsys (or inlines it)
    only if NIR/winsys bootstrap stays smaller than growing
    `userspace/examples/`.
+   The Debian desktop that this winsys has to serve, and what the shader
+   sandbox still rejects, is under "Debian graphical desktop" in
+   [GRAPHICS_ROADMAP.md](GRAPHICS_ROADMAP.md).
 3. Gate: guest draw succeeds; `scripts/qualify_functional.sh` still green
    (userspace apps are opt-in via `GPU_USERSPACE_EXAMPLES`, not on the
    default qualify path).

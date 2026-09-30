@@ -154,12 +154,58 @@ Flat workloads remain OM-bound (`om_stall` ≈ `raster_stall`, `om_conflict` = 0
 `shader_16_1x` is staging-bound
 (`om_stall` = 0, `raster_stall` = 63089, `staging_read_bytes` = 49152).
 
+## Debian graphical desktop
+
+The goal is a graphical desktop in the Debian guest under ARTI. Its purpose
+is to prove that the RTL and the software stack work together: the session
+submits through the DRM driver, the RTL executes the jobs, and the pixels on
+scanout are the pixels those jobs wrote. The QEMU window is a view of guest
+memory. Host simulation time is not part of the proof; wall-clock numbers
+later in this file size the model, and they do not gate this goal.
+
+`opengpu_drm_test`, `opengpu_triangle_present`, and the `pipe_*` examples
+already take that path. `triangle_present` calls `opengpu_render`, waits for
+the fence, checks the colour GEM, then `SETCRTC`s that buffer. The 320x240
+Debian run (38,160 red triangle pixels, pixel (1,1) `ff0000`) is
+fixed-function RTL output. Boot now defaults to both shader cores and to
+`OPENGPU_AUTO_DISPLAY=desktop`. `gradient` and `opengpu_kms_present` paint
+the framebuffer on the CPU, so a desktop built that way does not prove the
+graphics RTL.
+
+Still to do:
+
+1. **Desktop client, landed.** `userspace/examples/pipe_desktop` fills the
+   background and panel, blits the window, draws a triangle into it, blits a
+   pointer, and `pipe_opengpu_present`s that GEM. It checks those pixels
+   before printing `OPENGPU DESKTOP PASS`. `--hold` keeps the session and
+   moves the pointer from evdev. `OPENGPU_AUTO_DISPLAY=desktop` is the Debian
+   boot default (`opengpu-boot-display.service` runs it). `triangle` remains
+   the single-draw boot.
+2. **A desktop mode.** KMS advertises one mode, and the Debian profile is
+   320x240. Raise it in `driver/gpu_integration_debian.yaml` and rebuild with
+   `scripts/build_arti_debian_display.sh`. Arti bakes the framebuffer size in
+   at compile time, and `run_arti_debian.sh` does not rebuild the RTL. There
+   is no cursor plane, so the compositor draws the pointer with a GPU fill or
+   blit. Rebuild once before expecting shader pixels: a model already on disk
+   keeps the elaboration it was built with. The fragment shader binaries are
+   staged by default.
+3. **Confirm it on the Debian guest.** Boot `scripts/run_arti_debian.sh` and
+   expect `OPENGPU DESKTOP PASS` (panel, window, triangle and pointer values).
+   The scanout image is that same GEM. `fragment_tint`, `pipe_texture_draw`,
+   and `pipe_vertex_draw` remain the shader coverage beside this frame.
+4. **Mesa only after that frame is real.** Stock GTK and Qt clients need
+   OpenGL. The Gallium spike is [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md). The
+   shader sandbox is still 256 instructions, four forward branches, no loops
+   or calls, e32/m1 only; see "Workload-driven ISA" below. Widen it when a
+   desktop shader hits the limit. Index buffers, instancing, and a second
+   colour target wait for the same reason.
 
 ## Next work
 
-Priority is **functional**: a usable DRM GPU under ARTI/QEMU (open card0,
-submit, fence, read back). Cycle / PPA work stays secondary unless a guest
-path is blocked.
+Priority is **functional**: the Debian graphical desktop above, which is a
+usable DRM GPU under ARTI/QEMU (open card0, submit, fence, scan out RTL
+output). Cycle / PPA work stays secondary unless a guest path is blocked.
+Simulation wall-clock is not a gate.
 
 The functional baseline includes private Sv32 mappings with context-local
 revocation and ASID reuse, failure cleanup across compute/render ioctls,
@@ -192,15 +238,14 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
      `pipe_depth_pass`, `pipe_msaa_draw`, `pipe_vertex_draw` (skips without a
      vertex core; corpus tint binary staged as `/opengpu_fragment_tint.bin`).
    - Vertex+fragment cores: `pipe_vertex_draw`, `pipe_resolve`.
-   Preferred programmable bring-up:
+   Both shader cores are the default. Preferred programmable bring-up:
    ```sh
-   GPU_FRAG_CORE=1 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
+   GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
      scripts/run_arti_gpu.sh
    ```
-   Vertex+fragment:
+   Fixed-function is the opt-out:
    ```sh
-   GPU_FRAG_CORE=1 GPU_VERT_CORE=1 GPU_USERSPACE_EXAMPLES=1 \
-     GPU_USERSPACE_EXAMPLES_ONLY=1 scripts/run_arti_gpu.sh
+   GPU_FRAG_CORE=0 scripts/run_arti_gpu.sh
    ```
    Expect `OPENGPU USERSPACE EXAMPLES PASS`. `GPU_PIPE_SPIKE=1` is a
    compatibility alias for the fragment-core userspace path. Pipe DMA/draw
@@ -248,7 +293,7 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    interactive Debian model once, then boot it:
    ```sh
    scripts/build_arti_debian_display.sh
-   OPENGPU_AUTO_DISPLAY=triangle QEMU_DISPLAY=cocoa scripts/run_arti_debian.sh
+   QEMU_DISPLAY=cocoa scripts/run_arti_debian.sh
    ```
    The standalone DRM scanout check uses `scripts/run_arti_display.sh` to
    capture the rendered modeset after the initial console scanout. The 64x64
@@ -259,9 +304,10 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    the guest's expected framebuffer value. The Debian runner enables
    `opengpu-boot-display.service` by default: on boot it loads the driver,
    whose DRM fbdev client provides the Debian framebuffer console. Use
-   `OPENGPU_AUTO_DISPLAY=triangle` for a GPU-rendered triangle on scanout,
-   `OPENGPU_AUTO_DISPLAY=gradient` for the CPU KMS fill demo, or
-   `OPENGPU_AUTO_DISPLAY=0` for manual loading. A headless Debian boot
+   `OPENGPU_AUTO_DISPLAY` defaults to `desktop` (`examples/pipe_desktop`).
+   `OPENGPU_AUTO_DISPLAY=triangle` is the single GPU triangle.
+   `OPENGPU_AUTO_DISPLAY=0` loads manually. `gradient` asks the CPU to
+   paint the framebuffer and is not a GPU proof. A headless Debian boot
    previously confirmed `/dev/dri/card0`, an active service, and a 16x16
    scanout PPM. `examples/triangle_present` and `examples/pipe_present` close
    the graphics-client loop: render into the mode buffer, then SETCRTC for
@@ -351,8 +397,12 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
     workers than the model's `--threads 8` needs. A fill still does not speed
     up because Verilator partitions the logic graph, not memory traffic: with
     only the fill FSM and the memory AXI awake most tasks have nothing to do
-    and only the barrier is left. Raising `ARTI_VERILATOR_THREADS`
-    re-partitions the logic and needs a re-verilate; `contextp()->threads(n)`
+    and only the barrier is left. The partition count is fixed at 8 inside
+    ARTI's generated `build_embedded.sh` (`ARTI_EVAL_REGIONS`, not
+    user-facing; the old `ARTI_VERILATOR_THREADS` knob is gone), which fails
+    the build if codegen emits fewer than two `__Vthread__` partitions.
+    Changing it re-partitions the logic and needs a re-verilate;
+    `contextp()->threads(n)`
     only sizes the pool and hard-aborts if it is below the model's `--threads`
     value, so it caps overhead on small jobs rather than adding parallelism.
     The binding limit is parallel *work*: the design defaults to one compute
@@ -561,36 +611,54 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    builds `memoryMask` as `decode.activeMask & vlMask & Mux(vm, allLanes,
    predicateMask)`, and `VectorRegisterBank.predicateMask` is the architectural
    v0 read port (the low `lanes` bits of v0's flat data). Every unit folds the
-   mask in the same place, so the memory unit needs no v0 port of its own. A
-   `vmsltu` result feeding masked loads and stores is therefore expressible
-   today; what is untested is the chain end to end.
+   mask in the same place, so the memory unit needs no v0 port of its own.
 
-   The per-lane index a compiler needs for a predicated access is available:
-   `WarpContextInitializer` publishes `v1 = localLinearBase + lane`, and
-   measured on the graphics shader CU with a program that only sets `vl` and
-   then stores v1, v1 reads back 0, 1, 2, 3. `VectorBackendSpec` also covers
-   the initialize path on its own, publishing v1 through `io.initialize` and
-   reading the per-lane store data back, so VectorBackend's write into the
-   register file is not in question.
+   The per-lane index a compiler needs for a predicated access is available
+   on the graphics shader CU too: `KernelShaderStage` instantiates
+   `GpuComputeUnit`, whose `SingleCuKernelController` owns the
+   `WarpContextInitializer` that publishes `v1 = localLinearBase + lane`.
+   The whole bounds-check chain is covered: `KernelShaderStageSpec`
+   ("predicate a store on a vmsltu.vx mask built from v1") computes
+   `vmsltu.vx v0, v1, x9` with x9 = 2 and a store predicated on v0 writes
+   lanes 0 and 1 only, and `VectorBackendSpec` pins the same compare plus
+   back-to-back masked and unmasked stores below the CU.
 
-   What is broken is the integer vector compare, which is what a bounds check
-   needs. Storing v1 immediately before and after `vmsltu.vx v0, v1, x9` gives
-   the initializer's 0, 1, 2, 3 on both sides, so the compare does not disturb
-   v1 and the earlier reading that it did was a probe that stored v0 and v1 to
-   the same address and read back the second store. The compare does target the
-   right register: v0 is the one that changes. What is wrong is the value. v0
-   comes back as 0xb3865eb6, 0x549f802d, 0x89d37fe6, 0x02b6780a instead of the
-   packed mask 0x00000007 for lanes 0 to 2.
+   The integer vector compare is not broken. The earlier probe encoded
+   `vmsltu.vx` with funct3 010, which is OPMVX, not OPIVX: the encoding
+   0x6a12a057 fails `VectorDecoder` and raises an illegal-instruction trap, and
+   funct3 100 is required, giving 0x6a12c057 for `vmsltu.vx v0, v1, x5`. Run
+   with the correct encoding on the graphics shader CU, the compare decodes to
+   unit 7, `VectorExecutionDispatch` routes it to the integer ALU, and v0 comes
+   back as 0xb3865eb7: the low nibble is the packed mask 0x7 for lanes 0 to 2,
+   and the high 28 bits are the old v0, which nothing in the program ever
+   wrote. The same 0xb3865eb0 prefix appears in the words this was recorded
+   against before, which differ only in the low nibble (6 there, 7 here), so
+   the two observations are the same uninitialised destination with the mask in
+   the one field that the compare sets.
 
-   That points at the packing rather than the decode or the destination.
-   `VectorIntegerAlu` recognises the opcode, since `outputComparison` spans
-   funct6 0x18 to 0x1f and vmsltu is 0x1a, and it deliberately leaves `data` as
-   the old destination for a compare while putting the result in `mask`, with
-   `VectorBackend` re-forming the written word through `packedMask` as the
-   mask in the low `lanes` bits and the old destination above. All four words
-   of v0 are unrelated data, so that path is not producing what it should.
-   Until it is fixed a compiler cannot emit a data-dependent mask, and masked
-   memory has nothing to consume.
+   The expectation "v0 should hold 0x00000007" was the error. RVV defines only
+   the low bits of v0 for a mask-producing instruction; the bits above them and
+   lanes 1 to 3 are architecturally undefined, so an unwritten destination
+   reading back whatever the black-box SRAM powers up to is not a defect in the
+   compare. That value is stable across runs and across source changes because
+   Verilator seeds its random reset from a fixed constant, which is what made
+   it look like a computed result. The unpacking in `VectorBackend` was checked
+   directly and is correct as written: lane 0 occupies the low `xLen` bits of
+   the flat word, so dropping the low `lanes` bits of `aluFlat` drops exactly
+   lane 0's low bits and leaves every other lane where it was. Rewriting it as
+   a per-lane splice changed nothing observable, and a unit test that pins the
+   packed value passes against both forms, so the rewrite was dropped.
+
+   What does remain is that the vector register file is never initialised, so
+   any read of an unwritten vector register returns the SRAM's power-up
+   contents rather than zero. That is a separate question from the compare and
+   is not recorded as a compare defect. The shader validator's
+   defined-register tracking already keeps guest shaders from reading it.
+
+   A `vle32.v` followed directly by `vse32.v` of the same register stores the
+   loaded words (`KernelShaderStageSpec`, "store a vector load's data when the
+   store follows it directly"), so the `VectorRegisterScoreboard` RAW
+   interlock on the store's `readVd` holds without an intervening op.
 
    Still not reachable from a guest shader. The validator sandboxes `flw` to
    `imm(x1)` with a non-negative, 4-aligned offset that stays inside
@@ -599,13 +667,9 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    fragment output window the vector store path already uses. That is a sandbox
    change rather than a decode change, so it is left alone here.
 
-   One open observation, not asserted anywhere: a `VL=4` `vse32.v` produced a
-   `0xfff` byte mask, three lanes rather than four, on a bare
-   `KernelShaderStage` harness. A bit sweep of the `vsetvli` word did not
-   isolate the field, and the same encoding produces pixel-correct output
-   through the fragment path under ARTI, so this is unresolved: it is either a
-   harness artefact or specific to the fragment-batch lane count. Worth a
-   dedicated test before trusting CU-level vector stores.
+   The `0xfff` byte mask a `VL=4` `vse32.v` produced on the bare
+   `KernelShaderStage` harness is the harness, not the CU: `runShader` launches
+   `localX = 3`, so lane 3 is inactive and three 4-byte lanes are correct.
 
    `vfmerge`/`vfmv.v.f` and scalar FP
    arithmetic remain excluded. Add further VFUNARY0 /

@@ -3,16 +3,21 @@
 # KMS test, then boot the end-to-end Linux test. The ARTI setup is incremental
 # after the first run, so this remains the normal development entry point.
 #
-# Verilator is the default simulator (8 simulation threads). Set
-# GPU_SIM=flashsim to use FlashSim (FLASHSIM_DIR defaults to ../FlashSim).
-# QEMU, Linux and the driver stay the same.
+# Verilator is the default simulator. Set GPU_SIM=flashsim to use FlashSim
+# (FLASHSIM_DIR defaults to ../FlashSim). QEMU, Linux and the driver stay the
+# same. There is no thread-count knob: Verilator picks its own runtime pool,
+# and the eval-region count it partitions to is chosen inside build_embedded.sh,
+# which also fails the build if codegen comes back single-threaded.
+#
+# The fragment and vertex shader cores are on unless turned off
+# (GPU_FRAG_CORE=0 GPU_VERT_CORE=0). GPU_FRAG_CORE=0 alone keeps the vertex
+# core off too.
 set -euo pipefail
 
 GPU_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ARTI_DIR="${ARTI_DIR:-$GPU_DIR/../arti}"
 FLASHSIM_DIR="${FLASHSIM_DIR:-$GPU_DIR/../FlashSim}"
 GPU_SIM="${GPU_SIM:-verilator}"
-export ARTI_VERILATOR_THREADS="${ARTI_VERILATOR_THREADS:-8}"
 INTEGRATION_CONFIG="${INTEGRATION_CONFIG:-$GPU_DIR/driver/gpu_integration.yaml}"
 # Durable cache next to gpu/arti/FlashSim. /tmp is reaped on macOS.
 ARTI_WORK="${ARTI_WORK:-$(cd "$GPU_DIR/.." && pwd)/arti-work}"
@@ -39,8 +44,15 @@ QEMU_TOOLS="${QEMU_TOOLS:-$ARTI_WORK/qemu-build-tools}"
 ARTI_SETUP_WORK="${WORK_DIR:-$ARTI_WORK}"
 QEMU_BUILD="${QEMU_BUILD:-$ARTI_SETUP_WORK/qemu-arti-build}"
 QEMU_DISPLAY="${QEMU_DISPLAY:-none}"
-GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}"
-GPU_VERT_CORE="${GPU_VERT_CORE:-0}"
+GPU_FRAG_CORE="${GPU_FRAG_CORE:-1}"
+# A fixed-function run sets GPU_FRAG_CORE=0 and leaves the vertex core unset.
+if [ -z "${GPU_VERT_CORE:-}" ]; then
+    if [ "$GPU_FRAG_CORE" = "1" ]; then
+        GPU_VERT_CORE=1
+    else
+        GPU_VERT_CORE=0
+    fi
+fi
 # The integration profile is the single source of the resolution. ARTI derives
 # its QEMU scanout constants from it, so the elaboration, the driver default
 # mode and the work-tree names have to come from the same place; a variable
@@ -113,6 +125,7 @@ case "$GPU_SIM" in
         ;;
 esac
 echo "RTL sim     : $GPU_SIM"
+echo "GPU cores   : frag=$GPU_FRAG_CORE vert=$GPU_VERT_CORE"
 echo "ARTI work   : $ARTI_WORK"
 [ "$GPU_FRAG_CORE" = "0" ] || [ "$GPU_FRAG_CORE" = "1" ] || \
     fail "GPU_FRAG_CORE must be 0 or 1"

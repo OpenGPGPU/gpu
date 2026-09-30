@@ -20,17 +20,23 @@
 #   REBUILD_DISK=1 ./scripts/run_arti_debian.sh   # fresh qcow2 from base image
 #   CLOUDINIT_PACKAGES=1 ./scripts/run_arti_debian.sh  # also apt-install tools (slow)
 #
-# OpenGPU loads at boot and exposes the Debian framebuffer console by default.
-# Set OPENGPU_AUTO_DISPLAY=triangle to render+present a GPU triangle on scanout
-# (cocoa-friendly), gradient for the CPU KMS fill demo, or 0 to load manually.
+# OpenGPU loads at boot and presents a GPU-drawn desktop
+# (OPENGPU_AUTO_DISPLAY=desktop). The RTL writes the pixels. Set
+# OPENGPU_AUTO_DISPLAY=triangle for the single triangle, console for the
+# framebuffer console, or 0 to load manually. gradient paints the framebuffer
+# on the CPU and does not prove the graphics RTL.
+# Fragment and vertex cores are on. The model must have been built with
+# scripts/build_arti_debian_display.sh after that default; an older model
+# stays fixed-function until rebuilt. GPU_FRAG_CORE=0 GPU_VERT_CORE=0 selects
+# the fixed-function elaboration.
 # In the guest (root / arti):
 #   systemctl status opengpu-boot-display.service
 #   /root/load_opengpu.sh test      # opengpu_drm_test (modeset + flip → ARTI scanout)
 #   /root/load_opengpu.sh examples  # pipe/userspace smoke (when staged)
 #   /root/opengpu_triangle_present --hold
 #
-# For a visible primary scanout window with a rendered triangle:
-#   OPENGPU_AUTO_DISPLAY=triangle QEMU_DISPLAY=cocoa ./scripts/run_arti_debian.sh
+# For a visible primary scanout window:
+#   QEMU_DISPLAY=cocoa ./scripts/run_arti_debian.sh
 # Headless present check (PPM of first scanout):
 #   ./scripts/run_arti_display.sh
 set -euo pipefail
@@ -208,15 +214,18 @@ ensure_disk
 
 # Stage pipe/userspace binaries next to the driver so the OPENGPU ISO
 # ships /root/load_opengpu.sh examples. Skip with BUILD_USERSPACE=0.
-# Match GPU_FRAG_CORE to the QEMU binary you boot (this script never
-# rebuilds RTL).
+# This script never rebuilds RTL. GPU_FRAG_CORE selects which guest
+# shader binaries are staged; it must match the model you boot.
+if [ -z "${GPU_FRAG_CORE:-}" ]; then
+    GPU_FRAG_CORE=1
+fi
 if [ "${BUILD_USERSPACE:-1}" = "1" ]; then
-    echo "=== Cross-build guest userspace examples (FRAG=${GPU_FRAG_CORE:-0}) ==="
+    echo "=== Cross-build guest userspace examples (FRAG=$GPU_FRAG_CORE) ==="
     ARTI_WORK="$ARTI_WORK" DRIVER_OUTPUT="$DRIVER_OUTPUT" \
-    GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}" \
+    GPU_FRAG_CORE="$GPU_FRAG_CORE" \
         bash "$GPU_DIR/scripts/build_userspace_guest.sh"
 fi
-case "${OPENGPU_AUTO_DISPLAY:-console}" in
+case "${OPENGPU_AUTO_DISPLAY:-desktop}" in
     gradient)
         [ -x "$DRIVER_OUTPUT/opengpu_kms_present" ] || \
             fail "autodisplay needs $DRIVER_OUTPUT/opengpu_kms_present (set BUILD_USERSPACE=1)"
@@ -224,6 +233,10 @@ case "${OPENGPU_AUTO_DISPLAY:-console}" in
     triangle)
         [ -x "$DRIVER_OUTPUT/opengpu_triangle_present" ] || \
             fail "autodisplay needs $DRIVER_OUTPUT/opengpu_triangle_present (set BUILD_USERSPACE=1)"
+        ;;
+    desktop)
+        [ -x "$DRIVER_OUTPUT/opengpu_pipe_desktop" ] || \
+            fail "autodisplay needs $DRIVER_OUTPUT/opengpu_pipe_desktop (set BUILD_USERSPACE=1)"
         ;;
 esac
 
@@ -238,7 +251,7 @@ if [ "$REBUILD_CLOUDINIT" = "1" ]; then
     OUTPUT="$CIDATA" \
     MODULES_ISO="$MODULES_ISO" \
     OPENGPU_USERSPACE_DIR="$DRIVER_OUTPUT" \
-    OPENGPU_AUTO_DISPLAY="${OPENGPU_AUTO_DISPLAY:-console}" \
+    OPENGPU_AUTO_DISPLAY="${OPENGPU_AUTO_DISPLAY:-desktop}" \
         CLOUDINIT_PACKAGES="${CLOUDINIT_PACKAGES:-0}" \
         bash "$ARTI_DIR/examples/linux_arti_driver/build_cloudinit.sh"
 fi
@@ -258,7 +271,7 @@ export ARTI_DIR ARTI_WORK INTEGRATION_CONFIG
 export QEMU KERNEL DISK CIDATA MODULES_ISO
 export DRIVER_KO DRIVER_MANIFEST
 export QEMU_DISPLAY LINUX_BUILD
-export OPENGPU_AUTO_DISPLAY="${OPENGPU_AUTO_DISPLAY:-console}"
+export OPENGPU_AUTO_DISPLAY="${OPENGPU_AUTO_DISPLAY:-desktop}"
 export PATH="/opt/homebrew/bin:${QEMU_TOOLS:-$ARTI_WORK/qemu-build-tools}/bin:${PATH:-}"
 
 # Prefer firmware next to the work tree when present.

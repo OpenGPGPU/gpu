@@ -631,6 +631,35 @@ int pipe_opengpu_clear(struct pipe_opengpu_context *ctx, uint32_t pattern,
     return finish_or_hand_off(ctx, fence, out_fence);
 }
 
+int pipe_opengpu_fill(struct pipe_opengpu_context *ctx,
+                      struct pipe_opengpu_resource *dst,
+                      uint64_t offset, uint64_t bytes, uint32_t pattern,
+                      struct pipe_opengpu_fence **out_fence)
+{
+    struct drm_opengpu_fill fill = { 0 };
+    struct pipe_opengpu_fence *fence;
+
+    if (!ctx || !dst || !bytes || (offset & 63u) || (bytes & 63u) ||
+        offset + bytes > dst->buffer.size) {
+        errno = EINVAL;
+        return -1;
+    }
+    fence = alloc_fence(ctx->screen->fd);
+    if (!fence)
+        return -1;
+    fill.context_id = ctx->context_id;
+    fill.destination_handle = dst->buffer.handle;
+    fill.pattern = pattern;
+    fill.destination_offset = offset;
+    fill.bytes = bytes;
+    fill.out_syncobj = fence->handle;
+    if (opengpu_fill(ctx->screen->fd, &fill)) {
+        pipe_opengpu_fence_reference(&fence, NULL);
+        return -1;
+    }
+    return finish_or_hand_off(ctx, fence, out_fence);
+}
+
 int pipe_opengpu_blit(struct pipe_opengpu_context *ctx,
                       struct pipe_opengpu_resource *dst,
                       struct pipe_opengpu_resource *src,

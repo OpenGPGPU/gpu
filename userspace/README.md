@@ -75,7 +75,7 @@ builds use the tint shader. Pass `--hold` (or `OPENGPU_PRESENT_HOLD=1`) to
 keep the framebuffer live for cocoa. Debian auto-display:
 
 ```sh
-OPENGPU_AUTO_DISPLAY=triangle QEMU_DISPLAY=cocoa scripts/run_arti_debian.sh
+QEMU_DISPLAY=cocoa scripts/run_arti_debian.sh
 ```
 
 `pipe_opengpu.h` / `pipe_opengpu.c` is the Gallium-shaped winsys spike
@@ -96,27 +96,22 @@ triangle: fixed-function uses the HW sampler; fragment-core loads the corpus
 exercises vertex+fragment cores (`GPU_VERT_CORE=1`).
 `examples/pipe_present` allocates a mode-sized 2D colour GEM, clears, draws,
 and presents via `pipe_opengpu_present` (same `--hold` / tint rules as
-`triangle_present`).
+`triangle_present`). `examples/pipe_desktop` is the Debian desktop frame:
+GPU fill and blit for the panel, window and pointer, a GPU triangle in the
+window, then present. `--hold` follows the pointer from evdev.
 
-**ARTI as a GPU** (preferred programmable path):
-
-```sh
-GPU_FRAG_CORE=1 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
-  scripts/run_arti_gpu.sh
-```
-
-Fixed-function smoke:
+**ARTI as a GPU.** Fragment and vertex cores are the default:
 
 ```sh
 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
   scripts/run_arti_gpu.sh
 ```
 
-Vertex+fragment smoke:
+Fixed-function smoke:
 
 ```sh
-GPU_FRAG_CORE=1 GPU_VERT_CORE=1 GPU_USERSPACE_EXAMPLES=1 \
-  GPU_USERSPACE_EXAMPLES_ONLY=1 scripts/run_arti_gpu.sh
+GPU_FRAG_CORE=0 GPU_USERSPACE_EXAMPLES=1 GPU_USERSPACE_EXAMPLES_ONLY=1 \
+  scripts/run_arti_gpu.sh
 ```
 
 Debian interactive (same binaries on the OPENGPU ISO):
@@ -125,7 +120,7 @@ Debian interactive (same binaries on the OPENGPU ISO):
 scripts/run_arti_debian.sh
 # guest after /root/load_opengpu.sh:
 /root/load_opengpu.sh examples
-/root/opengpu_triangle_present --hold
+/root/opengpu_pipe_desktop --hold
 ```
 
 See the platform-integration section of

@@ -2,8 +2,8 @@
 # Cross-build static aarch64 userspace examples into the ARTI driver output
 # directory so build_cloudinit.sh can stage them on the OPENGPU modules ISO.
 #
-# Default: fixed-function set. With GPU_FRAG_CORE=1 also emit fragment_tint
-# and fragment_fp.
+# Fragment shaders are built by default. GPU_FRAG_CORE=0 emits the
+# fixed-function set only.
 set -euo pipefail
 
 GPU_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -13,7 +13,7 @@ LINUX_HEADERS="${LINUX_HEADERS:-$ARTI_WORK/linux-headers}"
 CROSS_GCC="${CROSS_GCC:-aarch64-linux-gnu-gcc}"
 RISCV_GCC="${RISCV_GCC:-riscv64-unknown-elf-gcc}"
 RISCV_OBJCOPY="${RISCV_OBJCOPY:-riscv64-unknown-elf-objcopy}"
-GPU_FRAG_CORE="${GPU_FRAG_CORE:-0}"
+GPU_FRAG_CORE="${GPU_FRAG_CORE:-1}"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -99,7 +99,7 @@ rm -f "$DRIVER_OUTPUT"/opengpu_fp_unary.o \
 
 for ex in pipe_clear_draw pipe_compute pipe_blit pipe_strided_blit \
           pipe_resolve pipe_texture_draw pipe_depth_pass pipe_msaa_draw \
-          pipe_vertex_draw pipe_present; do
+          pipe_vertex_draw pipe_present pipe_desktop; do
     "$CROSS_GCC" "${CFLAGS[@]}" \
         -o "$DRIVER_OUTPUT/opengpu_${ex}" \
         "$GPU_DIR/userspace/opengpu.c" "$GPU_DIR/userspace/pipe_opengpu.c" \

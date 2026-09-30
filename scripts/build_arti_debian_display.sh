@@ -24,7 +24,17 @@ export DRIVER_OUTPUT="${DRIVER_OUTPUT:-$DISPLAY_WORK/opengpu-driver}"
 export GPU_RTL_DIR="${GPU_RTL_DIR:-$GPU_DIR/generated/debian-${GPU_MODE}}"
 export INTEGRATION_CONFIG
 export GPU_SIM="${GPU_SIM:-verilator}"
-export ARTI_VERILATOR_THREADS="${ARTI_VERILATOR_THREADS:-8}"
+# Same defaults as run_arti_gpu.sh: both shader cores, unless the caller
+# turned them off. GPU_FRAG_CORE=0 implies no vertex core.
+export GPU_FRAG_CORE="${GPU_FRAG_CORE:-1}"
+if [ -z "${GPU_VERT_CORE:-}" ]; then
+    if [ "$GPU_FRAG_CORE" = "1" ]; then
+        GPU_VERT_CORE=1
+    else
+        GPU_VERT_CORE=0
+    fi
+fi
+export GPU_VERT_CORE
 export ARTI_VERILATOR_BUILD_JOBS="${ARTI_VERILATOR_BUILD_JOBS:-4}"
 # ARTI's setup looks under WORK_DIR by default. Reuse the existing Debian
 # image in ARTI_WORK; setup only checks that DEBIAN_QCOW2 exists at this step.
@@ -37,7 +47,7 @@ fi
 export BUILD_ONLY=1
 
 "$GPU_DIR/scripts/run_arti_gpu.sh"
-printf 'mode=%s backend=%s verilator_threads=%s\n' \
-    "$GPU_MODE" "$GPU_SIM" "$ARTI_VERILATOR_THREADS" \
+printf 'mode=%s backend=%s frag=%s vert=%s\n' \
+    "$GPU_MODE" "$GPU_SIM" "$GPU_FRAG_CORE" "$GPU_VERT_CORE" \
     > "$DISPLAY_WORK/display-mode.txt"
 echo "$GPU_MODE Debian GPU ready. Boot with scripts/run_arti_debian.sh"
