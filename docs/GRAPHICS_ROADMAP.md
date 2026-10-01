@@ -715,6 +715,13 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    naturally aligned `imm(x1)` accesses. `KernelShaderStageSpec` ("load and
    store scalar bytes and halfwords on the shader CU") checks sign and zero
    extension of `0x80` and `0xabcd`.
+   `vmerge.vvm`/`vmerge.vxm`/`vmerge.vim` and the unmasked `vmv.v.v`/
+   `vmv.v.x`/`vmv.v.i` forms retire on the integer ALU. A set mask lane
+   takes `vs1`, the scalar, or the sign-extended immediate; a clear mask
+   lane takes `vs2`; lanes outside VL keep the old destination. `vmv`
+   encodes `vs2` as `v0` and does not read it. `KernelShaderStageSpec`
+   ("merge an integer vector on the shader CU") checks a `vmerge.vvm` of
+   1/2/3 over 10/20/30 with lanes 0 and 1 selected, and a `vmv.v.x` of 2.
    Further VFUNARY0 forms and widening beyond the fixed SEW=32 profile wait
    for a motivating shader, validator rules, and execution/guest coverage
    together.

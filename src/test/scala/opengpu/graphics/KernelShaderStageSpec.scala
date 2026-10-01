@@ -691,4 +691,48 @@ class KernelShaderStageSpec extends AnyFlatSpec {
       dut.io.completion.bits.success.expect(true.B)
     }
   }
+
+  // vmerge.vvm writes vs1 on set mask lanes and vs2 on the clear lane.
+  // vmv.v.x broadcasts the scalar onto every active lane.
+  it should "merge an integer vector on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("00200493", 16), // addi x9, x0, 2
+        BigInt(0x1008) -> BigInt("6a14c057", 16), // vmsltu.vx v0, v1, x9
+        BigInt(0x100c) -> BigInt("00008293", 16), // addi x5, x1, 0
+        BigInt(0x1010) -> BigInt("0202e107", 16), // vle32.v v2, (x5)
+        BigInt(0x1014) -> BigInt("01008293", 16), // addi x5, x1, 16
+        BigInt(0x1018) -> BigInt("0202e187", 16), // vle32.v v3, (x5)
+        BigInt(0x101c) -> BigInt("5c218257", 16), // vmerge.vvm v4, v2, v3, v0
+        BigInt(0x1020) -> BigInt("04008293", 16), // addi x5, x1, 64
+        BigInt(0x1024) -> BigInt("0202e227", 16), // vse32.v v4, (x5)
+        BigInt(0x1028) -> BigInt("5e04c2d7", 16), // vmv.v.x v5, x9
+        BigInt(0x102c) -> BigInt("08008293", 16), // addi x5, x1, 128
+        BigInt(0x1030) -> BigInt("0202e2a7", 16), // vse32.v v5, (x5)
+        BigInt(0x1034) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      Seq(10, 20, 30).zipWithIndex.foreach { case (value, lane) =>
+        mem.putWord(BigInt(0x8000) + lane * 4, BigInt(value))
+      }
+      Seq(1, 2, 3).zipWithIndex.foreach { case (value, lane) =>
+        mem.putWord(BigInt(0x8010) + lane * 4, BigInt(value))
+      }
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val merged = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8040) + lane * 4))
+      assert(merged == Seq(BigInt(1), BigInt(2), BigInt(30)),
+        s"vmerge stored ${merged.map(_.toString(16))}")
+      val broadcast = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8080) + lane * 4))
+      assert(broadcast == Seq(BigInt(2), BigInt(2), BigInt(2)),
+        s"vmv.v.x stored ${broadcast.map(_.toString(16))}")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
 }

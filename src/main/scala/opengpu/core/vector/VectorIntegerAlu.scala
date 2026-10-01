@@ -79,8 +79,10 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
   *
   * The unit implements the precise funct6 encodings accepted by VectorDecoder,
   * including integer reductions, vrgather, and slide cross-lane selection.
-  * Inactive or masked-off lanes preserve oldVd. Results are held under output
-  * backpressure and the unit sustains one operation per cycle when unstalled.
+  * Inactive or masked-off lanes preserve oldVd, except vmerge: a clear mask
+  * lane in the body takes vs2, and only lanes outside VL keep oldVd. Results
+  * are held under output backpressure and the unit sustains one operation per
+  * cycle when unstalled.
   */
 class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   val io = IO(new Bundle {
@@ -169,6 +171,9 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         "h0d".U -> quadDy,
         "h0e".U -> lhs,
         "h0f".U -> lhs,
+        // vmerge/vmv: the input stage already selected vs1, the scalar, or
+        // the immediate against vs2. Body lanes use that value.
+        "h17".U -> lhs,
         // vsext/vzext vf2/vf4/vf8 use vs1=7/6, 5/4, and 3/2.
         "h12".U -> MuxLookup(partialBits.immediate, 0.U(32.W))(Seq(
           7.U -> Cat(Fill(16, lhs(15)), lhs(15, 0)),
@@ -554,6 +559,9 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
     when(io.in.valid) {
       val inputIsReduction =
         io.in.bits.operandType === "b010".U && io.in.bits.funct6 <= "h07".U
+      // vmerge applies v0 inside the body. vmv (vm=1) copies the true source.
+      // Lanes outside VL stay disabled so they keep oldVd.
+      val isMerge = io.in.bits.funct6 === "h17".U
       val sourceEnabled =
         io.in.bits.activeMask &
           Mux(io.in.bits.vm, Fill(config.lanes, 1.U), io.in.bits.predicateMask)
@@ -578,19 +586,25 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       inputBits.enabled := Mux(
         inputIsReduction,
         io.in.bits.activeMask.orR,
-        sourceEnabled
+        Mux(isMerge, io.in.bits.activeMask, sourceEnabled)
       )
       for (lane <- 0 until config.lanes) {
         inputBits.oldVd(lane) := io.in.bits.oldVd(lane)
         inputBits.vs1(lane) := io.in.bits.vs1(lane)
         inputBits.vs2(lane) := io.in.bits.vs2(lane)
         inputBits.vs2Odd(lane) := io.in.bits.vs2Odd(lane)
-        inputBits.lhs(lane) := io.in.bits.vs2(lane)
-        inputBits.rhs(lane) := Mux(
+        val trueSrc = Mux(
           io.in.bits.operandType === "b000".U,
           io.in.bits.vs1(lane),
           Mux(io.in.bits.operandType === "b100".U, io.in.bits.scalar, inputImmediate)
         )
+        val takeTrue = io.in.bits.vm || io.in.bits.predicateMask(lane)
+        inputBits.lhs(lane) := Mux(
+          isMerge,
+          Mux(takeTrue, trueSrc, io.in.bits.vs2(lane)),
+          io.in.bits.vs2(lane)
+        )
+        inputBits.rhs(lane) := trueSrc
       }
     }
   }

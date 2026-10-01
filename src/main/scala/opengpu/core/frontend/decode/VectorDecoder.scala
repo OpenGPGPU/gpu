@@ -255,6 +255,23 @@ private object VectorDecodeTable {
       readsVs2 = true, writesVd = true)
   )
 
+  // vmerge is masked (vm=0). vmv is the same funct6 with vm=1 and vs2=v0;
+  // any other vs2 is reserved.
+  private val mergePatterns = Seq(
+    VectorPattern("vmerge_vvm", "0101110??????????000?????1010111", 1,
+      readsVs1 = true, readsVs2 = true, writesVd = true),
+    VectorPattern("vmv_v_v", "010111100000?????000?????1010111", 1,
+      readsVs1 = true, writesVd = true),
+    VectorPattern("vmerge_vxm", "0101110??????????100?????1010111", 1,
+      readsVs2 = true, readsScalar = true, writesVd = true),
+    VectorPattern("vmv_v_x", "010111100000?????100?????1010111", 1,
+      readsScalar = true, writesVd = true),
+    VectorPattern("vmerge_vim", "0101110??????????011?????1010111", 1,
+      readsVs2 = true, writesVd = true),
+    VectorPattern("vmv_v_i", "010111100000?????011?????1010111", 1,
+      writesVd = true)
+  )
+
   private val arithmeticPatterns =
     (integerAluInstructions ++ integerMultiplyDivideInstructions ++ floatingPointInstructions)
       .flatMap { instruction =>
@@ -329,7 +346,8 @@ private object VectorDecodeTable {
 
   val patterns: Seq[VectorPattern] =
     memoryPatterns ++ configPatterns ++ arithmeticPatterns ++
-      unary0Patterns ++ unary1Patterns ++ texturePatterns ++ quadPatterns
+      mergePatterns ++ unary0Patterns ++ unary1Patterns ++
+      texturePatterns ++ quadPatterns
   val fields: Seq[DecodeField[VectorPattern, _ <: Data]] = Seq(
     Legal,
     Unit,

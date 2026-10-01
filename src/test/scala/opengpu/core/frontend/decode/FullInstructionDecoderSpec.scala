@@ -43,6 +43,24 @@ class ExtendedDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.vector.readsVs1.expect(true.B)
       dut.io.decoded.vector.readsVs2.expect(true.B)
 
+      // vmerge.vvm v4, v2, v3, v0
+      dut.io.instruction.poke("h5c218257".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.vector.unit.expect(VectorUnit.alu)
+      dut.io.decoded.vector.readsVs1.expect(true.B)
+      dut.io.decoded.vector.readsVs2.expect(true.B)
+      dut.io.decoded.vector.vm.expect(false.B)
+      // vmv.v.x v5, x9
+      dut.io.instruction.poke("h5e04c2d7".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.vector.readsVs1.expect(false.B)
+      dut.io.decoded.vector.readsVs2.expect(false.B)
+      dut.io.decoded.vector.readsScalar.expect(true.B)
+      dut.io.decoded.vector.vm.expect(true.B)
+      // vmv with vs2 other than v0 is reserved.
+      dut.io.instruction.poke("h5e218257".U)
+      dut.io.decoded.legal.expect(false.B)
+
       // vsetvli x1, x2, e32,m1
       dut.io.instruction.poke("h010170d7".U)
       dut.io.decoded.executionType.expect(ExecutionType.vector)

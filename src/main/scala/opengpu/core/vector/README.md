@@ -7,11 +7,17 @@ subsystem. It is intentionally rewritten around the fixed GPU profile:
 - VLEN=`lanes * 32`
 - one element per lane with no element crossing lanes
 - exact RVV funct6 and vv/vx/vi operand forms
-- masked and inactive lanes preserve the previous destination value
+- masked and inactive lanes preserve the previous destination value,
+  except `vmerge`, whose clear mask lanes take `vs2`
 - elastic ready/valid output with no result loss under backpressure
 
 `VectorIntegerAlu` implements the lane-local integer ALU, comparison/mask,
 saturating add/subtract, and shift instructions accepted by `VectorDecoder`.
+`vmerge.vvm`/`vmerge.vxm`/`vmerge.vim` write `vs1`, the scalar, or the
+sign-extended immediate on set mask lanes and `vs2` on clear mask lanes.
+`vmv.v.v`/`vmv.v.x`/`vmv.v.i` are the unmasked forms and require `vs2` = `v0`,
+which is not read. Lanes outside VL keep the old destination. The driver
+admits all six, and a masked destination cannot be `v0`.
 `vssrl.vv/vx/vi` and `vssra.vv/vx/vi` implement single-width scaling shifts:
 the unsigned or signed 32-bit source is shifted by the low five bits of the
 shift amount, then rounded according to `vxrm`. They share the fixed-point

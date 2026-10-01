@@ -75,6 +75,54 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     }
   }
 
+  it should "merge vs1 over vs2 and broadcast a scalar or immediate" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.funct6.poke("h17".U)
+      dut.io.in.bits.operandType.poke("b000".U)
+      dut.io.in.bits.vm.poke(false.B)
+      dut.io.in.bits.activeMask.poke("b0111".U)
+      dut.io.in.bits.predicateMask.poke("b0101".U)
+      for (lane <- 0 until config.lanes) {
+        dut.io.in.bits.vs2(lane).poke((10 + lane).U)
+        dut.io.in.bits.vs1(lane).poke((lane + 1).U)
+      }
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(7)
+      // Lanes 0 and 2 take vs1, lane 1 takes vs2, lane 3 is outside VL.
+      dut.io.out.bits.data(0).expect(1.U)
+      dut.io.out.bits.data(1).expect(11.U)
+      dut.io.out.bits.data(2).expect(3.U)
+      dut.io.out.bits.data(3).expect(103.U)
+
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.vm.poke(true.B)
+      dut.io.in.bits.operandType.poke("b100".U)
+      dut.io.in.bits.activeMask.poke("b0111".U)
+      dut.io.in.bits.scalar.poke(42.U)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(7)
+      dut.io.out.bits.data(0).expect(42.U)
+      dut.io.out.bits.data(1).expect(42.U)
+      dut.io.out.bits.data(2).expect(42.U)
+      dut.io.out.bits.data(3).expect(103.U)
+
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.operandType.poke("b011".U)
+      dut.io.in.bits.activeMask.poke("b1111".U)
+      dut.io.in.bits.immediate.poke("b11111".U)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(7)
+      for (lane <- 0 until config.lanes) {
+        dut.io.out.bits.data(lane).expect("hffffffff".U)
+      }
+    }
+  }
+
   it should "sign- and zero-extend fixed-profile 16-bit lanes" in {
     simulate(new VectorIntegerAlu(config)) { dut =>
       defaults(dut)

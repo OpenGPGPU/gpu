@@ -237,6 +237,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
 
         /* vfmerge.vfm is masked by definition. vfmv.v.f is its unmasked form. */
         bool fp_merge = form == 5 && funct6 == 0x17;
+        /* vmerge.vvm/vxm/vim. vmv is the unmasked form and is handled below. */
+        bool integer_merge =
+            (form == 0 || form == 3 || form == 4) && funct6 == 0x17;
         /* Other non-compare FP ops keep the old destination where v0 is clear. */
         bool fp_data =
             (form == 1 &&
@@ -252,7 +255,7 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
               funct6 == 0x24 || funct6 == 0x27 ||
               (funct6 >= 0x28 && funct6 <= 0x2f)));
         if (!(lane_local || comparison || reduction || gather || slide ||
-              fp_merge || fp_data) ||
+              fp_merge || fp_data || integer_merge) ||
             vd == 0)
             return false;
     }
@@ -267,6 +270,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
     switch (form) {
     case 0: /* integer vv */
         switch (funct6) {
+        case 0x17: /* vmerge; vmv requires vs2 = v0 */
+            return !(insn & (1u << 25)) || vs2 == 0;
         case 0x00: /* vadd */
         case 0x02: /* vsub */
         case 0x04: /* vminu */
@@ -384,6 +389,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         }
     case 3: /* integer vi */
         switch (funct6) {
+        case 0x17: /* vmerge; vmv requires vs2 = v0 */
+            return !(insn & (1u << 25)) || vs2 == 0;
         case 0x00: /* vadd */
         case 0x03: /* vrsub */
         case 0x09: /* vand */
@@ -416,6 +423,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         }
     case 4: /* integer vx */
         switch (funct6) {
+        case 0x17: /* vmerge; vmv requires vs2 = v0 */
+            return !(insn & (1u << 25)) || vs2 == 0;
         case 0x00: /* vadd */
         case 0x02: /* vsub */
         case 0x03: /* vrsub */
@@ -500,6 +509,11 @@ static inline void opengpu_shader_define_integer(
  * vfmv.v.f broadcasts a defined f-register. vfmerge.vfm is its masked form:
  * v0 and the old destination must be defined, and vs2 supplies the
  * mask-clear lanes.
+ * vmerge.vvm/vxm/vim select vs1, a scalar, or a sign-extended immediate on
+ * set mask lanes and vs2 on clear mask lanes. v0, vs2, and the old
+ * destination must be defined, and the destination cannot be v0. vmv.v.v,
+ * vmv.v.x, and vmv.v.i are the unmasked forms: vs2 must be v0 and is not
+ * read. Lanes outside VL keep the old destination.
  * The RVV profile admits vsetivli e32,m1, the implemented lane-local
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
  * divide and remainder forms, vssrl/vssra rounded scaling shifts,
@@ -725,10 +739,14 @@ static inline bool opengpu_shader_validate_words_profile(
                 bool vfmerge = opfvf && (insn >> 26) == 0x17;
                 /* vfmv.v.f is vfmerge with the mask bit set; vs2 is unused. */
                 bool vfmv = vfmerge && (insn & (1u << 25));
+                /* vmv.v.v/x/i encode vs2 as v0 and do not read it. */
+                bool integer_mv = (insn >> 26) == 0x17 &&
+                    (insn & (1u << 25)) &&
+                    (funct3 == 0 || funct3 == 3 || funct3 == 4);
 
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
-                    (!vfmv && !vector_defined[rs2]) ||
+                    (!vfmv && !integer_mv && !vector_defined[rs2]) ||
                     (vfmerge && !scalar_fpu_enabled) ||
                     (!fp && (insn >> 26) >= 0x2c && (insn >> 26) <= 0x2f &&
                      !vector_defined[rs2 + 1]) ||

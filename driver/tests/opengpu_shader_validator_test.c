@@ -1305,6 +1305,73 @@ int main(void)
         assert(!fpu_valid(no_scalar, 3));
     }
 
+    /* vmerge needs v0, vs2, and the old destination. vmv ignores vs2=v0. */
+    {
+        const uint32_t merge[] = {
+            vsetivli(4),
+            addi(9, 0, 2),
+            0x6a14c057u, /* vmsltu.vx v0, v1, x9 */
+            vle32(2, 1),
+            vle32(3, 1),
+            vle32(4, 1),
+            vector_alu(0x17, 0, 4, 2, 3) & ~(1u << 25),
+            vse32(4, 1),
+            vector_alu(0x17, 4, 5, 0, 9), /* vmv.v.x v5, x9 */
+            vector_alu(0x17, 3, 6, 0, 31), /* vmv.v.i v6, -1 */
+            vector_alu(0x17, 0, 7, 0, 1), /* vmv.v.v v7, v1 */
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t no_vs2[] = {
+            vsetivli(4),
+            addi(9, 0, 2),
+            0x6a14c057u,
+            vle32(3, 1),
+            vle32(4, 1),
+            vector_alu(0x17, 0, 4, 2, 3) & ~(1u << 25),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t no_old[] = {
+            vsetivli(4),
+            addi(9, 0, 2),
+            0x6a14c057u,
+            vle32(2, 1),
+            vle32(3, 1),
+            vector_alu(0x17, 0, 4, 2, 3) & ~(1u << 25),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t no_mask[] = {
+            vsetivli(4),
+            vle32(2, 1),
+            vle32(3, 1),
+            vle32(4, 1),
+            vector_alu(0x17, 0, 4, 2, 3) & ~(1u << 25),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t reserved_vs2[] = {
+            vsetivli(4),
+            vle32(1, 1),
+            vector_alu(0x17, 0, 4, 2, 1), /* vmv.v.v with vs2 != v0 */
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t undefined_scalar[] = {
+            vsetivli(4),
+            vector_alu(0x17, 4, 5, 0, 10), /* vmv.v.x x10 */
+            OPENGPU_SHADER_CEASE,
+        };
+
+        assert(opengpu_compute_shader_validate_words(merge, 12, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(no_vs2, 7, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(no_old, 7, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(no_mask, 6, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(reserved_vs2, 4, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(
+            undefined_scalar, 3, 64, 4));
+        program[0] = vsetivli(4);
+        program[1] = vector_alu(0x17, 0, 0, 1, 1) & ~(1u << 25);
+        program[2] = OPENGPU_SHADER_CEASE;
+        assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
+    }
+
     /* Masked non-compare FP keeps the old destination on clear lanes. */
     {
         const unsigned int opfvv_funct6[] = {
