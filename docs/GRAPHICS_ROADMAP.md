@@ -544,11 +544,12 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    f-register and a vector op consumes it through the `.vf` operand sideband,
    verified end to end in `KernelShaderStageSpec` ("feed a scalar FP load into
    a vector .vf operand on the shader CU"), which stores 3.0f plus a 2.0f
-   uniform as 5.0f. The integer scalar register file is not on that path, so
-   `uniform float` does not depend on the gap below.
-   - `committedFpuWriteback` leaves the core but `KernelShaderStage` never
-     consumes it, so a value loaded by `flw` cannot be read back by a
-     following *scalar* f-register instruction.
+   uniform as 5.0f. The integer scalar register file is not on that path.
+   The f-register file lives in `FpuIssueStage`. `committedFpuWriteback` only
+   observes a commit that has already updated that file, so
+   `KernelShaderStage` does not consume it. A later `fsw` reads the same
+   file (`KernelShaderStageSpec`, "round trip a float through an f-register
+   with fsw on the shader CU").
 
    `frm` and `fflags` are per-warp state in `VectorConfigurationUnit`, and the
    per-workgroup reset already existed: `GpuCore` drives `clearWarp` from the
@@ -660,21 +661,63 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    store follows it directly"), so the `VectorRegisterScoreboard` RAW
    interlock on the store's `readVd` holds without an intervening op.
 
-   Still not reachable from a guest shader. The validator sandboxes `flw` to
-   `imm(x1)` with a non-negative, 4-aligned offset that stays inside
-   `kernarg_size`, and its scalar path has no `case 0x27` at all, so admitting
-   `fsw` means giving it the same treatment on the write side, bounded to the
-   fragment output window the vector store path already uses. That is a sandbox
-   change rather than a decode change, so it is left alone here.
+   `fsw` is admitted on the same scalar-FPU capability as `flw`. It is S-type
+   `fsw fs, imm(x1)`: a non-negative 4-aligned offset, a source f-register
+   defined by a validated `flw`, and an address inside the profile's writable
+   window (fragment colour/depth/validity, vertex output slices, or the whole
+   compute kernarg). The hardware round trip was already covered; the sandbox
+   was the missing piece. The same capability now admits the FP32 operations
+   that retire on the scalar FPU fast path: `fadd`/`fsub`/`fmul`,
+   `fsgnj`/`fsgnjn`/`fsgnjx`, `fmin`/`fmax`, and `fmadd`/`fmsub`/`fnmsub`/
+   `fnmadd`. Sources must already be defined and the destination becomes
+   defined. `KernelShaderStageSpec` ("combine two scalar floats and store the
+   results on the shader CU") checks 2.0f and 3.0f through that set. The same
+   capability admits `feq`/`flt`/`fle`, `fcvt.w.s`/`fcvt.wu.s`, `fmv.x.w`,
+   `fclass.s`, `fcvt.s.w`/`fcvt.s.wu` and `fmv.w.x`. Integer destinations
+   cannot be `x1` and lose any pointer kind. The compare mapper now matches
+   RISC-V funct3 (`feq` is equality, `fle` is `<=`); the exact unit's internal
+   codes were the other way around. `KernelShaderStageSpec` ("cross scalar
+   floats and integers on the shader CU") checks 1.0f against 2.0f and a
+   conversion of the integer 5. `fdiv.s` and `fsqrt.s` now retire on the
+   same scalar FPU: the iterative divide and square-root lanes used by the
+   vector unit. `fsqrt.s` requires `rs2` = 0. `KernelShaderStageSpec`
+   ("divide and take a square root on the shader CU") checks 4.0/2.0 and
+   sqrt(4.0).
 
    The `0xfff` byte mask a `VL=4` `vse32.v` produced on the bare
    `KernelShaderStage` harness is the harness, not the CU: `runShader` launches
    `localX = 3`, so lane 3 is inactive and three 4-byte lanes are correct.
 
-   `vfmerge`/`vfmv.v.f` and scalar FP
-   arithmetic remain excluded. Add further VFUNARY0 /
-   widening beyond the fixed SEW=32 profile only with a motivating shader,
-   validator rules and execution/guest coverage together.
+   `vfmerge.vfm` and `vfmv.v.f` are admitted on the scalar-FPU capability.
+   `vfmv.v.f` broadcasts a defined f-register. `vfmerge.vfm` reads `v0`,
+   the old destination, and `vs2` for the mask-clear lanes.
+   `KernelShaderStageSpec` ("merge a scalar float into a vector on the
+   shader CU") checks both. Unmasked SEW=32 `vfcvt.xu.f.v`, `vfcvt.x.f.v`,
+   `vfcvt.f.xu.v`, `vfcvt.f.x.v`, and the two rtz float-to-integer forms are
+   admitted. `vs1` is the conversion opcode, not a vector register.
+   `KernelShaderStageSpec` ("convert floats and integers on the shader CU")
+   checks `vfcvt.rtz.x.f.v` of 1.5/2.5/−1.0 and `vfcvt.f.x.v` of 5/−5/0.
+   Masked non-compare FP uses the same units: a clear mask lane keeps the
+   old destination, so `vfadd`/`vfsub`/`vfmul`/`vfdiv`, the sign-injection
+   and min/max forms, VFUNARY0/1, the eight FMA forms, and the matching
+   OPFVF ops including `vfrdiv`/`vfrsub` are admitted when `v0` and that
+   old destination are already defined. `KernelShaderStageSpec` ("mask
+   vector float arithmetic on the shader CU") checks a masked `vfadd.vv`
+   and a masked `vfcvt.rtz.x.f.v`. In-place `vfcvt` is allowed; the
+   source/destination overlap rule stays on the integer widening form.
+   Unit-stride and constant-stride vector memory now admit 8-bit and 16-bit
+   elements as well as 32-bit. Each lane holds one zero-extended element, and
+   the base and a constant stride must be aligned to that element. Indexed
+   accesses stay 32-bit. `KernelShaderStageSpec` ("load and store narrow
+   vector elements on the shader CU") checks `vle8.v`, `vle16.v`, `vlse16.v`
+   with stride 4, and the matching `vse8.v` / `vse16.v` byte masks.
+   Scalar `lb`/`lbu`/`lh`/`lhu`/`lw` and `sb`/`sh`/`sw` are admitted as
+   naturally aligned `imm(x1)` accesses. `KernelShaderStageSpec` ("load and
+   store scalar bytes and halfwords on the shader CU") checks sign and zero
+   extension of `0x80` and `0xabcd`.
+   Further VFUNARY0 forms and widening beyond the fixed SEW=32 profile wait
+   for a motivating shader, validator rules, and execution/guest coverage
+   together.
 7. **Graphics feature decision** — measure target scenes before adding
    centroid or per-sample interpolation or framebuffer compression. Record
    the observed quality or bandwidth gap, expected benefit and verification

@@ -4,18 +4,28 @@
 
 #include "../opengpu_shader_validator.h"
 
-static uint32_t lw(unsigned int rd, int imm)
+static uint32_t load(unsigned int funct3, unsigned int rd, int imm)
 {
-    return ((uint32_t)imm & 0xfff) << 20 | 1u << 15 | 2u << 12 |
+    return ((uint32_t)imm & 0xfff) << 20 | 1u << 15 | (funct3 & 7) << 12 |
            (rd & 0x1f) << 7 | 0x03;
 }
 
-static uint32_t sw(unsigned int rs2, int imm)
+static uint32_t store(unsigned int funct3, unsigned int rs2, int imm)
 {
     uint32_t value = (uint32_t)imm & 0xfff;
 
     return (value >> 5) << 25 | (rs2 & 0x1f) << 20 | 1u << 15 |
-           2u << 12 | (value & 0x1f) << 7 | 0x23;
+           (funct3 & 7) << 12 | (value & 0x1f) << 7 | 0x23;
+}
+
+static uint32_t lw(unsigned int rd, int imm)
+{
+    return load(2, rd, imm);
+}
+
+static uint32_t sw(unsigned int rs2, int imm)
+{
+    return store(2, rs2, imm);
 }
 
 static uint32_t addi(unsigned int rd, unsigned int rs1, int imm)
@@ -65,6 +75,34 @@ static uint32_t vsse32(unsigned int vs3, unsigned int rs1,
            (rs1 & 0x1f) << 15 | (vs3 & 0x1f) << 7;
 }
 
+static uint32_t vle_width(unsigned int width, unsigned int vd,
+                          unsigned int rs1)
+{
+    return 0x02000007u | (width & 7) << 12 | (rs1 & 0x1f) << 15 |
+           (vd & 0x1f) << 7;
+}
+
+static uint32_t vse_width(unsigned int width, unsigned int vs3,
+                          unsigned int rs1)
+{
+    return 0x02000027u | (width & 7) << 12 | (rs1 & 0x1f) << 15 |
+           (vs3 & 0x1f) << 7;
+}
+
+static uint32_t vlse_width(unsigned int width, unsigned int vd,
+                           unsigned int rs1, unsigned int rs2)
+{
+    return 0x0a000007u | (width & 7) << 12 | (rs2 & 0x1f) << 20 |
+           (rs1 & 0x1f) << 15 | (vd & 0x1f) << 7;
+}
+
+static uint32_t vsse_width(unsigned int width, unsigned int vs3,
+                           unsigned int rs1, unsigned int rs2)
+{
+    return 0x0a000027u | (width & 7) << 12 | (rs2 & 0x1f) << 20 |
+           (rs1 & 0x1f) << 15 | (vs3 & 0x1f) << 7;
+}
+
 static uint32_t vluxei32(unsigned int vd, unsigned int rs1,
                          unsigned int vs2)
 {
@@ -88,10 +126,39 @@ static uint32_t vector_alu(unsigned int funct6, unsigned int form,
            (vd & 0x1f) << 7 | 0x57;
 }
 
+/* Unmasked OPFVV vfcvt. vs1 is the conversion, not a vector register. */
+static uint32_t vfcvt(unsigned int vs1, unsigned int vd, unsigned int vs2)
+{
+    return 0x12u << 26 | 1u << 25 | (vs2 & 0x1f) << 20 | (vs1 & 0x1f) << 15 |
+           1u << 12 | (vd & 0x1f) << 7 | 0x57;
+}
+
 static uint32_t flw(unsigned int rd, unsigned int rs1, int offset)
 {
     return ((uint32_t)offset & 0xfff) << 20 | (rs1 & 0x1f) << 15 |
            2u << 12 | (rd & 0x1f) << 7 | 0x07;
+}
+
+static uint32_t fsw(unsigned int rs2, unsigned int rs1, int imm)
+{
+    uint32_t value = (uint32_t)imm & 0xfff;
+
+    return (value >> 5) << 25 | (rs2 & 0x1f) << 20 | (rs1 & 0x1f) << 15 |
+           2u << 12 | (value & 0x1f) << 7 | 0x27;
+}
+
+static uint32_t fp_op(unsigned int funct5, unsigned int rm, unsigned int rd,
+                      unsigned int rs1, unsigned int rs2)
+{
+    return (funct5 & 0x1f) << 27 | (rs2 & 0x1f) << 20 | (rs1 & 0x1f) << 15 |
+           (rm & 7) << 12 | (rd & 0x1f) << 7 | 0x53;
+}
+
+static uint32_t fp_fma(unsigned int opcode, unsigned int rm, unsigned int rd,
+                       unsigned int rs1, unsigned int rs2, unsigned int rs3)
+{
+    return (rs3 & 0x1f) << 27 | (rs2 & 0x1f) << 20 | (rs1 & 0x1f) << 15 |
+           (rm & 7) << 12 | (rd & 0x1f) << 7 | (opcode & 0x7f);
 }
 
 static bool fpu_valid(const uint32_t *words, uint32_t count)
@@ -218,6 +285,29 @@ int main(void)
         
         discard_valid, 21, 288, 8, true, false));
 
+    /* Scalar byte and halfword accesses use the same imm(x1) window. */
+    program[0] = load(0, 10, 1); /* lb */
+    program[1] = load(4, 11, 1); /* lbu */
+    program[2] = load(1, 12, 2); /* lh */
+    program[3] = load(5, 13, 2); /* lhu */
+    program[4] = store(0, 10, 16); /* sb */
+    program[5] = store(1, 12, 18); /* sh */
+    program[6] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_compute_shader_validate_words(program, 7, 64, 1));
+    program[2] = load(1, 12, 1); /* odd halfword */
+    assert(!opengpu_compute_shader_validate_words(program, 7, 64, 1));
+    program[2] = load(1, 12, 2);
+    program[5] = store(1, 12, 17); /* odd halfword store */
+    assert(!opengpu_compute_shader_validate_words(program, 7, 64, 1));
+    program[0] = load(3, 10, 0); /* reserved width */
+    program[5] = store(1, 12, 18);
+    assert(!opengpu_compute_shader_validate_words(program, 7, 64, 1));
+    program[0] = load(0, 10, 63); /* last byte */
+    program[1] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_compute_shader_validate_words(program, 2, 64, 1));
+    program[0] = load(0, 10, 64);
+    assert(!opengpu_compute_shader_validate_words(program, 2, 64, 1));
+
     /* General compute may update any word in its bound kernarg range while
      * retaining the same control-flow and address proof. */
     program[0] = addi(10, 0, 42);
@@ -261,6 +351,49 @@ int main(void)
     program[3] = addi(6, 0, 8);
     program[4] = vlse32(2, 5, 6);
     program[5] = OPENGPU_SHADER_CEASE;
+    assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
+
+    /* 8- and 16-bit unit and constant-stride accesses. One element per lane.
+     * Indexed forms stay 32-bit, and a 64-bit width is not implemented. */
+    program[0] = vsetivli(4);
+    program[1] = addi(5, 1, 1);
+    program[2] = vle_width(0, 2, 5);
+    program[3] = vse_width(0, 2, 5);
+    program[4] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    program[1] = addi(5, 1, 62); /* four bytes would pass the end */
+    assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    program[1] = addi(5, 1, 2);
+    program[2] = vle_width(5, 2, 5);
+    program[3] = vse_width(5, 2, 5);
+    assert(opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    program[1] = addi(5, 1, 1); /* odd halfword base */
+    assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    program[1] = addi(5, 1, 0);
+    program[2] = addi(6, 0, 1);
+    program[3] = vlse_width(0, 2, 5, 6);
+    program[4] = vsse_width(0, 2, 5, 6);
+    program[5] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_compute_shader_validate_words(program, 6, 64, 4));
+    program[2] = addi(6, 0, 2);
+    program[3] = vlse_width(5, 2, 5, 6);
+    program[4] = vsse_width(5, 2, 5, 6);
+    assert(opengpu_compute_shader_validate_words(program, 6, 64, 4));
+    program[2] = addi(6, 0, 1); /* odd halfword stride */
+    assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
+    program[2] = vle_width(7, 2, 5); /* vle64 */
+    program[3] = OPENGPU_SHADER_CEASE;
+    assert(!opengpu_compute_shader_validate_words(program, 4, 64, 4));
+    program[2] = 0x06000007u | 5u << 15 | 2u << 7; /* indexed byte load */
+    assert(!opengpu_compute_shader_validate_words(program, 4, 64, 4));
+    program[0] = vsetivli(4);
+    program[1] = vector_alu(0x18, 0, 0, 1, 1);
+    program[2] = vector_alu(0x00, 3, 2, 1, 0);
+    program[3] = addi(5, 1, 0);
+    program[4] = vle_width(0, 2, 5) & ~(1u << 25);
+    program[5] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_compute_shader_validate_words(program, 6, 64, 4));
+    program[1] = addi(9, 0, 2); /* v0 undefined */
     assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
 
     /* Indexed word access is admitted only for byte offsets derived from the
@@ -867,7 +1000,16 @@ int main(void)
             vsetivli(1),
             addi(5, 1, 0),
             vle32(2, 5),
-            0x4c201157u, /* vfsqrt masked */
+            0x4c201157u, /* vfsqrt masked, v0 undefined */
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t vfunary1_masked_ok[] = {
+            vsetivli(1),
+            addi(9, 0, 2),
+            0x6a14c057u, /* vmsltu.vx v0, v1, x9 */
+            addi(5, 1, 0),
+            vle32(2, 5),
+            0x4c201157u, /* vfsqrt.v v2, v2, v0.t */
             OPENGPU_SHADER_CEASE,
         };
 
@@ -877,6 +1019,8 @@ int main(void)
             vfunary1_bad_op, 5, 64, 1));
         assert(!opengpu_compute_shader_validate_words(
             vfunary1_masked, 5, 64, 1));
+        assert(opengpu_compute_shader_validate_words(
+            vfunary1_masked_ok, 7, 64, 1));
     }
 
     /* Unmasked OPFVV vfadd/vfsub/vfmul; vs1 is a defined VGPR. */
@@ -915,7 +1059,7 @@ int main(void)
             vsetivli(4),
             addi(5, 1, 0),
             vle32(2, 5),
-            vector_alu(0x00, 1, 3, 2, 2) & ~(1u << 25),
+            vector_alu(0x00, 1, 3, 2, 2) & ~(1u << 25), /* no v0, no old vd */
             OPENGPU_SHADER_CEASE,
         };
         const uint32_t opfvv_undef_vs1[] = {
@@ -969,7 +1113,7 @@ int main(void)
             vle32(3, 5),
             addi(5, 1, 32),
             vle32(4, 5),
-            vector_alu(0x28, 1, 4, 2, 3) & ~(1u << 25),
+            vector_alu(0x28, 1, 4, 2, 3) & ~(1u << 25), /* v0 undefined */
             OPENGPU_SHADER_CEASE,
         };
 
@@ -1067,12 +1211,12 @@ int main(void)
         assert(!fpu_valid(fvf, 5));
         fvf[1] = flw(1, 1, 0);
         assert(fpu_valid(fvf, 5));
-        /* non-compare OPFVF stays unmasked */
+        /* masked OPFVF still needs v0 and the old destination */
         fvf[3] = vector_alu(0x00, 5, 4, 2, 1) & ~(1u << 25);
         assert(!fpu_valid(fvf, 5));
-        /* vfmerge/vfmv and VFUNARY encodings are not admitted as FVF */
+        /* vfmv.v.f broadcasts the defined f-register. VFUNARY is not FVF. */
         fvf[3] = vector_alu(0x17, 5, 4, 2, 1);
-        assert(!fpu_valid(fvf, 5));
+        assert(fpu_valid(fvf, 5));
         fvf[3] = vector_alu(0x13, 5, 4, 2, 1);
         assert(!fpu_valid(fvf, 5));
         /* FVF FMA reads the old destination */
@@ -1106,6 +1250,486 @@ int main(void)
         };
 
         assert(!fpu_valid(fvf_branch, 6));
+    }
+
+    /* vfmerge.vfm needs v0, the old destination, and vs2. vfmv.v.f does not. */
+    {
+        const uint32_t masked[] = {
+            vsetivli(4),
+            flw(1, 1, 0),
+            addi(9, 0, 2),
+            0x6a14c057u, /* vmsltu.vx v0, v1, x9 */
+            vle32(2, 1),
+            vle32(4, 1),
+            vector_alu(0x17, 5, 4, 2, 1) & ~(1u << 25),
+            vse32(4, 1),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t no_vs2[] = {
+            vsetivli(4),
+            flw(1, 1, 0),
+            addi(9, 0, 2),
+            0x6a14c057u,
+            vle32(4, 1),
+            vector_alu(0x17, 5, 4, 2, 1) & ~(1u << 25),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t no_old[] = {
+            vsetivli(4),
+            flw(1, 1, 0),
+            addi(9, 0, 2),
+            0x6a14c057u,
+            vle32(2, 1),
+            vector_alu(0x17, 5, 4, 2, 1) & ~(1u << 25),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t no_mask[] = {
+            vsetivli(4),
+            flw(1, 1, 0),
+            vle32(2, 1),
+            vle32(4, 1),
+            vector_alu(0x17, 5, 4, 2, 1) & ~(1u << 25),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t no_scalar[] = {
+            vsetivli(4),
+            vector_alu(0x17, 5, 4, 0, 1), /* vfmv.v.f, f1 undefined */
+            OPENGPU_SHADER_CEASE,
+        };
+
+        assert(fpu_valid(masked, 9));
+        assert(!opengpu_compute_shader_validate_words(masked, 9, 64, 4));
+        assert(!fpu_valid(no_vs2, 7));
+        assert(!fpu_valid(no_old, 7));
+        assert(!fpu_valid(no_mask, 6));
+        assert(!fpu_valid(no_scalar, 3));
+    }
+
+    /* Masked non-compare FP keeps the old destination on clear lanes. */
+    {
+        const unsigned int opfvv_funct6[] = {
+            0x00, 0x02, 0x04, 0x06, 0x08, 0x09, 0x0a, 0x12,
+            0x20, 0x24, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
+        };
+        const unsigned int opfvf_funct6[] = {
+            0x00, 0x02, 0x04, 0x06, 0x08, 0x09, 0x0a,
+            0x20, 0x21, 0x24, 0x27,
+            0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
+        };
+        const unsigned int unary1_vs1[] = { 0, 4, 5, 16 };
+        unsigned int n;
+
+        for (n = 0; n < sizeof(opfvv_funct6) / sizeof(opfvv_funct6[0]); n++) {
+            program[0] = vsetivli(4);
+            program[1] = vector_alu(0x18, 0, 0, 1, 1); /* vmseq.vv v0, v1, v1 */
+            program[2] = vector_alu(0x00, 3, 3, 1, 0); /* vadd.vi v3, v1, 0 */
+            program[3] = vector_alu(opfvv_funct6[n], 1, 3, 1, 1) & ~(1u << 25);
+            program[4] = OPENGPU_SHADER_CEASE;
+            assert(opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        }
+        for (n = 0; n < sizeof(unary1_vs1) / sizeof(unary1_vs1[0]); n++) {
+            program[3] = vector_alu(0x13, 1, 3, 1, unary1_vs1[n]) & ~(1u << 25);
+            assert(opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        }
+        program[1] = addi(9, 0, 2); /* v0 stays undefined */
+        program[3] = vector_alu(0x00, 1, 3, 1, 1) & ~(1u << 25);
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        program[1] = vector_alu(0x18, 0, 0, 1, 1);
+        program[2] = addi(5, 1, 0); /* old vd stays undefined */
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        program[2] = vector_alu(0x00, 3, 3, 1, 0);
+        program[3] &= ~(31u << 7); /* masked vd=v0 */
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+
+        for (n = 0; n < sizeof(opfvf_funct6) / sizeof(opfvf_funct6[0]); n++) {
+            program[0] = vsetivli(4);
+            program[1] = flw(1, 1, 0);
+            program[2] = vector_alu(0x18, 0, 0, 1, 1);
+            program[3] = vector_alu(0x00, 3, 3, 1, 0);
+            program[4] = vector_alu(opfvf_funct6[n], 5, 3, 1, 1) & ~(1u << 25);
+            program[5] = OPENGPU_SHADER_CEASE;
+            assert(fpu_valid(program, 6));
+            assert(!opengpu_compute_shader_validate_words(program, 6, 64, 4));
+        }
+    }
+
+    /* SEW=32 vfcvt. vs1 is the opcode, so v0 need not be a defined vector. */
+    {
+        const uint32_t cvt[] = {
+            vsetivli(4),
+            vle32(2, 1),
+            vfcvt(0, 3, 2), /* vfcvt.xu.f.v */
+            vfcvt(1, 4, 2), /* vfcvt.x.f.v */
+            vfcvt(2, 5, 2), /* vfcvt.f.xu.v */
+            vfcvt(3, 6, 2), /* vfcvt.f.x.v */
+            vfcvt(6, 7, 2), /* vfcvt.rtz.xu.f.v */
+            vfcvt(7, 8, 2), /* vfcvt.rtz.x.f.v */
+            vse32(3, 1),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t bad_op[] = {
+            vsetivli(4),
+            vle32(2, 1),
+            vfcvt(4, 3, 2),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t undef_src[] = {
+            vsetivli(4),
+            vfcvt(1, 3, 2),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t masked_cvt[] = {
+            vsetivli(4),
+            addi(9, 0, 2),
+            0x6a14c057u, /* vmsltu.vx v0, v1, x9 */
+            vle32(2, 1),
+            vle32(3, 1),
+            vfcvt(1, 3, 2) & ~(1u << 25),
+            OPENGPU_SHADER_CEASE,
+        };
+
+        const uint32_t inplace[] = {
+            vsetivli(4),
+            vle32(2, 1),
+            vfcvt(1, 2, 2), /* vfcvt.x.f.v v2, v2 */
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t masked_no_v0[] = {
+            vsetivli(4),
+            vle32(2, 1),
+            vle32(3, 1),
+            vfcvt(1, 3, 2) & ~(1u << 25),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t masked_vd0[] = {
+            vsetivli(4),
+            addi(9, 0, 2),
+            0x6a14c057u,
+            vle32(2, 1),
+            vle32(3, 1),
+            (vfcvt(1, 0, 2) & ~(1u << 25)), /* destination overlaps v0 */
+            OPENGPU_SHADER_CEASE,
+        };
+
+        assert(opengpu_compute_shader_validate_words(cvt, 10, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(bad_op, 4, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(undef_src, 3, 64, 4));
+        assert(opengpu_compute_shader_validate_words(masked_cvt, 7, 64, 4));
+        assert(opengpu_compute_shader_validate_words(inplace, 4, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(masked_no_v0, 5, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(masked_vd0, 7, 64, 4));
+    }
+
+    /* fsw stores a defined f-register through S-type imm(x1) into the
+     * profile output window, and only when the scalar FPU is enabled. */
+    {
+        const uint32_t compute_fsw[] = {
+            flw(1, 1, 0),
+            fsw(1, 1, 4),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t compute_wide[] = {
+            flw(1, 1, 0),
+            fsw(1, 1, 0x7fc),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t compute_neg[] = {
+            flw(1, 1, 0),
+            fsw(1, 1, -4),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t fragment_fsw[] = {
+            flw(1, 1, 0),
+            fsw(1, 1, 192),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t fragment_input[] = {
+            flw(1, 1, 0),
+            fsw(1, 1, 0),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t fragment_last[] = {
+            flw(1, 1, 0),
+            fsw(1, 1, 284),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t fragment_past[] = {
+            flw(1, 1, 288),
+            fsw(1, 1, 288),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t vertex_fsw[] = {
+            flw(1, 1, 0),
+            fsw(1, 1, 256),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t vertex_input[] = {
+            flw(1, 1, 0),
+            fsw(1, 1, 192),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t undef_f[] = {
+            flw(2, 1, 0),
+            fsw(1, 1, 4),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t integer_src[] = {
+            lw(10, 0),
+            fsw(10, 1, 4),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t unaligned[] = {
+            flw(1, 1, 0),
+            fsw(1, 1, 2),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t other_base[] = {
+            flw(1, 1, 0),
+            fsw(1, 5, 4),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t fsw_branch[] = {
+            branch(0, 0, 0, 8), /* skip the flw */
+            flw(1, 1, 0),
+            fsw(1, 1, 4),
+            OPENGPU_SHADER_CEASE,
+        };
+
+        assert(fpu_valid(compute_fsw, 3));
+        assert(!opengpu_compute_shader_validate_words(compute_fsw, 3, 64, 4));
+        assert(opengpu_compute_shader_validate_words_fpu(
+            compute_wide, 3, 0x800, 4, true));
+        assert(!opengpu_compute_shader_validate_words_fpu(
+            compute_neg, 3, 0x800, 4, true));
+        assert(opengpu_shader_validate_words(fragment_fsw, 3, 288, 8, true));
+        assert(opengpu_shader_validate_words_with_texture(
+            fragment_fsw, 3, 288, 8, false, true));
+        assert(!opengpu_shader_validate_words(fragment_fsw, 3, 288, 8, false));
+        assert(!opengpu_shader_validate_words(fragment_input, 3, 288, 8, true));
+        assert(opengpu_shader_validate_words(fragment_last, 3, 320, 8, true));
+        assert(!opengpu_shader_validate_words(fragment_past, 3, 320, 8, true));
+        assert(opengpu_vertex_shader_validate_words(vertex_fsw, 3, 512, 8, true));
+        assert(!opengpu_vertex_shader_validate_words(
+            vertex_fsw, 3, 512, 8, false));
+        assert(!opengpu_vertex_shader_validate_words(
+            vertex_input, 3, 512, 8, true));
+        assert(!fpu_valid(undef_f, 3));
+        assert(!fpu_valid(integer_src, 3));
+        assert(!fpu_valid(unaligned, 3));
+        assert(!fpu_valid(other_base, 3));
+        assert(!fpu_valid(fsw_branch, 4));
+    }
+
+    /* Scalar FP-to-FP arithmetic defines its destination f-register. */
+    {
+        const uint32_t fp_arith[] = {
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x00, 0, 3, 1, 2), /* fadd.s f3, f1, f2 */
+            fp_op(0x01, 7, 4, 2, 1), /* fsub.s f4, f2, f1, dyn */
+            fp_op(0x02, 0, 5, 1, 2), /* fmul.s f5, f1, f2 */
+            fp_op(0x04, 1, 6, 1, 2), /* fsgnjn.s f6, f1, f2 */
+            fp_op(0x05, 0, 7, 1, 2), /* fmin.s f7, f1, f2 */
+            fp_fma(0x43, 0, 8, 1, 2, 1), /* fmadd.s f8, f1, f2, f1 */
+            fsw(8, 1, 8),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t chained[] = {
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x00, 0, 3, 1, 2),
+            fp_op(0x00, 0, 4, 3, 1), /* fadd.s f4, f3, f1 */
+            fsw(4, 1, 8),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t uses_sum[] = {
+            vsetivli(4),
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x00, 0, 3, 1, 2),
+            vle32(2, 1),
+            vector_alu(0x00, 5, 4, 2, 3), /* vfadd.vf v4, v2, f3 */
+            vse32(4, 1),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t undef_src[] = {
+            flw(1, 1, 0),
+            fp_op(0x00, 0, 3, 1, 2),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t bad_rm[] = {
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x00, 5, 3, 1, 2),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t fdiv[] = {
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x03, 0, 3, 1, 2),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t fsqrt[] = {
+            flw(1, 1, 0),
+            fp_op(0x0b, 0, 3, 1, 0),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t fsqrt_rs2[] = {
+            flw(1, 1, 0),
+            fp_op(0x0b, 0, 3, 1, 1),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t feq[] = {
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x14, 2, 3, 1, 2),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t fcvt[] = {
+            flw(1, 1, 0),
+            fp_op(0x18, 0, 3, 1, 0),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t not_integer[] = {
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x00, 0, 9, 1, 2), /* defines f9, not x9 */
+            sw(9, 8),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t undef_fma[] = {
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_fma(0x43, 0, 8, 1, 2, 3), /* f3 undefined */
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t fragment_sum[] = {
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x00, 0, 3, 1, 2),
+            fsw(3, 1, 192),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t fp_branch[] = {
+            branch(0, 0, 0, 12),
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x00, 0, 3, 1, 2),
+            fsw(3, 1, 8),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t double_add[] = {
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x00, 0, 3, 1, 2) | (1u << 25),
+            OPENGPU_SHADER_CEASE,
+        };
+
+        assert(fpu_valid(fp_arith, 10));
+        assert(!opengpu_compute_shader_validate_words(fp_arith, 10, 64, 4));
+        assert(fpu_valid(chained, 6));
+        assert(fpu_valid(uses_sum, 8));
+        assert(opengpu_shader_validate_words(fragment_sum, 5, 288, 8, true));
+        assert(!fpu_valid(undef_src, 3));
+        assert(!fpu_valid(bad_rm, 4));
+        assert(fpu_valid(fdiv, 4));
+        assert(fpu_valid(fsqrt, 3));
+        assert(!fpu_valid(fsqrt_rs2, 3));
+        assert(fpu_valid(feq, 4));
+        assert(fpu_valid(fcvt, 3));
+        assert(!fpu_valid(not_integer, 5));
+        assert(!fpu_valid(undef_fma, 4));
+        assert(!fpu_valid(fp_branch, 6));
+        assert(!fpu_valid(double_add, 4));
+    }
+
+    /* Compares, conversions and bit moves cross the integer file. An integer
+     * destination cannot be x1 and does not stay a pointer. */
+    {
+        const uint32_t compare_store[] = {
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x14, 2, 10, 1, 2), /* feq.s x10, f1, f2 */
+            fp_op(0x14, 0, 11, 1, 2), /* fle.s x11, f1, f2 */
+            fp_op(0x14, 1, 12, 1, 2), /* flt.s x12, f1, f2 */
+            sw(10, 8),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t convert_store[] = {
+            flw(1, 1, 0),
+            fp_op(0x18, 0, 10, 1, 0), /* fcvt.w.s x10, f1 */
+            fp_op(0x18, 7, 11, 1, 1), /* fcvt.wu.s x11, f1, dyn */
+            fp_op(0x1c, 0, 12, 1, 0), /* fmv.x.w x12, f1 */
+            fp_op(0x1c, 1, 13, 1, 0), /* fclass.s x13, f1 */
+            sw(12, 8),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t int_to_fp[] = {
+            addi(10, 0, 5),
+            fp_op(0x1a, 0, 3, 10, 0), /* fcvt.s.w f3, x10 */
+            fp_op(0x1a, 0, 4, 10, 1), /* fcvt.s.wu f4, x10 */
+            fp_op(0x1e, 0, 5, 10, 0), /* fmv.w.x f5, x10 */
+            fsw(5, 1, 8),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t fragment_cmp[] = {
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x14, 2, 10, 1, 2),
+            sw(10, 192),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t writes_x1[] = {
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x14, 2, 1, 1, 2),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t undef_int[] = {
+            fp_op(0x1a, 0, 3, 10, 0),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t clobber_ptr[] = {
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            addi(5, 1, 0),
+            vsetivli(4),
+            fp_op(0x14, 2, 5, 1, 2),
+            vse32(1, 5),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t not_fp[] = {
+            flw(1, 1, 0),
+            fp_op(0x1c, 0, 10, 1, 0), /* defines x10, not f10 */
+            fsw(10, 1, 8),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t bad_rs2[] = {
+            flw(1, 1, 0),
+            fp_op(0x18, 0, 10, 1, 2),
+            OPENGPU_SHADER_CEASE,
+        };
+        const uint32_t cmp_branch[] = {
+            branch(0, 0, 0, 12),
+            flw(1, 1, 0),
+            flw(2, 1, 4),
+            fp_op(0x14, 2, 10, 1, 2),
+            sw(10, 8),
+            OPENGPU_SHADER_CEASE,
+        };
+
+        assert(fpu_valid(compare_store, 7));
+        assert(!opengpu_compute_shader_validate_words(
+            compare_store, 7, 64, 4));
+        assert(fpu_valid(convert_store, 7));
+        assert(fpu_valid(int_to_fp, 6));
+        assert(opengpu_shader_validate_words(fragment_cmp, 5, 288, 8, true));
+        assert(!fpu_valid(writes_x1, 4));
+        assert(!fpu_valid(undef_int, 2));
+        assert(!fpu_valid(clobber_ptr, 7));
+        assert(!fpu_valid(not_fp, 4));
+        assert(!fpu_valid(bad_rs2, 3));
+        assert(!fpu_valid(cmp_branch, 6));
     }
 
     program[1] = vector_alu(0x00, 4, 2, 1, 10); /* undefined scalar x10 */

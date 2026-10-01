@@ -165,7 +165,8 @@ private object FpuDecodeTable {
   private val roundedBinaryPatterns =
     binary("fadd", "00000") ++
       binary("fsub", "00001") ++
-      binary("fmul", "00010")
+      binary("fmul", "00010") ++
+      binary("fdiv", "00011", unit = 3)
 
   private val exactFunctionPatterns =
     exactRm("fsgnj",  "00100", "000", setsFlags = false) ++
@@ -188,6 +189,8 @@ private object FpuDecodeTable {
       unaryRs2("fcvt_from_w", "11010", "00000", 5, writesFp = true,
         writesInteger = false, usesRoundingMode = true, setsFlags = true) ++
       unaryRs2("fcvt_from_wu", "11010", "00001", 5, writesFp = true,
+        writesInteger = false, usesRoundingMode = true, setsFlags = true) ++
+      unaryRs2("fsqrt", "01011", "00000", 4, writesFp = true,
         writesInteger = false, usesRoundingMode = true, setsFlags = true)
 
   private val moveAndClassPatterns =

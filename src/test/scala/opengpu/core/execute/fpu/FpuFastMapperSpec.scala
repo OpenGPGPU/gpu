@@ -38,9 +38,14 @@ class FpuFastMapperSpec extends AnyFlatSpec {
       dut.io.out.request.operandB.expect("h40000000".U)
       dut.io.out.request.operandC.expect("h3f000000".U)
 
-      // Compare now maps to the exact unit.
+      // feq.s (funct3 2) maps to the exact unit's equality predicate (0),
+      // not its less-or-equal predicate.
       dut.io.in.instruction.poke("b1010000_00010_00001_010_00100_1010011".U)
       dut.io.out.supported.expect(true.B)
+      dut.io.out.request.operation.expect(Fp32Operation.compare)
+      dut.io.out.request.exactFunction.expect(0.U)
+      // fle.s (funct3 0) maps to less-or-equal (2).
+      dut.io.in.instruction.poke("b1010000_00010_00001_000_00100_1010011".U)
       dut.io.out.request.operation.expect(Fp32Operation.compare)
       dut.io.out.request.exactFunction.expect(2.U)
 

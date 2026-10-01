@@ -18,9 +18,11 @@ import opengpu.core.backend.scoreboard.RegisterReservation
 import opengpu.core.execute.control.SimtPath
 import opengpu.core.execute.fpu.{
   Fp32Request,
+  Fp32DivLane,
   Fp32ExactUnit,
   Fp32FmaLane,
   Fp32Operation,
+  Fp32SqrtLane,
   FpuFastMapper
 }
 import opengpu.core.frontend.decode.FpuDecodeResponse
@@ -42,8 +44,8 @@ private class FpuMappedEntry(config: GpuConfig, tagWidth: Int) extends Bundle {
   val decode = new FpuIssuedInstruction(config)
 }
 
-/** Scalar FP32 backend. FMA, sign/min-max/compare/classify/move are native;
-  * conversions and FP memory remain explicit outputs. */
+/** Scalar FP32 backend. FMA, divide, square root, sign/min-max/compare/
+  * classify/move, and conversions retire here; FP memory is a separate unit. */
 class FpuBackend(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
     extends Module {
   val io = IO(new Bundle {
@@ -74,11 +76,17 @@ class FpuBackend(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
   private val mapper = Module(new FpuFastMapper(config, tagWidth))
   private val fma = Module(new Fp32FmaLane(tagWidth))
   private val exact = Module(new Fp32ExactUnit(tagWidth))
+  private val div = Module(new Fp32DivLane(tagWidth))
+  private val sqrt = Module(new Fp32SqrtLane(tagWidth))
   private val memory = Module(new FpuMemoryUnit(config))
   private val fmaMetadata = Module(
     new Queue(new FpuIssuedInstruction(config), 8))
   private val exactMetadata = Module(
     new Queue(new FpuIssuedInstruction(config), 8))
+  private val divMetadata = Module(
+    new Queue(new FpuIssuedInstruction(config), 2))
+  private val sqrtMetadata = Module(
+    new Queue(new FpuIssuedInstruction(config), 2))
   private val mappedQueue = Module(
     new Queue(new FpuMappedEntry(config, tagWidth), 2))
 
@@ -144,25 +152,52 @@ class FpuBackend(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
       mappedQueue.io.deq.bits.request.operation === Fp32Operation.fmvFromX ||
       mappedQueue.io.deq.bits.request.operation === Fp32Operation.fpToInt ||
       mappedQueue.io.deq.bits.request.operation === Fp32Operation.intToFp
+  private val isDivDeq =
+    mappedQueue.io.deq.bits.request.operation === Fp32Operation.div
+  private val isSqrtDeq =
+    mappedQueue.io.deq.bits.request.operation === Fp32Operation.sqrt
+  // Each iterative lane accepts one operation and holds it until commit.
+  // The divider reports ready while an earlier divide is still iterating.
+  private val divIssueReady =
+    div.io.in.ready && !div.io.busy && divMetadata.io.enq.ready &&
+      !divMetadata.io.deq.valid
+  private val sqrtIssueReady =
+    sqrt.io.in.ready && sqrtMetadata.io.enq.ready &&
+      !sqrtMetadata.io.deq.valid
   private val executionReady = Mux(
     isExactDeq,
     exact.io.in.ready && exactMetadata.io.enq.ready,
-    fma.io.in.ready && fmaMetadata.io.enq.ready
+    Mux(
+      isDivDeq,
+      divIssueReady,
+      Mux(isSqrtDeq, sqrtIssueReady, fma.io.in.ready && fmaMetadata.io.enq.ready)
+    )
   )
-  exact.io.in.valid :=
+  private val issueExact =
     mappedQueue.io.deq.valid && isExactDeq && executionReady
-  exact.io.in.bits := mappedQueue.io.deq.bits.request
-  fma.io.in.valid :=
+  private val issueDiv =
+    mappedQueue.io.deq.valid && isDivDeq && executionReady
+  private val issueSqrt =
+    mappedQueue.io.deq.valid && isSqrtDeq && executionReady
+  private val issueFma =
     mappedQueue.io.deq.valid && mappedQueue.io.deq.bits.supported &&
-      !isExactDeq && executionReady
+      !isExactDeq && !isDivDeq && !isSqrtDeq && executionReady
+  exact.io.in.valid := issueExact
+  exact.io.in.bits := mappedQueue.io.deq.bits.request
+  div.io.in.valid := issueDiv
+  div.io.in.bits := mappedQueue.io.deq.bits.request
+  sqrt.io.in.valid := issueSqrt
+  sqrt.io.in.bits := mappedQueue.io.deq.bits.request
+  fma.io.in.valid := issueFma
   fma.io.in.bits := mappedQueue.io.deq.bits.request
   mappedQueue.io.deq.ready := executionReady
-  exactMetadata.io.enq.valid :=
-    mappedQueue.io.deq.valid && isExactDeq && executionReady
+  exactMetadata.io.enq.valid := issueExact
   exactMetadata.io.enq.bits := mappedQueue.io.deq.bits.decode
-  fmaMetadata.io.enq.valid :=
-    mappedQueue.io.deq.valid && mappedQueue.io.deq.bits.supported &&
-      !isExactDeq && executionReady
+  divMetadata.io.enq.valid := issueDiv
+  divMetadata.io.enq.bits := mappedQueue.io.deq.bits.decode
+  sqrtMetadata.io.enq.valid := issueSqrt
+  sqrtMetadata.io.enq.bits := mappedQueue.io.deq.bits.decode
+  fmaMetadata.io.enq.valid := issueFma
   fmaMetadata.io.enq.bits := mappedQueue.io.deq.bits.decode
   memory.io.in.valid :=
     issue.io.out.valid && isMemory && memory.io.in.ready
@@ -170,6 +205,8 @@ class FpuBackend(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
   io.unimplemented.valid := issue.io.out.valid && !fast && !isMemory
   io.unimplemented.bits := issue.io.out.bits
   fma.io.flush := io.flush
+  div.io.flush := io.flush
+  sqrt.io.flush := io.flush
   io.memoryRequest <> memory.io.cacheRequest
   memory.io.cacheResponse <> io.memoryResponse
   io.memoryFault <> memory.io.fault
@@ -178,11 +215,23 @@ class FpuBackend(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
     exact.io.out.valid && exactMetadata.io.deq.valid
   private val fmaResultValid =
     fma.io.out.valid && fmaMetadata.io.deq.valid
+  private val divResultValid =
+    div.io.out.valid && divMetadata.io.deq.valid
+  private val sqrtResultValid =
+    sqrt.io.out.valid && sqrtMetadata.io.deq.valid
   private val memoryResultValid = memory.io.commit.valid
   private val selectedMemory = memoryResultValid
   private val selectedExact = !selectedMemory && exactResultValid
-  private val selectedFma = !selectedMemory && !selectedExact && fmaResultValid
-  private val resultValid = selectedMemory || selectedExact || selectedFma
+  private val selectedFma =
+    !selectedMemory && !selectedExact && fmaResultValid
+  private val selectedDiv =
+    !selectedMemory && !selectedExact && !selectedFma && divResultValid
+  private val selectedSqrt =
+    !selectedMemory && !selectedExact && !selectedFma && !selectedDiv &&
+      sqrtResultValid
+  private val resultValid =
+    selectedMemory || selectedExact || selectedFma || selectedDiv ||
+      selectedSqrt
   private val result = Wire(new FpuDecodeResponse(config))
   result := Mux(
     selectedMemory,
@@ -190,18 +239,39 @@ class FpuBackend(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
     Mux(
       selectedExact,
       exactMetadata.io.deq.bits.decode,
-      fmaMetadata.io.deq.bits.decode
+      Mux(
+        selectedFma,
+        fmaMetadata.io.deq.bits.decode,
+        Mux(selectedDiv, divMetadata.io.deq.bits.decode,
+          sqrtMetadata.io.deq.bits.decode)
+      )
     )
   )
   private val resultData = Mux(
     selectedMemory,
     memory.io.commit.bits.loadData,
-    Mux(selectedExact, exact.io.out.bits.result, fma.io.out.bits.result)
+    Mux(
+      selectedExact,
+      exact.io.out.bits.result,
+      Mux(
+        selectedFma,
+        fma.io.out.bits.result,
+        Mux(selectedDiv, div.io.out.bits.result, sqrt.io.out.bits.result)
+      )
+    )
   )
   private val resultStatus = Mux(
     selectedMemory,
     0.U,
-    Mux(selectedExact, exact.io.out.bits.status, fma.io.out.bits.status)
+    Mux(
+      selectedExact,
+      exact.io.out.bits.status,
+      Mux(
+        selectedFma,
+        fma.io.out.bits.status,
+        Mux(selectedDiv, div.io.out.bits.status, sqrt.io.out.bits.status)
+      )
+    )
   )
   private val rd = result.instruction(11, 7)
   private val needsWrite = result.decoded.writesFp
@@ -215,11 +285,23 @@ class FpuBackend(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
   fma.io.out.ready :=
     !selectedMemory && fmaMetadata.io.deq.valid &&
       commitReady && !selectedExact
+  div.io.out.ready :=
+    !selectedMemory && !selectedExact && !selectedFma &&
+      divMetadata.io.deq.valid && commitReady
+  sqrt.io.out.ready :=
+    !selectedMemory && !selectedExact && !selectedFma && !selectedDiv &&
+      sqrtMetadata.io.deq.valid && commitReady
   exactMetadata.io.deq.ready :=
     !selectedMemory && exact.io.out.valid && commitReady
   fmaMetadata.io.deq.ready :=
     !selectedMemory && fma.io.out.valid &&
       commitReady && !selectedExact
+  divMetadata.io.deq.ready :=
+    !selectedMemory && !selectedExact && !selectedFma &&
+      div.io.out.valid && commitReady
+  sqrtMetadata.io.deq.ready :=
+    !selectedMemory && !selectedExact && !selectedFma && !selectedDiv &&
+      sqrt.io.out.valid && commitReady
 
   io.redirect.valid := resultValid
   io.redirect.bits.warpId := result.warpId
@@ -258,6 +340,10 @@ class FpuBackend(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
       assert(exact.io.out.bits.tag === expectedTag)
     }.elsewhen(selectedFma) {
       assert(fma.io.out.bits.tag === expectedTag)
+    }.elsewhen(selectedDiv) {
+      assert(div.io.out.bits.tag === expectedTag)
+    }.elsewhen(selectedSqrt) {
+      assert(sqrt.io.out.bits.tag === expectedTag)
     }
   }
 }

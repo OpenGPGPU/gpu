@@ -315,4 +315,380 @@ class KernelShaderStageSpec extends AnyFlatSpec {
       dut.io.completion.bits.success.expect(true.B)
     }
   }
+
+  // Two uniforms lowered through scalar FP: flw both, fadd/fsub/fmul/fsgnjn/
+  // fmin/fmadd, then fsw each result. fdiv, fsqrt, and the integer crossings
+  // retire on the same path and are covered by the tests below.
+  it should "combine two scalar floats and store the results on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("0000a087", 16), // flw f1, 0(x1)
+        BigInt(0x1004) -> BigInt("0040a107", 16), // flw f2, 4(x1)
+        BigInt(0x1008) -> BigInt("002081d3", 16), // fadd.s f3, f1, f2
+        BigInt(0x100c) -> BigInt("08110253", 16), // fsub.s f4, f2, f1
+        BigInt(0x1010) -> BigInt("102082d3", 16), // fmul.s f5, f1, f2
+        BigInt(0x1014) -> BigInt("20209353", 16), // fsgnjn.s f6, f1, f2
+        BigInt(0x1018) -> BigInt("282083d3", 16), // fmin.s f7, f1, f2
+        BigInt(0x101c) -> BigInt("08208443", 16), // fmadd.s f8, f1, f2, f1
+        BigInt(0x1020) -> BigInt("20000113", 16), // addi x2, x0, 0x200
+        BigInt(0x1024) -> BigInt("00312027", 16), // fsw f3, 0(x2)
+        BigInt(0x1028) -> BigInt("00412227", 16), // fsw f4, 4(x2)
+        BigInt(0x102c) -> BigInt("00512427", 16), // fsw f5, 8(x2)
+        BigInt(0x1030) -> BigInt("00612627", 16), // fsw f6, 12(x2)
+        BigInt(0x1034) -> BigInt("00712827", 16), // fsw f7, 16(x2)
+        BigInt(0x1038) -> BigInt("00812a27", 16), // fsw f8, 20(x2)
+        BigInt(0x103c) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      mem.putWord(BigInt(0x8000), BigInt("40000000", 16)) // 2.0f
+      mem.putWord(BigInt(0x8004), BigInt("40400000", 16)) // 3.0f
+
+      val result = runShader(dut, mem, limit = 2000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val expected = Seq(
+        0 -> "40a00000", // 2+3 = 5
+        4 -> "3f800000", // 3-2 = 1
+        8 -> "40c00000", // 2*3 = 6
+        12 -> "c0000000", // fsgnjn -> -2
+        16 -> "40000000", // min = 2
+        20 -> "41000000") // 2*3+2 = 8
+      expected.foreach { case (offset, bits) =>
+        val stored = storedWord(result.writes, BigInt(0x200 + offset))
+        assert(stored == BigInt(bits, 16),
+          s"offset $offset stored 0x${stored.toString(16)}, expected $bits")
+      }
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
+  // 1.0f compared with 2.0f distinguishes feq (0) from fle/flt (1). The same
+  // program converts and moves both directions and stores every result.
+  it should "cross scalar floats and integers on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("0000a087", 16), // flw f1, 0(x1)
+        BigInt(0x1004) -> BigInt("0040a107", 16), // flw f2, 4(x1)
+        BigInt(0x1008) -> BigInt("a020a553", 16), // feq.s x10, f1, f2
+        BigInt(0x100c) -> BigInt("a02085d3", 16), // fle.s x11, f1, f2
+        BigInt(0x1010) -> BigInt("a0209653", 16), // flt.s x12, f1, f2
+        BigInt(0x1014) -> BigInt("c00086d3", 16), // fcvt.w.s x13, f1
+        BigInt(0x1018) -> BigInt("e0009753", 16), // fclass.s x14, f1
+        BigInt(0x101c) -> BigInt("e00087d3", 16), // fmv.x.w x15, f1
+        BigInt(0x1020) -> BigInt("20000113", 16), // addi x2, x0, 0x200
+        BigInt(0x1024) -> BigInt("00a12023", 16), // sw x10, 0(x2)
+        BigInt(0x1028) -> BigInt("00b12223", 16), // sw x11, 4(x2)
+        BigInt(0x102c) -> BigInt("00c12423", 16), // sw x12, 8(x2)
+        BigInt(0x1030) -> BigInt("00d12623", 16), // sw x13, 12(x2)
+        BigInt(0x1034) -> BigInt("00e12823", 16), // sw x14, 16(x2)
+        BigInt(0x1038) -> BigInt("00f12a23", 16), // sw x15, 20(x2)
+        BigInt(0x103c) -> BigInt("00500813", 16), // addi x16, x0, 5
+        BigInt(0x1040) -> BigInt("d00801d3", 16), // fcvt.s.w f3, x16
+        BigInt(0x1044) -> BigInt("f0080253", 16), // fmv.w.x f4, x16
+        BigInt(0x1048) -> BigInt("00312c27", 16), // fsw f3, 24(x2)
+        BigInt(0x104c) -> BigInt("00412e27", 16), // fsw f4, 28(x2)
+        BigInt(0x1050) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      mem.putWord(BigInt(0x8000), BigInt("3f800000", 16)) // 1.0f
+      mem.putWord(BigInt(0x8004), BigInt("40000000", 16)) // 2.0f
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val expected = Seq(
+        0 -> "0", // feq 1.0 == 2.0
+        4 -> "1", // fle 1.0 <= 2.0
+        8 -> "1", // flt 1.0 < 2.0
+        12 -> "1", // fcvt.w.s 1.0
+        16 -> "40", // fclass positive normal
+        20 -> "3f800000", // fmv.x.w
+        24 -> "40a00000", // fcvt.s.w 5 -> 5.0f
+        28 -> "5") // fmv.w.x
+      expected.foreach { case (offset, bits) =>
+        val stored = storedWord(result.writes, BigInt(0x200 + offset))
+        assert(stored == BigInt(bits, 16),
+          s"offset $offset stored 0x${stored.toString(16)}, expected $bits")
+      }
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
+  // v1 holds the lane index. vmsltu against 2 sets v0 for lanes 0 and 1.
+  // vfmerge writes the scalar there and vs2 on the clear lane. vfmv.v.f
+  // broadcasts the same scalar onto every active lane.
+  it should "merge a scalar float into a vector on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("0000a087", 16), // flw f1, 0(x1)
+        BigInt(0x1008) -> BigInt("00200493", 16), // addi x9, x0, 2
+        BigInt(0x100c) -> BigInt("6a14c057", 16), // vmsltu.vx v0, v1, x9
+        BigInt(0x1010) -> BigInt("01008293", 16), // addi x5, x1, 16
+        BigInt(0x1014) -> BigInt("0202e107", 16), // vle32.v v2, (x5)
+        BigInt(0x1018) -> BigInt("0202e207", 16), // vle32.v v4, (x5)
+        BigInt(0x101c) -> BigInt("5c20d257", 16), // vfmerge.vfm v4, v2, f1, v0
+        BigInt(0x1020) -> BigInt("04008293", 16), // addi x5, x1, 64
+        BigInt(0x1024) -> BigInt("0202e227", 16), // vse32.v v4, (x5)
+        BigInt(0x1028) -> BigInt("5e00d2d7", 16), // vfmv.v.f v5, f1
+        BigInt(0x102c) -> BigInt("08008293", 16), // addi x5, x1, 128
+        BigInt(0x1030) -> BigInt("0202e2a7", 16), // vse32.v v5, (x5)
+        BigInt(0x1034) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      mem.putWord(BigInt(0x8000), BigInt("40000000", 16)) // 2.0f
+      val vs2 = Seq("40800000", "40a00000", "40c00000") // 4, 5, 6
+      vs2.zipWithIndex.foreach { case (bits, lane) =>
+        mem.putWord(BigInt(0x8010) + lane * 4, BigInt(bits, 16))
+      }
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val merged = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8040) + lane * 4))
+      assert(merged == Seq("40000000", "40000000", "40c00000").map(BigInt(_, 16)),
+        s"vfmerge stored ${merged.map(_.toString(16))}")
+      val broadcast = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8080) + lane * 4))
+      assert(broadcast == Seq("40000000", "40000000", "40000000").map(BigInt(_, 16)),
+        s"vfmv stored ${broadcast.map(_.toString(16))}")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
+  // 1.5 and 2.5 truncate toward zero; -1.0 stays -1. The integer vector
+  // 5, -5, 0 converts back to those exact floats.
+  it should "convert floats and integers on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("00008293", 16), // addi x5, x1, 0
+        BigInt(0x1008) -> BigInt("0202e107", 16), // vle32.v v2, (x5)
+        BigInt(0x100c) -> BigInt("4a2391d7", 16), // vfcvt.rtz.x.f.v v3, v2
+        BigInt(0x1010) -> BigInt("04008293", 16), // addi x5, x1, 64
+        BigInt(0x1014) -> BigInt("0202e1a7", 16), // vse32.v v3, (x5)
+        BigInt(0x1018) -> BigInt("01008293", 16), // addi x5, x1, 16
+        BigInt(0x101c) -> BigInt("0202e207", 16), // vle32.v v4, (x5)
+        BigInt(0x1020) -> BigInt("4a4192d7", 16), // vfcvt.f.x.v v5, v4
+        BigInt(0x1024) -> BigInt("08008293", 16), // addi x5, x1, 128
+        BigInt(0x1028) -> BigInt("0202e2a7", 16), // vse32.v v5, (x5)
+        BigInt(0x102c) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      Seq("3fc00000", "40200000", "bf800000").zipWithIndex.foreach {
+        case (bits, lane) =>
+          mem.putWord(BigInt(0x8000) + lane * 4, BigInt(bits, 16))
+      }
+      Seq(BigInt(5), BigInt("fffffffb", 16), BigInt(0)).zipWithIndex.foreach {
+        case (bits, lane) =>
+          mem.putWord(BigInt(0x8010) + lane * 4, bits)
+      }
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val ints = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8040) + lane * 4))
+      assert(ints == Seq(BigInt(1), BigInt(2), BigInt("ffffffff", 16)),
+        s"vfcvt.rtz.x.f.v stored ${ints.map(_.toString(16))}")
+      val floats = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8080) + lane * 4))
+      assert(floats == Seq("40a00000", "c0a00000", "0").map(BigInt(_, 16)),
+        s"vfcvt.f.x.v stored ${floats.map(_.toString(16))}")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
+  // v0 is set for lanes 0 and 1. Masked vfadd doubles those lanes and leaves
+  // lane 2 at the old destination. Masked vfcvt.rtz.x.f.v does the same.
+  it should "mask vector float arithmetic on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,tu,mu
+        BigInt(0x1004) -> BigInt("00200493", 16), // addi x9, x0, 2
+        BigInt(0x1008) -> BigInt("6a14c057", 16), // vmsltu.vx v0, v1, x9
+        BigInt(0x100c) -> BigInt("00008293", 16), // addi x5, x1, 0
+        BigInt(0x1010) -> BigInt("0202e107", 16), // vle32.v v2, (x5)
+        BigInt(0x1014) -> BigInt("01008293", 16), // addi x5, x1, 16
+        BigInt(0x1018) -> BigInt("0202e207", 16), // vle32.v v4, (x5)
+        BigInt(0x101c) -> BigInt("00211257", 16), // vfadd.vv v4, v2, v2, v0.t
+        BigInt(0x1020) -> BigInt("04008293", 16), // addi x5, x1, 64
+        BigInt(0x1024) -> BigInt("0202e227", 16), // vse32.v v4, (x5)
+        BigInt(0x1028) -> BigInt("02008293", 16), // addi x5, x1, 32
+        BigInt(0x102c) -> BigInt("0202e187", 16), // vle32.v v3, (x5)
+        BigInt(0x1030) -> BigInt("482391d7", 16), // vfcvt.rtz.x.f.v v3, v2, v0.t
+        BigInt(0x1034) -> BigInt("08008293", 16), // addi x5, x1, 128
+        BigInt(0x1038) -> BigInt("0202e1a7", 16), // vse32.v v3, (x5)
+        BigInt(0x103c) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      Seq("3f800000", "40000000", "40800000").zipWithIndex.foreach {
+        case (bits, lane) =>
+          mem.putWord(BigInt(0x8000) + lane * 4, BigInt(bits, 16))
+      }
+      Seq("41000000", "41000000", "41000000").zipWithIndex.foreach {
+        case (bits, lane) =>
+          mem.putWord(BigInt(0x8010) + lane * 4, BigInt(bits, 16))
+      }
+      (0 until 3).foreach { lane =>
+        mem.putWord(BigInt(0x8020) + lane * 4, BigInt("11111111", 16))
+      }
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val added = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8040) + lane * 4))
+      assert(added == Seq("40000000", "40800000", "41000000").map(BigInt(_, 16)),
+        s"masked vfadd stored ${added.map(_.toString(16))}")
+      val converted = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8080) + lane * 4))
+      assert(converted == Seq(BigInt(1), BigInt(2), BigInt("11111111", 16)),
+        s"masked vfcvt stored ${converted.map(_.toString(16))}")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
+  // Each lane holds one zero-extended element. vle8 reads consecutive bytes,
+  // vle16 consecutive halfwords, and vlse16 stride 4 reads every other
+  // halfword. The narrow stores write only those low bytes.
+  it should "load and store narrow vector elements on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1
+        BigInt(0x1004) -> BigInt("00008293", 16), // addi x5, x1, 0
+        BigInt(0x1008) -> BigInt("02028107", 16), // vle8.v v2, (x5)
+        BigInt(0x100c) -> BigInt("04008293", 16), // addi x5, x1, 64
+        BigInt(0x1010) -> BigInt("0202e127", 16), // vse32.v v2, (x5)
+        BigInt(0x1014) -> BigInt("01008293", 16), // addi x5, x1, 16
+        BigInt(0x1018) -> BigInt("0202d187", 16), // vle16.v v3, (x5)
+        BigInt(0x101c) -> BigInt("08008293", 16), // addi x5, x1, 128
+        BigInt(0x1020) -> BigInt("0202e1a7", 16), // vse32.v v3, (x5)
+        BigInt(0x1024) -> BigInt("00400313", 16), // addi x6, x0, 4
+        BigInt(0x1028) -> BigInt("01008293", 16), // addi x5, x1, 16
+        BigInt(0x102c) -> BigInt("0a62d207", 16), // vlse16.v v4, (x5), x6
+        BigInt(0x1030) -> BigInt("10008293", 16), // addi x5, x1, 256
+        BigInt(0x1034) -> BigInt("0202e227", 16), // vse32.v v4, (x5)
+        BigInt(0x1038) -> BigInt("0c008293", 16), // addi x5, x1, 192
+        BigInt(0x103c) -> BigInt("02028127", 16), // vse8.v v2, (x5)
+        BigInt(0x1040) -> BigInt("0d008293", 16), // addi x5, x1, 208
+        BigInt(0x1044) -> BigInt("0202d1a7", 16), // vse16.v v3, (x5)
+        BigInt(0x1048) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      mem.putWord(BigInt(0x8000), BigInt("332211", 16))
+      mem.putWord(BigInt(0x8010), BigInt("abcd1234", 16))
+      mem.putWord(BigInt(0x8014), BigInt("ff", 16))
+      mem.putWord(BigInt(0x8018), BigInt("7", 16))
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val bytes = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8040) + lane * 4))
+      assert(bytes == Seq(BigInt(0x11), BigInt(0x22), BigInt(0x33)),
+        s"vle8 stored ${bytes.map(_.toString(16))}")
+      val halves = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8080) + lane * 4))
+      assert(halves == Seq(BigInt(0x1234), BigInt(0xabcd), BigInt(0xff)),
+        s"vle16 stored ${halves.map(_.toString(16))}")
+      val strided = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8100) + lane * 4))
+      assert(strided == Seq(BigInt(0x1234), BigInt(0xff), BigInt(7)),
+        s"vlse16 stored ${strided.map(_.toString(16))}")
+      val packed8 = (0 until 3).map(lane =>
+        result.writes.getOrElse(BigInt(0x80c0) + lane, BigInt(-1)))
+      assert(packed8 == Seq(BigInt(0x11), BigInt(0x22), BigInt(0x33)),
+        s"vse8 stored ${packed8.map(_.toString(16))}")
+      assert(!result.writes.contains(BigInt(0x80c3)),
+        "inactive lane must not store a byte")
+      val packed16 = (0 until 6).map(i =>
+        result.writes.getOrElse(BigInt(0x80d0) + i, BigInt(-1)))
+      assert(packed16 == Seq(0x34, 0x12, 0xcd, 0xab, 0xff, 0x00).map(BigInt(_)),
+        s"vse16 stored ${packed16.map(_.toString(16))}")
+      assert(!result.writes.contains(BigInt(0x80d6)),
+        "inactive lane must not store a halfword")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
+  // 4.0 / 2.0 and sqrt(4.0) both retire through the scalar divide and
+  // square-root lanes and store 2.0f.
+  it should "divide and take a square root on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("0000a087", 16), // flw f1, 0(x1)
+        BigInt(0x1004) -> BigInt("0040a107", 16), // flw f2, 4(x1)
+        BigInt(0x1008) -> BigInt("182081d3", 16), // fdiv.s f3, f1, f2
+        BigInt(0x100c) -> BigInt("58008253", 16), // fsqrt.s f4, f1
+        BigInt(0x1010) -> BigInt("0030a827", 16), // fsw f3, 16(x1)
+        BigInt(0x1014) -> BigInt("0040aa27", 16), // fsw f4, 20(x1)
+        BigInt(0x1018) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      mem.putWord(BigInt(0x8000), BigInt("40800000", 16)) // 4.0f
+      mem.putWord(BigInt(0x8004), BigInt("40000000", 16)) // 2.0f
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val quotient = storedWord(result.writes, BigInt(0x8010))
+      val root = storedWord(result.writes, BigInt(0x8014))
+      assert(quotient == BigInt("40000000", 16),
+        s"fdiv stored 0x${quotient.toString(16)}")
+      assert(root == BigInt("40000000", 16),
+        s"fsqrt stored 0x${root.toString(16)}")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
+  // 0x80 sign-extends through lb and stays 0x80 through lbu. The halfword
+  // 0xabcd does the same through lh and lhu. sb and sh write the low bytes.
+  it should "load and store scalar bytes and halfwords on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("00008503", 16), // lb x10, 0(x1)
+        BigInt(0x1004) -> BigInt("0000c583", 16), // lbu x11, 0(x1)
+        BigInt(0x1008) -> BigInt("00209603", 16), // lh x12, 2(x1)
+        BigInt(0x100c) -> BigInt("0020d683", 16), // lhu x13, 2(x1)
+        BigInt(0x1010) -> BigInt("00a0a823", 16), // sw x10, 16(x1)
+        BigInt(0x1014) -> BigInt("00b0aa23", 16), // sw x11, 20(x1)
+        BigInt(0x1018) -> BigInt("00c0ac23", 16), // sw x12, 24(x1)
+        BigInt(0x101c) -> BigInt("00d0ae23", 16), // sw x13, 28(x1)
+        BigInt(0x1020) -> BigInt("02a08023", 16), // sb x10, 32(x1)
+        BigInt(0x1024) -> BigInt("02c09123", 16), // sh x12, 34(x1)
+        BigInt(0x1028) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      mem.putWord(BigInt(0x8000), BigInt("abcd0080", 16))
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      assert(storedWord(result.writes, BigInt(0x8010)) == BigInt("ffffff80", 16),
+        "lb did not sign-extend")
+      assert(storedWord(result.writes, BigInt(0x8014)) == BigInt(0x80),
+        "lbu did not zero-extend")
+      assert(storedWord(result.writes, BigInt(0x8018)) == BigInt("ffffabcd", 16),
+        "lh did not sign-extend")
+      assert(storedWord(result.writes, BigInt(0x801c)) == BigInt(0xabcd),
+        "lhu did not zero-extend")
+      assert(result.writes.getOrElse(BigInt(0x8020), BigInt(-1)) == BigInt(0x80),
+        "sb dropped the low byte")
+      val half = (0 until 2).map(i =>
+        result.writes.getOrElse(BigInt(0x8022) + i, BigInt(-1)))
+      assert(half == Seq(BigInt(0xcd), BigInt(0xab)),
+        s"sh stored ${half.map(_.toString(16))}")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
 }

@@ -51,9 +51,9 @@ threads, is dropped by `sbt clean`, and `-Dopengpu.simCache=off` turns it off.
 - RV32I/M integer, branch, jump, load/store and upper-immediate decoding
 - Zicsr, system/fence, and explicit illegal-instruction reporting
 - F/D/Zfh floating-point pipeline routing and execution controls
-- FP32 FMA plus exact sign-injection, min/max, compare, classify, bit-move,
-  integer/FP32 conversion with dynamic frm, rtz, and NV/NX flags, and flw/fsw
-  memory execution in the FPU backend
+- FP32 FMA, divide, and square root, plus exact sign-injection, min/max,
+  compare, classify, bit-move, integer/FP32 conversion with dynamic frm, rtz,
+  and NV/NX flags, and flw/fsw memory execution in the FPU backend
 - Precise allow-listed RVV arithmetic, mask, configuration, and vector-memory routing
 - RVV integer divide/remainder (`vdivu/vdiv/vremu/vrem`) in vv/vx forms
 - RVV FP32 lane-local operations: sign injection, min/max, comparisons,

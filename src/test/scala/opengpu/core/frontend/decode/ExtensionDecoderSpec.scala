@@ -23,11 +23,18 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.instruction.poke("b0000000_00000_00001_011_00010_0000111".U) // fld
       dut.io.decoded.valid.expect(false.B)
 
-      // DIV/SQRT are intentionally deferred to a separate shared unit.
       dut.io.instruction.poke("b0001100_00010_00001_000_00011_1010011".U) // fdiv.s
-      dut.io.decoded.valid.expect(false.B)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.unit.expect(FpuUnit.divide)
+      dut.io.decoded.readsRs1.expect(true.B)
+      dut.io.decoded.readsRs2.expect(true.B)
+      dut.io.decoded.writesFp.expect(true.B)
+      dut.io.decoded.setsFlags.expect(true.B)
       dut.io.instruction.poke("b0101100_00000_00001_000_00011_1010011".U) // fsqrt.s
-      dut.io.decoded.valid.expect(false.B)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.unit.expect(FpuUnit.squareRoot)
+      dut.io.decoded.readsRs2.expect(false.B)
+      dut.io.decoded.writesFp.expect(true.B)
 
       dut.io.instruction.poke("h02008157".U)
       dut.io.decoded.valid.expect(false.B)

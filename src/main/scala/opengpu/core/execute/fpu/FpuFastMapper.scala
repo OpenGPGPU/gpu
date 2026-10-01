@@ -33,6 +33,9 @@ class FpuFastMapper(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
   private val isAdd = isOpFp && funct5 === "b00000".U
   private val isSub = isOpFp && funct5 === "b00001".U
   private val isMul = isOpFp && funct5 === "b00010".U
+  private val isDiv = isOpFp && funct5 === "b00011".U
+  private val isSqrt = isOpFp && funct5 === "b01011".U &&
+    io.in.instruction(24, 20) === 0.U
   private val isSgnj = isOpFp && funct5 === "b00100".U
   private val isMinMax = isOpFp && funct5 === "b00101".U &&
     (io.in.instruction(14, 12) === "b000".U ||
@@ -63,16 +66,23 @@ class FpuFastMapper(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
 
   io.out := 0.U.asTypeOf(io.out)
   io.out.supported := isFmadd || isFmsub || isFnmsub || isFnmadd ||
-    isAdd || isSub || isMul || isExact
+    isAdd || isSub || isMul || isDiv || isSqrt || isExact
   io.out.request.roundingMode := Mux(
     io.in.decoded.rm === "b111".U,
     selectedFrm,
     io.in.decoded.rm
   )
+  // The exact unit numbers predicates as 0 ==, 1 <, 2 <=. RISC-V funct3 is
+  // 0 <= (fle), 1 < (flt), 2 == (feq).
+  private val compareFunction = MuxLookup(io.in.instruction(14, 12), 0.U)(Seq(
+    0.U -> 2.U,
+    1.U -> 1.U,
+    2.U -> 0.U
+  ))
   io.out.request.exactFunction := Mux(
     isFpToInt || isIntToFp,
     io.in.instruction(24, 20)(0),
-    io.in.instruction(14, 12)
+    Mux(isCompare, compareFunction, io.in.instruction(14, 12))
   )
   io.out.request.tag := Cat(io.in.warpId, io.in.instruction(11, 7))
 
@@ -93,6 +103,13 @@ class FpuFastMapper(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
     io.out.request.operandA := io.rs1Data
     io.out.request.operandB := io.rs2Data
     io.out.request.operation := Fp32Operation.mul
+  }.elsewhen(isDiv) {
+    io.out.request.operandA := io.rs1Data
+    io.out.request.operandB := io.rs2Data
+    io.out.request.operation := Fp32Operation.div
+  }.elsewhen(isSqrt) {
+    io.out.request.operandA := io.rs1Data
+    io.out.request.operation := Fp32Operation.sqrt
   }.elsewhen(isExact) {
     io.out.request.operandA := Mux(
       isFmvFromX || isIntToFp, io.scalarRs1Data, io.rs1Data)
