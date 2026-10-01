@@ -311,7 +311,10 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         default:
             return false;
         }
-    case 2: /* integer reduction or multiply/divide vv */
+    case 2: /* integer reduction, mask logical, or multiply/divide vv */
+        /* vmand/vmor/vmxor and the negated forms are unmasked. */
+        if (funct6 >= 0x18 && funct6 <= 0x1f)
+            return (insn & (1u << 25)) != 0;
         return funct6 <= 0x07 || funct6 == 0x12 ||
                (funct6 >= 0x20 && funct6 <= 0x27);
     case 6: /* multiply/divide vx */
@@ -514,6 +517,10 @@ static inline void opengpu_shader_define_integer(
  * destination must be defined, and the destination cannot be v0. vmv.v.v,
  * vmv.v.x, and vmv.v.i are the unmasked forms: vs2 must be v0 and is not
  * read. Lanes outside VL keep the old destination.
+ * vmand, vmor, vmxor and the negated forms vmandn, vmorn, vmnand, vmnor
+ * and vmxnor combine two defined mask registers. The encoding is unmasked;
+ * a clear vm bit is rejected. The destination may be v0. Bits outside VL
+ * keep the old destination.
  * The RVV profile admits vsetivli e32,m1, the implemented lane-local
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
  * divide and remainder forms, vssrl/vssra rounded scaling shifts,

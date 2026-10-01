@@ -272,6 +272,27 @@ private object VectorDecodeTable {
       writesVd = true)
   )
 
+  // OPMVV mask logical. The masked encoding (vm=0) is reserved.
+  private val maskLogicalPatterns = Seq(
+    "vmandn" -> "011000",
+    "vmand" -> "011001",
+    "vmor" -> "011010",
+    "vmxor" -> "011011",
+    "vmorn" -> "011100",
+    "vmnand" -> "011101",
+    "vmnor" -> "011110",
+    "vmxnor" -> "011111"
+  ).map { case (name, funct6) =>
+    VectorPattern(
+      name,
+      s"${funct6}1??????????010?????1010111",
+      1,
+      readsVs1 = true,
+      readsVs2 = true,
+      writesVd = true
+    )
+  }
+
   private val arithmeticPatterns =
     (integerAluInstructions ++ integerMultiplyDivideInstructions ++ floatingPointInstructions)
       .flatMap { instruction =>
@@ -346,7 +367,8 @@ private object VectorDecodeTable {
 
   val patterns: Seq[VectorPattern] =
     memoryPatterns ++ configPatterns ++ arithmeticPatterns ++
-      mergePatterns ++ unary0Patterns ++ unary1Patterns ++
+      mergePatterns ++ maskLogicalPatterns ++ unary0Patterns ++
+      unary1Patterns ++
       texturePatterns ++ quadPatterns
   val fields: Seq[DecodeField[VectorPattern, _ <: Data]] = Seq(
     Legal,

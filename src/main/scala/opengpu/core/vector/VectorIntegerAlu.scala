@@ -26,6 +26,9 @@ private class NormalizedVectorIntegerRequest(config: GpuConfig) extends Bundle {
   val immediate = UInt(5.W)
   val quad = Bool()
   val reduction = Bool()
+  // Mask-register logical ops pack their result the same way compares do.
+  val maskLogical = Bool()
+  val maskBits = UInt(config.lanes.W)
 }
 
 private class VectorIntegerCandidates(config: GpuConfig) extends Bundle {
@@ -45,6 +48,8 @@ private class VectorIntegerCandidates(config: GpuConfig) extends Bundle {
   val shift = Vec(config.lanes, UInt(config.xLen.W))
   val comparison = UInt(config.lanes.W)
   val saturated = UInt(config.lanes.W)
+  val maskLogical = Bool()
+  val maskBits = UInt(config.lanes.W)
 }
 
 private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
@@ -73,6 +78,8 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
   val saturated = Vec(config.lanes, Bool())
   val saturationLimit = Vec(config.lanes, UInt(config.xLen.W))
   val widening = Vec(config.lanes, UInt(config.xLen.W))
+  val maskLogical = Bool()
+  val maskBits = UInt(config.lanes.W)
 }
 
 /** RVV integer ALU for the fixed SEW=32, LMUL=1 GPU profile.
@@ -80,9 +87,10 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
   * The unit implements the precise funct6 encodings accepted by VectorDecoder,
   * including integer reductions, vrgather, and slide cross-lane selection.
   * Inactive or masked-off lanes preserve oldVd, except vmerge: a clear mask
-  * lane in the body takes vs2, and only lanes outside VL keep oldVd. Results
-  * are held under output backpressure and the unit sustains one operation per
-  * cycle when unstalled.
+  * lane in the body takes vs2, and only lanes outside VL keep oldVd.
+  * vmand/vmor/vmxor and their negated forms combine the packed mask bits in
+  * element zero. Results are held under output backpressure and the unit
+  * sustains one operation per cycle when unstalled.
   */
 class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
   val io = IO(new Bundle {
@@ -279,10 +287,13 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       outputBits.data := selectedResults
       // Comparison destinations are packed masks. Preserve masked-off and
       // inactive bits from the old destination, including when vd != v0.
-      outputBits.mask :=
+      outputBits.mask := Mux(
+        candidateBits.maskLogical,
+        candidateBits.maskBits,
         (candidateBits.comparison & candidateBits.enabled) |
           (candidateBits.oldVd(0)(config.lanes - 1, 0) &
             ~candidateBits.enabled)
+      )
       outputBits.writesMask := outputComparison
       outputBits.saturated :=
         outputSaturating &&
@@ -309,6 +320,8 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       candidateBits.shift := shiftCandidates
       candidateBits.comparison := laneComparisons.asUInt
       candidateBits.saturated := laneSaturated.asUInt
+      candidateBits.maskLogical := partialBits.maskLogical
+      candidateBits.maskBits := partialBits.maskBits
     }
   }
 
@@ -326,6 +339,8 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       partialBits.immediate := inputBits.immediate
       partialBits.quad := inputBits.quad
       partialBits.reduction := inputBits.reduction
+      partialBits.maskLogical := inputBits.maskLogical
+      partialBits.maskBits := inputBits.maskBits
       for (lane <- 0 until config.lanes) {
         val lhs = inputBits.lhs(lane)
         val rhs = inputBits.rhs(lane)
@@ -580,8 +595,28 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       inputBits.funct6 := io.in.bits.funct6
       inputBits.operandType := io.in.bits.operandType
       inputBits.immediate := io.in.bits.immediate
+      val isMaskLogical =
+        io.in.bits.operandType === "b010".U && io.in.bits.vm &&
+          io.in.bits.funct6 >= "h18".U && io.in.bits.funct6 <= "h1f".U
+      val vs2Mask = io.in.bits.vs2(0)(config.lanes - 1, 0)
+      val vs1Mask = io.in.bits.vs1(0)(config.lanes - 1, 0)
+      // vs2 is the left operand. A trailing n in the mnemonic negates vs1.
+      val logical = MuxLookup(io.in.bits.funct6, 0.U(config.lanes.W))(Seq(
+        "h18".U -> (vs2Mask & ~vs1Mask), // vmandn
+        "h19".U -> (vs2Mask & vs1Mask),  // vmand
+        "h1a".U -> (vs2Mask | vs1Mask),  // vmor
+        "h1b".U -> (vs2Mask ^ vs1Mask),  // vmxor
+        "h1c".U -> (vs2Mask | ~vs1Mask), // vmorn
+        "h1d".U -> ~(vs2Mask & vs1Mask), // vmnand
+        "h1e".U -> ~(vs2Mask | vs1Mask), // vmnor
+        "h1f".U -> ~(vs2Mask ^ vs1Mask)  // vmxnor
+      ))
+      val oldMask = io.in.bits.oldVd(0)(config.lanes - 1, 0)
       inputBits.quad := io.in.bits.quad
       inputBits.reduction := inputIsReduction
+      inputBits.maskLogical := isMaskLogical
+      inputBits.maskBits :=
+        (logical & io.in.bits.activeMask) | (oldMask & ~io.in.bits.activeMask)
       inputBits.sourceEnabled := sourceEnabled
       inputBits.enabled := Mux(
         inputIsReduction,

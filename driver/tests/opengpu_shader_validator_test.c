@@ -1372,6 +1372,28 @@ int main(void)
         assert(!opengpu_compute_shader_validate_words(program, 3, 64, 4));
     }
 
+    /* Mask logical combines two defined masks and may write v0. */
+    {
+        unsigned int funct6;
+
+        program[0] = vsetivli(4);
+        program[1] = addi(9, 0, 2);
+        program[2] = vector_alu(0x1a, 4, 4, 1, 9); /* vmsltu.vx v4, v1, x9 */
+        program[3] = addi(10, 0, 1);
+        program[4] = vector_alu(0x1a, 4, 5, 1, 10);
+        program[5] = vector_alu(0x19, 2, 0, 4, 5); /* vmand.mm v0, v4, v5 */
+        program[6] = OPENGPU_SHADER_CEASE;
+        assert(opengpu_compute_shader_validate_words(program, 7, 64, 4));
+        for (funct6 = 0x18; funct6 <= 0x1f; funct6++) {
+            program[5] = vector_alu(funct6, 2, 0, 4, 5);
+            assert(opengpu_compute_shader_validate_words(program, 7, 64, 4));
+            program[5] &= ~(1u << 25); /* masked encoding is reserved */
+            assert(!opengpu_compute_shader_validate_words(program, 7, 64, 4));
+        }
+        program[5] = vector_alu(0x19, 2, 0, 6, 5); /* v6 undefined */
+        assert(!opengpu_compute_shader_validate_words(program, 7, 64, 4));
+    }
+
     /* Masked non-compare FP keeps the old destination on clear lanes. */
     {
         const unsigned int opfvv_funct6[] = {

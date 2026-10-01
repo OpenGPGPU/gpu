@@ -61,6 +61,17 @@ class ExtendedDecoderSpec extends AnyFlatSpec {
       dut.io.instruction.poke("h5e218257".U)
       dut.io.decoded.legal.expect(false.B)
 
+      // vmand.mm v0, v4, v5
+      dut.io.instruction.poke("h6642a057".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.vector.unit.expect(VectorUnit.alu)
+      dut.io.decoded.vector.readsVs1.expect(true.B)
+      dut.io.decoded.vector.readsVs2.expect(true.B)
+      dut.io.decoded.vector.vm.expect(true.B)
+      // The masked encoding of a mask-logical op is reserved.
+      dut.io.instruction.poke("h6442a057".U)
+      dut.io.decoded.legal.expect(false.B)
+
       // vsetvli x1, x2, e32,m1
       dut.io.instruction.poke("h010170d7".U)
       dut.io.decoded.executionType.expect(ExecutionType.vector)

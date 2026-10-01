@@ -18,6 +18,10 @@ sign-extended immediate on set mask lanes and `vs2` on clear mask lanes.
 `vmv.v.v`/`vmv.v.x`/`vmv.v.i` are the unmasked forms and require `vs2` = `v0`,
 which is not read. Lanes outside VL keep the old destination. The driver
 admits all six, and a masked destination cannot be `v0`.
+`vmand.mm`, `vmor.mm`, `vmxor.mm`, and the negated forms `vmandn.mm`,
+`vmorn.mm`, `vmnand.mm`, `vmnor.mm`, and `vmxnor.mm` combine the packed mask
+in element zero of two source registers. The masked encoding is reserved.
+Bits outside VL keep the old destination, and the result may be `v0`.
 `vssrl.vv/vx/vi` and `vssra.vv/vx/vi` implement single-width scaling shifts:
 the unsigned or signed 32-bit source is shifted by the low five bits of the
 shift amount, then rounded according to `vxrm`. They share the fixed-point

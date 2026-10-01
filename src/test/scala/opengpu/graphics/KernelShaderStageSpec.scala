@@ -735,4 +735,41 @@ class KernelShaderStageSpec extends AnyFlatSpec {
       dut.io.completion.bits.success.expect(true.B)
     }
   }
+
+  // id < 2 is bits 0 and 1. id < 1 is bit 0. AND keeps lane 0; OR keeps 0 and 1.
+  it should "combine compare masks on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("00200493", 16), // addi x9, x0, 2
+        BigInt(0x1008) -> BigInt("6a14c257", 16), // vmsltu.vx v4, v1, x9
+        BigInt(0x100c) -> BigInt("00100513", 16), // addi x10, x0, 1
+        BigInt(0x1010) -> BigInt("6a1542d7", 16), // vmsltu.vx v5, v1, x10
+        BigInt(0x1014) -> BigInt("6642a057", 16), // vmand.mm v0, v4, v5
+        BigInt(0x1018) -> BigInt("04008293", 16), // addi x5, x1, 64
+        BigInt(0x101c) -> BigInt("0002e0a7", 16), // vse32.v v1, (x5), v0.t
+        BigInt(0x1020) -> BigInt("6a42a057", 16), // vmor.mm v0, v4, v5
+        BigInt(0x1024) -> BigInt("08008293", 16), // addi x5, x1, 128
+        BigInt(0x1028) -> BigInt("0002e0a7", 16), // vse32.v v1, (x5), v0.t
+        BigInt(0x102c) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val anded = (0 until 3).map(lane =>
+        result.writes.contains(BigInt(0x8040) + lane * 4))
+      assert(anded == Seq(true, false, false),
+        s"vmand store wrote lanes $anded")
+      assert(storedWord(result.writes, BigInt(0x8040)) == 0)
+      val ored = (0 until 3).map(lane =>
+        result.writes.contains(BigInt(0x8080) + lane * 4))
+      assert(ored == Seq(true, true, false),
+        s"vmor store wrote lanes $ored")
+      assert(storedWord(result.writes, BigInt(0x8084)) == 1)
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
 }

@@ -722,6 +722,11 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    encodes `vs2` as `v0` and does not read it. `KernelShaderStageSpec`
    ("merge an integer vector on the shader CU") checks a `vmerge.vvm` of
    1/2/3 over 10/20/30 with lanes 0 and 1 selected, and a `vmv.v.x` of 2.
+   `vmand`/`vmor`/`vmxor` and `vmandn`/`vmorn`/`vmnand`/`vmnor`/`vmxnor`
+   combine two packed masks. They are unmasked, may write `v0`, and keep
+   bits outside VL. `KernelShaderStageSpec` ("combine compare masks on the
+   shader CU") ANDs `id < 2` with `id < 1` and ORs the same pair, then
+   predicates a store on each result.
    Further VFUNARY0 forms and widening beyond the fixed SEW=32 profile wait
    for a motivating shader, validator rules, and execution/guest coverage
    together.

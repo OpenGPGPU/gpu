@@ -123,6 +123,30 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     }
   }
 
+  it should "combine packed mask bits and keep the inactive bit" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      dut.io.in.bits.operandType.poke("b010".U)
+      dut.io.in.bits.vm.poke(true.B)
+      dut.io.in.bits.activeMask.poke("b0111".U)
+      dut.io.in.bits.vs2(0).poke("b0101".U)
+      dut.io.in.bits.vs1(0).poke("b0011".U)
+      dut.io.in.bits.oldVd(0).poke("b1000".U)
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.funct6.poke("h19".U) // vmand
+      dut.clock.step()
+      dut.io.in.bits.funct6.poke("h1a".U) // vmor
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(6)
+      dut.io.out.bits.writesMask.expect(true.B)
+      dut.io.out.bits.mask.expect("b1001".U)
+      dut.io.out.bits.data(1).expect(101.U)
+      dut.clock.step()
+      dut.io.out.bits.mask.expect("b1111".U)
+    }
+  }
+
   it should "sign- and zero-extend fixed-profile 16-bit lanes" in {
     simulate(new VectorIntegerAlu(config)) { dut =>
       defaults(dut)
