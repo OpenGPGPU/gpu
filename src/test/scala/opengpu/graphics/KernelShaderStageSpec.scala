@@ -879,4 +879,58 @@ class KernelShaderStageSpec extends AnyFlatSpec {
       dut.io.completion.bits.success.expect(true.B)
     }
   }
+
+  // The .vv forms take a vector of per-element offsets, so each lane shifts by
+  // its own amount instead of one shared scalar. VL=3 and a four-element
+  // offset vector exercise both the offset-per-element path and the lanes
+  // outside VL that keep the old destination.
+  it should "slide by a per-element vector offset on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c101f057", 16), // vsetivli x0,3,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("01008293", 16), // addi x5, x1, 16
+        BigInt(0x1008) -> BigInt("0202e107", 16), // vle32.v v2, (x5)
+        BigInt(0x100c) -> BigInt("02008313", 16), // addi x6, x1, 32
+        BigInt(0x1010) -> BigInt("02036207", 16), // vle32.v v4, (x6)
+        BigInt(0x1014) -> BigInt("03008393", 16), // addi x7, x1, 48
+        BigInt(0x1018) -> BigInt("0203e287", 16), // vle32.v v5, (x7)
+        BigInt(0x101c) -> BigInt("022031d7", 16), // vadd.vi v3, v2, 0
+        BigInt(0x1020) -> BigInt("3a2201d7", 16), // vslideup.vv v3, v2, v4
+        BigInt(0x1024) -> BigInt("04008293", 16), // addi x5, x1, 64
+        BigInt(0x1028) -> BigInt("0202e1a7", 16), // vse32.v v3, (x5)
+        BigInt(0x102c) -> BigInt("02203357", 16), // vadd.vi v6, v2, 0
+        BigInt(0x1030) -> BigInt("3e228357", 16), // vslidedown.vv v6, v2, v5
+        BigInt(0x1034) -> BigInt("08008293", 16), // addi x5, x1, 128
+        BigInt(0x1038) -> BigInt("0202e327", 16), // vse32.v v6, (x5)
+        BigInt(0x103c) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      Seq(11, 22, 33).zipWithIndex.foreach { case (value, lane) =>
+        mem.putWord(BigInt(0x8010) + lane * 4, BigInt(value))
+      }
+      // vslideup offsets 3,2,1,0: only element 2 and 3 have room to slide.
+      Seq(3, 2, 1, 0).zipWithIndex.foreach { case (value, lane) =>
+        mem.putWord(BigInt(0x8020) + lane * 4, BigInt(value))
+      }
+      // vslidedown offsets 0,1,2,3: element 2 runs off the top and reads zero.
+      Seq(0, 1, 2, 3).zipWithIndex.foreach { case (value, lane) =>
+        mem.putWord(BigInt(0x8030) + lane * 4, BigInt(value))
+      }
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      // Elements 0 and 1 keep the old v3 the vadd.vi above wrote.
+      val up = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8040) + lane * 4))
+      assert(up == Seq(BigInt(11), BigInt(22), BigInt(22)),
+        s"vslideup.vv stored ${up.map(_.toString(16))}")
+      val down = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8080) + lane * 4))
+      assert(down == Seq(BigInt(11), BigInt(33), BigInt(0)),
+        s"vslidedown.vv stored ${down.map(_.toString(16))}")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
 }

@@ -140,8 +140,8 @@ private object VectorDecodeTable {
     VectorInstruction("vor",    0x0a, Seq(IVV, IVX, IVI)),
     VectorInstruction("vxor",   0x0b, Seq(IVV, IVX, IVI)),
     VectorInstruction("vrgather", 0x0c, Seq(IVV, IVX, IVI)),
-    VectorInstruction("vslideup", 0x0e, Seq(IVX, IVI)),
-    VectorInstruction("vslidedown", 0x0f, Seq(IVX, IVI)),
+    VectorInstruction("vslideup", 0x0e, Seq(IVV, IVX, IVI)),
+    VectorInstruction("vslidedown", 0x0f, Seq(IVV, IVX, IVI)),
     // OPMVX inserts the integer scalar and shifts by one element.
     VectorInstruction("vslide1up", 0x0e, Seq(MVX)),
     VectorInstruction("vslide1down", 0x0f, Seq(MVX)),

@@ -253,7 +253,8 @@ int main(void)
         { 0x09, 0 }, { 0x09, 3 }, { 0x0a, 0 }, { 0x0a, 3 },
         { 0x0b, 0 }, { 0x0b, 3 },
         { 0x0c, 0 }, { 0x0c, 3 }, { 0x0c, 4 },
-        { 0x0e, 3 }, { 0x0e, 4 }, { 0x0f, 3 }, { 0x0f, 4 },
+        { 0x0e, 0 }, { 0x0e, 3 }, { 0x0e, 4 },
+        { 0x0f, 0 }, { 0x0f, 3 }, { 0x0f, 4 },
         { 0x18, 3 }, { 0x1b, 0 },
         { 0x00, 2 }, { 0x01, 2 }, { 0x02, 2 }, { 0x03, 2 },
         { 0x04, 2 }, { 0x05, 2 }, { 0x06, 2 }, { 0x07, 2 },
@@ -656,6 +657,8 @@ int main(void)
             { 0x0c, 3, 0 }, /* vrgather.vi */
             { 0x0e, 3, 1 }, /* vslideup.vi */
             { 0x0f, 3, 1 }, /* vslidedown.vi */
+            { 0x0e, 0, 1 }, /* vslideup.vv, per-element offsets */
+            { 0x0f, 0, 1 }, /* vslidedown.vv, per-element offsets */
         };
         for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
             program[3] = vector_alu(cases[i].funct6, cases[i].form, 3, 1,
@@ -676,6 +679,15 @@ int main(void)
         }
         program[3] = vector_alu(0x0e, 3, 1, 1, 1) & ~(1u << 25);
         assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        /* The vslideup overlap rule covers the vector-vector form. */
+        program[3] = vector_alu(0x0e, 0, 1, 1, 1) & ~(1u << 25);
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        program[3] = vector_alu(0x0e, 0, 1, 1, 1);
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        program[3] = vector_alu(0x0e, 0, 2, 1, 1);
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        program[3] = vector_alu(0x0e, 0, 3, 1, 1); /* unmasked, all defined */
+        assert(opengpu_compute_shader_validate_words(program, 5, 64, 4));
     }
 
     /* A masked extension must discard previously trusted index provenance. */
@@ -840,7 +852,7 @@ int main(void)
         /* Reserved operand forms remain rejected under a mask. */
         const unsigned int excluded[][2] = {
             { 0x02, 3 }, /* vsub.vi */
-            { 0x0e, 0 }, /* vslideup.vv */
+            { 0x0e, 1 }, /* vslideup has no OPFVV encoding */
             { 0x18, 2 }, /* comparison reduction form */
         };
         for (i = 0; i < sizeof(excluded) / sizeof(excluded[0]); i++) {

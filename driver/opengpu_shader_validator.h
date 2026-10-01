@@ -232,7 +232,7 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         bool reduction = form == 2 && funct6 <= 0x07;
         bool gather = (form == 0 || form == 3 || form == 4) &&
                       funct6 == 0x0c;
-        bool slide = ((form == 3 || form == 4) &&
+        bool slide = ((form == 0 || form == 3 || form == 4) &&
                       (funct6 == 0x0e || funct6 == 0x0f)) ||
                      (form == 6 && (funct6 == 0x0e || funct6 == 0x0f));
 
@@ -283,6 +283,8 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         case 0x0a: /* vor */
         case 0x0b: /* vxor */
         case 0x0c: /* vrgather */
+        case 0x0e: /* vslideup */
+        case 0x0f: /* vslidedown */
         case 0x18: /* vmseq */
         case 0x19: /* vmsne */
         case 0x1a: /* vmsltu */
@@ -550,6 +552,10 @@ static inline void opengpu_shader_define_integer(
  * element vl-1. Both are OPMVX. vslide1up keeps the vslideup rule that vd
  * must already be defined and must not overlap vs2. Masked-off lanes and
  * lanes outside vl keep the old destination.
+ * vslideup and vslidedown also take a vector of per-element offsets in a
+ * defined vs1, so each lane shifts by its own amount rather than by one
+ * shared scalar or immediate. The vslideup rules carry over unchanged: vd
+ * must already be defined and must not overlap vs2.
  * The RVV profile admits vsetivli e32,m1, the implemented lane-local
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
  * divide and remainder forms, vssrl/vssra rounded scaling shifts,

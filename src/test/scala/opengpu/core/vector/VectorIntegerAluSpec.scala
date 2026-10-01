@@ -781,6 +781,50 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     }
   }
 
+  it should "slide elements by a per-element vector offset" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      Seq(11, 22, 33, 44).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.in.bits.vs2(lane).poke(value.U)
+        dut.io.in.bits.oldVd(lane).poke(100.U)
+      }
+      // vs1 carries a different offset per element.
+      Seq(3, 2, 1, 0).zipWithIndex.foreach { case (offset, lane) =>
+        dut.io.in.bits.vs1(lane).poke(offset.U)
+      }
+      dut.io.in.bits.operandType.poke("b000".U)
+
+      def run(funct6: Int, expected: Seq[Int]): Unit = {
+        dut.io.in.bits.funct6.poke(funct6.U)
+        dut.io.in.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+        dut.clock.step(7)
+        expected.zipWithIndex.foreach { case (value, lane) =>
+          dut.io.out.bits.data(lane).expect(value.U)
+        }
+      }
+
+      // An offset past element 0 keeps the old destination.
+      run(0x0e, Seq(100, 100, 22, 44))
+
+      Seq(0, 1, 2, 3).zipWithIndex.foreach { case (offset, lane) =>
+        dut.io.in.bits.vs1(lane).poke(offset.U)
+      }
+      // Lanes that run off the top become zero, inactive lanes keep old vd.
+      dut.io.in.bits.vl.poke(3.U)
+      dut.io.in.bits.activeMask.poke("b0111".U)
+      run(0x0f, Seq(11, 33, 0, 100))
+
+      // A masked slide leaves the clear lanes at the old destination.
+      dut.io.in.bits.vl.poke(4.U)
+      dut.io.in.bits.activeMask.poke("b1111".U)
+      dut.io.in.bits.vm.poke(false.B)
+      dut.io.in.bits.predicateMask.poke("b0101".U)
+      run(0x0f, Seq(11, 100, 0, 100))
+    }
+  }
+
   it should "reduce active elements into destination element zero" in {
     simulate(new VectorIntegerAlu(config)) { dut =>
       defaults(dut)

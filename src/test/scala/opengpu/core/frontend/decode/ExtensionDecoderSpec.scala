@@ -88,8 +88,26 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.valid.expect(true.B)
       dut.io.decoded.unit.expect(VectorUnit.alu)
 
-      // There is no vector-vector encoding for the slide family.
+      // vslideup.vv and vslidedown.vv read a vector of per-element offsets.
       dut.io.instruction.poke("b001110_1_00001_00010_000_00011_1010111".U)
+      dut.io.decoded.recognized.expect(true.B)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.unit.expect(VectorUnit.alu)
+      dut.io.decoded.readsVs1.expect(true.B)
+      dut.io.decoded.readsScalar.expect(false.B)
+      dut.io.decoded.readsVs2.expect(true.B)
+      dut.io.decoded.writesVd.expect(true.B)
+      dut.io.instruction.poke("b001111_1_00001_00010_000_00011_1010111".U)
+      dut.io.decoded.recognized.expect(true.B)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.readsVs1.expect(true.B)
+      // The masked forms are equally legal.
+      dut.io.instruction.poke("b001110_0_00001_00010_000_00011_1010111".U)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.vm.expect(false.B)
+
+      // The vslideup overlap rule covers the vector-vector form too.
+      dut.io.instruction.poke("b001110_1_00001_00010_000_00001_1010111".U)
       dut.io.decoded.recognized.expect(true.B)
       dut.io.decoded.valid.expect(false.B)
 

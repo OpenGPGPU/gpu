@@ -750,6 +750,12 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    overlap the source. Masked-off lanes and lanes outside `vl` keep the old
    destination. `KernelShaderStageSpec` ("slide one element by a scalar on
    the shader CU") slides 11/22/33 with `VL=3` and inserts `0x5a`.
+   `vslideup.vv` and `vslidedown.vv` read the offset from a defined vector
+   instead of a scalar or immediate, so each element shifts by its own amount.
+   The offset register was already routed to the slide network for the `.vx`
+   and `.vi` forms, so this was a decode row, a validator classification and
+   coverage. `KernelShaderStageSpec` ("slide by a per-element vector offset on
+   the shader CU") slides 11/22/33 by 3/2/1/0 and 0/1/2/3 with `VL=3`.
    Further VFUNARY0 forms and widening beyond the fixed SEW=32 profile wait
    for a motivating shader, validator rules, and execution/guest coverage
    together.

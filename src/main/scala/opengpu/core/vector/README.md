@@ -42,9 +42,11 @@ The eight single-width integer reductions combine the active `vs2` lanes with
 the scalar seed in `vs1[0]` and write the result to `vd[0]`. It also implements
 `vrgather.vv/vx/vi`; each destination lane selects a source element
 independently, and indices outside VLMAX produce zero.
-`vslideup.vx/vi` and `vslidedown.vx/vi` move elements across lanes; slide-up
-preserves destination elements below the offset, while slide-down returns zero
-when its source index is outside VLMAX. The custom fragment-quad
+`vslideup.vv/vx/vi` and `vslidedown.vv/vx/vi` move elements across lanes;
+slide-up preserves destination elements below the offset, while slide-down
+returns zero when its source index is outside VLMAX. The `vv` forms take a
+vector of per-element offsets, so each lane shifts by its own amount instead of
+one shared scalar or immediate. The custom fragment-quad
 `vquad.dfdx`/`vquad.dfdy` cross-lane primitives operate over four-lane groups
 ordered TL, TR, BL, BR. The fragment shader profile admits their unmasked
 forms. Rasterization emits complete quads, including uncovered helper lanes;
