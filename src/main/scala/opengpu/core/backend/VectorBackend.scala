@@ -37,6 +37,7 @@ import opengpu.core.vector.{
   VectorFmaAlu,
   VectorMultiplyAlu,
   VectorFpuAlu,
+  VectorFReduceAlu,
   VectorFlagsWrite,
   VectorCsrWrite
 }
@@ -108,11 +109,12 @@ class VectorBackend(
   private val estimateAlu = Module(new VectorFEstimateAlu(config))
   private val fsqrtAlu = Module(new VectorFsqrtAlu(config))
   private val fmaAlu = Module(new VectorFmaAlu(config))
+  private val reduceAlu = Module(new VectorFReduceAlu(config))
   private val divAlu = Module(new VectorFdivAlu(config))
   private val configuration = Module(new VectorConfigurationUnit(config))
   private val memory = Module(new VectorMemoryUnit(config))
   private val writebackArbiter =
-    Module(new RRArbiter(new VectorCommitRequest(config), 11))
+    Module(new RRArbiter(new VectorCommitRequest(config), 12))
   private val completionQueue =
     Module(new Queue(new SimtPath(config), 1, pipe = false, flow = false))
   private val inflight =
@@ -299,10 +301,16 @@ class VectorBackend(
   private val fpuIsRecip = fpuIsUnary1 && fpuVs1 === "b00100".U
   private val fpuIsRsqrt = fpuIsUnary1 && fpuVs1 === "b00101".U
   private val fpuIsClassify = fpuIsUnary1 && fpuVs1 === "b10000".U
+  // OPFRED is funct6 000001 for vfredusum and 000011 for vfredosum, both in
+  // OPFVV only. The guard keeps a stray encoding off the fold datapath.
+  private val fpuIsReduce =
+    (dispatch.io.fpu.bits.decode.decoded.funct6 === "h01".U ||
+      dispatch.io.fpu.bits.decode.decoded.funct6 === "h03".U) &&
+      dispatch.io.fpu.bits.decode.decoded.operandType === "b001".U
   private val fpuUnsupported =
     dispatch.io.fpu.valid && !fpuIsArithmetic && !fpuIsExact &&
       !fpuIsDiv && !fpuIsCvt && !fpuIsSqrt && !fpuIsClassify &&
-      !fpuIsRecip && !fpuIsRsqrt
+      !fpuIsRecip && !fpuIsRsqrt && !fpuIsReduce
   private val fpuWritesFloat =
     dispatch.io.fpu.bits.decode.decoded.writesFloat
   private val fpuFloatReady = !fpuWritesFloat || io.fpReserve.ready
@@ -320,12 +328,39 @@ class VectorBackend(
   fsqrtAlu.io.in.valid := dispatch.io.fpu.valid && fpuIsSqrt
   fmaAlu.io.in.valid := dispatch.io.fpu.valid && fpuIsArithmetic
   divAlu.io.in.valid := dispatch.io.fpu.valid && fpuIsDiv
+  reduceAlu.io.in.valid := dispatch.io.fpu.valid && fpuIsReduce
+  reduceAlu.io.in.bits.warpId := dispatch.io.fpu.bits.decode.warpId
+  reduceAlu.io.in.bits.pc := dispatch.io.fpu.bits.decode.pc
+  reduceAlu.io.in.bits.warpActiveMask :=
+    dispatch.io.fpu.bits.decode.activeMask
+  reduceAlu.io.in.bits.vd :=
+    dispatch.io.fpu.bits.decode.instruction(11, 7)
+  reduceAlu.io.in.bits.activeMask :=
+    dispatch.io.fpu.bits.decode.activeMask & vlMask
+  reduceAlu.io.in.bits.rawActiveMask :=
+    dispatch.io.fpu.bits.decode.activeMask & vlMask
+  reduceAlu.io.in.bits.predicateMask :=
+    dispatch.io.fpu.bits.predicateMask
+  reduceAlu.io.in.bits.oldVd := dispatch.io.fpu.bits.oldVdData
+  reduceAlu.io.in.bits.vs1 := dispatch.io.fpu.bits.vs1Data
+  reduceAlu.io.in.bits.vs2 := dispatch.io.fpu.bits.vs2Data
+  reduceAlu.io.in.bits.vs1Field := fpuVs1
+  reduceAlu.io.in.bits.scalarFpData := dispatch.io.fpu.bits.scalarFpData
+  reduceAlu.io.in.bits.roundingMode := vectorState.frm
+  reduceAlu.io.in.bits.funct6 :=
+    dispatch.io.fpu.bits.decode.decoded.funct6
+  reduceAlu.io.in.bits.operandType :=
+    dispatch.io.fpu.bits.decode.decoded.operandType
+  reduceAlu.io.in.bits.vm := dispatch.io.fpu.bits.decode.decoded.vm
   dispatch.io.fpu.ready := Mux(
     fpuUnsupported,
     io.unimplemented.ready,
     Mux(
       fpuIsArithmetic,
       fmaAlu.io.in.ready,
+      Mux(
+        fpuIsReduce,
+        reduceAlu.io.in.ready,
       Mux(
         fpuIsSqrt,
         fsqrtAlu.io.in.ready,
@@ -342,6 +377,7 @@ class VectorBackend(
             )
           )
         )
+      )
       )
     )
   )
@@ -852,6 +888,27 @@ class VectorBackend(
     estimateAlu.io.out.bits.warpActiveMask
 
   writebackArbiter.io.in(10) <> io.texCommit
+
+  writebackArbiter.io.in(11).valid := reduceAlu.io.out.valid
+  reduceAlu.io.out.ready := writebackArbiter.io.in(11).ready
+  writebackArbiter.io.in(11).bits.writeback.warpId :=
+    reduceAlu.io.out.bits.warpId
+  writebackArbiter.io.in(11).bits.writeback.vd :=
+    reduceAlu.io.out.bits.vd
+  writebackArbiter.io.in(11).bits.writeback.data :=
+    reduceAlu.io.out.bits.data
+  writebackArbiter.io.in(11).bits.saturated := false.B
+  writebackArbiter.io.in(11).bits.writesVd := true.B
+  writebackArbiter.io.in(11).bits.writesScalar := false.B
+  writebackArbiter.io.in(11).bits.scalarData := 0.U
+  writebackArbiter.io.in(11).bits.writesFloat := false.B
+  writebackArbiter.io.in(11).bits.floatData := 0.U
+  writebackArbiter.io.in(11).bits.flags := reduceAlu.io.out.bits.flags
+  writebackArbiter.io.in(11).bits.writesFlags :=
+    reduceAlu.io.out.bits.writesFlags
+  writebackArbiter.io.in(11).bits.pc := reduceAlu.io.out.bits.pc
+  writebackArbiter.io.in(11).bits.warpActiveMask :=
+    reduceAlu.io.out.bits.warpActiveMask
 
   private val initializeWarpValid =
     io.initialize.bits.warpId < config.warps.U

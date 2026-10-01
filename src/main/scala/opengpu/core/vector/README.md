@@ -70,6 +70,16 @@ exact-conversion lanes. Non-rtz conversions honor the per-warp `frm`; the four
 rtz forms force truncation. The float-to-float conversions (`vfcvt.f.f.v`) are
 still unimplemented, so vfrm selectors 8 and 9 stay reserved.
 
+`VectorFReduceAlu` implements the OPFRED FP32 sums `vfredusum.vs` and
+`vfredosum.vs` on the fixed SEW=32 profile. It folds `vs1[0]` and the
+participating `vs2` elements into element 0 of `vd`; every other element keeps
+the old destination. The fold is sequential, one add at a time through a single
+elastic `Fp32FmaLane`, because FP addition is not associative: an adder tree
+would satisfy the unordered form and break the ordered one. The fold costs one
+lane of area instead of `lanes`-1, and pays for it in latency. Elements masked off or inactive issue no operation instead of
+adding an identity. The min/max reductions are not implemented, and the
+widening `vfwredusum`/`vfwredosum` forms are outside the fixed profile.
+
 `VectorFsqrtAlu` implements `vfsqrt.v` with one iterative restoring-square-root
 lane per vector lane. It honors the per-warp `frm` and reports NX/NV through
 the normal vector flag path.

@@ -222,7 +222,7 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    fixed-function and vertex+fragment guests with `opengpu_drm_test`.
    Userspace apps on top of that API:
    - Fixed-function (`GPU_FRAG_CORE=0`): compute, `fp_unary`, `fp_binary`,
-     `fp_fma`, `fp_div`, `fp_compare`, `fp_scalar`, `widen_alu`,
+     `fp_fma`, `fp_div`, `fp_compare`, `fp_scalar`, `fp_reduce`, `widen_alu`,
      `fixed_width`, triangle,
      `triangle_present`, `pipe_present`, `pipe_clear_draw`,
      `pipe_compute`, `pipe_blit`, `pipe_strided_blit`, `pipe_resolve`,
@@ -230,6 +230,7 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    - Fragment core (`GPU_FRAG_CORE=1`, `GPU_VERT_CORE=0`): `fragment_tint`,
      `fragment_fp`,
      `fp_unary`, `fp_binary`, `fp_fma`, `fp_div`, `fp_compare`, `fp_scalar`,
+     `fp_reduce`,
      `widen_alu`,
      `fixed_width`, `triangle_present`, `pipe_present`,
      `pipe_clear_draw`, `pipe_compute`,
@@ -757,6 +758,25 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    overlap the source. Masked-off lanes and lanes outside `vl` keep the old
    destination. `KernelShaderStageSpec` ("slide one element by a scalar on
    the shader CU") slides 11/22/33 with `VL=3` and inserts `0x5a`.
+   The OPFRED sums `vfredusum.vs` (funct6 000001) and `vfredosum.vs`
+   (funct6 000011) are the FP32 reductions; `vs1` is the seed register, not an
+   opcode, so both are ordinary OPFVV three-operand encodings. `VectorFReduceAlu`
+   folds `vs1[0]` and the participating `vs2` elements into element 0 and
+   preserves the rest of the destination. It runs one add at a time through a
+   single elastic `Fp32FmaLane`: FP addition is not associative, so a
+   `lanes`-1 adder tree would satisfy the unordered form while quietly
+   breaking the ordered one, and a sequential fold serves both: one lane of
+   area instead of `lanes`-1, paid for with one five-stage add per element. A non-participating
+   element issues no add at all instead of adding an identity, so a `-0.0`
+   accumulator cannot become `+0.0`. `frm` and the NV/NX flags come from the
+   same per-add path as `vfadd.vv`. The min/max reductions stay unimplemented:
+   `vfredmin.vs` is funct6 001010, which this core already spends on
+   `vfsgnjx.vv`, so that word validates and runs as a sign-injection instead of
+   being rejected. `VectorFReduceAluSpec` ("fold in element order rather than
+   through a tree") pins the sequential result against a value a tree cannot
+   produce, and `KernelShaderStageSpec` ("reduce a vector of floats into element
+   zero on the shader CU") runs both forms end to end. The corpus shader
+   `fp_reduce.S` and `examples/fp_reduce` check them under ARTI.
    `vslideup.vv` and `vslidedown.vv` read the offset from a defined vector
    instead of a scalar or immediate, so each element shifts by its own amount.
    The offset register was already routed to the slide network for the `.vx`

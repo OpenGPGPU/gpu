@@ -138,6 +138,34 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.valid.expect(true.B)
       dut.io.decoded.unit.expect(VectorUnit.alu)
 
+      // vfredusum.vs and vfredosum.vs are the OPFRED sums. vs1 is the seed
+      // register, not a selector, and only OPFVV admits the funct6.
+      for (funct6 <- Seq(0x01, 0x03); vm <- Seq(0, 1)) {
+        dut.io.instruction.poke(
+          ((BigInt(funct6) << 26) | (BigInt(vm) << 25) | (BigInt(2) << 20) |
+            (BigInt(4) << 15) | (BigInt(1) << 12) | (BigInt(3) << 7) |
+            0x57).U)
+        dut.io.decoded.recognized.expect(true.B)
+        dut.io.decoded.valid.expect(true.B)
+        dut.io.decoded.unit.expect(VectorUnit.floatingPoint)
+        dut.io.decoded.readsVs1.expect(true.B)
+        dut.io.decoded.readsVs2.expect(true.B)
+        dut.io.decoded.writesVd.expect(true.B)
+        dut.io.decoded.vm.expect((vm == 1).B)
+        // funct6 000001 in OPMVV is the integer vredand and 000011 in OPIVX is
+        // the integer vrsub.vx, so the operand form is what keeps the
+        // reductions apart. OPMVX has no row for either funct6.
+        dut.io.instruction.poke(
+          ((BigInt(funct6) << 26) | (BigInt(vm) << 25) | (BigInt(2) << 20) |
+            (BigInt(4) << 15) | (BigInt(6) << 12) | (BigInt(3) << 7) |
+            0x57).U)
+        dut.io.decoded.valid.expect(false.B)
+      }
+      // vfredmin.vs is funct6 001010, which this core spends on vfsgnjx.vv.
+      dut.io.instruction.poke("h162213d7".U) // vfredmin.vs v7, v2, v4
+      dut.io.decoded.recognized.expect(true.B)
+      dut.io.decoded.valid.expect(false.B)
+
       // Reduction funct6 values above vredmax are currently unsupported.
       dut.io.instruction.poke("b001000_1_00001_00010_010_00011_1010111".U)
       dut.io.decoded.recognized.expect(true.B)

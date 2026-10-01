@@ -260,6 +260,19 @@ private object VectorDecodeTable {
       readsVs2 = true, writesVd = true)
   )
 
+  // OPFRED: the two FP32 sum reductions. funct6 selects the form and vs1 stays
+  // a real vector register holding the seed in element 0, so vfredusum.vs is
+  // funct6 000001 and its ordered twin vfredosum.vs is funct6 000011.
+  // vfredmin.vs would be funct6 001010, which this core already spends on
+  // vfsgnjx.vv, so the min/max reductions and the widening
+  // vfwredusum/vfwredosum forms stay reserved.
+  private val fpReductionPatterns = Seq(
+    VectorPattern("vfredusum_vs", "000001???????????001?????1010111", 4,
+      readsVs1 = true, readsVs2 = true, writesVd = true),
+    VectorPattern("vfredosum_vs", "000011???????????001?????1010111", 4,
+      readsVs1 = true, readsVs2 = true, writesVd = true)
+  )
+
   // VFUNARY1: funct6 010011 carries the unary FP opcode in the vs1 field.
   private val unary1Patterns = Seq(
     VectorPattern("vfsqrt_v", "010011??????00000001?????1010111", 4,
@@ -406,6 +419,7 @@ private object VectorDecodeTable {
       floatMovePatterns ++
       unary0Patterns ++
       unary1Patterns ++
+      fpReductionPatterns ++
       texturePatterns ++ quadPatterns
   val fields: Seq[DecodeField[VectorPattern, _ <: Data]] = Seq(
     Legal,

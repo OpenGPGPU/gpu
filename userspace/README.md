@@ -44,6 +44,10 @@ kernarg and checks `vfadd` / `vfrsub` / `vfrdiv` / `vfmul` / `vfmacc` /
 `vmfgt` in their `.vf` forms (default `/opengpu_fp_scalar.bin`). It skips
 unless the device advertises `OPENGPU_CAP_COMPUTE_SCALAR_FPU`.
 
+`examples/fp_reduce` loads `fp_reduce` and checks the OPFRED sums
+`vfredusum.vs` and `vfredosum.vs`: both write element 0 of the destination
+with 1+2+3+4 and leave the three following elements at the values a `vadd.vv`
+put there (default `/opengpu_fp_reduce.bin`).
 `examples/widen_alu` loads the corpus `widen_alu` shader and checks lane-local
 `vwadd` / `vwsub` / `vwmul` (default `/opengpu_widen_alu.bin`).
 `examples/fixed_width` loads `fixed_width` and checks `vsext` / `vzext` /
@@ -139,8 +143,9 @@ discard / `vquad.dfdx`), `fragment_fp.S` (fragment-profile OPFVV; guest
 `examples/fragment_fp`), `fp_unary.S` (FP32 VFUNARY1), `fp_binary.S`
 (unmasked OPFVV `vfadd`/`vfsub`/`vfmul`/`vfmin`/`vfmax`/`vfsgnj`), and
 `fp_fma.S` (eight fused FMA forms), `fp_div.S` (`vfdiv`),
-`fp_compare.S` (`vmfeq`/`vmflt`) and `fp_scalar.S` (`flw` plus OPFVF,
-validated with the scalar-FPU compute profile), and compiles three
+`fp_compare.S` (`vmfeq`/`vmflt`), `fp_scalar.S` (`flw` plus OPFVF,
+validated with the scalar-FPU compute profile) and `fp_reduce.S` (OPFRED
+`vfredusum.vs`/`vfredosum.vs`), and compiles three
 small C shaders with `riscv64-unknown-elf-gcc`, adapts the C argument base to
 OpenGPU's direct `x1` kernarg convention, and replaces the C return with the
 OpenGPU cease instruction. The script checks every binary with the production

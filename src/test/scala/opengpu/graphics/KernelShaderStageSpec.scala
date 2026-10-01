@@ -504,6 +504,63 @@ class KernelShaderStageSpec extends AnyFlatSpec {
     }
   }
 
+  // The OPFRED sums fold into element 0 and leave the rest of the destination
+// alone. vfredosum.vs is funct6 000011 rather than a vs1 selector, so both
+// forms are ordinary OPFVV three-operand encodings.
+  it should "reduce a vector of floats into element zero on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("00008293", 16), // addi x5, x1, 0
+        BigInt(0x1008) -> BigInt("0202e107", 16), // vle32.v v2, (x5)
+        BigInt(0x100c) -> BigInt("01008313", 16), // addi x6, x1, 16
+        BigInt(0x1010) -> BigInt("02036207", 16), // vle32.v v4, (x6)
+        BigInt(0x1014) -> BigInt("02008313", 16), // addi x6, x1, 32
+        BigInt(0x1018) -> BigInt("02036187", 16), // vle32.v v3, (x6)
+        BigInt(0x101c) -> BigInt("02036307", 16), // vle32.v v6, (x6)
+        BigInt(0x1020) -> BigInt("062211d7", 16), // vfredusum.vs v3, v2, v4
+        BigInt(0x1024) -> BigInt("04008293", 16), // addi x5, x1, 64
+        BigInt(0x1028) -> BigInt("0202e1a7", 16), // vse32.v v3, (x5)
+        BigInt(0x102c) -> BigInt("0e221357", 16), // vfredosum.vs v6, v2, v4
+        BigInt(0x1030) -> BigInt("08008293", 16), // addi x5, x1, 128
+        BigInt(0x1034) -> BigInt("0202e327", 16), // vse32.v v6, (x5)
+        BigInt(0x1038) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      // v2 is reduced; the seed is 1.0 and the four elements are 2, 3, 4, 0.5.
+      // runShader launches localX = 3, so element 3 is inactive: it stays out
+      // of the fold and only three elements are stored.
+      Seq("40000000", "40400000", "40800000", "3f000000").zipWithIndex.foreach {
+        case (bits, lane) => mem.putWord(BigInt(0x8000) + lane * 4, BigInt(bits, 16))
+      }
+      Seq("3f800000", "3f800000", "3f800000", "3f800000").zipWithIndex.foreach {
+        case (bits, lane) => mem.putWord(BigInt(0x8010) + lane * 4, BigInt(bits, 16))
+      }
+      // v3 and v6 both start at 7.0, which elements past 0 must keep.
+      Seq("40e00000", "40e00000", "40e00000", "40e00000").zipWithIndex.foreach {
+        case (bits, lane) => mem.putWord(BigInt(0x8020) + lane * 4, BigInt(bits, 16))
+      }
+
+      val result = runShader(dut, mem, limit = 8000)
+      assert(result.traps.isEmpty, show(result.traps))
+      // 1 + 2 + 3 + 4 = 10: the active elements only.
+      val unordered = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8040) + lane * 4))
+      assert(unordered == Seq(BigInt("41200000", 16),
+        BigInt("40e00000", 16), BigInt("40e00000", 16)),
+        s"vfredusum stored ${unordered.map(_.toString(16))}")
+      val ordered = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8080) + lane * 4))
+      assert(ordered(0) == BigInt("41200000", 16),
+        s"vfredosum stored 0x${ordered(0).toString(16)}")
+      assert(ordered.tail == Seq.fill(2)(BigInt("40e00000", 16)),
+        s"vfredosum clobbered ${ordered.tail.map(_.toString(16))}")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
   // The rtz integer-to-FP forms truncate instead of rounding to nearest even:
 // 2^32-1 lands one float below 2^32 and -(2^31+1) one below -(2^31). 2^31+1
 // and -1 are exactly representable, so those lanes are unchanged.

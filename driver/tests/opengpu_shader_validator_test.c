@@ -876,6 +876,55 @@ int main(void)
     program[1] = vector_alu(0x00, 2, 1, 1, 1); /* reduction overlap is legal */
     assert(opengpu_compute_shader_validate_words(program, 3, 64, 4));
 
+    /* OPFRED sums. vs1 is the seed register and vd keeps its old value in
+     * every element but 0, so both must be defined. */
+    program[0] = vsetivli(4);
+    program[1] = vle32(2, 1);
+    program[2] = vle32(3, 1);
+    program[3] = vle32(4, 1); /* v4 seeds vfredusum.vs v3, v2, v4 */
+    program[4] = vle32(6, 1); /* v6 is the vfredosum destination */
+    program[5] = vector_alu(0x01, 1, 3, 2, 4);
+    program[6] = vector_alu(0x03, 1, 6, 2, 4); /* vfredosum.vs v6, v2, v4 */
+    program[7] = OPENGPU_SHADER_CEASE;
+    assert(opengpu_compute_shader_validate_words(program, 8, 64, 4));
+    program[5] = vector_alu(0x01, 1, 3, 2, 5); /* v5 undefined seed */
+    assert(!opengpu_compute_shader_validate_words(program, 8, 64, 4));
+    program[5] = vector_alu(0x01, 1, 5, 2, 4); /* v5 undefined destination */
+    assert(!opengpu_compute_shader_validate_words(program, 8, 64, 4));
+    program[5] = vector_alu(0x01, 1, 3, 2, 4) & ~(1u << 25); /* no v0 */
+    assert(!opengpu_compute_shader_validate_words(program, 8, 64, 4));
+    /* The standard vfredmin.vs encoding is funct6 001010 in OPFVV, which this
+     * core spends on vfsgnjx.vv. That collision is deliberate and one-way:
+     * the word validates and runs as vfsgnjx.vv, so vfredmin/vfredmax are not
+     * implemented and a compiler emitting vfredmin.vs would be misdecoded
+     * rather than rejected. */
+    program[5] = vector_alu(0x0a, 1, 3, 2, 4);
+    assert(opengpu_compute_shader_validate_words(program, 8, 64, 4));
+
+    uint32_t fp_reduce_masked[] = {
+        vsetivli(4),
+        vector_alu(0x18, 0, 0, 1, 1), /* vmseq.vv v0, v1, v1 */
+        vle32(2, 1),
+        vle32(3, 1),
+        vle32(4, 1),
+        vector_alu(0x01, 1, 3, 2, 4) & ~(1u << 25), /* masked vfredusum */
+        OPENGPU_SHADER_CEASE,
+    };
+    assert(opengpu_compute_shader_validate_words(fp_reduce_masked, 7, 64, 4));
+    /* A reduction is vector-only, so no scalar-FPU capability is needed and the
+     * fragment and vertex profiles admit it too. */
+    assert(opengpu_shader_validate_words(fp_reduce_masked, 7, 288, 8, false));
+    assert(opengpu_vertex_shader_validate_words(fp_reduce_masked, 7, 512, 8,
+                                                  false));
+    fp_reduce_masked[1] = vle32(2, 1); /* no v0 */
+    assert(!opengpu_compute_shader_validate_words(fp_reduce_masked, 7, 64, 4));
+    fp_reduce_masked[1] = vector_alu(0x18, 0, 0, 1, 1);
+    fp_reduce_masked[3] = vector_alu(0x18, 0, 0, 1, 1); /* no old v3 */
+    assert(!opengpu_compute_shader_validate_words(fp_reduce_masked, 7, 64, 4));
+    fp_reduce_masked[3] = vle32(3, 1);
+    fp_reduce_masked[5] = vector_alu(0x01, 1, 0, 2, 4) & ~(1u << 25);
+    assert(!opengpu_compute_shader_validate_words(fp_reduce_masked, 7, 64, 4));
+
     program[0] = sw(10, 0); /* input array is read-only */
     program[1] = OPENGPU_SHADER_CEASE;
     assert(!opengpu_shader_validate_words(program, 2, 288, 8, false));

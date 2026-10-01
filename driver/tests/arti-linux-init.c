@@ -122,6 +122,7 @@ int main(void)
                run_program("/opengpu_fp_div") < 0 ||
                run_program("/opengpu_fp_compare") < 0 ||
                run_program("/opengpu_fp_scalar") < 0 ||
+               run_program("/opengpu_fp_reduce") < 0 ||
                run_program("/opengpu_widen_alu") < 0 ||
                run_program("/opengpu_fixed_width") < 0 ||
                run_program("/opengpu_triangle_present") < 0 ||
@@ -144,6 +145,7 @@ int main(void)
                run_program("/opengpu_fp_div") < 0 ||
                run_program("/opengpu_fp_compare") < 0 ||
                run_program("/opengpu_fp_scalar") < 0 ||
+               run_program("/opengpu_fp_reduce") < 0 ||
                run_program("/opengpu_widen_alu") < 0 ||
                run_program("/opengpu_fixed_width") < 0 ||
                run_program("/opengpu_triangle_example") < 0 ||

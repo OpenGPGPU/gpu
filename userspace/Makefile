@@ -10,7 +10,8 @@ EXAMPLES := examples/compute examples/triangle examples/fragment_tint \
 	examples/fragment_fp \
 	examples/fragment_fp_scalar \
 	examples/fp_unary examples/fp_binary examples/fp_fma examples/fp_div \
-	examples/fp_compare examples/fp_scalar examples/widen_alu \
+	examples/fp_compare examples/fp_scalar examples/fp_reduce \
+	examples/widen_alu \
 	examples/fixed_width \
 	examples/triangle_present \
 	examples/pipe_clear_draw examples/pipe_compute examples/pipe_blit \
@@ -54,6 +55,9 @@ examples/fp_div: examples/fp_div.c opengpu.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< opengpu.o
 
 examples/fp_compare: examples/fp_compare.c opengpu.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< opengpu.o
+
+examples/fp_reduce: examples/fp_reduce.c opengpu.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< opengpu.o
 
 examples/fp_scalar: examples/fp_scalar.c opengpu.o

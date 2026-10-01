@@ -1129,4 +1129,141 @@ class VectorBackendSpec extends AnyFlatSpec {
     }
   }
 
+  // vfredusum.vs folds vs1[0] and the active vs2 elements into element 0 of
+  // vd. Every other element keeps the old destination, so the writeback is a
+  // whole register whose upper elements must be the value read before.
+  it should "reduce FP32 elements into element zero through vector writeback" in {
+    val config = GpuConfig(lanes = 4, warps = 1)
+    simulate(new VectorBackend(config)) { dut =>
+      dut.reset.poke(true.B)
+      dut.io.in.valid.poke(false.B)
+      // The vsetvli AVL comes from x1, so the scalar read supplies vl = 4.
+      dut.io.scalarRs1Data.poke(4.U)
+      dut.io.scalarRs2Data.poke(0.U)
+      dut.io.scalarFpData.poke(0.U)
+      for (warp <- 0 until config.warps) {
+        dut.io.scalarFpBusy(warp).poke(0.U)
+      }
+      dut.io.initialize.valid.poke(false.B)
+      dut.io.initialize.bits.warpId.poke(0.U)
+      dut.io.initialize.bits.vd.poke(0.U)
+      for (lane <- 0 until config.lanes) {
+        dut.io.initialize.bits.data(lane).poke(0.U)
+      }
+      dut.io.scalarWriteback.ready.poke(false.B)
+      dut.io.redirect.ready.poke(true.B)
+      dut.io.memoryRequest.ready.poke(true.B)
+      dut.io.memoryResponse.valid.poke(false.B)
+      dut.io.memoryFault.ready.poke(true.B)
+      dut.io.memoryResponse.bits.faultMask.poke(0.U)
+      dut.io.memoryResponse.bits.pageFault.poke(false.B)
+      for (lane <- 0 until config.lanes) {
+        dut.io.memoryResponse.bits.readData(lane).poke(0.U)
+      }
+      dut.io.scalarReserve.ready.poke(true.B)
+      dut.io.unimplemented.ready.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      def initialize(register: Int, values: Seq[BigInt]): Unit = {
+        dut.io.initialize.valid.poke(true.B)
+        dut.io.initialize.bits.warpId.poke(0.U)
+        dut.io.initialize.bits.vd.poke(register.U)
+        for (lane <- 0 until config.lanes) {
+          dut.io.initialize.bits.data(lane).poke(values(lane).U)
+        }
+        var initCycles = 0
+        while (!dut.io.initialize.ready.peek().litToBoolean && initCycles < 4) {
+          dut.clock.step()
+          initCycles += 1
+        }
+        dut.io.initialize.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.initialize.valid.poke(false.B)
+      }
+
+      // vsetvli x1, x2, e32,m1 with all four lanes active.
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.instruction.poke("h010170d7".U)
+      dut.io.in.bits.pc.poke("h1000".U)
+      dut.io.in.bits.warpId.poke(0.U)
+      dut.io.in.bits.activeMask.poke("b1111".U)
+      dut.io.in.bits.decoded.recognized.poke(true.B)
+      dut.io.in.bits.decoded.valid.poke(true.B)
+      dut.io.in.bits.decoded.unit.poke(VectorUnit.configuration)
+      dut.io.in.bits.decoded.funct6.poke(0.U)
+      dut.io.in.bits.decoded.operandType.poke(7.U)
+      dut.io.in.bits.decoded.vm.poke(false.B)
+      dut.io.in.bits.decoded.nf.poke(0.U)
+      dut.io.in.bits.decoded.mop.poke(0.U)
+      dut.io.in.bits.decoded.elementWidth.poke(7.U)
+      dut.io.in.bits.decoded.readsVs1.poke(false.B)
+      dut.io.in.bits.decoded.readsVs2.poke(false.B)
+      dut.io.in.bits.decoded.readsVs2Pair.poke(false.B)
+      dut.io.in.bits.decoded.readsScalar.poke(false.B)
+      dut.io.in.bits.decoded.readsFloat.poke(false.B)
+      dut.io.in.bits.decoded.writesVd.poke(false.B)
+      dut.io.in.bits.decoded.memoryRead.poke(false.B)
+      dut.io.in.bits.decoded.memoryWrite.poke(false.B)
+      dut.io.in.bits.decoded.configure.poke(true.B)
+      dut.io.in.ready.expect(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      var cycles = 0
+      while (!dut.io.scalarWriteback.valid.peek().litToBoolean && cycles < 6) {
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(dut.io.scalarWriteback.valid.peek().litToBoolean)
+      dut.io.scalarWriteback.ready.poke(true.B)
+      dut.clock.step()
+
+      // Seed 1.0, elements 2.0/3.0/4.0/0.5, destination starts at 7.0.
+      initialize(2, Seq(BigInt("40000000", 16), BigInt("40400000", 16),
+        BigInt("40800000", 16), BigInt("3f000000", 16)))
+      initialize(4, Seq(BigInt("3f800000", 16), BigInt(0), BigInt(0), BigInt(0)))
+      initialize(3, Seq(BigInt("40e00000", 16), BigInt("40e00000", 16),
+        BigInt("40e00000", 16), BigInt("40e00000", 16)))
+
+      // vfredusum.vs v3, v2, v4
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.instruction.poke("h062211d7".U)
+      dut.io.in.bits.pc.poke("h1004".U)
+      dut.io.in.bits.warpId.poke(0.U)
+      dut.io.in.bits.activeMask.poke("b1111".U)
+      dut.io.in.bits.decoded.recognized.poke(true.B)
+      dut.io.in.bits.decoded.valid.poke(true.B)
+      dut.io.in.bits.decoded.unit.poke(VectorUnit.floatingPoint)
+      dut.io.in.bits.decoded.funct6.poke("h01".U)
+      dut.io.in.bits.decoded.operandType.poke("b001".U)
+      dut.io.in.bits.decoded.vm.poke(true.B)
+      dut.io.in.bits.decoded.readsVs1.poke(true.B)
+      dut.io.in.bits.decoded.readsVs2.poke(true.B)
+      dut.io.in.bits.decoded.readsScalar.poke(false.B)
+      dut.io.in.bits.decoded.readsFloat.poke(false.B)
+      dut.io.in.bits.decoded.writesVd.poke(true.B)
+      dut.io.in.bits.decoded.configure.poke(false.B)
+      dut.io.in.ready.expect(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+
+      cycles = 0
+      while (!dut.io.committedVectorWriteback.valid.peek().litToBoolean &&
+        cycles < 120) {
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(dut.io.committedVectorWriteback.valid.peek().litToBoolean)
+      dut.io.committedVectorWriteback.bits.vd.expect(3.U)
+      // 1 + 2 + 3 + 4 + 0.5
+      dut.io.committedVectorWriteback.bits.data(0)
+        .expect(BigInt("41280000", 16).U)
+      // Elements past 0 keep the 7.0 the initialize wrote.
+      for (lane <- 1 until config.lanes) {
+        dut.io.committedVectorWriteback.bits.data(lane)
+          .expect(BigInt("40e00000", 16).U)
+      }
+      dut.io.committedVectorFlags.valid.expect(true.B)
+    }
+  }
 }

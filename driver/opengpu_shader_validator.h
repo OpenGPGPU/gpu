@@ -230,6 +230,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
              (funct6 == 0x18 || funct6 == 0x19 || funct6 == 0x1b ||
               funct6 == 0x1c || funct6 == 0x1d || funct6 == 0x1f));
         bool reduction = form == 2 && funct6 <= 0x07;
+        /* OPFRED: funct6 000001 is vfredusum and 000011 is vfredosum. Both
+         * fold into element 0 like the integer reductions do. */
+        bool fp_reduction = form == 1 && (funct6 == 0x01 || funct6 == 0x03);
         bool gather = (form == 0 || form == 3 || form == 4) &&
                       funct6 == 0x0c;
         bool slide = ((form == 0 || form == 3 || form == 4) &&
@@ -256,7 +259,7 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
               funct6 == 0x24 || funct6 == 0x27 ||
               (funct6 >= 0x28 && funct6 <= 0x2f)));
         if (!(lane_local || comparison || reduction || gather || slide ||
-              fp_merge || fp_data || integer_merge) ||
+              fp_merge || fp_data || integer_merge || fp_reduction) ||
             vd == 0)
             return false;
     }
@@ -349,7 +352,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
             return (insn & (1u << 25)) && vs1 == 0;
         switch (funct6) {
         case 0x00: /* vfadd */
+        case 0x01: /* vfredusum */
         case 0x02: /* vfsub */
+        case 0x03: /* vfredosum */
         case 0x04: /* vfmin */
         case 0x06: /* vfmax */
         case 0x08: /* vfsgnj */
@@ -557,11 +562,18 @@ static inline void opengpu_shader_define_integer(
  * defined vs1, so each lane shifts by its own amount rather than by one
  * shared scalar or immediate. The vslideup rules carry over unchanged: vd
  * must already be defined and must not overlap vs2.
+ * vfredusum.vs and vfredosum.vs fold vs1[0] and the participating vs2
+ * elements into element 0 of vd and keep the old destination in every other
+ * element, so vd must already be defined. vs1 is the seed register, not an
+ * opcode. The masked form additionally needs a defined v0. The min/max
+ * reductions are not admitted: vfredmin.vs would be funct6 001010, which this
+ * profile already spends on vfsgnjx.vv.
  * The RVV profile admits vsetivli e32,m1, the implemented lane-local
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
  * divide and remainder forms, vssrl/vssra rounded scaling shifts,
  * masked lane-local integer arithmetic, comparisons, reductions, gathers,
- * slides and extensions, fixed-profile vnsrl/vnsra narrowing shifts over even/odd
+ * slides and extensions, the two OPFRED sum reductions, fixed-profile
+ * vnsrl/vnsra narrowing shifts over even/odd
  * register pairs, vnclipu/vnclip rounded saturating narrowing, FP32
  * VFUNARY0 (`vfcvt.xu.f.v`/`vfcvt.x.f.v`/`vfcvt.f.xu.v`/`vfcvt.f.x.v` and the
  * two rtz float-to-integer forms) and VFUNARY1
@@ -798,6 +810,9 @@ static inline bool opengpu_shader_validate_words_profile(
                 /* vfmv.s.f writes f[rs1] into vd[0]. vs2 is v0 and unread. */
                 bool vfmv_sf = funct3 == 5 && (insn >> 26) == 0x10 &&
                     (insn & (1u << 25)) && rs2 == 0;
+                /* vfredusum.vs / vfredosum.vs. vs1 holds the seed. */
+                bool fp_reduction = opfvv &&
+                    ((insn >> 26) == 0x01 || (insn >> 26) == 0x03);
 
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
@@ -816,6 +831,9 @@ static inline bool opengpu_shader_validate_words_profile(
                        rs1 == 6 || rs1 == 7)) ||
                     ((insn >> 26) <= 0x07 && funct3 == 2 &&
                      !vector_defined[rd]) ||
+                    /* A reduction only rewrites element 0 and reads the old
+                     * destination for the rest, so vd must be defined. */
+                    (fp_reduction && !vector_defined[rd]) ||
                     ((insn >> 26) == 0x0e && !vector_defined[rd]) ||
                     ((funct3 == 0 || funct3 == 2) && (insn >> 26) != 0x12 &&
                      !vmv_xs &&
