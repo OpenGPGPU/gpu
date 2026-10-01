@@ -253,6 +253,10 @@ private object VectorDecodeTable {
     VectorPattern("vfcvt_rtz_xu_f_v", "010010??????00110001?????1010111", 4,
       readsVs2 = true, writesVd = true),
     VectorPattern("vfcvt_rtz_x_f_v", "010010??????00111001?????1010111", 4,
+      readsVs2 = true, writesVd = true),
+    VectorPattern("vfcvt_rtz_f_xu_v", "010010??????00100001?????1010111", 4,
+      readsVs2 = true, writesVd = true),
+    VectorPattern("vfcvt_rtz_f_x_v", "010010??????00101001?????1010111", 4,
       readsVs2 = true, writesVd = true)
   )
 

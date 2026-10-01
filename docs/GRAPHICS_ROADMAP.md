@@ -697,6 +697,13 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    admitted. `vs1` is the conversion opcode, not a vector register.
    `KernelShaderStageSpec` ("convert floats and integers on the shader CU")
    checks `vfcvt.rtz.x.f.v` of 1.5/2.5/−1.0 and `vfcvt.f.x.v` of 5/−5/0.
+   The rtz integer-to-FP forms `vfcvt.rtz.f.xu.v` and `vfcvt.rtz.f.x.v` are
+   admitted too. Their rounding mux already existed for the float-to-integer
+   forms, so this was vfrm selectors 4 and 5 in the decode and the validator
+   table, which now admits every selector below 8. Selectors 8 and 9 are the
+   unimplemented float-to-float conversions and stay reserved.
+   `KernelShaderStageSpec` ("convert integers to float with RTZ on the
+   shader CU") converts 2^32−1 and 2^31+1 both signed and unsigned.
    Masked non-compare FP uses the same units: a clear mask lane keeps the
    old destination, so `vfadd`/`vfsub`/`vfmul`/`vfdiv`, the sign-injection
    and min/max forms, VFUNARY0/1, the eight FMA forms, and the matching

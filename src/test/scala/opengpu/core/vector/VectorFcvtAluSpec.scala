@@ -120,6 +120,24 @@ class VectorFcvtAluSpec extends AnyFlatSpec {
     assert(flags == 0)
   }
 
+  it should "apply RTZ to the rtz integer-to-FP forms" in {
+    val config = GpuConfig(lanes = 2)
+    val (unsigned, _) = run(config, { bits =>
+      configure(bits, config, 4, Seq("hffffffff", "h7fffffff"))
+    })
+    // RTZ drops the bits below the mantissa; the dynamic rounding mode would
+    // round 2^32-1 and 2^31-1 up to the next float instead.
+    assert(unsigned(0) == BigInt("4f7fffff", 16))
+    assert(unsigned(1) == BigInt("4effffff", 16))
+
+    val (signed, flags) = run(config, { bits =>
+      configure(bits, config, 5, Seq("h80000001", "hfffffffa"))
+    })
+    assert(signed(0) == BigInt("ceffffff", 16)) // -(2^31+1)
+    assert(signed(1) == BigInt("c0c00000", 16)) // -6 is exact
+    assert((flags & BigInt("1", 16)) != 0)
+  }
+
   it should "classify FP values into the RVV vfclass bitmask" in {
     val config = GpuConfig(lanes = 4)
     val (data, flags) = run(config, { bits =>

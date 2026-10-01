@@ -41,10 +41,12 @@ class VectorFcvtAlu(config: GpuConfig = GpuConfig()) extends Module {
         io.in.bits.vs1Field <= "b00111".U)
   private val isIntToFp =
     io.in.bits.vs1Field >= "b00010".U &&
-      io.in.bits.vs1Field <= "b00011".U
+      io.in.bits.vs1Field <= "b00101".U
   private val isClassify = io.in.bits.vs1Field === "b10000".U
   private val isRtz =
-    io.in.bits.vs1Field === "b00110".U ||
+    (io.in.bits.vs1Field >= "b00100".U &&
+      io.in.bits.vs1Field <= "b00101".U) ||
+      io.in.bits.vs1Field === "b00110".U ||
       io.in.bits.vs1Field === "b00111".U
   private val isUnsigned = !io.in.bits.vs1Field(0)
   private val isSupported = isFpToInt || isIntToFp || isClassify
@@ -54,10 +56,12 @@ class VectorFcvtAlu(config: GpuConfig = GpuConfig()) extends Module {
         inputBits.vs1Field <= "b00111".U)
   private val inputIsIntToFp =
     inputBits.vs1Field >= "b00010".U &&
-      inputBits.vs1Field <= "b00011".U
+      inputBits.vs1Field <= "b00101".U
   private val inputIsClassify = inputBits.vs1Field === "b10000".U
   private val inputIsRtz =
-    inputBits.vs1Field === "b00110".U ||
+    (inputBits.vs1Field >= "b00100".U &&
+      inputBits.vs1Field <= "b00101".U) ||
+      inputBits.vs1Field === "b00110".U ||
       inputBits.vs1Field === "b00111".U
   private val inputIsUnsigned = !inputBits.vs1Field(0)
 

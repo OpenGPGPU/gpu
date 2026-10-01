@@ -218,6 +218,29 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
         dut.io.decoded.valid.expect(false.B)
       }
 
+      // The rtz integer-to-FP conversions are vfrm selectors 4 and 5 in OPFVV,
+      // masked or not. vs1 is the conversion, not a VGPR.
+      for (selector <- Seq(4, 5); vm <- Seq(0, 1)) {
+        val instruction = (BigInt(0x12) << 26) | (BigInt(vm) << 25) |
+          (BigInt(4) << 20) | (BigInt(selector) << 15) |
+          (BigInt(1) << 12) | (BigInt(3) << 7) | 0x57
+        dut.io.instruction.poke(instruction.U)
+        dut.io.decoded.valid.expect(true.B)
+        dut.io.decoded.unit.expect(VectorUnit.floatingPoint)
+        dut.io.decoded.readsVs1.expect(false.B)
+        dut.io.decoded.readsVs2.expect(true.B)
+        dut.io.decoded.writesVd.expect(true.B)
+      }
+      // Selectors 8 and 9 are the unimplemented float-to-float conversions.
+      for (selector <- Seq(8, 9, 10, 17)) {
+        val instruction = (BigInt(0x12) << 26) | (BigInt(4) << 20) |
+          (BigInt(selector) << 15) | (BigInt(1) << 12) |
+          (BigInt(3) << 7) | 0x57
+        dut.io.instruction.poke(instruction.U)
+        dut.io.decoded.recognized.expect(true.B)
+        dut.io.decoded.valid.expect(false.B)
+      }
+
       // Masked unit-stride word loads are implemented by the vector LSU.
       dut.io.instruction.poke("b0000_0_00_0_00000_00010_110_00011_0000111".U)
       dut.io.decoded.valid.expect(true.B)

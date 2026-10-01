@@ -336,8 +336,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
 
         if (funct6 == 0x12) {
             /* vfcvt.* ; vs1 selects the conversion and is not a VGPR.
-             * 0 xu.f, 1 x.f, 2 f.xu, 3 f.x, 6 rtz.xu.f, 7 rtz.x.f. */
-            return vs1 <= 3u || vs1 == 6u || vs1 == 7u;
+             * 0 xu.f, 1 x.f, 2 f.xu, 3 f.x, 4 rtz.f.xu, 5 rtz.f.x,
+             * 6 rtz.xu.f, 7 rtz.x.f. */
+            return vs1 <= 7u;
         }
         if (funct6 == 0x13) {
             /* vfsqrt / vfrec7 / vfrsqrt7 / vfclass; vs1 is not a VGPR. */

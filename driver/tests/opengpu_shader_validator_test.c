@@ -1614,13 +1614,15 @@ int main(void)
             vfcvt(3, 6, 2), /* vfcvt.f.x.v */
             vfcvt(6, 7, 2), /* vfcvt.rtz.xu.f.v */
             vfcvt(7, 8, 2), /* vfcvt.rtz.x.f.v */
+            vfcvt(4, 9, 2), /* vfcvt.rtz.f.xu.v */
+            vfcvt(5, 10, 2), /* vfcvt.rtz.f.x.v */
             vse32(3, 1),
             OPENGPU_SHADER_CEASE,
         };
         const uint32_t bad_op[] = {
             vsetivli(4),
             vle32(2, 1),
-            vfcvt(4, 3, 2),
+            vfcvt(8, 3, 2), /* float-to-float conversion is unimplemented */
             OPENGPU_SHADER_CEASE,
         };
         const uint32_t undef_src[] = {
@@ -1661,7 +1663,7 @@ int main(void)
             OPENGPU_SHADER_CEASE,
         };
 
-        assert(opengpu_compute_shader_validate_words(cvt, 10, 64, 4));
+        assert(opengpu_compute_shader_validate_words(cvt, 12, 64, 4));
         assert(!opengpu_compute_shader_validate_words(bad_op, 4, 64, 4));
         assert(!opengpu_compute_shader_validate_words(undef_src, 3, 64, 4));
         assert(opengpu_compute_shader_validate_words(masked_cvt, 7, 64, 4));

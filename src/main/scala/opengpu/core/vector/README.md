@@ -64,9 +64,11 @@ and `vxsat` state for every warp. It implements `vsetvli`, `vsetivli`, and
 types.
 
 `VectorFcvtAlu` implements lane-local `vfcvt.xu.f.v`, `vfcvt.x.f.v`,
-`vfcvt.f.xu.v`, `vfcvt.f.x.v`, the two `vfcvt.rtz` integer forms, and
-`vfclass.v` using the scalar exact-conversion lanes. Non-rtz conversions honor
-the per-warp `frm`; the rtz forms force truncation.
+`vfcvt.f.xu.v`, `vfcvt.f.x.v`, `vfcvt.rtz.xu.f.v`, `vfcvt.rtz.x.f.v`,
+`vfcvt.rtz.f.xu.v`, `vfcvt.rtz.f.x.v`, and `vfclass.v` using the scalar
+exact-conversion lanes. Non-rtz conversions honor the per-warp `frm`; the four
+rtz forms force truncation. The float-to-float conversions (`vfcvt.f.f.v`) are
+still unimplemented, so vfrm selectors 8 and 9 stay reserved.
 
 `VectorFsqrtAlu` implements `vfsqrt.v` with one iterative restoring-square-root
 lane per vector lane. It honors the per-warp `frm` and reports NX/NV through

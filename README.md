@@ -58,9 +58,9 @@ threads, is dropped by `sbt clean`, and `-Dopengpu.simCache=off` turns it off.
 - RVV integer divide/remainder (`vdivu/vdiv/vremu/vrem`) in vv/vx forms
 - RVV FP32 lane-local operations: sign injection, min/max, comparisons,
   add/sub/mul/div, vfrdiv/vfrsub, vfmv.v.f/vfmerge.vfm, the
-  vfcvt.xu.f.v/vfcvt.x.f.v/vfcvt.f.xu.v/vfcvt.f.x.v and rtz integer forms,
-  vfclass.v/vfsqrt.v/vfrec7.v/vfrsqrt7.v, and all eight fused FMA forms
-  over FVV/FVF operands
+  vfcvt.xu.f.v/vfcvt.x.f.v/vfcvt.f.xu.v/vfcvt.f.x.v and the four rtz
+  conversion forms, vfclass.v/vfsqrt.v/vfrec7.v/vfrsqrt7.v, and all eight
+  fused FMA forms over FVV/FVF operands
 - RVV FP exception flags (NV/DZ/OF/UF/NX) committed alongside scalar FPU flags
   and accumulated with scalar FPU flags into per-warp fflags state; frm feeds
   vector FP rounding and scalar FPU dynamic rounding

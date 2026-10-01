@@ -504,6 +504,45 @@ class KernelShaderStageSpec extends AnyFlatSpec {
     }
   }
 
+  // The rtz integer-to-FP forms truncate instead of rounding to nearest even:
+// 2^32-1 lands one float below 2^32 and -(2^31+1) one below -(2^31). 2^31+1
+// and -1 are exactly representable, so those lanes are unchanged.
+  it should "convert integers to float with RTZ on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("00008293", 16), // addi x5, x1, 0
+        BigInt(0x1008) -> BigInt("0202e107", 16), // vle32.v v2, (x5)
+        BigInt(0x100c) -> BigInt("4a2211d7", 16), // vfcvt.rtz.f.xu.v v3, v2
+        BigInt(0x1010) -> BigInt("04008293", 16), // addi x5, x1, 64
+        BigInt(0x1014) -> BigInt("0202e1a7", 16), // vse32.v v3, (x5)
+        BigInt(0x1018) -> BigInt("4a229257", 16), // vfcvt.rtz.f.x.v v4, v2
+        BigInt(0x101c) -> BigInt("08008293", 16), // addi x5, x1, 128
+        BigInt(0x1020) -> BigInt("0202e227", 16), // vse32.v v4, (x5)
+        BigInt(0x1024) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      Seq(BigInt("ffffffff", 16), BigInt("80000001", 16), BigInt(0))
+        .zipWithIndex.foreach { case (value, lane) =>
+          mem.putWord(BigInt(0x8000) + lane * 4, value)
+        }
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val unsigned = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8040) + lane * 4))
+      assert(unsigned == Seq("4f7fffff", "4f000000", "0").map(BigInt(_, 16)),
+        s"vfcvt.rtz.f.xu.v stored ${unsigned.map(_.toString(16))}")
+      val signed = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8080) + lane * 4))
+      assert(signed == Seq("bf800000", "ceffffff", "0").map(BigInt(_, 16)),
+        s"vfcvt.rtz.f.x.v stored ${signed.map(_.toString(16))}")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
   // v0 is set for lanes 0 and 1. Masked vfadd doubles those lanes and leaves
   // lane 2 at the old destination. Masked vfcvt.rtz.x.f.v does the same.
   it should "mask vector float arithmetic on the shader CU" in {
