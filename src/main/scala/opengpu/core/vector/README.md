@@ -75,6 +75,19 @@ estimates with the standard mantissa lookup tables. It handles infinities,
 zeros, NaNs, and subnormal normalization, reports DZ/NV, and raises OF/NX when
 a `vfrec7` subnormal reciprocal overflows.
 
+`vslide1up.vx` inserts an integer scalar at element 0 and slides `vs2` up by
+one. `vslide1down.vx` slides `vs2` down by one and writes that scalar at
+element `vl-1`. Both encodings are OPMVX. `vslide1up` keeps the `vslideup`
+overlap rule: the destination must not be `vs2`. Masked-off lanes and lanes
+outside `vl` keep the old destination.
+
+`vfmv.s.f` writes an f-register into element 0 and leaves every other element
+unchanged. `vfmv.f.s` copies element 0 into an f-register and does not write
+the vector register; an inactive element 0 writes the canonical NaN. The
+decoder admits only the unmasked forms (`vs1` = 0, `vs2` = `v0`). The
+f-register is reserved when the FPU ALU accepts `vfmv.f.s` and is written
+back into the scalar FP register file.
+
 Remaining RVV families (most widening/narrowing beyond the fixed SEW=32
 profile, and VFUNARY0 forms such as `vfcvt.f.f.v`) remain separate migration
 steps. FP32 VFUNARY1 (`vfsqrt.v`, `vfrec7.v`, `vfrsqrt7.v`, `vfclass.v`) is

@@ -26,6 +26,7 @@ class FpuIssueStage(config: GpuConfig = GpuConfig()) extends Module {
     val in = Flipped(Decoupled(new FpuDecodeResponse(config)))
     val out = Decoupled(new FpuIssuedInstruction(config))
     val writeback = Flipped(Valid(new FpuRegisterWrite(config)))
+    val externalWrite = Flipped(Decoupled(new FpuRegisterWrite(config)))
     val scalarRead = Output(new ScalarRegisterRead(config))
     val scalarRs1Data = Input(UInt(32.W))
     val fvfRead = Input(new FpuRegisterRead(config))
@@ -78,7 +79,15 @@ class FpuIssueStage(config: GpuConfig = GpuConfig()) extends Module {
   rf.io.read.rs3 := reservation.rs3
   rf.io.fvfRead := io.fvfRead
   io.fvfData := rf.io.fvfData
-  rf.io.write := io.writeback
+  // An internal commit wins the single write port. vfmv.f.s waits and does
+  // not release a scoreboard entry it did not reserve.
+  io.externalWrite.ready := !io.writeback.valid
+  rf.io.write.valid := io.writeback.valid || io.externalWrite.valid
+  rf.io.write.bits := Mux(
+    io.writeback.valid,
+    io.writeback.bits,
+    io.externalWrite.bits
+  )
   io.busyByWarp := scoreboard.io.busyByWarp
   scoreboard.io.release.valid := io.writeback.valid
   scoreboard.io.release.bits.warpId := io.writeback.bits.warpId

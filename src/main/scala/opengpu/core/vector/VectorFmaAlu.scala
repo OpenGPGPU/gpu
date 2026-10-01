@@ -150,6 +150,8 @@ class VectorFmaAlu(config: GpuConfig = GpuConfig()) extends Module {
       outputBits.writesMask := false.B
       outputBits.saturated := false.B
       outputBits.writesFlags := true.B
+      outputBits.writesFloat := false.B
+      outputBits.floatData := 0.U
       outputBits.flags := laneFlags.reduce(_ | _)
     }
   }

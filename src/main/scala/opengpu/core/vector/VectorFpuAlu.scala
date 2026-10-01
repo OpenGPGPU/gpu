@@ -34,6 +34,9 @@ class VectorFpuResult(config: GpuConfig) extends Bundle {
   val saturated = Bool()
   val flags = UInt(5.W)
   val writesFlags = Bool()
+  // vfmv.f.s copies element 0 into an f-register and leaves vd unchanged.
+  val writesFloat = Bool()
+  val floatData = UInt(32.W)
 }
 
 private class VectorFpuCandidate(config: GpuConfig) extends Bundle {
@@ -88,6 +91,11 @@ class VectorFpuAlu(config: GpuConfig = GpuConfig()) extends Module {
   private val isCompare =
     candidateBits.funct6 >= "h18".U && candidateBits.funct6 <= "h1f".U
   private val isFpMerge = candidateBits.funct6 === "h17".U
+  // vfmv.s.f writes the scalar into element 0. vfmv.f.s copies element 0 out.
+  private val moveScalarToVector =
+    candidateBits.funct6 === "h10".U && candidateBits.operandType === "b101".U
+  private val moveVectorToScalar =
+    candidateBits.funct6 === "h10".U && candidateBits.operandType === "b001".U
 
   for (lane <- 0 until config.lanes) {
     val lhs = candidateBits.lhs(lane)
@@ -142,12 +150,20 @@ class VectorFpuAlu(config: GpuConfig = GpuConfig()) extends Module {
       )
     )
     laneData(lane) := Mux(
-      isFpMerge,
-      mergeData,
+      moveScalarToVector,
       Mux(
-        isCompare,
-        candidateBits.oldVd(lane),
-        Mux(enabled, exactData, candidateBits.oldVd(lane))
+        lane.U === 0.U && enabled,
+        candidateBits.scalarFpData,
+        candidateBits.oldVd(lane)
+      ),
+      Mux(
+        isFpMerge,
+        mergeData,
+        Mux(
+          isCompare,
+          candidateBits.oldVd(lane),
+          Mux(enabled, exactData, candidateBits.oldVd(lane))
+        )
       )
     )
     laneMask(lane) := enabled && comparison
@@ -169,6 +185,12 @@ class VectorFpuAlu(config: GpuConfig = GpuConfig()) extends Module {
       outputBits.data := laneData
       outputBits.mask := laneMask.asUInt
       outputBits.writesMask := isCompare
+      outputBits.writesFloat := moveVectorToScalar
+      outputBits.floatData := Mux(
+        candidateBits.enabled(0),
+        candidateBits.lhs(0),
+        "h7fc00000".U
+      )
       outputBits.saturated := false.B
       outputBits.flags :=
         Mux(laneFlags.reduce(_ || _), "h10".U(5.W), 0.U(5.W))

@@ -89,6 +89,10 @@ class FrontendScalarFpu(
   fpu.io.flush := false.B
   fpu.io.frm := 0.U.asTypeOf(fpu.io.frm)
   fpu.io.fvfRead := 0.U.asTypeOf(new FpuRegisterRead(config))
+  fpu.io.externalReserve.valid := false.B
+  fpu.io.externalReserve.bits := 0.U.asTypeOf(fpu.io.externalReserve.bits)
+  fpu.io.externalWrite.valid := false.B
+  fpu.io.externalWrite.bits := 0.U.asTypeOf(fpu.io.externalWrite.bits)
   fpu.io.unimplemented.ready := true.B
   fpu.io.memoryRequest.ready := true.B
   fpu.io.memoryResponse.valid := false.B

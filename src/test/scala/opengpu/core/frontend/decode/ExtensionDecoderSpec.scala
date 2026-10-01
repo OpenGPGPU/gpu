@@ -93,6 +93,23 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.recognized.expect(true.B)
       dut.io.decoded.valid.expect(false.B)
 
+      // vslide1up.vx / vslide1down.vx insert an integer and shift by one.
+      dut.io.instruction.poke("h3a2561d7".U) // vslide1up.vx v3, v2, x10
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.unit.expect(VectorUnit.alu)
+      dut.io.decoded.readsScalar.expect(true.B)
+      dut.io.decoded.readsVs2.expect(true.B)
+      dut.io.decoded.writesVd.expect(true.B)
+      dut.io.instruction.poke("h3e256257".U) // vslide1down.vx v4, v2, x10
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.unit.expect(VectorUnit.alu)
+      // vslide1up keeps the destination/source overlap rule. vslide1down does not.
+      dut.io.instruction.poke("b001110_1_00011_00010_110_00011_1010111".U)
+      dut.io.decoded.recognized.expect(true.B)
+      dut.io.decoded.valid.expect(false.B)
+      dut.io.instruction.poke("b001111_1_00011_00010_110_00011_1010111".U)
+      dut.io.decoded.valid.expect(true.B)
+
       // vslideup cannot overlap its destination and vector source groups.
       dut.io.instruction.poke("b001110_1_00011_00010_100_00011_1010111".U)
       dut.io.decoded.recognized.expect(true.B)

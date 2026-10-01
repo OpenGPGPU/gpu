@@ -100,6 +100,33 @@ class ExtendedDecoderSpec extends AnyFlatSpec {
       dut.io.instruction.poke("h4214e1d7".U)
       dut.io.decoded.legal.expect(false.B)
 
+      // vfmv.f.s f2, v2
+      dut.io.instruction.poke("h42201157".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.vector.unit.expect(VectorUnit.floatingPoint)
+      dut.io.decoded.vector.readsVs2.expect(true.B)
+      dut.io.decoded.vector.readsFloat.expect(false.B)
+      dut.io.decoded.vector.writesVd.expect(false.B)
+      dut.io.decoded.vector.writesFloat.expect(true.B)
+      // vs1 other than 0 stays reserved.
+      dut.io.instruction.poke("h42209157".U)
+      dut.io.decoded.legal.expect(false.B)
+      // The masked encoding is reserved.
+      dut.io.instruction.poke("h40201157".U)
+      dut.io.decoded.legal.expect(false.B)
+
+      // vfmv.s.f v2, f1
+      dut.io.instruction.poke("h4200d157".U)
+      dut.io.decoded.legal.expect(true.B)
+      dut.io.decoded.vector.unit.expect(VectorUnit.floatingPoint)
+      dut.io.decoded.vector.readsVs2.expect(false.B)
+      dut.io.decoded.vector.readsFloat.expect(true.B)
+      dut.io.decoded.vector.writesVd.expect(true.B)
+      dut.io.decoded.vector.writesFloat.expect(false.B)
+      // vs2 other than v0 is reserved.
+      dut.io.instruction.poke("h4210d157".U)
+      dut.io.decoded.legal.expect(false.B)
+
       // vsetvli x1, x2, e32,m1
       dut.io.instruction.poke("h010170d7".U)
       dut.io.decoded.executionType.expect(ExecutionType.vector)

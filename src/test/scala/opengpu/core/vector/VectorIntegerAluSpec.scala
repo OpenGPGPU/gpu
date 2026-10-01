@@ -19,6 +19,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     dut.io.in.bits.warpId.poke(0.U)
     dut.io.in.bits.vd.poke(3.U)
     dut.io.in.bits.activeMask.poke("b1111".U)
+    dut.io.in.bits.vl.poke(4.U)
     dut.io.in.bits.predicateMask.poke("b1111".U)
     dut.io.in.bits.scalar.poke(0.U)
     dut.io.in.bits.immediate.poke(0.U)
@@ -740,6 +741,43 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.clock.step(7)
       for (lane <- 0 until config.lanes)
         dut.io.out.bits.data(lane).expect(0.U)
+    }
+  }
+
+  it should "insert a scalar when sliding one element up or down" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      Seq(11, 22, 33, 44).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.in.bits.vs2(lane).poke(value.U)
+      }
+      dut.io.in.bits.operandType.poke("b110".U)
+      dut.io.in.bits.scalar.poke(0x5a.U)
+
+      def run(funct6: Int, expected: Seq[Int]): Unit = {
+        dut.io.in.bits.funct6.poke(funct6.U)
+        dut.io.in.valid.poke(true.B)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+        dut.clock.step(7)
+        expected.zipWithIndex.foreach { case (value, lane) =>
+          dut.io.out.bits.data(lane).expect(value.U)
+        }
+      }
+
+      run(0x0e, Seq(0x5a, 11, 22, 33))
+      run(0x0f, Seq(22, 33, 44, 0x5a))
+
+      dut.io.in.bits.vl.poke(3.U)
+      dut.io.in.bits.activeMask.poke("b0111".U)
+      run(0x0f, Seq(22, 33, 0x5a, 103))
+
+      dut.io.in.bits.vl.poke(4.U)
+      dut.io.in.bits.activeMask.poke("b1111".U)
+      dut.io.in.bits.vm.poke(false.B)
+      dut.io.in.bits.predicateMask.poke("b0101".U)
+      run(0x0e, Seq(0x5a, 101, 22, 103))
+      dut.io.in.bits.predicateMask.poke("b1001".U)
+      run(0x0f, Seq(22, 101, 102, 0x5a))
     }
   }
 

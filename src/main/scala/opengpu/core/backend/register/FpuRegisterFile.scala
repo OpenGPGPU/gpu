@@ -17,6 +17,12 @@ class FpuRegisterWrite(config: GpuConfig) extends Bundle {
   val data = UInt(32.W)
 }
 
+/** Reservation of an f-register written by the vector unit (`vfmv.f.s`). */
+class FpuExternalReserve(config: GpuConfig) extends Bundle {
+  val warpId = UInt(config.warpIdWidth.W)
+  val rd = UInt(5.W)
+}
+
 /** Per-warp scalar floating-point register file.
   *
   * Unlike the integer RF, f0 is an ordinary writable register. Three

@@ -70,6 +70,8 @@ class VectorFEstimateAlu(config: GpuConfig = GpuConfig()) extends Module {
   io.out.bits.writesMask := false.B
   io.out.bits.saturated := false.B
   io.out.bits.writesFlags := true.B
+  io.out.bits.writesFloat := false.B
+  io.out.bits.floatData := 0.U
 
   private val laneFlags = Wire(Vec(config.lanes, UInt(5.W)))
   for ((lane, index) <- lanes.zipWithIndex) {

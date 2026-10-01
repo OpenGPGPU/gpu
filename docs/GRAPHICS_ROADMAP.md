@@ -735,6 +735,21 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    writeback port as `vset*`. `KernelShaderStageSpec` ("move element zero
    through an integer register on the shader CU") splats 7, replaces element
    0 with `0x5a`, stores the vector, and stores the integer read back.
+   `vfmv.s.f` writes an f-register into element 0 and leaves every other
+   element unchanged. `vfmv.f.s` copies element 0 into an f-register and does
+   not write the vector register. An inactive element 0 writes the canonical
+   NaN. Both encodings are unmasked and need the scalar FPU, with `vs1` = 0
+   for `vfmv.f.s` and `vs2` = `v0` for `vfmv.s.f`. The f-register is reserved
+   until the vector unit writes it back. `KernelShaderStageSpec` ("move
+   element zero through a scalar float on the shader CU") replaces element 0
+   of 4/5/6 with 2.0 and stores that float.
+   `vslide1up.vx` inserts an integer at element 0 and slides the source up by
+   one. `vslide1down.vx` slides the source down by one and writes that
+   integer at element `vl-1`. Both are OPMVX. `vslide1up` keeps the
+   `vslideup` rule that the destination is already defined and does not
+   overlap the source. Masked-off lanes and lanes outside `vl` keep the old
+   destination. `KernelShaderStageSpec` ("slide one element by a scalar on
+   the shader CU") slides 11/22/33 with `VL=3` and inserts `0x5a`.
    Further VFUNARY0 forms and widening beyond the fixed SEW=32 profile wait
    for a motivating shader, validator rules, and execution/guest coverage
    together.

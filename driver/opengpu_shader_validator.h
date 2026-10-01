@@ -232,8 +232,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         bool reduction = form == 2 && funct6 <= 0x07;
         bool gather = (form == 0 || form == 3 || form == 4) &&
                       funct6 == 0x0c;
-        bool slide = (form == 3 || form == 4) &&
-                     (funct6 == 0x0e || funct6 == 0x0f);
+        bool slide = ((form == 3 || form == 4) &&
+                      (funct6 == 0x0e || funct6 == 0x0f)) ||
+                     (form == 6 && (funct6 == 0x0e || funct6 == 0x0f));
 
         /* vfmerge.vfm is masked by definition. vfmv.v.f is its unmasked form. */
         bool fp_merge = form == 5 && funct6 == 0x17;
@@ -320,7 +321,10 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
             return (insn & (1u << 25)) && ((insn >> 15) & 0x1f) == 0;
         return funct6 <= 0x07 || funct6 == 0x12 ||
                (funct6 >= 0x20 && funct6 <= 0x27);
-    case 6: /* vmv.s.x or multiply/divide vx */
+    case 6: /* vslide1*.vx, vmv.s.x, or multiply/divide vx */
+        /* vslide1up.vx / vslide1down.vx insert the scalar and shift by one. */
+        if (funct6 == 0x0e || funct6 == 0x0f)
+            return true;
         /* vmv.s.x: VRXUNARY0, vs2 = v0, unmasked. */
         if (funct6 == 0x10)
             return (insn & (1u << 25)) && vs2 == 0;
@@ -337,6 +341,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
             /* vfsqrt / vfrec7 / vfrsqrt7 / vfclass; vs1 is not a VGPR. */
             return vs1 == 0 || vs1 == 4 || vs1 == 5 || vs1 == 16;
         }
+        /* vfmv.f.s: vs1 = 0, unmasked. Other vs1 values stay reserved. */
+        if (funct6 == 0x10)
+            return (insn & (1u << 25)) && vs1 == 0;
         switch (funct6) {
         case 0x00: /* vfadd */
         case 0x02: /* vfsub */
@@ -365,6 +372,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         }
     }
     case 5: /* OPFVF: rs1 names a scalar FP register */
+        /* vfmv.s.f: vs2 = v0, unmasked. */
+        if (funct6 == 0x10)
+            return (insn & (1u << 25)) && vs2 == 0;
         switch (funct6) {
         case 0x00: /* vfadd */
         case 0x02: /* vfsub */
@@ -531,6 +541,15 @@ static inline void opengpu_shader_define_integer(
  * and is not read. vmv.x.s copies element 0 of a defined vector into an
  * integer register other than x1. vs1 must be 0 and is not a vector source.
  * Both encodings are unmasked.
+ * vfmv.s.f writes a defined f-register into element 0 of vd. vs2 must be v0
+ * and is not read. vfmv.f.s copies element 0 of a defined vector into an
+ * f-register. vs1 must be 0 and is not a vector source. Both need the scalar
+ * FPU and are unmasked. An inactive element 0 writes the canonical NaN.
+ * vslide1up.vx inserts a defined integer at element 0 and slides vs2 up by
+ * one. vslide1down.vx slides vs2 down by one and writes that integer at
+ * element vl-1. Both are OPMVX. vslide1up keeps the vslideup rule that vd
+ * must already be defined and must not overlap vs2. Masked-off lanes and
+ * lanes outside vl keep the old destination.
  * The RVV profile admits vsetivli e32,m1, the implemented lane-local
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
  * divide and remainder forms, vssrl/vssra rounded scaling shifts,
@@ -766,11 +785,19 @@ static inline bool opengpu_shader_validate_words_profile(
                 /* vmv.s.x writes the scalar into vd[0]. vs2 is v0 and unread. */
                 bool vmv_sx = funct3 == 6 && (insn >> 26) == 0x10 &&
                     (insn & (1u << 25)) && rs2 == 0;
+                /* vfmv.f.s copies vs2[0] into f[rd]. vs1 is the opcode. */
+                bool vfmv_fs = funct3 == 1 && (insn >> 26) == 0x10 &&
+                    (insn & (1u << 25)) && rs1 == 0;
+                /* vfmv.s.f writes f[rs1] into vd[0]. vs2 is v0 and unread. */
+                bool vfmv_sf = funct3 == 5 && (insn >> 26) == 0x10 &&
+                    (insn & (1u << 25)) && rs2 == 0;
 
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
-                    (!vfmv && !integer_mv && !vmv_sx && !vector_defined[rs2]) ||
+                    (!vfmv && !integer_mv && !vmv_sx && !vfmv_sf &&
+                     !vector_defined[rs2]) ||
                     (vfmerge && !scalar_fpu_enabled) ||
+                    ((vfmv_fs || vfmv_sf) && !scalar_fpu_enabled) ||
                     (!fp && (insn >> 26) >= 0x2c && (insn >> 26) <= 0x2f &&
                      !vector_defined[rs2 + 1]) ||
                     (!(insn & (1u << 25)) &&
@@ -787,7 +814,8 @@ static inline bool opengpu_shader_validate_words_profile(
                      !vmv_xs &&
                      !vector_defined[rs1]) ||
                     /* Binary OPFVV reads vs1. VFUNARY0/1 encode the op there. */
-                    (opfvv && !vfunary0 && !vfunary1 && !vector_defined[rs1]) ||
+                    (opfvv && !vfunary0 && !vfunary1 && !vfmv_fs &&
+                     !vector_defined[rs1]) ||
                     (opfvf && !state.fp_defined[rs1]) ||
                     /* Fused FMA forms read the old destination. */
                     (fp && (insn >> 26) >= 0x28 && (insn >> 26) <= 0x2f &&
@@ -795,6 +823,10 @@ static inline bool opengpu_shader_validate_words_profile(
                     ((funct3 == 4 || funct3 == 6) &&
                      !scalar_defined[rs1]))
                     return false;
+                if (vfmv_fs) {
+                    state.fp_defined[rd] = true;
+                    break;
+                }
                 if (vmv_xs) {
                     if (rd == 1)
                         return false;

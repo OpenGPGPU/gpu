@@ -156,6 +156,8 @@ class GpuCore(
     fpu.io.frm := vector.io.frm
     vector.io.scalarFpData := fpu.io.fvfData
     vector.io.scalarFpBusy := fpu.io.fpuBusyByWarp
+    fpu.io.externalReserve <> vector.io.fpReserve
+    fpu.io.externalWrite <> vector.io.fpWriteback
     vector.io.scalarFlagsWrite.valid := fpu.io.committedFlags.valid
     vector.io.scalarFlagsWrite.bits.warpId :=
       fpu.io.committedFlags.bits.warpId
@@ -184,6 +186,8 @@ class GpuCore(
     scalar.io.externalReserve <> vector.io.scalarReserve
     vector.io.scalarFpData := 0.U
     vector.io.scalarFpBusy := 0.U.asTypeOf(vector.io.scalarFpBusy)
+    vector.io.fpReserve.ready := true.B
+    vector.io.fpWriteback.ready := true.B
     vector.io.scalarFlagsWrite.valid := false.B
     vector.io.scalarFlagsWrite.bits.warpId := 0.U
     vector.io.scalarFlagsWrite.bits.flags := 0.U

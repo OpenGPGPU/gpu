@@ -192,6 +192,8 @@ class TexSampleUnit(
   io.vectorCommit.bits.writesVd := true.B
   io.vectorCommit.bits.writesScalar := false.B
   io.vectorCommit.bits.scalarData := 0.U
+  io.vectorCommit.bits.writesFloat := false.B
+  io.vectorCommit.bits.floatData := 0.U
   io.vectorCommit.bits.flags := 0.U
   io.vectorCommit.bits.writesFlags := false.B
   io.vectorCommit.bits.pc := pcReg

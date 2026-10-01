@@ -10,6 +10,8 @@ import opengpu.core.backend.issue.{
 }
 import opengpu.core.backend.register.{
   FpuRegisterRead,
+  FpuExternalReserve,
+  FpuRegisterWrite,
   ScalarRegisterRead,
   ScalarRegisterWrite,
   VectorRegisterWrite
@@ -46,6 +48,9 @@ class VectorCommitRequest(config: GpuConfig) extends Bundle {
   // vmv.x.s. rd is writeback.vd; the vector register file is not updated.
   val writesScalar = Bool()
   val scalarData = UInt(config.xLen.W)
+  // vfmv.f.s. rd is writeback.vd; the vector register file is not updated.
+  val writesFloat = Bool()
+  val floatData = UInt(32.W)
   val flags = UInt(5.W)
   val writesFlags = Bool()
   val pc = UInt(config.xLen.W)
@@ -78,6 +83,8 @@ class VectorBackend(
     val scalarReserve = Decoupled(new RegisterReservation(config))
     val initialize = Flipped(Decoupled(new VectorRegisterWrite(config)))
     val scalarWriteback = Decoupled(new ScalarRegisterWrite(config))
+    val fpReserve = Decoupled(new FpuExternalReserve(config))
+    val fpWriteback = Decoupled(new FpuRegisterWrite(config))
     val redirect = Decoupled(new SimtPath(config))
     val memoryRequest = Decoupled(new VectorMemoryTransaction(config))
     val memoryResponse = Flipped(Decoupled(new VectorMemoryResponse(config)))
@@ -116,7 +123,8 @@ class VectorBackend(
   // the result, so the redirect cannot race ahead of the register update.
   private val vectorCommitAccepted =
     completionQueue.io.enq.ready &&
-      (!commitBits.writesScalar || io.scalarWriteback.ready)
+      (!commitBits.writesScalar || io.scalarWriteback.ready) &&
+      (!commitBits.writesFloat || io.fpWriteback.ready)
   private val commitFire = commitValid && vectorCommitAccepted
 
   when(writebackArbiter.io.out.fire) {
@@ -191,6 +199,7 @@ class VectorBackend(
   integerAlu.io.in.bits.vs2Odd := dispatch.io.alu.bits.vs2OddData
   integerAlu.io.in.bits.vxrm := vectorState.vxrm
   integerAlu.io.in.bits.scalar := dispatch.io.alu.bits.scalarRs1Data
+  integerAlu.io.in.bits.vl := vectorState.vl
   integerAlu.io.in.bits.immediate :=
     dispatch.io.alu.bits.decode.instruction(19, 15)
   integerAlu.io.in.bits.funct6 :=
@@ -243,6 +252,7 @@ class VectorBackend(
   divideAlu.io.in.bits.vs2Odd := 0.U.asTypeOf(divideAlu.io.in.bits.vs2Odd)
   divideAlu.io.in.bits.vxrm := 0.U
   divideAlu.io.in.bits.scalar := dispatch.io.divide.bits.scalarRs1Data
+  divideAlu.io.in.bits.vl := vectorState.vl
   divideAlu.io.in.bits.immediate := 0.U
   divideAlu.io.in.bits.funct6 :=
     dispatch.io.divide.bits.decode.decoded.funct6
@@ -267,6 +277,7 @@ class VectorBackend(
     "h08".U -> true.B,
     "h09".U -> true.B,
     "h0a".U -> true.B,
+    "h10".U -> true.B,
     "h17".U -> true.B,
     "h18".U -> true.B,
     "h19".U -> true.B,
@@ -292,7 +303,17 @@ class VectorBackend(
     dispatch.io.fpu.valid && !fpuIsArithmetic && !fpuIsExact &&
       !fpuIsDiv && !fpuIsCvt && !fpuIsSqrt && !fpuIsClassify &&
       !fpuIsRecip && !fpuIsRsqrt
-  fpuAlu.io.in.valid := dispatch.io.fpu.valid && fpuIsExact
+  private val fpuWritesFloat =
+    dispatch.io.fpu.bits.decode.decoded.writesFloat
+  private val fpuFloatReady = !fpuWritesFloat || io.fpReserve.ready
+  fpuAlu.io.in.valid :=
+    dispatch.io.fpu.valid && fpuIsExact && fpuFloatReady
+  private val fpuReserving =
+    dispatch.io.fpu.valid && fpuIsExact && fpuAlu.io.in.ready &&
+      fpuWritesFloat
+  io.fpReserve.valid := fpuReserving
+  io.fpReserve.bits.warpId := dispatch.io.fpu.bits.decode.warpId
+  io.fpReserve.bits.rd := dispatch.io.fpu.bits.decode.instruction(11, 7)
   cvtAlu.io.in.valid := dispatch.io.fpu.valid && (fpuIsCvt || fpuIsClassify)
   estimateAlu.io.in.valid :=
     dispatch.io.fpu.valid && (fpuIsRecip || fpuIsRsqrt)
@@ -314,7 +335,11 @@ class VectorBackend(
           Mux(
             fpuIsCvt || fpuIsClassify,
             cvtAlu.io.in.ready,
-            Mux(fpuIsExact, fpuAlu.io.in.ready, divAlu.io.in.ready)
+            Mux(
+              fpuIsExact,
+              fpuAlu.io.in.ready && fpuFloatReady,
+              divAlu.io.in.ready
+            )
           )
         )
       )
@@ -591,6 +616,8 @@ class VectorBackend(
     integerAlu.io.out.bits.writesScalar
   writebackArbiter.io.in(0).bits.scalarData :=
     integerAlu.io.out.bits.scalarData
+  writebackArbiter.io.in(0).bits.writesFloat := false.B
+  writebackArbiter.io.in(0).bits.floatData := 0.U
   writebackArbiter.io.in(0).bits.flags := 0.U
   writebackArbiter.io.in(0).bits.writesFlags := false.B
   writebackArbiter.io.in(0).bits.pc := integerAlu.io.out.bits.pc
@@ -610,6 +637,8 @@ class VectorBackend(
   writebackArbiter.io.in(1).bits.writesVd := true.B
   writebackArbiter.io.in(1).bits.writesScalar := false.B
   writebackArbiter.io.in(1).bits.scalarData := 0.U
+  writebackArbiter.io.in(1).bits.writesFloat := false.B
+  writebackArbiter.io.in(1).bits.floatData := 0.U
   writebackArbiter.io.in(1).bits.flags := 0.U
   writebackArbiter.io.in(1).bits.writesFlags := false.B
   writebackArbiter.io.in(1).bits.pc := multiplyAlu.io.out.bits.pc
@@ -635,9 +664,14 @@ class VectorBackend(
     ).asTypeOf(Vec(config.lanes, UInt(config.xLen.W)))
   writebackArbiter.io.in(2).bits.saturated :=
     fpuAlu.io.out.bits.saturated
-  writebackArbiter.io.in(2).bits.writesVd := true.B
+  writebackArbiter.io.in(2).bits.writesVd :=
+    !fpuAlu.io.out.bits.writesFloat
   writebackArbiter.io.in(2).bits.writesScalar := false.B
   writebackArbiter.io.in(2).bits.scalarData := 0.U
+  writebackArbiter.io.in(2).bits.writesFloat :=
+    fpuAlu.io.out.bits.writesFloat
+  writebackArbiter.io.in(2).bits.floatData :=
+    fpuAlu.io.out.bits.floatData
   writebackArbiter.io.in(2).bits.flags := fpuAlu.io.out.bits.flags
   writebackArbiter.io.in(2).bits.writesFlags :=
     fpuAlu.io.out.bits.writesFlags
@@ -657,6 +691,8 @@ class VectorBackend(
   writebackArbiter.io.in(3).bits.writesVd := true.B
   writebackArbiter.io.in(3).bits.writesScalar := false.B
   writebackArbiter.io.in(3).bits.scalarData := 0.U
+  writebackArbiter.io.in(3).bits.writesFloat := false.B
+  writebackArbiter.io.in(3).bits.floatData := 0.U
   writebackArbiter.io.in(3).bits.flags := fmaAlu.io.out.bits.flags
   writebackArbiter.io.in(3).bits.writesFlags :=
     fmaAlu.io.out.bits.writesFlags
@@ -703,6 +739,8 @@ class VectorBackend(
     memPipeBits.writesVd
   writebackArbiter.io.in(4).bits.writesScalar := false.B
   writebackArbiter.io.in(4).bits.scalarData := 0.U
+  writebackArbiter.io.in(4).bits.writesFloat := false.B
+  writebackArbiter.io.in(4).bits.floatData := 0.U
   writebackArbiter.io.in(4).bits.flags := 0.U
   writebackArbiter.io.in(4).bits.writesFlags := false.B
   writebackArbiter.io.in(4).bits.pc := memPipeBits.pc
@@ -721,6 +759,8 @@ class VectorBackend(
   writebackArbiter.io.in(5).bits.writesVd := true.B
   writebackArbiter.io.in(5).bits.writesScalar := false.B
   writebackArbiter.io.in(5).bits.scalarData := 0.U
+  writebackArbiter.io.in(5).bits.writesFloat := false.B
+  writebackArbiter.io.in(5).bits.floatData := 0.U
   writebackArbiter.io.in(5).bits.flags := divAlu.io.out.bits.flags
   writebackArbiter.io.in(5).bits.writesFlags :=
     divAlu.io.out.bits.writesFlags
@@ -740,6 +780,8 @@ class VectorBackend(
   writebackArbiter.io.in(6).bits.writesVd := true.B
   writebackArbiter.io.in(6).bits.writesScalar := false.B
   writebackArbiter.io.in(6).bits.scalarData := 0.U
+  writebackArbiter.io.in(6).bits.writesFloat := false.B
+  writebackArbiter.io.in(6).bits.floatData := 0.U
   writebackArbiter.io.in(6).bits.flags := cvtAlu.io.out.bits.flags
   writebackArbiter.io.in(6).bits.writesFlags :=
     cvtAlu.io.out.bits.writesFlags
@@ -759,6 +801,8 @@ class VectorBackend(
   writebackArbiter.io.in(7).bits.writesVd := true.B
   writebackArbiter.io.in(7).bits.writesScalar := false.B
   writebackArbiter.io.in(7).bits.scalarData := 0.U
+  writebackArbiter.io.in(7).bits.writesFloat := false.B
+  writebackArbiter.io.in(7).bits.floatData := 0.U
   writebackArbiter.io.in(7).bits.flags := 0.U
   writebackArbiter.io.in(7).bits.writesFlags := false.B
   writebackArbiter.io.in(7).bits.pc := divideAlu.io.out.bits.pc
@@ -777,6 +821,8 @@ class VectorBackend(
   writebackArbiter.io.in(8).bits.writesVd := true.B
   writebackArbiter.io.in(8).bits.writesScalar := false.B
   writebackArbiter.io.in(8).bits.scalarData := 0.U
+  writebackArbiter.io.in(8).bits.writesFloat := false.B
+  writebackArbiter.io.in(8).bits.floatData := 0.U
   writebackArbiter.io.in(8).bits.flags := fsqrtAlu.io.out.bits.flags
   writebackArbiter.io.in(8).bits.writesFlags :=
     fsqrtAlu.io.out.bits.writesFlags
@@ -796,6 +842,8 @@ class VectorBackend(
   writebackArbiter.io.in(9).bits.writesVd := true.B
   writebackArbiter.io.in(9).bits.writesScalar := false.B
   writebackArbiter.io.in(9).bits.scalarData := 0.U
+  writebackArbiter.io.in(9).bits.writesFloat := false.B
+  writebackArbiter.io.in(9).bits.floatData := 0.U
   writebackArbiter.io.in(9).bits.flags := estimateAlu.io.out.bits.flags
   writebackArbiter.io.in(9).bits.writesFlags :=
     estimateAlu.io.out.bits.writesFlags
@@ -930,6 +978,11 @@ class VectorBackend(
     commitBits.scalarData,
     configuration.io.out.bits.data
   )
+  io.fpWriteback.valid :=
+    commitValid && commitBits.writesFloat && completionQueue.io.enq.ready
+  io.fpWriteback.bits.warpId := commitBits.writeback.warpId
+  io.fpWriteback.bits.rd := commitBits.writeback.vd
+  io.fpWriteback.bits.data := commitBits.floatData
 
   io.rawHazard := RegNext(issue.io.rawHazard)
   io.wawHazard := RegNext(issue.io.wawHazard)

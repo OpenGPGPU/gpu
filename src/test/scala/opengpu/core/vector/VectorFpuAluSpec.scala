@@ -207,4 +207,49 @@ class VectorFpuAluSpec extends AnyFlatSpec {
     assert((data >> 32) == BigInt("40000000", 16))
     assert((data & 0xffffffffL) == BigInt("22222222", 16))
   }
+
+  it should "move element zero through a scalar float" in {
+    val config = GpuConfig(lanes = 4)
+    simulate(new VectorFpuAlu(config)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.in.valid.poke(false.B)
+      dut.io.in.bits.poke(0.U.asTypeOf(dut.io.in.bits))
+      dut.io.out.ready.poke(true.B)
+      dut.io.in.bits.vm.poke(true.B)
+      dut.io.in.bits.activeMask.poke("b0111".U)
+      dut.io.in.bits.funct6.poke("h10".U)
+      dut.io.in.bits.operandType.poke("b101".U)
+      dut.io.in.bits.scalarFpData.poke("h40000000".U)
+      for (lane <- 0 until config.lanes)
+        dut.io.in.bits.oldVd(lane).poke((0x10 + lane).U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(2)
+      dut.io.out.bits.writesFloat.expect(false.B)
+      dut.io.out.bits.data(0).expect("h40000000".U)
+      dut.io.out.bits.data(1).expect(0x11.U)
+      dut.io.out.bits.data(2).expect(0x12.U)
+      dut.io.out.bits.data(3).expect(0x13.U)
+
+      dut.io.in.bits.operandType.poke("b001".U)
+      dut.io.in.bits.vs2(0).poke("h40000000".U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(2)
+      dut.io.out.bits.writesFloat.expect(true.B)
+      dut.io.out.bits.floatData.expect("h40000000".U)
+
+      dut.io.in.bits.activeMask.poke("b0110".U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(2)
+      dut.io.out.bits.writesFloat.expect(true.B)
+      dut.io.out.bits.floatData.expect("h7fc00000".U)
+    }
+  }
 }

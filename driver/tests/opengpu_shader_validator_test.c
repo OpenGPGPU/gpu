@@ -1451,6 +1451,98 @@ int main(void)
         assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
     }
 
+    /* vfmv.s.f writes element 0. vfmv.f.s reads it into an f-register. */
+    {
+        uint32_t move[8] = {
+            vsetivli(4),
+            flw(1, 1, 0),
+            vector_alu(0x10, 5, 2, 0, 1), /* vfmv.s.f v2, f1 */
+            vector_alu(0x10, 1, 2, 2, 0), /* vfmv.f.s f2, v2 */
+            fsw(2, 1, 32),
+            OPENGPU_SHADER_CEASE,
+        };
+        uint32_t no_float[5] = {
+            vsetivli(4),
+            vector_alu(0x10, 5, 2, 0, 1), /* f1 undefined */
+            OPENGPU_SHADER_CEASE,
+        };
+        uint32_t no_vector[6] = {
+            vsetivli(4),
+            flw(1, 1, 0),
+            vector_alu(0x10, 1, 3, 4, 0), /* v4 undefined */
+            OPENGPU_SHADER_CEASE,
+        };
+        uint32_t still_undefined_vector[8] = {
+            vsetivli(4),
+            flw(1, 1, 0),
+            vector_alu(0x10, 5, 2, 0, 1),
+            vector_alu(0x10, 1, 3, 2, 0), /* f3, not v3 */
+            vector_alu(0x00, 0, 4, 3, 1), /* v3 was not written */
+            OPENGPU_SHADER_CEASE,
+        };
+
+        assert(fpu_valid(move, 6));
+        assert(!opengpu_compute_shader_validate_words(move, 6, 64, 4));
+        assert(!fpu_valid(no_float, 3));
+        assert(!fpu_valid(no_vector, 4));
+        assert(!fpu_valid(still_undefined_vector, 6));
+        program[0] = vsetivli(4);
+        program[1] = flw(1, 1, 0);
+        program[2] = vector_alu(0x00, 3, 2, 1, 0);
+        program[3] = vector_alu(0x10, 1, 2, 2, 1); /* vs1 != 0 */
+        program[4] = OPENGPU_SHADER_CEASE;
+        assert(!fpu_valid(program, 5));
+        program[3] = vector_alu(0x10, 1, 2, 2, 0) & ~(1u << 25);
+        assert(!fpu_valid(program, 5));
+        program[3] = vector_alu(0x10, 5, 2, 1, 1); /* vs2 != v0 */
+        assert(!fpu_valid(program, 5));
+        program[3] = vector_alu(0x10, 5, 2, 0, 1) & ~(1u << 25);
+        assert(!fpu_valid(program, 5));
+    }
+
+    /* vslide1up inserts the scalar at element 0. vslide1down inserts it
+     * at vl-1. vslide1up needs a defined destination and rejects overlap. */
+    {
+        uint32_t slide[8];
+
+        slide[0] = vsetivli(3);
+        slide[1] = addi(10, 0, 0x5a);
+        slide[2] = vector_alu(0x00, 3, 3, 1, 0); /* vadd.vi v3, v1, 0 */
+        slide[3] = vector_alu(0x0e, 6, 3, 1, 10); /* vslide1up.vx v3, v1, x10 */
+        slide[4] = vector_alu(0x0f, 6, 4, 1, 10); /* vslide1down.vx v4, v1, x10 */
+        slide[5] = OPENGPU_SHADER_CEASE;
+        assert(opengpu_compute_shader_validate_words(slide, 6, 64, 4));
+        assert(opengpu_shader_validate_words(slide, 6, 288, 8, false));
+        assert(opengpu_vertex_shader_validate_words(slide, 6, 512, 8, false));
+        slide[3] = vector_alu(0x0e, 6, 3, 1, 11); /* x11 undefined */
+        assert(!opengpu_compute_shader_validate_words(slide, 6, 64, 4));
+        slide[3] = vector_alu(0x0e, 6, 3, 4, 10); /* v4 undefined */
+        assert(!opengpu_compute_shader_validate_words(slide, 6, 64, 4));
+        slide[3] = vector_alu(0x0e, 6, 5, 1, 10); /* v5 undefined destination */
+        assert(!opengpu_compute_shader_validate_words(slide, 6, 64, 4));
+        slide[3] = vector_alu(0x0e, 6, 3, 3, 10); /* vd overlaps vs2 */
+        assert(!opengpu_compute_shader_validate_words(slide, 6, 64, 4));
+        slide[3] = vector_alu(0x0f, 6, 3, 3, 10); /* vslide1down may overlap */
+        assert(opengpu_compute_shader_validate_words(slide, 6, 64, 4));
+        slide[3] = vector_alu(0x0e, 6, 3, 1, 10) & ~(1u << 25); /* no v0 */
+        assert(!opengpu_compute_shader_validate_words(slide, 6, 64, 4));
+
+        slide[2] = vector_alu(0x18, 0, 0, 1, 1); /* vmseq.vv v0, v1, v1 */
+        slide[3] = vector_alu(0x0e, 6, 3, 1, 10) & ~(1u << 25);
+        slide[4] = OPENGPU_SHADER_CEASE;
+        assert(!opengpu_compute_shader_validate_words(slide, 5, 64, 4)); /* no old v3 */
+
+        slide[2] = vector_alu(0x00, 3, 3, 1, 0); /* define v3 */
+        slide[3] = vector_alu(0x00, 3, 4, 1, 0); /* define v4 */
+        slide[4] = vector_alu(0x18, 0, 0, 1, 1); /* define v0 */
+        slide[5] = vector_alu(0x0e, 6, 3, 1, 10) & ~(1u << 25);
+        slide[6] = vector_alu(0x0f, 6, 4, 1, 10) & ~(1u << 25);
+        slide[7] = OPENGPU_SHADER_CEASE;
+        assert(opengpu_compute_shader_validate_words(slide, 8, 64, 4));
+        slide[5] = vector_alu(0x0e, 6, 0, 1, 10) & ~(1u << 25); /* masked vd=v0 */
+        assert(!opengpu_compute_shader_validate_words(slide, 8, 64, 4));
+    }
+
     /* Masked non-compare FP keeps the old destination on clear lanes. */
     {
         const unsigned int opfvv_funct6[] = {

@@ -20,6 +20,7 @@ private case class VectorPattern(
   readsFloat: Boolean = false,
   writesVd: Boolean = false,
   writesScalar: Boolean = false,
+  writesFloat: Boolean = false,
   memoryRead: Boolean = false,
   memoryWrite: Boolean = false,
   configure: Boolean = false
@@ -66,6 +67,10 @@ private object VectorDecodeTable {
   object WritesScalar extends VectorBoolField("writesScalar") {
     override protected def value(pattern: VectorPattern): Boolean =
       pattern.writesScalar
+  }
+  object WritesFloat extends VectorBoolField("writesFloat") {
+    override protected def value(pattern: VectorPattern): Boolean =
+      pattern.writesFloat
   }
   object MemoryRead extends VectorBoolField("memoryRead") {
     override protected def value(pattern: VectorPattern): Boolean = pattern.memoryRead
@@ -137,6 +142,9 @@ private object VectorDecodeTable {
     VectorInstruction("vrgather", 0x0c, Seq(IVV, IVX, IVI)),
     VectorInstruction("vslideup", 0x0e, Seq(IVX, IVI)),
     VectorInstruction("vslidedown", 0x0f, Seq(IVX, IVI)),
+    // OPMVX inserts the integer scalar and shifts by one element.
+    VectorInstruction("vslide1up", 0x0e, Seq(MVX)),
+    VectorInstruction("vslide1down", 0x0f, Seq(MVX)),
     VectorInstruction("vredsum",  0x00, Seq(MVV)),
     VectorInstruction("vredand",  0x01, Seq(MVV)),
     VectorInstruction("vredor",   0x02, Seq(MVV)),
@@ -286,6 +294,15 @@ private object VectorDecodeTable {
       readsScalar = true, writesVd = true)
   )
 
+  // vfmv.f.s is OPFVV with vs1 = 0. vfmv.s.f is OPFVF with vs2 = v0.
+  // Other unary opcodes in that space, and the masked forms, stay reserved.
+  private val floatMovePatterns = Seq(
+    VectorPattern("vfmv_f_s", "0100001?????00000001?????1010111", 4,
+      readsVs2 = true, writesFloat = true),
+    VectorPattern("vfmv_s_f", "010000100000?????101?????1010111", 4,
+      readsFloat = true, writesVd = true)
+  )
+
   // OPMVV mask logical. The masked encoding (vm=0) is reserved.
   private val maskLogicalPatterns = Seq(
     "vmandn" -> "011000",
@@ -382,6 +399,7 @@ private object VectorDecodeTable {
   val patterns: Seq[VectorPattern] =
     memoryPatterns ++ configPatterns ++ arithmeticPatterns ++
       mergePatterns ++ maskLogicalPatterns ++ scalarMovePatterns ++
+      floatMovePatterns ++
       unary0Patterns ++
       unary1Patterns ++
       texturePatterns ++ quadPatterns
@@ -395,6 +413,7 @@ private object VectorDecodeTable {
     ReadsFloat,
     WritesVd,
     WritesScalar,
+    WritesFloat,
     MemoryRead,
     MemoryWrite,
     Configure
@@ -458,6 +477,7 @@ class VectorDecoder extends Module {
   io.decoded.readsFloat := result(VectorDecodeTable.ReadsFloat)
   io.decoded.writesVd := result(VectorDecodeTable.WritesVd)
   io.decoded.writesScalar := result(VectorDecodeTable.WritesScalar)
+  io.decoded.writesFloat := result(VectorDecodeTable.WritesFloat)
   io.decoded.memoryRead := result(VectorDecodeTable.MemoryRead)
   io.decoded.memoryWrite := result(VectorDecodeTable.MemoryWrite)
   io.decoded.configure := result(VectorDecodeTable.Configure)

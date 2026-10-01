@@ -9,6 +9,7 @@ import opengpu.core.backend.issue.{
   FpuMemoryUnit
 }
 import opengpu.core.backend.register.{
+  FpuExternalReserve,
   FpuRegisterRead,
   FpuRegisterWrite,
   ScalarRegisterRead,
@@ -64,6 +65,8 @@ class FpuBackend(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
     val fvfRead = Input(new FpuRegisterRead(config))
     val fvfData = Output(UInt(32.W))
     val fpuBusyByWarp = Output(Vec(config.warps, UInt(32.W)))
+    val externalReserve = Flipped(Decoupled(new FpuExternalReserve(config)))
+    val externalWrite = Flipped(Decoupled(new FpuRegisterWrite(config)))
     val memoryRequest = Decoupled(new VectorCacheLineRequest(config))
     val memoryResponse = Flipped(Decoupled(new VectorCacheLineResponse()))
     val memoryFault = Decoupled(new ScalarMemoryFault(config))
@@ -90,7 +93,23 @@ class FpuBackend(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
   private val mappedQueue = Module(
     new Queue(new FpuMappedEntry(config, tagWidth), 2))
 
-  issue.io.in <> io.in
+  private val externalBusy =
+    RegInit(VecInit(Seq.fill(config.warps)(0.U(32.W))))
+  private val inputWarpValid = io.in.bits.warpId < config.warps.U
+  private val selectedExternalBusy =
+    if (config.warps == 1) externalBusy(0)
+    else Mux(inputWarpValid, externalBusy(io.in.bits.warpId), 0.U)
+  private def externallyBusy(register: UInt): Bool =
+    selectedExternalBusy(register)
+  private val decodedIn = io.in.bits.decoded
+  private val externalHazard =
+    (decodedIn.readsRs1 && externallyBusy(io.in.bits.instruction(19, 15))) ||
+      (decodedIn.readsRs2 && externallyBusy(io.in.bits.instruction(24, 20))) ||
+      (decodedIn.readsRs3 && externallyBusy(io.in.bits.instruction(31, 27))) ||
+      (decodedIn.writesFp && externallyBusy(io.in.bits.instruction(11, 7)))
+  issue.io.in.valid := io.in.valid && !externalHazard
+  issue.io.in.bits := io.in.bits
+  io.in.ready := issue.io.in.ready && !externalHazard
   mapper.io.in := issue.io.out.bits.decode
   mapper.io.rs1Data := issue.io.out.bits.rs1Data
   mapper.io.rs2Data := issue.io.out.bits.rs2Data
@@ -101,7 +120,9 @@ class FpuBackend(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
   issue.io.scalarRs1Data := io.scalarRs1Data
   issue.io.fvfRead := io.fvfRead
   io.fvfData := issue.io.fvfData
-  io.fpuBusyByWarp := issue.io.busyByWarp
+  io.fpuBusyByWarp := VecInit(issue.io.busyByWarp.zipWithIndex.map {
+    case (busy, warp) => busy | externalBusy(warp)
+  })
 
   private val fast = mapper.io.out.supported
   private val isExact =
@@ -330,6 +351,26 @@ class FpuBackend(config: GpuConfig = GpuConfig(), tagWidth: Int = 16)
     io.committedWriteback.bits,
     io.initialize.bits
   )
+  issue.io.externalWrite <> io.externalWrite
+  private val reserveWarpValid =
+    io.externalReserve.bits.warpId < config.warps.U
+  io.externalReserve.ready := reserveWarpValid
+  private val reserveFire = io.externalReserve.fire
+  private val writeFire = io.externalWrite.fire
+  private val reserveOH = UIntToOH(io.externalReserve.bits.rd, 32)
+  private val writeOH = UIntToOH(io.externalWrite.bits.rd, 32)
+  for (warp <- 0 until config.warps) {
+    val afterWrite = Mux(
+      writeFire && io.externalWrite.bits.warpId === warp.U,
+      externalBusy(warp) & ~writeOH,
+      externalBusy(warp)
+    )
+    externalBusy(warp) := Mux(
+      reserveFire && io.externalReserve.bits.warpId === warp.U,
+      afterWrite | reserveOH,
+      afterWrite
+    )
+  }
   io.rawHazard := issue.io.rawHazard
   io.wawHazard := issue.io.wawHazard
 

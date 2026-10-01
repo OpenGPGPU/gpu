@@ -24,6 +24,8 @@ private class NormalizedVectorIntegerRequest(config: GpuConfig) extends Bundle {
   val funct6 = UInt(6.W)
   val operandType = UInt(3.W)
   val immediate = UInt(5.W)
+  // Architectural vl. vslide1down inserts the scalar at element vl-1.
+  val vl = UInt(config.xLen.W)
   val quad = Bool()
   val reduction = Bool()
   // Mask-register logical ops pack their result the same way compares do.
@@ -499,9 +501,22 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
           inputBits.lhs(slideDownIndex(gatherIndexWidth - 1, 0)),
           0.U
         )
+        // vslide1up.vx / vslide1down.vx are OPMVX: shift by one and insert
+        // the scalar. vslide1down's scalar lands on element vl-1.
+        val slide1 = inputBits.operandType === "b110".U
+        val slide1Up = if (lane == 0) inputBits.rhs(0) else inputBits.lhs(lane - 1)
+        val slide1DownNext =
+          if (lane + 1 < config.lanes) inputBits.lhs(lane + 1) else 0.U
+        val slide1Down = Mux(
+          lane.U(config.xLen.W) === (inputBits.vl - 1.U),
+          inputBits.rhs(lane),
+          slide1DownNext
+        )
         val crossLane = MuxCase(inputBits.lhs(lane), Seq(
           (inputBits.funct6 === "h0c".U && !inputBits.quad) -> gathered,
+          (inputBits.funct6 === "h0e".U && slide1) -> slide1Up,
           (inputBits.funct6 === "h0e".U) -> slideUp,
+          (inputBits.funct6 === "h0f".U && slide1) -> slide1Down,
           (inputBits.funct6 === "h0f".U) -> slideDown
         ))
         preparedBits.lhs(lane) := crossLane
@@ -613,6 +628,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       inputBits.funct6 := io.in.bits.funct6
       inputBits.operandType := io.in.bits.operandType
       inputBits.immediate := io.in.bits.immediate
+      inputBits.vl := io.in.bits.vl
       val isMaskLogical =
         io.in.bits.operandType === "b010".U && io.in.bits.vm &&
           io.in.bits.funct6 >= "h18".U && io.in.bits.funct6 <= "h1f".U
@@ -660,10 +676,17 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         inputBits.vs1(lane) := io.in.bits.vs1(lane)
         inputBits.vs2(lane) := io.in.bits.vs2(lane)
         inputBits.vs2Odd(lane) := io.in.bits.vs2Odd(lane)
+        val isSlide1 =
+          io.in.bits.operandType === "b110".U &&
+            (io.in.bits.funct6 === "h0e".U || io.in.bits.funct6 === "h0f".U)
         val trueSrc = Mux(
           io.in.bits.operandType === "b000".U,
           io.in.bits.vs1(lane),
-          Mux(io.in.bits.operandType === "b100".U, io.in.bits.scalar, inputImmediate)
+          Mux(
+            io.in.bits.operandType === "b100".U || isSlide1,
+            io.in.bits.scalar,
+            inputImmediate
+          )
         )
         val takeTrue = io.in.bits.vm || io.in.bits.predicateMask(lane)
         inputBits.lhs(lane) := Mux(

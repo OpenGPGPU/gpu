@@ -10,6 +10,8 @@ class VectorIntegerRequest(config: GpuConfig) extends Bundle {
   val vd = UInt(5.W)
   val activeMask = UInt(config.lanes.W)
   val predicateMask = UInt(config.lanes.W)
+  // Architectural vl. vslide1down writes the scalar at element vl-1.
+  val vl = UInt(config.xLen.W)
   val oldVd = Vec(config.lanes, UInt(config.xLen.W))
   val vs1 = Vec(config.lanes, UInt(config.xLen.W))
   val vs2 = Vec(config.lanes, UInt(config.xLen.W))
