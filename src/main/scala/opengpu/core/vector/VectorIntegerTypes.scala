@@ -33,6 +33,9 @@ class VectorIntegerResult(config: GpuConfig) extends Bundle {
   val mask = UInt(config.lanes.W)
   val writesMask = Bool()
   val saturated = Bool()
+  // vmv.x.s copies element 0 into an integer register and leaves vd unchanged.
+  val writesScalar = Bool()
+  val scalarData = UInt(config.xLen.W)
 }
 
 class VectorMultiplyRequest(config: GpuConfig) extends Bundle {

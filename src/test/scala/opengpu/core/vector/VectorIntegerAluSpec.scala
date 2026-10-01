@@ -147,6 +147,41 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     }
   }
 
+  it should "move one element between a vector and an integer register" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      dut.io.in.bits.funct6.poke("h10".U)
+      dut.io.in.bits.operandType.poke("b110".U)
+      dut.io.in.bits.vm.poke(true.B)
+      dut.io.in.bits.activeMask.poke("b0111".U)
+      dut.io.in.bits.scalar.poke("h5a".U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(7)
+      dut.io.out.bits.writesScalar.expect(false.B)
+      dut.io.out.bits.data(0).expect("h5a".U)
+      dut.io.out.bits.data(1).expect(101.U)
+      dut.io.out.bits.data(2).expect(102.U)
+      dut.io.out.bits.data(3).expect(103.U)
+
+      dut.io.in.bits.operandType.poke("b010".U)
+      dut.io.in.bits.vs2(0).poke("h5a".U)
+      dut.io.in.bits.vs2(1).poke(7.U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.bits.activeMask.poke("b0110".U)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(6)
+      dut.io.out.bits.writesScalar.expect(true.B)
+      dut.io.out.bits.scalarData.expect("h5a".U)
+      dut.clock.step()
+      dut.io.out.bits.writesScalar.expect(true.B)
+      dut.io.out.bits.scalarData.expect(0.U)
+    }
+  }
+
   it should "sign- and zero-extend fixed-profile 16-bit lanes" in {
     simulate(new VectorIntegerAlu(config)) { dut =>
       defaults(dut)

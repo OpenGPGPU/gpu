@@ -29,6 +29,9 @@ private class NormalizedVectorIntegerRequest(config: GpuConfig) extends Bundle {
   // Mask-register logical ops pack their result the same way compares do.
   val maskLogical = Bool()
   val maskBits = UInt(config.lanes.W)
+  // vmv.x.s. Element 0 is copied out; the vector register is not written.
+  val writesScalar = Bool()
+  val scalarData = UInt(config.xLen.W)
 }
 
 private class VectorIntegerCandidates(config: GpuConfig) extends Bundle {
@@ -50,6 +53,8 @@ private class VectorIntegerCandidates(config: GpuConfig) extends Bundle {
   val saturated = UInt(config.lanes.W)
   val maskLogical = Bool()
   val maskBits = UInt(config.lanes.W)
+  val writesScalar = Bool()
+  val scalarData = UInt(config.xLen.W)
 }
 
 private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
@@ -80,6 +85,8 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
   val widening = Vec(config.lanes, UInt(config.xLen.W))
   val maskLogical = Bool()
   val maskBits = UInt(config.lanes.W)
+  val writesScalar = Bool()
+  val scalarData = UInt(config.xLen.W)
 }
 
 /** RVV integer ALU for the fixed SEW=32, LMUL=1 GPU profile.
@@ -89,7 +96,10 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
   * Inactive or masked-off lanes preserve oldVd, except vmerge: a clear mask
   * lane in the body takes vs2, and only lanes outside VL keep oldVd.
   * vmand/vmor/vmxor and their negated forms combine the packed mask bits in
-  * element zero. Results are held under output backpressure and the unit
+  * element zero. `vmv.s.x` writes the scalar into element 0 and leaves every
+  * other element unchanged. `vmv.x.s` copies element 0 into `scalarData` and
+  * does not write the vector register; an inactive element 0 produces zero.
+  * Results are held under output backpressure and the unit
   * sustains one operation per cycle when unstalled.
   */
 class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
@@ -182,6 +192,8 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         // vmerge/vmv: the input stage already selected vs1, the scalar, or
         // the immediate against vs2. Body lanes use that value.
         "h17".U -> lhs,
+        // vmv.s.x places the scalar in lhs and enables only element 0.
+        "h10".U -> lhs,
         // vsext/vzext vf2/vf4/vf8 use vs1=7/6, 5/4, and 3/2.
         "h12".U -> MuxLookup(partialBits.immediate, 0.U(32.W))(Seq(
           7.U -> Cat(Fill(16, lhs(15)), lhs(15, 0)),
@@ -295,6 +307,8 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
             ~candidateBits.enabled)
       )
       outputBits.writesMask := outputComparison
+      outputBits.writesScalar := candidateBits.writesScalar
+      outputBits.scalarData := candidateBits.scalarData
       outputBits.saturated :=
         outputSaturating &&
           (candidateBits.saturated & candidateBits.enabled).orR
@@ -322,6 +336,8 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       candidateBits.saturated := laneSaturated.asUInt
       candidateBits.maskLogical := partialBits.maskLogical
       candidateBits.maskBits := partialBits.maskBits
+      candidateBits.writesScalar := partialBits.writesScalar
+      candidateBits.scalarData := partialBits.scalarData
     }
   }
 
@@ -341,6 +357,8 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       partialBits.reduction := inputBits.reduction
       partialBits.maskLogical := inputBits.maskLogical
       partialBits.maskBits := inputBits.maskBits
+      partialBits.writesScalar := inputBits.writesScalar
+      partialBits.scalarData := inputBits.scalarData
       for (lane <- 0 until config.lanes) {
         val lhs = inputBits.lhs(lane)
         val rhs = inputBits.rhs(lane)
@@ -617,11 +635,25 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       inputBits.maskLogical := isMaskLogical
       inputBits.maskBits :=
         (logical & io.in.bits.activeMask) | (oldMask & ~io.in.bits.activeMask)
+      // vmv.s.x is OPMVX. vmv.x.s is OPMVV. Both are unmasked with vs1 = 0.
+      val isScalarToVector =
+        io.in.bits.operandType === "b110".U && io.in.bits.vm &&
+          io.in.bits.funct6 === "h10".U
+      val isVectorToScalar =
+        io.in.bits.operandType === "b010".U && io.in.bits.vm &&
+          io.in.bits.funct6 === "h10".U
+      inputBits.writesScalar := isVectorToScalar
+      inputBits.scalarData :=
+        Mux(io.in.bits.activeMask(0), io.in.bits.vs2(0), 0.U)
       inputBits.sourceEnabled := sourceEnabled
       inputBits.enabled := Mux(
         inputIsReduction,
         io.in.bits.activeMask.orR,
-        Mux(isMerge, io.in.bits.activeMask, sourceEnabled)
+        Mux(
+          isMerge,
+          io.in.bits.activeMask,
+          Mux(isScalarToVector, io.in.bits.activeMask(0), sourceEnabled)
+        )
       )
       for (lane <- 0 until config.lanes) {
         inputBits.oldVd(lane) := io.in.bits.oldVd(lane)
@@ -637,7 +669,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         inputBits.lhs(lane) := Mux(
           isMerge,
           Mux(takeTrue, trueSrc, io.in.bits.vs2(lane)),
-          io.in.bits.vs2(lane)
+          Mux(isScalarToVector, io.in.bits.scalar, io.in.bits.vs2(lane))
         )
         inputBits.rhs(lane) := trueSrc
       }
@@ -649,7 +681,8 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       io.in.bits.operandType === "b000".U ||
         io.in.bits.operandType === "b010".U ||
         io.in.bits.operandType === "b011".U ||
-        io.in.bits.operandType === "b100".U,
+        io.in.bits.operandType === "b100".U ||
+        io.in.bits.operandType === "b110".U,
       "VectorIntegerAlu received an unsupported RVV operand form"
     )
   }

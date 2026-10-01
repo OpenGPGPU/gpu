@@ -43,6 +43,9 @@ class VectorCommitRequest(config: GpuConfig) extends Bundle {
   val writeback = new VectorRegisterWrite(config)
   val saturated = Bool()
   val writesVd = Bool()
+  // vmv.x.s. rd is writeback.vd; the vector register file is not updated.
+  val writesScalar = Bool()
+  val scalarData = UInt(config.xLen.W)
   val flags = UInt(5.W)
   val writesFlags = Bool()
   val pc = UInt(config.xLen.W)
@@ -109,7 +112,12 @@ class VectorBackend(
     RegInit(VecInit(Seq.fill(config.warps)(0.U(6.W))))
   private val commitValid = RegInit(false.B)
   private val commitBits = Reg(new VectorCommitRequest(config))
-  private val commitFire = commitValid && completionQueue.io.enq.ready
+  // A scalar move holds completion until the integer writeback port accepts
+  // the result, so the redirect cannot race ahead of the register update.
+  private val vectorCommitAccepted =
+    completionQueue.io.enq.ready &&
+      (!commitBits.writesScalar || io.scalarWriteback.ready)
+  private val commitFire = commitValid && vectorCommitAccepted
 
   when(writebackArbiter.io.out.fire) {
     commitValid := true.B
@@ -163,8 +171,11 @@ class VectorBackend(
   io.texSample.bits.issued := dispatch.io.texture.bits
   io.texSample.bits.executionMask := textureMask
 
-  integerAlu.io.in.valid := dispatch.io.alu.valid
-  dispatch.io.alu.ready := integerAlu.io.in.ready
+  private val aluWritesScalar =
+    dispatch.io.alu.bits.decode.decoded.writesScalar
+  private val aluScalarReady = !aluWritesScalar || io.scalarReserve.ready
+  integerAlu.io.in.valid := dispatch.io.alu.valid && aluScalarReady
+  dispatch.io.alu.ready := integerAlu.io.in.ready && aluScalarReady
   integerAlu.io.in.bits.warpId := dispatch.io.alu.bits.decode.warpId
   integerAlu.io.in.bits.pc := dispatch.io.alu.bits.decode.pc
   integerAlu.io.in.bits.warpActiveMask :=
@@ -520,14 +531,26 @@ class VectorBackend(
       io.scalarReserve.ready
   dispatch.io.configuration.ready :=
     configurationReady && configCanEnter
-  io.scalarReserve.valid :=
+  private val configReserving =
     dispatch.io.configuration.valid && configCanEnter &&
       configuration.io.in.ready
-  io.scalarReserve.bits.warpId := configWarp
+  // Reserve rd in the same cycle the ALU accepts vmv.x.s. Dispatch is
+  // exclusive, so this cannot overlap a vset* reservation.
+  private val aluReserving =
+    dispatch.io.alu.valid && integerAlu.io.in.ready && aluWritesScalar
+  io.scalarReserve.valid := configReserving || aluReserving
+  io.scalarReserve.bits.warpId := Mux(
+    aluReserving,
+    dispatch.io.alu.bits.decode.warpId,
+    configWarp
+  )
   io.scalarReserve.bits.rs1 := 0.U
   io.scalarReserve.bits.rs2 := 0.U
-  io.scalarReserve.bits.rd :=
+  io.scalarReserve.bits.rd := Mux(
+    aluReserving,
+    dispatch.io.alu.bits.decode.instruction(11, 7),
     dispatch.io.configuration.bits.decode.instruction(11, 7)
+  )
   io.scalarReserve.bits.useRs1 := false.B
   io.scalarReserve.bits.useRs2 := false.B
   io.scalarReserve.bits.writeRd := io.scalarReserve.bits.rd =/= 0.U
@@ -562,7 +585,12 @@ class VectorBackend(
     ).asTypeOf(Vec(config.lanes, UInt(config.xLen.W)))
   writebackArbiter.io.in(0).bits.saturated :=
     integerAlu.io.out.bits.saturated
-  writebackArbiter.io.in(0).bits.writesVd := true.B
+  writebackArbiter.io.in(0).bits.writesVd :=
+    !integerAlu.io.out.bits.writesScalar
+  writebackArbiter.io.in(0).bits.writesScalar :=
+    integerAlu.io.out.bits.writesScalar
+  writebackArbiter.io.in(0).bits.scalarData :=
+    integerAlu.io.out.bits.scalarData
   writebackArbiter.io.in(0).bits.flags := 0.U
   writebackArbiter.io.in(0).bits.writesFlags := false.B
   writebackArbiter.io.in(0).bits.pc := integerAlu.io.out.bits.pc
@@ -580,6 +608,8 @@ class VectorBackend(
   writebackArbiter.io.in(1).bits.saturated :=
     multiplyAlu.io.out.bits.saturated
   writebackArbiter.io.in(1).bits.writesVd := true.B
+  writebackArbiter.io.in(1).bits.writesScalar := false.B
+  writebackArbiter.io.in(1).bits.scalarData := 0.U
   writebackArbiter.io.in(1).bits.flags := 0.U
   writebackArbiter.io.in(1).bits.writesFlags := false.B
   writebackArbiter.io.in(1).bits.pc := multiplyAlu.io.out.bits.pc
@@ -606,6 +636,8 @@ class VectorBackend(
   writebackArbiter.io.in(2).bits.saturated :=
     fpuAlu.io.out.bits.saturated
   writebackArbiter.io.in(2).bits.writesVd := true.B
+  writebackArbiter.io.in(2).bits.writesScalar := false.B
+  writebackArbiter.io.in(2).bits.scalarData := 0.U
   writebackArbiter.io.in(2).bits.flags := fpuAlu.io.out.bits.flags
   writebackArbiter.io.in(2).bits.writesFlags :=
     fpuAlu.io.out.bits.writesFlags
@@ -623,6 +655,8 @@ class VectorBackend(
     fmaAlu.io.out.bits.data
   writebackArbiter.io.in(3).bits.saturated := false.B
   writebackArbiter.io.in(3).bits.writesVd := true.B
+  writebackArbiter.io.in(3).bits.writesScalar := false.B
+  writebackArbiter.io.in(3).bits.scalarData := 0.U
   writebackArbiter.io.in(3).bits.flags := fmaAlu.io.out.bits.flags
   writebackArbiter.io.in(3).bits.writesFlags :=
     fmaAlu.io.out.bits.writesFlags
@@ -667,6 +701,8 @@ class VectorBackend(
   writebackArbiter.io.in(4).bits.saturated := false.B
   writebackArbiter.io.in(4).bits.writesVd :=
     memPipeBits.writesVd
+  writebackArbiter.io.in(4).bits.writesScalar := false.B
+  writebackArbiter.io.in(4).bits.scalarData := 0.U
   writebackArbiter.io.in(4).bits.flags := 0.U
   writebackArbiter.io.in(4).bits.writesFlags := false.B
   writebackArbiter.io.in(4).bits.pc := memPipeBits.pc
@@ -683,6 +719,8 @@ class VectorBackend(
     divAlu.io.out.bits.data
   writebackArbiter.io.in(5).bits.saturated := false.B
   writebackArbiter.io.in(5).bits.writesVd := true.B
+  writebackArbiter.io.in(5).bits.writesScalar := false.B
+  writebackArbiter.io.in(5).bits.scalarData := 0.U
   writebackArbiter.io.in(5).bits.flags := divAlu.io.out.bits.flags
   writebackArbiter.io.in(5).bits.writesFlags :=
     divAlu.io.out.bits.writesFlags
@@ -700,6 +738,8 @@ class VectorBackend(
     cvtAlu.io.out.bits.data
   writebackArbiter.io.in(6).bits.saturated := false.B
   writebackArbiter.io.in(6).bits.writesVd := true.B
+  writebackArbiter.io.in(6).bits.writesScalar := false.B
+  writebackArbiter.io.in(6).bits.scalarData := 0.U
   writebackArbiter.io.in(6).bits.flags := cvtAlu.io.out.bits.flags
   writebackArbiter.io.in(6).bits.writesFlags :=
     cvtAlu.io.out.bits.writesFlags
@@ -717,6 +757,8 @@ class VectorBackend(
     divideAlu.io.out.bits.data
   writebackArbiter.io.in(7).bits.saturated := false.B
   writebackArbiter.io.in(7).bits.writesVd := true.B
+  writebackArbiter.io.in(7).bits.writesScalar := false.B
+  writebackArbiter.io.in(7).bits.scalarData := 0.U
   writebackArbiter.io.in(7).bits.flags := 0.U
   writebackArbiter.io.in(7).bits.writesFlags := false.B
   writebackArbiter.io.in(7).bits.pc := divideAlu.io.out.bits.pc
@@ -733,6 +775,8 @@ class VectorBackend(
     fsqrtAlu.io.out.bits.data
   writebackArbiter.io.in(8).bits.saturated := false.B
   writebackArbiter.io.in(8).bits.writesVd := true.B
+  writebackArbiter.io.in(8).bits.writesScalar := false.B
+  writebackArbiter.io.in(8).bits.scalarData := 0.U
   writebackArbiter.io.in(8).bits.flags := fsqrtAlu.io.out.bits.flags
   writebackArbiter.io.in(8).bits.writesFlags :=
     fsqrtAlu.io.out.bits.writesFlags
@@ -750,6 +794,8 @@ class VectorBackend(
     estimateAlu.io.out.bits.data
   writebackArbiter.io.in(9).bits.saturated := false.B
   writebackArbiter.io.in(9).bits.writesVd := true.B
+  writebackArbiter.io.in(9).bits.writesScalar := false.B
+  writebackArbiter.io.in(9).bits.scalarData := 0.U
   writebackArbiter.io.in(9).bits.flags := estimateAlu.io.out.bits.flags
   writebackArbiter.io.in(9).bits.writesFlags :=
     estimateAlu.io.out.bits.writesFlags
@@ -778,7 +824,7 @@ class VectorBackend(
   private val selectConfiguration =
     !selectVector && configuration.io.out.valid
   completionQueue.io.enq.valid :=
-    commitValid ||
+    commitFire ||
       (selectConfiguration && io.scalarWriteback.ready)
   completionQueue.io.enq.bits.warpId := Mux(
     selectVector,
@@ -863,13 +909,27 @@ class VectorBackend(
   }
 
   io.scalarWriteback.valid :=
-    selectConfiguration && completionQueue.io.enq.ready
+    (selectConfiguration && completionQueue.io.enq.ready) ||
+      (commitValid && commitBits.writesScalar &&
+        completionQueue.io.enq.ready)
   configuration.io.out.ready :=
     !selectVector && io.scalarWriteback.ready &&
       completionQueue.io.enq.ready
-  io.scalarWriteback.bits.warpId := configuration.io.out.bits.warpId
-  io.scalarWriteback.bits.rd := configuration.io.out.bits.rd
-  io.scalarWriteback.bits.data := configuration.io.out.bits.data
+  io.scalarWriteback.bits.warpId := Mux(
+    selectVector,
+    commitBits.writeback.warpId,
+    configuration.io.out.bits.warpId
+  )
+  io.scalarWriteback.bits.rd := Mux(
+    selectVector,
+    commitBits.writeback.vd,
+    configuration.io.out.bits.rd
+  )
+  io.scalarWriteback.bits.data := Mux(
+    selectVector,
+    commitBits.scalarData,
+    configuration.io.out.bits.data
+  )
 
   io.rawHazard := RegNext(issue.io.rawHazard)
   io.wawHazard := RegNext(issue.io.wawHazard)

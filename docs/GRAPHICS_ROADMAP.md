@@ -727,6 +727,14 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    bits outside VL. `KernelShaderStageSpec` ("combine compare masks on the
    shader CU") ANDs `id < 2` with `id < 1` and ORs the same pair, then
    predicates a store on each result.
+   `vmv.s.x` writes a scalar into element 0 and leaves every other element
+   unchanged. `vmv.x.s` copies element 0 into an integer register other than
+   `x1` and does not write the vector register. Both encodings are unmasked,
+   with `vs1` = 0 for `vmv.x.s` and `vs2` = `v0` for `vmv.s.x`. The integer
+   destination is reserved on the scalar scoreboard and joins the same
+   writeback port as `vset*`. `KernelShaderStageSpec` ("move element zero
+   through an integer register on the shader CU") splats 7, replaces element
+   0 with `0x5a`, stores the vector, and stores the integer read back.
    Further VFUNARY0 forms and widening beyond the fixed SEW=32 profile wait
    for a motivating shader, validator rules, and execution/guest coverage
    together.

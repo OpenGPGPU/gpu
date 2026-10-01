@@ -22,6 +22,12 @@ admits all six, and a masked destination cannot be `v0`.
 `vmorn.mm`, `vmnand.mm`, `vmnor.mm`, and `vmxnor.mm` combine the packed mask
 in element zero of two source registers. The masked encoding is reserved.
 Bits outside VL keep the old destination, and the result may be `v0`.
+`vmv.s.x` writes a scalar into element 0 and leaves every other element
+unchanged. `vmv.x.s` copies element 0 into an integer register and does not
+write the vector register; an inactive element 0 writes zero. The decoder
+admits only the unmasked forms (`vs1` = 0, `vs2` = `v0`). The scalar
+destination is reserved when the ALU accepts the move and is written back
+on the same port as `vset*`. The driver rejects a write to `x1`.
 `vssrl.vv/vx/vi` and `vssra.vv/vx/vi` implement single-width scaling shifts:
 the unsigned or signed 32-bit source is shifted by the low five bits of the
 shift amount, then rounded according to `vxrm`. They share the fixed-point

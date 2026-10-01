@@ -1394,6 +1394,63 @@ int main(void)
         assert(!opengpu_compute_shader_validate_words(program, 7, 64, 4));
     }
 
+    /* vmv.s.x writes element 0. vmv.x.s reads it into an integer other than x1. */
+    {
+        uint32_t move[8] = {
+            vsetivli(4),
+            addi(9, 0, 0x5a),
+            vector_alu(0x10, 6, 2, 0, 9), /* vmv.s.x v2, x9 */
+            vector_alu(0x10, 2, 10, 2, 0), /* vmv.x.s x10, v2 */
+            sw(10, 32),
+            OPENGPU_SHADER_CEASE,
+        };
+        uint32_t writes_x1[6] = {
+            vsetivli(4),
+            addi(9, 0, 0x5a),
+            vector_alu(0x10, 6, 2, 0, 9),
+            vector_alu(0x10, 2, 1, 2, 0), /* rd = x1 */
+            OPENGPU_SHADER_CEASE,
+        };
+        uint32_t no_vector[6] = {
+            vsetivli(4),
+            addi(9, 0, 1),
+            vector_alu(0x10, 2, 10, 4, 0), /* v4 undefined */
+            OPENGPU_SHADER_CEASE,
+        };
+        uint32_t no_scalar[5] = {
+            vsetivli(4),
+            vector_alu(0x10, 6, 2, 0, 10), /* x10 undefined */
+            OPENGPU_SHADER_CEASE,
+        };
+        uint32_t still_undefined_vector[8] = {
+            vsetivli(4),
+            addi(9, 0, 0x5a),
+            vector_alu(0x10, 6, 2, 0, 9),
+            vector_alu(0x10, 2, 10, 2, 0),
+            vector_alu(0x00, 0, 3, 10, 1), /* v10 was not written */
+            OPENGPU_SHADER_CEASE,
+        };
+
+        assert(opengpu_compute_shader_validate_words(move, 6, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(writes_x1, 5, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(no_vector, 4, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(no_scalar, 3, 64, 4));
+        assert(!opengpu_compute_shader_validate_words(
+            still_undefined_vector, 6, 64, 4));
+        program[0] = vsetivli(4);
+        program[1] = addi(9, 0, 1);
+        program[2] = vector_alu(0x00, 3, 2, 1, 0);
+        program[3] = vector_alu(0x10, 2, 10, 2, 1); /* vs1 != 0 */
+        program[4] = OPENGPU_SHADER_CEASE;
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        program[3] = vector_alu(0x10, 2, 10, 2, 0) & ~(1u << 25);
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        program[3] = vector_alu(0x10, 6, 2, 1, 9); /* vs2 != v0 */
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+        program[3] = vector_alu(0x10, 6, 2, 0, 9) & ~(1u << 25);
+        assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    }
+
     /* Masked non-compare FP keeps the old destination on clear lanes. */
     {
         const unsigned int opfvv_funct6[] = {

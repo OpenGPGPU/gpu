@@ -55,6 +55,8 @@ class VectorDecodeSignals extends Bundle {
   val readsScalar = Bool()
   val readsFloat = Bool()
   val writesVd = Bool()
+  // vmv.x.s writes an integer register. The vector destination stays unchanged.
+  val writesScalar = Bool()
   val memoryRead = Bool()
   val memoryWrite = Bool()
   val configure = Bool()

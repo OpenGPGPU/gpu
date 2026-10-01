@@ -19,6 +19,7 @@ private case class VectorPattern(
   readsScalar: Boolean = false,
   readsFloat: Boolean = false,
   writesVd: Boolean = false,
+  writesScalar: Boolean = false,
   memoryRead: Boolean = false,
   memoryWrite: Boolean = false,
   configure: Boolean = false
@@ -61,6 +62,10 @@ private object VectorDecodeTable {
   }
   object WritesVd extends VectorBoolField("writesVd") {
     override protected def value(pattern: VectorPattern): Boolean = pattern.writesVd
+  }
+  object WritesScalar extends VectorBoolField("writesScalar") {
+    override protected def value(pattern: VectorPattern): Boolean =
+      pattern.writesScalar
   }
   object MemoryRead extends VectorBoolField("memoryRead") {
     override protected def value(pattern: VectorPattern): Boolean = pattern.memoryRead
@@ -272,6 +277,15 @@ private object VectorDecodeTable {
       writesVd = true)
   )
 
+  // vmv.x.s is VWXUNARY0 (OPMVV, vs1 = 0). vmv.s.x is VRXUNARY0 (OPMVX, vs2 = v0).
+  // Other unary opcodes in that space, and the masked forms, stay reserved.
+  private val scalarMovePatterns = Seq(
+    VectorPattern("vmv_x_s", "0100001?????00000010?????1010111", 1,
+      readsVs2 = true, writesScalar = true),
+    VectorPattern("vmv_s_x", "010000100000?????110?????1010111", 1,
+      readsScalar = true, writesVd = true)
+  )
+
   // OPMVV mask logical. The masked encoding (vm=0) is reserved.
   private val maskLogicalPatterns = Seq(
     "vmandn" -> "011000",
@@ -367,7 +381,8 @@ private object VectorDecodeTable {
 
   val patterns: Seq[VectorPattern] =
     memoryPatterns ++ configPatterns ++ arithmeticPatterns ++
-      mergePatterns ++ maskLogicalPatterns ++ unary0Patterns ++
+      mergePatterns ++ maskLogicalPatterns ++ scalarMovePatterns ++
+      unary0Patterns ++
       unary1Patterns ++
       texturePatterns ++ quadPatterns
   val fields: Seq[DecodeField[VectorPattern, _ <: Data]] = Seq(
@@ -379,6 +394,7 @@ private object VectorDecodeTable {
     ReadsScalar,
     ReadsFloat,
     WritesVd,
+    WritesScalar,
     MemoryRead,
     MemoryWrite,
     Configure
@@ -441,6 +457,7 @@ class VectorDecoder extends Module {
   io.decoded.readsScalar := result(VectorDecodeTable.ReadsScalar)
   io.decoded.readsFloat := result(VectorDecodeTable.ReadsFloat)
   io.decoded.writesVd := result(VectorDecodeTable.WritesVd)
+  io.decoded.writesScalar := result(VectorDecodeTable.WritesScalar)
   io.decoded.memoryRead := result(VectorDecodeTable.MemoryRead)
   io.decoded.memoryWrite := result(VectorDecodeTable.MemoryWrite)
   io.decoded.configure := result(VectorDecodeTable.Configure)

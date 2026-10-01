@@ -772,4 +772,36 @@ class KernelShaderStageSpec extends AnyFlatSpec {
       dut.io.completion.bits.success.expect(true.B)
     }
   }
+
+  // vmv.v.x fills the active lanes, vmv.s.x replaces element 0, and vmv.x.s
+  // reads that element back into an integer that sw stores.
+  it should "move element zero through an integer register on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("00700493", 16), // addi x9, x0, 7
+        BigInt(0x1008) -> BigInt("5e04c157", 16), // vmv.v.x v2, x9
+        BigInt(0x100c) -> BigInt("05a00513", 16), // addi x10, x0, 0x5a
+        BigInt(0x1010) -> BigInt("42056157", 16), // vmv.s.x v2, x10
+        BigInt(0x1014) -> BigInt("04008293", 16), // addi x5, x1, 64
+        BigInt(0x1018) -> BigInt("0202e127", 16), // vse32.v v2, (x5)
+        BigInt(0x101c) -> BigInt("422025d7", 16), // vmv.x.s x11, v2
+        BigInt(0x1020) -> BigInt("08b0a023", 16), // sw x11, 128(x1)
+        BigInt(0x1024) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val stored = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8040) + lane * 4))
+      assert(stored == Seq(BigInt(0x5a), BigInt(7), BigInt(7)),
+        s"vmv.s.x stored ${stored.map(_.toString(16))}")
+      assert(storedWord(result.writes, BigInt(0x8080)) == BigInt(0x5a),
+        "vmv.x.s did not return element 0")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
 }

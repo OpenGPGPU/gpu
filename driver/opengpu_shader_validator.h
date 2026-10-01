@@ -311,13 +311,19 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         default:
             return false;
         }
-    case 2: /* integer reduction, mask logical, or multiply/divide vv */
+    case 2: /* integer reduction, mask logical, vmv.x.s, or multiply/divide vv */
         /* vmand/vmor/vmxor and the negated forms are unmasked. */
         if (funct6 >= 0x18 && funct6 <= 0x1f)
             return (insn & (1u << 25)) != 0;
+        /* vmv.x.s: VWXUNARY0, vs1 = 0, unmasked. Other vs1 values stay reserved. */
+        if (funct6 == 0x10)
+            return (insn & (1u << 25)) && ((insn >> 15) & 0x1f) == 0;
         return funct6 <= 0x07 || funct6 == 0x12 ||
                (funct6 >= 0x20 && funct6 <= 0x27);
-    case 6: /* multiply/divide vx */
+    case 6: /* vmv.s.x or multiply/divide vx */
+        /* vmv.s.x: VRXUNARY0, vs2 = v0, unmasked. */
+        if (funct6 == 0x10)
+            return (insn & (1u << 25)) && vs2 == 0;
         return funct6 >= 0x20 && funct6 <= 0x27;
     case 1: { /* OPFVV: FP32 VFUNARY1 plus unmasked binary FVV */
         opengpu_shader_u32 vs1 = (insn >> 15) & 0x1f;
@@ -521,6 +527,10 @@ static inline void opengpu_shader_define_integer(
  * and vmxnor combine two defined mask registers. The encoding is unmasked;
  * a clear vm bit is rejected. The destination may be v0. Bits outside VL
  * keep the old destination.
+ * vmv.s.x writes a defined integer into element 0 of vd. vs2 must be v0
+ * and is not read. vmv.x.s copies element 0 of a defined vector into an
+ * integer register other than x1. vs1 must be 0 and is not a vector source.
+ * Both encodings are unmasked.
  * The RVV profile admits vsetivli e32,m1, the implemented lane-local
  * integer ALU, comparison, saturating, reduction, gather, slide, multiply,
  * divide and remainder forms, vssrl/vssra rounded scaling shifts,
@@ -750,10 +760,16 @@ static inline bool opengpu_shader_validate_words_profile(
                 bool integer_mv = (insn >> 26) == 0x17 &&
                     (insn & (1u << 25)) &&
                     (funct3 == 0 || funct3 == 3 || funct3 == 4);
+                /* vmv.x.s copies vs2[0] into integer rd. vs1 is the opcode. */
+                bool vmv_xs = funct3 == 2 && (insn >> 26) == 0x10 &&
+                    (insn & (1u << 25)) && rs1 == 0;
+                /* vmv.s.x writes the scalar into vd[0]. vs2 is v0 and unread. */
+                bool vmv_sx = funct3 == 6 && (insn >> 26) == 0x10 &&
+                    (insn & (1u << 25)) && rs2 == 0;
 
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
-                    (!vfmv && !integer_mv && !vector_defined[rs2]) ||
+                    (!vfmv && !integer_mv && !vmv_sx && !vector_defined[rs2]) ||
                     (vfmerge && !scalar_fpu_enabled) ||
                     (!fp && (insn >> 26) >= 0x2c && (insn >> 26) <= 0x2f &&
                      !vector_defined[rs2 + 1]) ||
@@ -768,6 +784,7 @@ static inline bool opengpu_shader_validate_words_profile(
                      !vector_defined[rd]) ||
                     ((insn >> 26) == 0x0e && !vector_defined[rd]) ||
                     ((funct3 == 0 || funct3 == 2) && (insn >> 26) != 0x12 &&
+                     !vmv_xs &&
                      !vector_defined[rs1]) ||
                     /* Binary OPFVV reads vs1. VFUNARY0/1 encode the op there. */
                     (opfvv && !vfunary0 && !vfunary1 && !vector_defined[rs1]) ||
@@ -778,6 +795,18 @@ static inline bool opengpu_shader_validate_words_profile(
                     ((funct3 == 4 || funct3 == 6) &&
                      !scalar_defined[rs1]))
                     return false;
+                if (vmv_xs) {
+                    if (rd == 1)
+                        return false;
+                    values[rd].kind = OPENGPU_SHADER_VALUE_UNKNOWN;
+                    values[rd].offset = 0;
+                    if (rd == 0) {
+                        values[0].kind = OPENGPU_SHADER_VALUE_UNKNOWN;
+                        values[0].offset = 0;
+                    }
+                    scalar_defined[rd] = true;
+                    break;
+                }
                 state.vector_local_indices &= ~(1u << rd);
                 state.vector_local_bytes &= ~(1u << rd);
                 /* A masked shift can retain arbitrary old destination lanes. */
