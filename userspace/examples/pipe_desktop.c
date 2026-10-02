@@ -4,7 +4,8 @@
  * Background, panel, window and pointer are GPU fill and strided blit.
  * The window content is a GPU triangle. A vertex-core build has to submit
  * that triangle through the vertex shader; the legacy draw record is
- * rejected there. Scanout is that colour GEM.
+ * rejected there. The fragment build loads fragment_tint, which paints
+ * every covered pixel. Scanout is that colour GEM.
  * Pass --hold to keep the session up and move the pointer from evdev.
  * The proof is the pixel check below, not how fast the model redraws.
  */

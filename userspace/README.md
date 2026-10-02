@@ -59,8 +59,10 @@ a fixed-function build (64x64 by default). It obtains the mode through
 default `/dev/dri/card0`.
 
 `examples/fragment_tint` is the programmable counterpart: it binds the
-corpus `fragment_tint` shader and expects `OPENGPU_CAP_FRAGMENT_CORE`. Pass
-the DRM node and optional shader binary path (default
+corpus `fragment_tint` shader and expects `OPENGPU_CAP_FRAGMENT_CORE`. The
+shader XORs `0x00ff00ff` into every lane of the interpolated colour, so
+every covered pixel is painted. Pass the DRM
+node and optional shader binary path (default
 `/opengpu_fragment_tint.bin`).
 `examples/fragment_fp` runs the corpus `fragment_fp` shader, which computes
 6.0f per lane with `vfmul` / `vfdiv` / `vfmacc` on the fragment shader CU and
@@ -145,7 +147,8 @@ discard / `vquad.dfdx`), `fragment_fp.S` (fragment-profile OPFVV; guest
 `fp_fma.S` (eight fused FMA forms), `fp_div.S` (`vfdiv`),
 `fp_compare.S` (`vmfeq`/`vmflt`), `fp_scalar.S` (`flw` plus OPFVF,
 validated with the scalar-FPU compute profile) and `fp_reduce.S` (OPFRED
-`vfredusum.vs`/`vfredosum.vs`), and compiles three
+`vfredusum.vs`/`vfredosum.vs`), `fragment_tint.S` (per-lane colour XOR;
+guest `examples/fragment_tint` and `examples/pipe_desktop`), and compiles two
 small C shaders with `riscv64-unknown-elf-gcc`, adapts the C argument base to
 OpenGPU's direct `x1` kernarg convention, and replaces the C return with the
 OpenGPU cease instruction. The script checks every binary with the production

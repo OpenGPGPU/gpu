@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
-/* Programmable fragment tint: XOR interpolated colour with 0x00ff00ff.
- * Requires OPENGPU_CAP_FRAGMENT_CORE. Shader binary from fragment_tint.c
- * (corpus); default path /opengpu_fragment_tint.bin. */
+/* Programmable fragment tint: XOR interpolated colour with 0x00ff00ff
+ * on every lane. Requires OPENGPU_CAP_FRAGMENT_CORE. Shader binary from
+ * shaders/fragment_tint.S (corpus); default path /opengpu_fragment_tint.bin. */
 #include "../opengpu.h"
 #include <errno.h>
 #include <fcntl.h>
