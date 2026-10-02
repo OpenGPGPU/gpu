@@ -504,6 +504,53 @@ class KernelShaderStageSpec extends AnyFlatSpec {
     }
   }
 
+  // vid.v needs no source at all, and vcompress.vm then packs the lanes whose
+  // compare set v0 into the low elements of the destination. Comparing against
+  // 11 selects lanes 0 and 2, so the pack is [11, 11] followed by the two
+  // elements the destination already held.
+  it should "index and compact elements on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("0200e107", 16), // vle32.v v2, (x1)
+        BigInt(0x1008) -> BigInt("02008313", 16), // addi x6, x1, 32
+        BigInt(0x100c) -> BigInt("02036207", 16), // vle32.v v4, (x6)
+        BigInt(0x1010) -> BigInt("00b00293", 16), // addi x5, x0, 11
+        BigInt(0x1014) -> BigInt("6222c057", 16), // vmseq.vx v0, v2, x5
+        BigInt(0x1018) -> BigInt("5208a2d7", 16), // vid.v v5
+        BigInt(0x101c) -> BigInt("03008313", 16), // addi x6, x1, 48
+        BigInt(0x1020) -> BigInt("020362a7", 16), // vse32.v v5, (x6)
+        BigInt(0x1024) -> BigInt("5e202257", 16), // vcompress.vm v4, v2, v0
+        BigInt(0x1028) -> BigInt("04008313", 16), // addi x6, x1, 64
+        BigInt(0x102c) -> BigInt("02036227", 16), // vse32.v v4, (x6)
+        BigInt(0x1030) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      Seq(11, 22, 11, 33).zipWithIndex.foreach { case (value, lane) =>
+        mem.putWord(BigInt(0x8000) + lane * 4, BigInt(value))
+      }
+      // v4 is the compress destination: 7 in every element, of which only the
+      // two lowest are overwritten by the packed result.
+      Seq(7, 7, 7, 7).zipWithIndex.foreach { case (value, lane) =>
+        mem.putWord(BigInt(0x8020) + lane * 4, BigInt(value))
+      }
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val indices = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8030) + lane * 4))
+      assert(indices == Seq(BigInt(0), BigInt(1), BigInt(2)),
+        s"vid.v stored ${indices.mkString(",")}")
+      val packed = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8040) + lane * 4))
+      assert(packed == Seq(BigInt(11), BigInt(11), BigInt(7)),
+        s"vcompress stored ${packed.mkString(",")}")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
   // vmacc accumulates into the destination and vmadd into vs2, with the
   // destination also acting as a multiplicand in the vmadd form. The two
   // differ here because the destinations start from different values, and the

@@ -280,6 +280,22 @@ private object VectorDecodeTable {
       readsVs1 = true, readsVs2 = true, writesVd = true)
   )
 
+  // vid.v writes each element's index. vs2 must be v0 and vs1 carries the
+  // fixed EEW/EMUL selector 10001 rather than a register number, so neither
+  // source field is a vector read.
+  private val elementIndexPatterns = Seq(
+    VectorPattern("vid_v", "010100?0000010001010?????1010111", 1,
+      writesVd = true)
+  )
+
+  // vcompress.vm shares funct6 010111 with vmerge/vmv, which the core decodes
+  // in OPIVV/OPIVI/OPIVX, so the OPMVV form is free. vm=1 is the only legal
+  // encoding; the masked form of the same funct6 is reserved.
+  private val compressPatterns = Seq(
+    VectorPattern("vcompress_vm", "0101111??????????010?????1010111", 1,
+      readsVs1 = true, readsVs2 = true, writesVd = true)
+  )
+
   // VFUNARY1: funct6 010011 carries the unary FP opcode in the vs1 field.
   private val unary1Patterns = Seq(
     VectorPattern("vfsqrt_v", "010011??????00000001?????1010111", 4,
@@ -422,6 +438,7 @@ private object VectorDecodeTable {
 
   val patterns: Seq[VectorPattern] =
     memoryPatterns ++ configPatterns ++ arithmeticPatterns ++
+      elementIndexPatterns ++ compressPatterns ++
       mergePatterns ++ maskLogicalPatterns ++ scalarMovePatterns ++
       floatMovePatterns ++
       unary0Patterns ++
@@ -469,6 +486,15 @@ class VectorDecoder extends Module {
       (!io.instruction(25) && io.instruction(11, 7) === 0.U)
   )
 
+  // vcompress writes a compacted copy of vs2, so a destination overlapping
+  // either source would be read and written at once.
+  val integerCompress = opcode === "b1010111".U &&
+    io.instruction(31, 26) === "b010111".U &&
+    io.instruction(14, 12) === "b010".U
+  val compressOverlap = integerCompress && (
+    io.instruction(11, 7) === io.instruction(24, 20) ||
+      io.instruction(11, 7) === io.instruction(19, 15)
+  )
   // Narrowing shifts and clips treat vs2/vs2+1 as one 64-bit source.
   // vs2 must be even and vd disjoint from the pair; masked vd cannot be v0.
   val integerNarrowing = opcode === "b1010111".U &&
@@ -487,7 +513,8 @@ class VectorDecoder extends Module {
   io.decoded := 0.U.asTypeOf(new VectorDecodeSignals)
   io.decoded.recognized := recognized
   io.decoded.valid := result(VectorDecodeTable.Legal) &&
-    !slideUpOverlap && !extensionOverlap && !narrowingOverlap
+    !slideUpOverlap && !extensionOverlap && !narrowingOverlap &&
+    !compressOverlap
   io.decoded.unit := decodedUnit
   io.decoded.funct6 := io.instruction(31, 26)
   io.decoded.operandType := io.instruction(14, 12)

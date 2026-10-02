@@ -467,6 +467,73 @@ int main(void)
         assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
     }
 
+    /* vid.v reads no vector source: vs2 is v0 and vs1 is the fixed EEW/EMUL
+     * selector 10001. Any other field combination stays reserved. */
+    {
+        uint32_t vid[3];
+        uint32_t masked_vid[6];
+
+        vid[0] = vsetivli(4);
+        vid[1] = 0x5208a257u; /* vid.v v4 */
+        vid[2] = OPENGPU_SHADER_CEASE;
+        assert(opengpu_compute_shader_validate_words(vid, 3, 64, 4));
+        assert(opengpu_shader_validate_words(vid, 3, 288, 8, false));
+        vid[1] = (0x5208a257u | (1u << 20)); /* vs2 must stay v0 */
+        assert(!opengpu_compute_shader_validate_words(vid, 3, 64, 4));
+        vid[1] = (0x5208a257u & ~(31u << 15)) | (2u << 15);
+        assert(!opengpu_compute_shader_validate_words(vid, 3, 64, 4));
+        vid[1] = 0x5208a257u & ~(31u << 15); /* vs1 selector 0 */
+        assert(!opengpu_compute_shader_validate_words(vid, 3, 64, 4));
+
+        /* Masked vid.v needs a defined v0 and old destination. */
+        masked_vid[0] = vsetivli(4);
+        masked_vid[1] = vector_alu(0x18, 0, 0, 1, 1); /* vmseq.vv v0 */
+        masked_vid[2] = vle32(4, 1);
+        masked_vid[3] = 0x5208a257u & ~(1u << 25);
+        masked_vid[4] = OPENGPU_SHADER_CEASE;
+        assert(opengpu_compute_shader_validate_words(masked_vid, 5, 64, 4));
+        masked_vid[1] = vle32(2, 1); /* no v0 */
+        assert(!opengpu_compute_shader_validate_words(masked_vid, 5, 64, 4));
+        masked_vid[1] = vector_alu(0x18, 0, 0, 1, 1);
+        masked_vid[2] = vle32(2, 1); /* no old v4 */
+        assert(!opengpu_compute_shader_validate_words(masked_vid, 5, 64, 4));
+        masked_vid[2] = vle32(4, 1);
+        masked_vid[3] = 0x5208a257u & ~(1u << 25) & ~(31u << 7); /* vd = v0 */
+        assert(!opengpu_compute_shader_validate_words(masked_vid, 5, 64, 4));
+    }
+
+    /* vcompress.vm packs the vs1 mask's selected elements of vs2 into the low
+     * elements of vd. It is unmasked only, and the destination must be
+     * disjoint from both sources. */
+    {
+        uint32_t compress[6] = { 0 };
+
+        compress[0] = vsetivli(4);
+        compress[1] = vector_alu(0x18, 0, 0, 1, 1); /* vmseq.vv v0 */
+        compress[2] = vle32(2, 1);
+        compress[3] = vle32(3, 1);
+        compress[4] = vector_alu(0x17, 2, 3, 2, 0); /* vcompress v3, v2, v0 */
+        compress[5] = OPENGPU_SHADER_CEASE;
+        assert(opengpu_compute_shader_validate_words(compress, 6, 64, 4));
+        assert(opengpu_shader_validate_words(compress, 6, 288, 8, false));
+        compress[4] = vector_alu(0x17, 2, 3, 2, 0) & ~(1u << 25);
+        assert(!opengpu_compute_shader_validate_words(compress, 6, 64, 4));
+        compress[4] = vector_alu(0x17, 2, 2, 2, 0); /* vd == vs2 */
+        assert(!opengpu_compute_shader_validate_words(compress, 6, 64, 4));
+        compress[4] = vector_alu(0x17, 2, 0, 2, 0); /* vd == mask */
+        assert(!opengpu_compute_shader_validate_words(compress, 6, 64, 4));
+        compress[4] = vector_alu(0x17, 2, 3, 6, 0); /* undefined vs2 */
+        assert(!opengpu_compute_shader_validate_words(compress, 6, 64, 4));
+        compress[4] = vector_alu(0x17, 2, 3, 2, 5); /* undefined mask */
+        assert(!opengpu_compute_shader_validate_words(compress, 6, 64, 4));
+        /* funct6 010111 stays the merge family in the immediate form, and the
+         * unmasked vmv.v.i still needs vs2 to be v0. */
+        compress[4] = vector_alu(0x17, 3, 3, 2, 0);
+        assert(!opengpu_compute_shader_validate_words(compress, 6, 64, 4));
+        compress[4] = vector_alu(0x17, 3, 3, 2, 0) & ~(1u << 25);
+        assert(opengpu_compute_shader_validate_words(compress, 6, 64, 4));
+    }
+
     /* Single-width multiply-accumulate. The destination is the third operand,
      * so it must be defined in the unmasked forms too, not just under a mask. */
     {

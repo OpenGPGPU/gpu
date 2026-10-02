@@ -825,6 +825,103 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     }
   }
 
+  // vid.v reads no vector source: the element index is the result, masked
+  // lanes and lanes outside vl keep the old destination like any lane-local op.
+  it should "write each element's own index with vid" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      dut.io.in.bits.funct6.poke("h14".U)
+      dut.io.in.bits.operandType.poke("b010".U)
+
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(7)
+      for (lane <- 0 until config.lanes) {
+        dut.io.out.bits.data(lane).expect(lane.U)
+      }
+
+      // A masked element keeps the old destination, and so does a lane past vl.
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.vm.poke(false.B)
+      dut.io.in.bits.predicateMask.poke("b0101".U)
+      dut.io.in.bits.vl.poke(3.U)
+      dut.io.in.bits.activeMask.poke("b0111".U)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(7)
+      dut.io.out.bits.data(0).expect(0.U)
+      dut.io.out.bits.data(1).expect(101.U)
+      dut.io.out.bits.data(2).expect(2.U)
+      dut.io.out.bits.data(3).expect(103.U)
+    }
+  }
+
+  // vcompress packs the mask-selected elements of vs2 into the low elements of
+  // vd, in element order. Lanes past the last selected element keep the old
+  // destination, which is what the tail-undisturbed profile asks for.
+  it should "pack mask-selected elements into the low destination elements" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      // vs2 = 11, 22, 33, 44 and the mask in vs1 selects lanes 0, 1 and 3.
+      Seq(11, 22, 33, 44).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.in.bits.vs2(lane).poke(value.U)
+      }
+      dut.io.in.bits.vs1(0).poke(0b1011.U)
+      dut.io.in.bits.funct6.poke("h17".U)
+      dut.io.in.bits.operandType.poke("b010".U)
+
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(7)
+      Seq(11, 22, 44, 103).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.out.bits.data(lane).expect(value.U)
+      }
+
+      // A single selected element lands in element 0 and leaves the rest.
+      dut.io.in.bits.vs1(0).poke(0b0100.U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(7)
+      Seq(33, 101, 102, 103).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.out.bits.data(lane).expect(value.U)
+      }
+
+      // Every element selected is a plain copy; none selected changes nothing.
+      dut.io.in.bits.vs1(0).poke(0b1111.U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(7)
+      Seq(11, 22, 33, 44).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.out.bits.data(lane).expect(value.U)
+      }
+      dut.io.in.bits.vs1(0).poke(0.U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(7)
+      Seq(100, 101, 102, 103).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.out.bits.data(lane).expect(value.U)
+      }
+
+      // Elements past vl are not selected even when the mask bit is set.
+      dut.io.in.bits.vs1(0).poke(0b1111.U)
+      dut.io.in.bits.vl.poke(2.U)
+      dut.io.in.bits.activeMask.poke("b0011".U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(7)
+      Seq(11, 22, 102, 103).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.out.bits.data(lane).expect(value.U)
+      }
+    }
+  }
+
   it should "reduce active elements into destination element zero" in {
     simulate(new VectorIntegerAlu(config)) { dut =>
       defaults(dut)

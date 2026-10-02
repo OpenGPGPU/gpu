@@ -777,6 +777,18 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    produce, and `KernelShaderStageSpec` ("reduce a vector of floats into element
    zero on the shader CU") runs both forms end to end. The corpus shader
    `fp_reduce.S` and `examples/fp_reduce` check them under ARTI.
+   `vid.v` and `vcompress.vm` complete the index-and-pack pair a compiler
+   emits around a compare: `vid.v` (funct6 `010100`, OPMVV) writes each
+   element's own index and reads no vector source at all -- its vs2 field is
+   fixed to v0 and its vs1 field holds the EEW/EMUL selector rather than a
+   register number -- and `vcompress.vm` (funct6 `010111`, OPMVV, unmasked
+   only) packs the mask-selected elements of vs2 into the low elements of vd,
+   which the ALU does by ranking the selected lanes and selecting the matching
+   source. That funct6 is the one `vmerge`/`vmv` use, but those are
+   OPIVV/OPIVI/OPIVX here, so the forms do not collide; the destination must be
+   disjoint from both sources. `VectorIntegerAluSpec` and
+   `KernelShaderStageSpec` ("index and compact elements on the shader CU",
+   which runs `vmseq.vx` followed by both) cover them.
    The single-width integer multiply-accumulate family (`vmadd`, `vnmsub`,
    `vmacc`, `vnmsac`, funct6 `101001`/`101011`/`101101`/`101111` in `vv` and
    `vx`) rides the existing radix-4 Booth pipeline: `vmacc`/`vnmsac` add the

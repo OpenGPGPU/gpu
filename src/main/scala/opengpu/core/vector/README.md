@@ -42,6 +42,20 @@ The eight single-width integer reductions combine the active `vs2` lanes with
 the scalar seed in `vs1[0]` and write the result to `vd[0]`. It also implements
 `vrgather.vv/vx/vi`; each destination lane selects a source element
 independently, and indices outside VLMAX produce zero.
+`vid.v` writes each element's own index and reads no vector source: its vs2
+field is fixed to v0 and its vs1 field carries the EEW/EMUL selector rather
+than a register number. It shares funct6 `010100` with nothing else in the
+fixed profile.
+
+`vcompress.vm` packs the elements of `vs2` selected by the mask in `vs1` into
+the low elements of `vd`, in element order, leaving the rest of `vd`
+undisturbed. It shares funct6 `010111` with `vmerge`/`vmv`, which the core
+decodes in OPIVV/OPIVI/OPIVX, so the OPMVV form is unambiguous; the masked
+form of the same encoding is reserved and the destination must be disjoint
+from both sources. Each destination lane needs the source lane whose rank
+matches it, where the rank counts selected lanes below it, so the ALU computes
+a rank and selects rather than indexing per lane.
+
 `vslideup.vv/vx/vi` and `vslidedown.vv/vx/vi` move elements across lanes;
 slide-up preserves destination elements below the offset, while slide-down
 returns zero when its source index is outside VLMAX. The `vv` forms take a

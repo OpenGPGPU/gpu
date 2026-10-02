@@ -219,7 +219,7 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
             ((form == 0 || form == 3 || form == 4) &&
              (funct6 < 0x0c || funct6 >= 0x20)) ||
             ((form == 2 || form == 6) && funct6 >= 0x20) ||
-            (form == 2 && funct6 == 0x12);
+            (form == 2 && (funct6 == 0x12 || funct6 == 0x14));
         bool comparison =
             ((form == 0 || form == 3 || form == 4) &&
              funct6 >= 0x18 && funct6 <= 0x1f) ||
@@ -264,6 +264,11 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
             return false;
     }
     if (funct6 == 0x0e && vd == vs2) /* vslideup overlap is reserved */
+        return false;
+    /* vcompress packs vs2 into vd, so the destination must be disjoint from
+     * both the source and the vs1 mask. */
+    if (funct6 == 0x17 && form == 2 &&
+        (vd == vs2 || vd == ((insn >> 15) & 0x1f)))
         return false;
     if (form == 2 && funct6 == 0x12 && vd == vs2)
         return false; /* widening source/destination overlap */
@@ -324,6 +329,14 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         /* vmv.x.s: VWXUNARY0, vs1 = 0, unmasked. Other vs1 values stay reserved. */
         if (funct6 == 0x10)
             return (insn & (1u << 25)) && ((insn >> 15) & 0x1f) == 0;
+        /* vcompress.vm shares funct6 010111 with the OPIVV merge forms. The
+         * masked form of the same encoding is reserved. */
+        if (funct6 == 0x17)
+            return (insn & (1u << 25)) != 0;
+        /* vid.v reads no vector source: vs2 must be v0 and vs1 carries the
+         * fixed EEW/EMUL selector, so neither field names a register. */
+        if (funct6 == 0x14)
+            return vs2 == 0 && ((insn >> 15) & 0x1f) == 17;
         return funct6 <= 0x07 || funct6 == 0x12 ||
                (funct6 >= 0x20 && funct6 <= 0x27) ||
                (funct6 == 0x29 || funct6 == 0x2b || funct6 == 0x2d ||
@@ -566,6 +579,12 @@ static inline void opengpu_shader_define_integer(
  * defined vs1, so each lane shifts by its own amount rather than by one
  * shared scalar or immediate. The vslideup rules carry over unchanged: vd
  * must already be defined and must not overlap vs2.
+ * vcompress.vm packs the mask-selected elements of vs2 into the low elements
+ * of vd. It is only encoded unmasked, the destination must be disjoint from
+ * both vs2 and the vs1 mask, and both must be defined.
+ * vid.v writes each element's own index. Its vs2 field must be v0 and its vs1
+ * field carries the fixed EEW/EMUL selector rather than a register number, so
+ * neither source register needs to be defined and neither is a vector read.
  * vmadd, vnmsub, vmacc and vnmsac read the destination as their third
  * operand, so vd must already be a defined vector register; the sources must
  * be defined as for any other multiply. Only the low half of the product is
@@ -821,6 +840,10 @@ static inline bool opengpu_shader_validate_words_profile(
                 /* vfredusum.vs / vfredosum.vs. vs1 holds the seed. */
                 bool fp_reduction = opfvv &&
                     ((insn >> 26) == 0x01 || (insn >> 26) == 0x03);
+                /* vid.v writes each element's own index; vs2 is v0 and vs1
+                 * is the fixed selector, so neither is a register source. */
+                bool element_index =
+                    funct3 == 2 && (insn >> 26) == 0x14;
                 /* vmadd/vnmsub/vmacc/vnmsac: the destination is the third
                  * operand, so it must be a defined vector register. */
                 bool multiply_accumulate =
@@ -831,7 +854,7 @@ static inline bool opengpu_shader_validate_words_profile(
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
                     (!vfmv && !integer_mv && !vmv_sx && !vfmv_sf &&
-                     !vector_defined[rs2]) ||
+                     !element_index && !vector_defined[rs2]) ||
                     (vfmerge && !scalar_fpu_enabled) ||
                     ((vfmv_fs || vfmv_sf) && !scalar_fpu_enabled) ||
                     (!fp && (insn >> 26) >= 0x2c && (insn >> 26) <= 0x2f &&
@@ -851,7 +874,7 @@ static inline bool opengpu_shader_validate_words_profile(
                     (multiply_accumulate && !vector_defined[rd]) ||
                     ((insn >> 26) == 0x0e && !vector_defined[rd]) ||
                     ((funct3 == 0 || funct3 == 2) && (insn >> 26) != 0x12 &&
-                     !vmv_xs &&
+                     !vmv_xs && !element_index &&
                      !vector_defined[rs1]) ||
                     /* Binary OPFVV reads vs1. VFUNARY0/1 encode the op there. */
                     (opfvv && !vfunary0 && !vfunary1 && !vfmv_fs &&

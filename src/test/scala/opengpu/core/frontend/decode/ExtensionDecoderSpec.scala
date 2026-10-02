@@ -133,6 +133,48 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.recognized.expect(true.B)
       dut.io.decoded.valid.expect(false.B)
 
+      // vid.v is funct6 010100 in OPMVV with vs2 fixed to v0 and vs1 holding
+      // the EEW/EMUL selector 10001 rather than a register number.
+      def elementIndex(selector: Int, masked: Boolean, vs2: Int): BigInt =
+        (BigInt(0x14) << 26) | (BigInt(if (masked) 0 else 1) << 25) |
+          (BigInt(vs2) << 20) | (BigInt(selector) << 15) |
+          (BigInt(2) << 12) | (BigInt(4) << 7) | 0x57
+
+      dut.io.instruction.poke("h5208a257".U) // vid.v v4, from the assembler
+      dut.io.instruction.poke(elementIndex(17, masked = false, vs2 = 0).U)
+      dut.io.decoded.recognized.expect(true.B)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.unit.expect(VectorUnit.alu)
+      dut.io.decoded.readsVs1.expect(false.B)
+      dut.io.decoded.readsVs2.expect(false.B)
+      dut.io.decoded.writesVd.expect(true.B)
+      dut.io.instruction.poke(elementIndex(17, masked = true, vs2 = 0).U)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.vm.expect(false.B)
+      dut.io.instruction.poke(elementIndex(16, masked = false, vs2 = 0).U)
+      dut.io.decoded.valid.expect(false.B)
+      dut.io.instruction.poke(elementIndex(17, masked = false, vs2 = 1).U)
+      dut.io.decoded.valid.expect(false.B)
+
+      // vcompress.vm is funct6 010111 in OPMVV. The masked form of the same
+      // encoding is reserved, and the destination must be disjoint from both
+      // sources.
+      dut.io.instruction.poke("h5e2021d7".U) // vcompress.vm v3, v2, v0
+      dut.io.decoded.recognized.expect(true.B)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.unit.expect(VectorUnit.alu)
+      dut.io.decoded.readsVs1.expect(true.B)
+      dut.io.decoded.readsVs2.expect(true.B)
+      dut.io.decoded.writesVd.expect(true.B)
+      dut.io.instruction.poke("h5c2021d7".U) // masked: reserved
+      dut.io.decoded.valid.expect(false.B)
+      dut.io.instruction.poke(
+        (BigInt("5e2021d7", 16) & ~(BigInt(31) << 7) | (BigInt(2) << 7)).U)
+      dut.io.decoded.valid.expect(false.B) // vd == vs2
+      dut.io.instruction.poke(
+        (BigInt("5e2021d7", 16) & ~(BigInt(31) << 7)).U)
+      dut.io.decoded.valid.expect(false.B) // vd == mask
+
       // vredsum.vs is a vector reduction routed through the integer ALU.
       dut.io.instruction.poke("b000000_1_00001_00010_010_00011_1010111".U)
       dut.io.decoded.valid.expect(true.B)

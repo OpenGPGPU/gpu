@@ -94,7 +94,8 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
 /** RVV integer ALU for the fixed SEW=32, LMUL=1 GPU profile.
   *
   * The unit implements the precise funct6 encodings accepted by VectorDecoder,
-  * including integer reductions, vrgather, and slide cross-lane selection.
+  * including integer reductions, vrgather, slide cross-lane selection, vid.v
+  * and vcompress.vm's rank-then-select packing.
   * Inactive or masked-off lanes preserve oldVd, except vmerge: a clear mask
   * lane in the body takes vs2, and only lanes outside VL keep oldVd.
   * vmand/vmor/vmxor and their negated forms combine the packed mask bits in
@@ -191,6 +192,8 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         "h0d".U -> quadDy,
         "h0e".U -> lhs,
         "h0f".U -> lhs,
+        // vid.v: the input stage put the element index in lhs.
+        "h14".U -> lhs,
         // vmerge/vmv: the input stage already selected vs1, the scalar, or
         // the immediate against vs2. Body lanes use that value.
         "h17".U -> lhs,
@@ -609,7 +612,14 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         io.in.bits.operandType === "b010".U && io.in.bits.funct6 <= "h07".U
       // vmerge applies v0 inside the body. vmv (vm=1) copies the true source.
       // Lanes outside VL stay disabled so they keep oldVd.
-      val isMerge = io.in.bits.funct6 === "h17".U
+      // vcompress.vm shares funct6 010111 with vmerge/vmv but only in OPMVV;
+      // the merge forms are OPIVV/OPIVI/OPIVX, so the operand form separates
+      // them and isMerge must not swallow the compaction.
+      val isCompress = io.in.bits.funct6 === "h17".U &&
+        io.in.bits.operandType === "b010".U
+      val isMerge = io.in.bits.funct6 === "h17".U && !isCompress
+      val isElementIndex = io.in.bits.funct6 === "h14".U &&
+        io.in.bits.operandType === "b010".U
       val sourceEnabled =
         io.in.bits.activeMask &
           Mux(io.in.bits.vm, Fill(config.lanes, 1.U), io.in.bits.predicateMask)
@@ -662,13 +672,48 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       inputBits.scalarData :=
         Mux(io.in.bits.activeMask(0), io.in.bits.vs2(0), 0.U)
       inputBits.sourceEnabled := sourceEnabled
+      // vcompress packs the mask-selected elements of vs2 into the low
+      // elements of vd. A destination lane's source is the lane whose rank
+      // equals it, where the rank is the number of selected lanes below it, so
+      // the ordinary per-lane result becomes a rank-then-select. Lanes past the
+      // last selected element keep the old destination.
+      val compressMask = io.in.bits.vs1(0)(config.lanes - 1, 0) &
+        io.in.bits.activeMask
+      val compressRank = (0 until config.lanes).map { index =>
+        val below = if (index == 0) 0.U(config.lanes.W)
+                    else compressMask(index - 1, 0)
+        PopCount(below)
+      }
+      val compressSource = (0 until config.lanes).map { destination =>
+        val candidates = (0 until config.lanes).map { source =>
+          Mux(
+            compressMask(source) &&
+              compressRank(source) === destination.U,
+            source.U,
+            config.lanes.U
+          )
+        }
+        // Keep the lowest matching source lane.
+        candidates.reduce((best, next) =>
+          Mux(best === config.lanes.U, next, best)
+        )
+      }
+      val compressEnabled = Cat(
+        (0 until config.lanes).reverse.map { destination =>
+          compressSource(destination) < config.lanes.U
+        }
+      )
       inputBits.enabled := Mux(
         inputIsReduction,
         io.in.bits.activeMask.orR,
         Mux(
-          isMerge,
-          io.in.bits.activeMask,
-          Mux(isScalarToVector, io.in.bits.activeMask(0), sourceEnabled)
+          isCompress,
+          compressEnabled,
+          Mux(
+            isMerge,
+            io.in.bits.activeMask,
+            Mux(isScalarToVector, io.in.bits.activeMask(0), sourceEnabled)
+          )
         )
       )
       for (lane <- 0 until config.lanes) {
@@ -689,10 +734,30 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
           )
         )
         val takeTrue = io.in.bits.vm || io.in.bits.predicateMask(lane)
+        // vid.v reads no vector source: each element's index is its own output.
+        val elementIndex = lane.U(config.xLen.W)
+        val compressedSource = MuxLookup(
+          compressSource(lane),
+          0.U(config.xLen.W)
+        )((0 until config.lanes).map(source =>
+          source.U -> io.in.bits.vs2(source)
+        ))
         inputBits.lhs(lane) := Mux(
-          isMerge,
-          Mux(takeTrue, trueSrc, io.in.bits.vs2(lane)),
-          Mux(isScalarToVector, io.in.bits.scalar, io.in.bits.vs2(lane))
+          isCompress,
+          Mux(
+            compressSource(lane) < config.lanes.U,
+            compressedSource,
+            io.in.bits.oldVd(lane)
+          ),
+          Mux(
+            isElementIndex,
+            elementIndex,
+            Mux(
+              isMerge,
+              Mux(takeTrue, trueSrc, io.in.bits.vs2(lane)),
+              Mux(isScalarToVector, io.in.bits.scalar, io.in.bits.vs2(lane))
+            )
+          )
         )
         inputBits.rhs(lane) := trueSrc
       }
