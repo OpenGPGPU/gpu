@@ -2,7 +2,9 @@
 /* Debian desktop frame drawn by the GPU.
  *
  * Background, panel, window and pointer are GPU fill and strided blit.
- * The window content is a GPU triangle. Scanout is that colour GEM.
+ * The window content is a GPU triangle. A vertex-core build has to submit
+ * that triangle through the vertex shader; the legacy draw record is
+ * rejected there. Scanout is that colour GEM.
  * Pass --hold to keep the session up and move the pointer from evdev.
  * The proof is the pixel check below, not how fast the model redraws.
  */
@@ -232,6 +234,55 @@ static int restore_cursor(struct pipe_opengpu_context *ctx,
                     CURSOR, desk->pitch, CURSOR * 4u);
 }
 
+/* Format 0: pos.xyzw Q16.16, packed colour, depth, uv. */
+struct desktop_vertex {
+    int32_t x, y, z, w;
+    uint32_t color;
+    int32_t depth;
+    uint32_t u, v;
+};
+
+/* Copy the eight vertex words into the fragment varyings. */
+static size_t write_passthrough_vs(uint32_t *program)
+{
+    uint32_t pc = 0, field;
+
+    program[pc++] = 0x00241293u;
+    program[pc++] = 0x005082b3u;
+    program[pc++] = 0xc1027057u;
+    for (field = 0; field < 8; field++) {
+        uint32_t input_offset = field * 32;
+        uint32_t output_offset = (8 + field) * 32;
+
+        program[pc++] = (input_offset << 20) | 0x00028313u;
+        program[pc++] = 0x02036087u;
+        program[pc++] = (output_offset << 20) | 0x00028313u;
+        program[pc++] = 0x020360a7u;
+    }
+    program[pc++] = 0x30500073u;
+    return (size_t)pc * 4u;
+}
+
+static void window_vertices(struct desktop_vertex verts[3],
+                            const struct desktop *desk)
+{
+    uint32_t x0 = desk->win_x;
+    uint32_t y0 = desk->win_y + desk->title_h;
+    uint32_t x1 = desk->win_x + desk->win_w;
+    uint32_t y1 = desk->win_y + desk->win_h;
+    const uint32_t color = 0xff4040ffu;
+
+    verts[0] = (struct desktop_vertex){
+        ndc(x0, desk->width), ndc(y0, desk->height), 0, 0x10000, color, 0x10,
+        0, 0};
+    verts[1] = (struct desktop_vertex){
+        ndc(x1, desk->width), ndc(y0, desk->height), 0, 0x10000, color, 0x10,
+        0, 0};
+    verts[2] = (struct desktop_vertex){
+        ndc(x0, desk->width), ndc(y1, desk->height), 0, 0x10000, color, 0x10,
+        0, 0};
+}
+
 static void fill_triangle(struct drm_opengpu_draw *draw, const struct desktop *desk)
 {
     uint32_t x0 = desk->win_x;
@@ -390,19 +441,23 @@ int main(int argc, char **argv)
     struct pipe_opengpu_screen *screen = NULL;
     struct pipe_opengpu_context *ctx = NULL;
     struct pipe_opengpu_resource *color = NULL;
+    struct pipe_opengpu_resource *vertices = NULL;
     struct pipe_opengpu_resource *tiles = NULL;
     struct pipe_opengpu_resource *sprite = NULL;
     struct pipe_opengpu_resource *backup = NULL;
     struct pipe_opengpu_fence *fence = NULL;
     struct drm_opengpu_draw draw;
+    struct drm_opengpu_vertex_draw vdraw;
     struct desktop desk;
+    struct desktop_vertex verts[3];
+    uint32_t vs[64];
     uint8_t shader[256];
-    size_t shader_bytes = 0;
+    size_t shader_bytes = 0, vs_bytes = 0;
     uint32_t width = 0, height = 0, pitch, win_bytes;
     uint32_t panel, window, triangle, cursor;
     uint64_t caps;
     int status = 1;
-    int fragment, hold;
+    int fragment, vertex, hold;
 
     hold = want_hold(argc, argv);
     screen = pipe_opengpu_screen_create(card_path(argc, argv));
@@ -410,6 +465,7 @@ int main(int argc, char **argv)
         goto done;
     caps = pipe_opengpu_screen_capabilities(screen);
     fragment = !!(caps & OPENGPU_CAP_FRAGMENT_CORE);
+    vertex = !!(caps & OPENGPU_CAP_VERTEX_CORE);
     if ((caps & OPENGPU_CAP_VERTEX_CORE) && !fragment) {
         fprintf(stderr, "pipe_desktop: unexpected vertex-only config\n");
         errno = EINVAL;
@@ -439,6 +495,18 @@ int main(int argc, char **argv)
             goto done;
     } else if (pipe_opengpu_bind_fs(ctx, NULL, 0)) {
         goto done;
+    }
+    if (vertex) {
+        window_vertices(verts, &desk);
+        vs_bytes = write_passthrough_vs(vs);
+        vertices = pipe_opengpu_resource_create(screen, sizeof(verts));
+        if (!vertices)
+            goto done;
+        memcpy(pipe_opengpu_resource_map(vertices), verts, sizeof(verts));
+        if (pipe_opengpu_bind_vs(ctx, vs, vs_bytes) ||
+            pipe_opengpu_set_vertex_buffer(ctx, vertices, sizeof(verts[0]),
+                                           sizeof(verts)))
+            goto done;
     }
 
     win_bytes = desk.win_w * 4u * desk.win_h;
@@ -472,9 +540,20 @@ int main(int argc, char **argv)
                  desk.win_w * 4u))
         goto done;
 
-    fill_triangle(&draw, &desk);
-    if (pipe_opengpu_draw_vbo(ctx, &draw, &fence) || wait_fence(ctx, &fence))
-        goto done;
+    if (vertex) {
+        memset(&vdraw, 0, sizeof(vdraw));
+        vdraw.vertex_count = 3;
+        vdraw.vertex_stride = sizeof(verts[0]);
+        vdraw.fragment_kernarg_bank_stride = 320;
+        vdraw.state = OPENGPU_DRAW_STATE_OVERRIDE;
+        if (pipe_opengpu_draw_vertex(ctx, &vdraw, &fence) ||
+            wait_fence(ctx, &fence))
+            goto done;
+    } else {
+        fill_triangle(&draw, &desk);
+        if (pipe_opengpu_draw_vbo(ctx, &draw, &fence) || wait_fence(ctx, &fence))
+            goto done;
+    }
     if (fill_solid(ctx, sprite, CURSOR * 4u * CURSOR, COLOR_CURSOR) ||
         place_cursor(ctx, color, backup, sprite, &desk))
         goto done;
@@ -532,6 +611,8 @@ done:
         pipe_opengpu_resource_destroy(screen, sprite);
     if (tiles)
         pipe_opengpu_resource_destroy(screen, tiles);
+    if (vertices)
+        pipe_opengpu_resource_destroy(screen, vertices);
     if (color)
         pipe_opengpu_resource_destroy(screen, color);
     if (ctx)
