@@ -181,6 +181,83 @@ void opengpu_hw_progress_tick(struct opengpu_device *gpu)
     opengpu_reg_read(gpu, GPU_REG_STATUS);
 }
 
+/* How long a fence wait blocks before yielding. 0 keeps the original
+ * single uninterruptible wait, which is what real silicon wants; the ARTI
+ * runner builds with -DOPENGPU_FENCE_SLICE_MS=4 so the emulated case takes the
+ * sliced path below. Kept as a module parameter so a stuck guest can be
+ * re-tuned from sysfs without rebuilding. */
+static unsigned int fence_slice_ms = OPENGPU_FENCE_SLICE_MS;
+#ifdef __KERNEL__
+module_param(fence_slice_ms, uint, 0644);
+MODULE_PARM_DESC(fence_slice_ms,
+    "Fence wait slice in ms. 0 = one uninterruptible blocking wait (real "
+    "silicon); non-zero = sliced wait that ticks the device and calls "
+    "cond_resched() between slices (emulator)");
+#endif
+
+/** opengpu_hw_fence_wait - wait for @fence while keeping the device moving
+ * @gpu: device whose registers drive the emulated model
+ * @fence: fence to wait on; not consumed, the caller still owns it
+ * @timeout_ms: total budget in milliseconds
+ * @interruptible: let a signal abort the wait
+ *
+ * Returns 0 once the fence has signalled, the fence's error status if it
+ * completed with one, or a negative errno. A 31-second uninterruptible block
+ * is fine on silicon but starves every other guest CPU under an emulator, where
+ * a single register tick can cost far more than its nominal time, so the
+ * emulated build waits in slices and yields in between.
+ */
+int opengpu_hw_fence_wait(struct opengpu_device *gpu, struct dma_fence *fence,
+                          unsigned int timeout_ms, bool interruptible)
+{
+    unsigned int slice = fence_slice_ms;
+    long timeout;
+    int status;
+
+    if (dma_fence_is_signaled(fence))
+        goto out_status;
+
+    if (!slice) {
+        /* Real silicon: one blocking wait, no scheduling noise. */
+        timeout = dma_fence_wait_timeout(fence, interruptible,
+                                         msecs_to_jiffies(timeout_ms));
+        if (timeout <= 0)
+            return timeout < 0 ? (int)timeout : -ETIMEDOUT;
+        /* Unconditional, not signal_pending_state(interruptible, ...): the
+         * pre-existing invalidate waiter bailed on a pending signal even
+         * though it waited uninterruptibly, and the one-shot hw waiters simply
+         * never checked. Honouring the signal is the safer of the two, and one
+         * branch after a blocking wait costs nothing. */
+        if (signal_pending(current))
+            return -ERESTARTSYS;
+        goto out_status;
+    }
+
+    /* Emulator: the model advances only while the guest touches registers, so
+     * the wait has to keep the device moving -- and cond_resched() so this task
+     * does not monopolise the CPU for the whole timeout. */
+    timeout = msecs_to_jiffies(timeout_ms);
+    while (!dma_fence_is_signaled(fence)) {
+        unsigned long step = min_t(long, jiffies_to_msecs(timeout), slice);
+        long waited;
+
+        waited = dma_fence_wait_timeout(fence, interruptible,
+                                        msecs_to_jiffies(step));
+        if (waited < 0)
+            return (int)waited;
+        timeout -= waited ? waited : (long)msecs_to_jiffies(step);
+        if (timeout <= 0)
+            return -ETIMEDOUT;
+        opengpu_hw_progress_tick(gpu);
+        cond_resched();
+        if (signal_pending(current))
+            return -ERESTARTSYS;
+    }
+out_status:
+    status = dma_fence_get_status(fence);
+    return status > 0 ? 0 : status;
+}
+
 static void opengpu_hw_complete(struct opengpu_device *gpu, int error)
 {
     struct dma_fence *fence;
@@ -760,7 +837,6 @@ static int opengpu_hw_unified_dma_locked(struct opengpu_device *gpu,
                                          u64 expected_bytes)
 {
     struct dma_fence *fence;
-    long timeout;
     int ret;
 
     ret = opengpu_hw_unified_dma_submit_locked(
@@ -769,16 +845,10 @@ static int opengpu_hw_unified_dma_locked(struct opengpu_device *gpu,
         &fence);
     if (ret)
         return ret;
-    timeout = dma_fence_wait_timeout(
-        fence, false, msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS + 100));
-    if (timeout <= 0) {
-        opengpu_hw_abort(gpu, timeout < 0 ? (int)timeout : -ETIMEDOUT);
-        ret = timeout < 0 ? (int)timeout : -ETIMEDOUT;
-    } else {
-        ret = dma_fence_get_status(fence);
-        if (ret > 0)
-            ret = 0;
-    }
+    ret = opengpu_hw_fence_wait(gpu, fence, OPENGPU_DRAW_WAIT_MS + 100,
+                                false);
+    if (ret < 0)
+        opengpu_hw_abort(gpu, ret);
     dma_fence_put(fence);
     return ret;
 }
@@ -1388,7 +1458,6 @@ static int opengpu_hw_invalidate_buffer_locked(
     struct dma_fence *fence;
     u64 start, end;
     u32 bytes;
-    long timeout;
     int ret;
 
     if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS) || !buffer ||
@@ -1411,16 +1480,10 @@ static int opengpu_hw_invalidate_buffer_locked(
         0, 0, 0, bytes, NULL, &fence);
     if (ret)
         return ret;
-    timeout = dma_fence_wait_timeout(
-        fence, false, msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS + 100));
-    if (timeout <= 0) {
-        opengpu_hw_abort(gpu, timeout < 0 ? (int)timeout : -ETIMEDOUT);
-        ret = timeout < 0 ? (int)timeout : -ETIMEDOUT;
-    } else {
-        ret = dma_fence_get_status(fence);
-        if (ret > 0)
-            ret = 0;
-    }
+    ret = opengpu_hw_fence_wait(gpu, fence, OPENGPU_DRAW_WAIT_MS + 100,
+                                false);
+    if (ret < 0)
+        opengpu_hw_abort(gpu, ret);
     dma_fence_put(fence);
     return ret;
 }

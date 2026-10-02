@@ -32,6 +32,19 @@ struct opengpu_drm;
 #ifndef OPENGPU_DRAW_WAIT_MS
 #define OPENGPU_DRAW_WAIT_MS    30000
 #endif
+/* How long a single dma_fence wait may block before the waiter has to yield.
+ * 0 waits once, uninterruptibly, in one dma_fence_wait_timeout() call: real
+ * silicon signals the fence from its IRQ, so the wait costs nothing and the
+ * driver's full OPENGPU_DRAW_WAIT_MS budget is available in one go. A non-zero
+ * value waits in slices of this many ms, reading a device register and calling
+ * cond_resched() between them, which emulated hardware needs because the model
+ * only advances while the guest touches registers -- and because a 30s
+ * uninterruptible block starves every other CPU and trips RCU stall reports.
+ * The runner passes -DOPENGPU_FENCE_SLICE_MS for ARTI targets; see
+ * scripts/run_arti_gpu.sh. */
+#ifndef OPENGPU_FENCE_SLICE_MS
+#define OPENGPU_FENCE_SLICE_MS   0
+#endif
 /* How long the driver waits for a requested safe unified-command reset to
  * drain before declaring the device wedged. */
 #ifndef OPENGPU_RESET_WAIT_MS
@@ -257,6 +270,8 @@ int opengpu_hw_render_async(struct opengpu_device *gpu,
                             struct dma_fence **fence);
 void opengpu_hw_abort(struct opengpu_device *gpu, int error);
 void opengpu_hw_progress_tick(struct opengpu_device *gpu);
+int opengpu_hw_fence_wait(struct opengpu_device *gpu, struct dma_fence *fence,
+                          unsigned int timeout_ms, bool interruptible);
 void opengpu_hw_get_fault(struct opengpu_device *gpu,
                           struct opengpu_fault_snapshot *fault);
 int opengpu_hw_clear(struct opengpu_device *gpu, u32 base, u32 bytes,

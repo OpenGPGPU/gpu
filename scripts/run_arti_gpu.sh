@@ -84,6 +84,13 @@ if [ "$GPU_FRAG_CORE" = "1" ]; then
 fi
 ARTI_GPU_DRAW_WAIT_MS="${ARTI_GPU_DRAW_WAIT_MS:-$_ARTI_GPU_DRAW_WAIT_DEFAULT}"
 unset _ARTI_GPU_DRAW_WAIT_DEFAULT
+# Fence wait slice handed to the driver as OPENGPU_FENCE_SLICE_MS. The emulated
+# model only advances while the guest touches registers, so the driver must
+# keep ticking the device instead of blocking uninterruptibly for the whole
+# ARTI_GPU_DRAW_WAIT_MS budget -- that starves every other guest CPU and trips
+# RCU stall reports. Real silicon builds leave this at the header default of 0,
+# which keeps the original single blocking wait.
+ARTI_GPU_FENCE_SLICE_MS="${ARTI_GPU_FENCE_SLICE_MS:-4}"
 QEMU_VERSION="${QEMU_VERSION:-11.1.0}"
 LINUX_VERSION="${LINUX_VERSION:-7.2}"
 BUSYBOX_DIR="${BUSYBOX_DIR:-$ARTI_WORK/busybox-1.36.1}"
@@ -126,6 +133,7 @@ case "$GPU_SIM" in
 esac
 echo "RTL sim     : $GPU_SIM"
 echo "GPU cores   : frag=$GPU_FRAG_CORE vert=$GPU_VERT_CORE"
+echo "Fence slice : ${ARTI_GPU_FENCE_SLICE_MS}ms (0 = one blocking wait)"
 echo "ARTI work   : $ARTI_WORK"
 [ "$GPU_FRAG_CORE" = "0" ] || [ "$GPU_FRAG_CORE" = "1" ] || \
     fail "GPU_FRAG_CORE must be 0 or 1"
@@ -346,7 +354,8 @@ cp "$GPU_DIR"/driver/*.c "$GPU_DIR"/driver/*.h "$DRIVER_STAGE/"
 LINUX_BUILD="$LINUX_BUILD" \
 ARTI_DIR="$ARTI_DIR" \
 KCFLAGS="${KCFLAGS:-} -DOPENGPU_DRAW_WAIT_MS=$ARTI_GPU_DRAW_WAIT_MS \
-    -DOPENGPU_DEFAULT_WIDTH=$GPU_WIDTH -DOPENGPU_DEFAULT_HEIGHT=$GPU_HEIGHT" \
+    -DOPENGPU_DEFAULT_WIDTH=$GPU_WIDTH -DOPENGPU_DEFAULT_HEIGHT=$GPU_HEIGHT \
+    -DOPENGPU_FENCE_SLICE_MS=$ARTI_GPU_FENCE_SLICE_MS" \
     "$ARTI_DIR/examples/linux_arti_driver/build_driver.sh" \
         --dir "$DRIVER_STAGE" \
         --module gpu_drv \

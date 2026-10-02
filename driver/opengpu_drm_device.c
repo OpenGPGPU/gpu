@@ -64,7 +64,6 @@ static int opengpu_gem_invalidate(struct drm_gem_object *obj)
     struct dma_fence *fence = NULL;
     u64 start, end;
     u32 bytes;
-    long timeout;
     int ret;
 
     if (!(gpu->hw.capabilities & GPU_CAP_UNIFIED_COMMANDS))
@@ -83,30 +82,10 @@ static int opengpu_gem_invalidate(struct drm_gem_object *obj)
                                       &fence);
     if (ret)
         return ret;
-    /* Emulated hardware only advances while the guest touches registers, so
-     * wait in slices and tick the device between them. */
-    timeout = msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS + 100);
-    while (!dma_fence_is_signaled(fence)) {
-        long waited = dma_fence_wait_timeout(fence, false,
-                                             min(timeout,
-                                                 msecs_to_jiffies(4)));
-        if (waited < 0) {
-            dma_fence_put(fence);
-            return waited;
-        }
-        timeout -= waited ? waited : msecs_to_jiffies(4);
-        if (timeout <= 0) {
-            dma_fence_put(fence);
-            return -ETIMEDOUT;
-        }
-        opengpu_hw_progress_tick(gpu);
-        if (signal_pending(current)) {
-            dma_fence_put(fence);
-            return -ERESTARTSYS;
-        }
-    }
+    ret = opengpu_hw_fence_wait(gpu, fence, OPENGPU_DRAW_WAIT_MS + 100,
+                                false);
     dma_fence_put(fence);
-    return 0;
+    return ret;
 }
 
 static int opengpu_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,

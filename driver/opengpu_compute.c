@@ -140,7 +140,6 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
     bool vm_ready = false;
     u32 descriptor_va;
     struct dma_fence *fence = NULL;
-    long timeout;
     int ret;
 
     if (gpu->hw.capabilities & GPU_CAP_VERTEX_CORE)
@@ -254,16 +253,10 @@ static int opengpu_submit_test(struct opengpu_device *gpu)
         vm_ready ? &vm : NULL, &fence);
     if (ret)
         goto out_descriptor;
-    timeout = dma_fence_wait_timeout(
-        fence, false, msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS + 100));
-    if (timeout <= 0) {
-        opengpu_hw_abort(gpu, timeout < 0 ? (int)timeout : -ETIMEDOUT);
-        ret = timeout < 0 ? (int)timeout : -ETIMEDOUT;
-    } else {
-        ret = dma_fence_get_status(fence);
-        if (ret > 0)
-            ret = 0;
-    }
+    ret = opengpu_hw_fence_wait(gpu, fence, OPENGPU_DRAW_WAIT_MS + 100,
+                                false);
+    if (ret < 0)
+        opengpu_hw_abort(gpu, ret);
     dma_fence_put(fence);
 out_descriptor:
     opengpu_buffer_free(gpu, &descriptor);
@@ -281,41 +274,12 @@ static int opengpu_wait_fence(struct opengpu_device *gpu,
 static int opengpu_wait_fence(struct opengpu_device *gpu,
                               struct dma_fence **fence, bool interruptible)
 {
-    long timeout;
     int ret;
 
     if (!*fence)
         return 0;
-    /* Wait in slices and touch a status register between slices: on emulated
-     * hardware the model only advances while the guest accesses device
-     * registers, so a pure sleep would starve the draw it waits for. */
-    timeout = msecs_to_jiffies(OPENGPU_DRAW_WAIT_MS + 100);
-    while (!dma_fence_is_signaled(*fence)) {
-        long waited = dma_fence_wait_timeout(*fence, interruptible,
-                                             min(timeout,
-                                                 msecs_to_jiffies(4)));
-        if (waited > 0)
-            timeout -= waited;
-        else if (waited == 0)
-            timeout -= msecs_to_jiffies(4);
-        else {
-            ret = waited;
-            goto out;
-        }
-        if (timeout <= 0) {
-            ret = -ETIMEDOUT;
-            goto out;
-        }
-        opengpu_hw_progress_tick(gpu);
-        if (signal_pending_state(interruptible, current)) {
-            ret = -ERESTARTSYS;
-            goto out;
-        }
-    }
-    ret = dma_fence_get_status(*fence);
-    if (ret > 0)
-        ret = 0;
-out:
+    ret = opengpu_hw_fence_wait(gpu, *fence, OPENGPU_DRAW_WAIT_MS + 100,
+                                interruptible);
     dma_fence_put(*fence);
     *fence = NULL;
     return ret;
