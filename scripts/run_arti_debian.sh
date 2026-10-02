@@ -44,7 +44,7 @@ set -euo pipefail
 GPU_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ARTI_DIR="${ARTI_DIR:-$GPU_DIR/../arti}"
 FLASHSIM_DIR="${FLASHSIM_DIR:-$GPU_DIR/../FlashSim}"
-GPU_SIM="${GPU_SIM:-verilator}"
+GPU_SIM="${GPU_SIM:-flashsim}"
 ARTI_WORK="${ARTI_WORK:-$(cd "$GPU_DIR/.." && pwd)/arti-work}"
 mkdir -p "$ARTI_WORK"
 export ARTI_WORK
@@ -266,6 +266,22 @@ echo "    /root/load_opengpu.sh"
 echo "    /root/load_opengpu.sh test"
 echo "    /root/load_opengpu.sh examples"
 echo ""
+
+# FlashSim steps the RTL inside QEMU while holding the BQL: once from the
+# vCPU on every register access (arti_model_settle), and again from the
+# main-thread IRQ poll (every 100us of host time). The built-in budgets are
+# 500k / 262k cycles with no wall-clock cap, on the theory that the BQL
+# freezes guest jiffies. This guest is -smp 2, so the other vCPU keeps the
+# clock running, a multi-second hold misses RCU grace periods, and the UI
+# thread never gets back in. The model reads these at startup; the binary
+# does not have to be rebuilt. The IRQ callback stays a few cycles so it
+# cannot sit on the main thread. Guest register polls (the sliced fence
+# wait) advance the draw, and one of those polls returns within 8ms.
+ARTI_MODEL_IRQ_PUMP="${ARTI_MODEL_IRQ_PUMP:-16}"
+ARTI_MODEL_IRQ_PUMP_NS="${ARTI_MODEL_IRQ_PUMP_NS:-200000}"
+ARTI_MODEL_SETTLE_NS="${ARTI_MODEL_SETTLE_NS:-8000000}"
+export ARTI_MODEL_IRQ_PUMP ARTI_MODEL_IRQ_PUMP_NS ARTI_MODEL_SETTLE_NS
+echo "  Model cap : settle ${ARTI_MODEL_SETTLE_NS}ns, irq pump ${ARTI_MODEL_IRQ_PUMP} cycles / ${ARTI_MODEL_IRQ_PUMP_NS}ns"
 
 export ARTI_DIR ARTI_WORK INTEGRATION_CONFIG
 export QEMU KERNEL DISK CIDATA MODULES_ISO

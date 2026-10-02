@@ -750,6 +750,14 @@ if [ "${GPU_USERSPACE_EXAMPLES_ONLY:-0}" = "1" ]; then
     export DRIVER_MARKER="OPENGPU USERSPACE EXAMPLES PASS"
 fi
 
+# Same BQL bound as run_arti_debian.sh. A 500k-cycle settle on -smp 2 lets
+# the other vCPU advance jiffies while this one is inside the model, which
+# is the guest RCU stall on FlashSim draws. Honoured by the existing binary.
+ARTI_MODEL_IRQ_PUMP="${ARTI_MODEL_IRQ_PUMP:-16}"
+ARTI_MODEL_IRQ_PUMP_NS="${ARTI_MODEL_IRQ_PUMP_NS:-200000}"
+ARTI_MODEL_SETTLE_NS="${ARTI_MODEL_SETTLE_NS:-8000000}"
+export ARTI_MODEL_IRQ_PUMP ARTI_MODEL_IRQ_PUMP_NS ARTI_MODEL_SETTLE_NS
+
 export ARTI_DIR INTEGRATION_CONFIG LINUX_BUILD DRIVER_KO DRIVER_MANIFEST WORK
 export QEMU_DISPLAY HOLD_AFTER_TEST TIMEOUT
 export QEMU_SRC
