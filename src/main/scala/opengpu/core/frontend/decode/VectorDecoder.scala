@@ -280,12 +280,15 @@ private object VectorDecodeTable {
       readsVs1 = true, readsVs2 = true, writesVd = true)
   )
 
-  // vid.v writes each element's index. vs2 must be v0 and vs1 carries the
-  // fixed EEW/EMUL selector 10001 rather than a register number, so neither
-  // source field is a vector read.
-  private val elementIndexPatterns = Seq(
+  // funct6 010100 in OPMVV is a family selected by the vs1 field rather than
+  // by vs1 as a register: 10001 is vid.v, whose vs2 is fixed to v0 and which
+  // reads no vector source at all, and 10000 is viota.m, whose vs2 is the
+  // mask register it accumulates. vmsbf.m (vs1 = 00001) is not implemented.
+  private val maskScanPatterns = Seq(
     VectorPattern("vid_v", "010100?0000010001010?????1010111", 1,
-      writesVd = true)
+      writesVd = true),
+    VectorPattern("viota_m", "010100??????10000010?????1010111", 1,
+      readsVs2 = true, writesVd = true)
   )
 
   // vcompress.vm shares funct6 010111 with vmerge/vmv, which the core decodes
@@ -438,7 +441,7 @@ private object VectorDecodeTable {
 
   val patterns: Seq[VectorPattern] =
     memoryPatterns ++ configPatterns ++ arithmeticPatterns ++
-      elementIndexPatterns ++ compressPatterns ++
+      maskScanPatterns ++ compressPatterns ++
       mergePatterns ++ maskLogicalPatterns ++ scalarMovePatterns ++
       floatMovePatterns ++
       unary0Patterns ++

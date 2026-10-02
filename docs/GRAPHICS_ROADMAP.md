@@ -777,6 +777,20 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    produce, and `KernelShaderStageSpec` ("reduce a vector of floats into element
    zero on the shader CU") runs both forms end to end. The corpus shader
    `fp_reduce.S` and `examples/fp_reduce` check them under ARTI.
+   funct6 `010100` in OPMVV is one family selected by the vs1 field rather
+   than by vs1 as a register: 10001 is `vid.v`, 10000 is `viota.m`, and the
+   set-before-first `vmsbf.m` (00001) is the unimplemented third member. Only
+   `vid.v` and `viota.m` are admitted. `viota.m` writes each element the count
+   of set mask bits below it, reading vs2 as its mask and, when masked,
+   counting only enabled elements. Both reuse the prefix popcount that
+   `vcompress` needs, and the integer request now carries the encoded vs1 field
+   so the ALU can read the selector. Together they give the spec's canonical
+   compaction idiom, which this core's indexed stores already implement:
+   `KernelShaderStageSpec` ("scatter selected elements with viota on the shader
+   CU") runs `vmseq.vx`, `viota.m`, `vsll.vi` and `vsoxei32.v` and checks the
+   packed output. The driver does not yet admit that sequence for a guest
+   shader, because an indexed access still requires its index vector to carry
+   the trusted local-byte provenance that only `vsll.vi` on `v1` establishes.
    `vid.v` and `vcompress.vm` complete the index-and-pack pair a compiler
    emits around a compare: `vid.v` (funct6 `010100`, OPMVV) writes each
    element's own index and reads no vector source at all -- its vs2 field is

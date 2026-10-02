@@ -485,6 +485,45 @@ int main(void)
         vid[1] = 0x5208a257u & ~(31u << 15); /* vs1 selector 0 */
         assert(!opengpu_compute_shader_validate_words(vid, 3, 64, 4));
 
+        /* viota.m is the same funct6 selected by vs1 = 10000, and its vs2 is
+         * the mask it accumulates rather than a fixed v0. */
+        {
+            uint32_t iota[4];
+            uint32_t masked_iota[6];
+
+            iota[0] = vsetivli(4);
+            iota[1] = vle32(2, 1);
+            iota[2] = 0x522822d7u; /* viota.m v5, v2 */
+            iota[3] = OPENGPU_SHADER_CEASE;
+            assert(opengpu_compute_shader_validate_words(iota, 4, 64, 4));
+            assert(opengpu_shader_validate_words(iota, 4, 288, 8, false));
+            iota[2] = (0x522822d7u & ~(31u << 7)) | (2u << 7); /* vd == vs2 */
+            assert(!opengpu_compute_shader_validate_words(iota, 4, 64, 4));
+            iota[2] = 0x522822d7u;
+            iota[1] = vle32(6, 1); /* undefined mask */
+            assert(!opengpu_compute_shader_validate_words(iota, 4, 64, 4));
+
+            masked_iota[0] = vsetivli(4);
+            masked_iota[1] = vector_alu(0x18, 0, 0, 1, 1); /* vmseq.vv v0 */
+            masked_iota[2] = vle32(2, 1);
+            masked_iota[3] = vle32(5, 1);
+            masked_iota[4] = 0x522822d7u & ~(1u << 25); /* masked viota */
+            masked_iota[5] = OPENGPU_SHADER_CEASE;
+            assert(opengpu_compute_shader_validate_words(masked_iota, 6, 64,
+                                                         4));
+            masked_iota[1] = vle32(2, 1); /* no v0 */
+            assert(!opengpu_compute_shader_validate_words(masked_iota, 6, 64,
+                                                          4));
+            masked_iota[1] = vector_alu(0x18, 0, 0, 1, 1);
+            masked_iota[3] = vle32(2, 1); /* no old v5 */
+            assert(!opengpu_compute_shader_validate_words(masked_iota, 6, 64,
+                                                          4));
+            masked_iota[3] = vle32(5, 1);
+            masked_iota[4] = 0x522822d7u & ~(1u << 25) & ~(31u << 7);
+            assert(!opengpu_compute_shader_validate_words(masked_iota, 6, 64,
+                                                          4));
+        }
+
         /* Masked vid.v needs a defined v0 and old destination. */
         masked_vid[0] = vsetivli(4);
         masked_vid[1] = vector_alu(0x18, 0, 0, 1, 1); /* vmseq.vv v0 */

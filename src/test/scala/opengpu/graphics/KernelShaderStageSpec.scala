@@ -551,6 +551,48 @@ class KernelShaderStageSpec extends AnyFlatSpec {
     }
   }
 
+  // viota.m gives each element the count of selected lanes below it, which
+  // with a scaled copy is the byte offset the spec's scatter idiom wants:
+  // comparing against 20 selects lanes 1 and 3, so the ranks are 0, 0, 1, 1 and
+  // the store compacts the odd elements into the first two words.
+  it should "scatter selected elements with viota on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("0200e107", 16), // vle32.v v2, (x1)
+        BigInt(0x1008) -> BigInt("01400293", 16), // addi x5, x0, 20
+        BigInt(0x100c) -> BigInt("6222c057", 16), // vmseq.vx v0, v2, x5
+        BigInt(0x1010) -> BigInt("520822d7", 16), // viota.m v5, v0
+        BigInt(0x1014) -> BigInt("02008313", 16), // addi x6, x1, 32
+        BigInt(0x1018) -> BigInt("020362a7", 16), // vse32.v v5, (x6)
+        BigInt(0x101c) -> BigInt("965132d7", 16), // vsll.vi v5, v5, 2
+        BigInt(0x1020) -> BigInt("03008313", 16), // addi x6, x1, 48
+        BigInt(0x1024) -> BigInt("0e536127", 16), // vsoxei32.v v2, (x6), v5
+        BigInt(0x1028) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      Seq(10, 20, 30, 40).zipWithIndex.foreach { case (value, lane) =>
+        mem.putWord(BigInt(0x8000) + lane * 4, BigInt(value))
+      }
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val ranks = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8020) + lane * 4))
+      assert(ranks == Seq(BigInt(0), BigInt(0), BigInt(1)),
+        s"viota.m stored ${ranks.mkString(",")}")
+      // Three lanes run, so the scatter leaves the first two selected elements
+      // packed and stops before lane 3.
+      assert(storedWord(result.writes, BigInt(0x8030)) == BigInt(20),
+        s"scatter stored 0x${storedWord(result.writes, BigInt(0x8030)).toString(16)}")
+      assert(storedWord(result.writes, BigInt(0x8034)) == BigInt(30),
+        s"scatter stored 0x${storedWord(result.writes, BigInt(0x8034)).toString(16)}")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
   // vmacc accumulates into the destination and vmadd into vs2, with the
   // destination also acting as a multiplicand in the vmadd form. The two
   // differ here because the destinations start from different values, and the

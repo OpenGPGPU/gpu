@@ -19,6 +19,9 @@ class VectorIntegerRequest(config: GpuConfig) extends Bundle {
   val vs2Odd = Vec(config.lanes, UInt(config.xLen.W))
   val scalar = UInt(config.xLen.W)
   val immediate = UInt(5.W)
+  // The encoded vs1 field, for the funct6 010100 mask-scan family where vs1
+  // selects the operation instead of naming a register.
+  val vs1Field = UInt(5.W)
   val funct6 = UInt(6.W)
   val operandType = UInt(3.W)
   val vm = Bool()

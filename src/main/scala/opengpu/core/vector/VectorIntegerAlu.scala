@@ -24,6 +24,7 @@ private class NormalizedVectorIntegerRequest(config: GpuConfig) extends Bundle {
   val funct6 = UInt(6.W)
   val operandType = UInt(3.W)
   val immediate = UInt(5.W)
+  val vs1Field = UInt(5.W)
   // Architectural vl. vslide1down inserts the scalar at element vl-1.
   val vl = UInt(config.xLen.W)
   val quad = Bool()
@@ -45,6 +46,7 @@ private class VectorIntegerCandidates(config: GpuConfig) extends Bundle {
   val enabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
   val immediate = UInt(5.W)
+  val vs1Field = UInt(5.W)
   val quad = Bool()
   val reduction = Bool()
   val basic = Vec(config.lanes, UInt(config.xLen.W))
@@ -68,6 +70,7 @@ private class VectorIntegerPartial(config: GpuConfig) extends Bundle {
   val enabled = UInt(config.lanes.W)
   val funct6 = UInt(6.W)
   val immediate = UInt(5.W)
+  val vs1Field = UInt(5.W)
   val quad = Bool()
   val reduction = Bool()
   val lhs = Vec(config.lanes, UInt(config.xLen.W))
@@ -192,7 +195,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
         "h0d".U -> quadDy,
         "h0e".U -> lhs,
         "h0f".U -> lhs,
-        // vid.v: the input stage put the element index in lhs.
+        // vid.v and viota.m: the input stage put the index or the rank in lhs.
         "h14".U -> lhs,
         // vmerge/vmv: the input stage already selected vs1, the scalar, or
         // the immediate against vs2. Body lanes use that value.
@@ -331,6 +334,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       candidateBits.enabled := partialBits.enabled
       candidateBits.funct6 := partialBits.funct6
       candidateBits.immediate := partialBits.immediate
+      candidateBits.vs1Field := partialBits.vs1Field
       candidateBits.quad := partialBits.quad
       candidateBits.reduction := partialBits.reduction
       candidateBits.basic := basicCandidates
@@ -358,6 +362,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       partialBits.enabled := inputBits.enabled
       partialBits.funct6 := inputBits.funct6
       partialBits.immediate := inputBits.immediate
+      partialBits.vs1Field := inputBits.vs1Field
       partialBits.quad := inputBits.quad
       partialBits.reduction := inputBits.reduction
       partialBits.maskLogical := inputBits.maskLogical
@@ -618,8 +623,13 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       val isCompress = io.in.bits.funct6 === "h17".U &&
         io.in.bits.operandType === "b010".U
       val isMerge = io.in.bits.funct6 === "h17".U && !isCompress
-      val isElementIndex = io.in.bits.funct6 === "h14".U &&
+      // funct6 010100 in OPMVV is a family selected by vs1: 10001 is vid.v,
+      // which reads no source at all, and 10000 is viota.m, whose vs2 is the
+      // mask it accumulates.
+      val isMaskScan = io.in.bits.funct6 === "h14".U &&
         io.in.bits.operandType === "b010".U
+      val isElementIndex = isMaskScan && io.in.bits.vs1Field === "b10001".U
+      val isIota = isMaskScan && io.in.bits.vs1Field === "b10000".U
       val sourceEnabled =
         io.in.bits.activeMask &
           Mux(io.in.bits.vm, Fill(config.lanes, 1.U), io.in.bits.predicateMask)
@@ -638,6 +648,7 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       inputBits.funct6 := io.in.bits.funct6
       inputBits.operandType := io.in.bits.operandType
       inputBits.immediate := io.in.bits.immediate
+      inputBits.vs1Field := io.in.bits.vs1Field
       inputBits.vl := io.in.bits.vl
       val isMaskLogical =
         io.in.bits.operandType === "b010".U && io.in.bits.vm &&
@@ -679,11 +690,22 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
       // last selected element keep the old destination.
       val compressMask = io.in.bits.vs1(0)(config.lanes - 1, 0) &
         io.in.bits.activeMask
-      val compressRank = (0 until config.lanes).map { index =>
-        val below = if (index == 0) 0.U(config.lanes.W)
-                    else compressMask(index - 1, 0)
-        PopCount(below)
+      def prefixPopCount(mask: UInt): Seq[UInt] = (0 until config.lanes).map {
+        index =>
+          val below = if (index == 0) 0.U(config.lanes.W)
+                      else mask(index - 1, 0)
+          PopCount(below)
       }
+      val compressRank = prefixPopCount(compressMask)
+      // viota.m counts the set bits of vs2's mask below each element, and
+      // only elements that are themselves enabled contribute.
+      val iotaMask = io.in.bits.vs2(0)(config.lanes - 1, 0) &
+        Mux(
+          io.in.bits.vm,
+          io.in.bits.activeMask,
+          io.in.bits.activeMask & io.in.bits.predicateMask
+        )
+      val iotaRank = prefixPopCount(iotaMask)
       val compressSource = (0 until config.lanes).map { destination =>
         val candidates = (0 until config.lanes).map { source =>
           Mux(
@@ -750,8 +772,8 @@ class VectorIntegerAlu(config: GpuConfig = GpuConfig()) extends Module {
             io.in.bits.oldVd(lane)
           ),
           Mux(
-            isElementIndex,
-            elementIndex,
+            isMaskScan,
+            Mux(isIota, iotaRank(lane), elementIndex),
             Mux(
               isMerge,
               Mux(takeTrue, trueSrc, io.in.bits.vs2(lane)),

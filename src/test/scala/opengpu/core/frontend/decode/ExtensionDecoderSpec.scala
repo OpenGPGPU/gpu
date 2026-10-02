@@ -151,10 +151,23 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.instruction.poke(elementIndex(17, masked = true, vs2 = 0).U)
       dut.io.decoded.valid.expect(true.B)
       dut.io.decoded.vm.expect(false.B)
-      dut.io.instruction.poke(elementIndex(16, masked = false, vs2 = 0).U)
-      dut.io.decoded.valid.expect(false.B)
       dut.io.instruction.poke(elementIndex(17, masked = false, vs2 = 1).U)
       dut.io.decoded.valid.expect(false.B)
+
+      // viota.m is the same funct6 with vs1 = 10000, and unlike vid.v its
+      // vs2 names the mask register it accumulates.
+      dut.io.instruction.poke("h522822d7".U) // viota.m v5, v2
+      dut.io.decoded.recognized.expect(true.B)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.unit.expect(VectorUnit.alu)
+      dut.io.decoded.readsVs1.expect(false.B)
+      dut.io.decoded.readsVs2.expect(true.B)
+      dut.io.decoded.writesVd.expect(true.B)
+      dut.io.instruction.poke(elementIndex(16, masked = true, vs2 = 2).U)
+      dut.io.decoded.valid.expect(true.B)
+      dut.io.decoded.vm.expect(false.B)
+      dut.io.instruction.poke(elementIndex(1, masked = false, vs2 = 2).U)
+      dut.io.decoded.valid.expect(false.B) // vmsbf.m is not implemented
 
       // vcompress.vm is funct6 010111 in OPMVV. The masked form of the same
       // encoding is reserved, and the destination must be disjoint from both

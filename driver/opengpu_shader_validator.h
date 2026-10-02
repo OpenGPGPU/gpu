@@ -270,6 +270,12 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
     if (funct6 == 0x17 && form == 2 &&
         (vd == vs2 || vd == ((insn >> 15) & 0x1f)))
         return false;
+    /* viota.m reads vs2 and writes a per-element rank, so the destination
+     * must be disjoint from it, and from v0 under a mask. */
+    if (funct6 == 0x14 && form == 2 &&
+        ((insn >> 15) & 0x1f) == 16 &&
+        (vd == vs2 || (!(insn & (1u << 25)) && vd == 0)))
+        return false;
     if (form == 2 && funct6 == 0x12 && vd == vs2)
         return false; /* widening source/destination overlap */
     if ((form == 0 || form == 3 || form == 4) &&
@@ -333,10 +339,13 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
          * masked form of the same encoding is reserved. */
         if (funct6 == 0x17)
             return (insn & (1u << 25)) != 0;
-        /* vid.v reads no vector source: vs2 must be v0 and vs1 carries the
-         * fixed EEW/EMUL selector, so neither field names a register. */
-        if (funct6 == 0x14)
-            return vs2 == 0 && ((insn >> 15) & 0x1f) == 17;
+        /* funct6 010100 in OPMVV selects its operation in vs1: 10001 is
+         * vid.v, whose vs2 is fixed to v0, and 10000 is viota.m, which reads
+         * vs2 as its mask. Neither names a register in vs1. */
+        if (funct6 == 0x14) {
+            opengpu_shader_u32 selector = (insn >> 15) & 0x1f;
+            return selector == 16 || (selector == 17 && vs2 == 0);
+        }
         return funct6 <= 0x07 || funct6 == 0x12 ||
                (funct6 >= 0x20 && funct6 <= 0x27) ||
                (funct6 == 0x29 || funct6 == 0x2b || funct6 == 0x2d ||
@@ -582,9 +591,11 @@ static inline void opengpu_shader_define_integer(
  * vcompress.vm packs the mask-selected elements of vs2 into the low elements
  * of vd. It is only encoded unmasked, the destination must be disjoint from
  * both vs2 and the vs1 mask, and both must be defined.
- * vid.v writes each element's own index. Its vs2 field must be v0 and its vs1
- * field carries the fixed EEW/EMUL selector rather than a register number, so
- * neither source register needs to be defined and neither is a vector read.
+ * The funct6 010100 family (vid.v and viota.m) selects its operation in the
+ * vs1 field instead of naming a register: 10001 is vid.v, whose vs2 field is
+ * fixed to v0 and which reads no vector source at all, and 10000 is viota.m,
+ * which accumulates the mask in vs2 into a per-element rank. The destination
+ * must be disjoint from that source, and from v0 under a mask.
  * vmadd, vnmsub, vmacc and vnmsac read the destination as their third
  * operand, so vd must already be a defined vector register; the sources must
  * be defined as for any other multiply. Only the low half of the product is
@@ -840,10 +851,13 @@ static inline bool opengpu_shader_validate_words_profile(
                 /* vfredusum.vs / vfredosum.vs. vs1 holds the seed. */
                 bool fp_reduction = opfvv &&
                     ((insn >> 26) == 0x01 || (insn >> 26) == 0x03);
-                /* vid.v writes each element's own index; vs2 is v0 and vs1
-                 * is the fixed selector, so neither is a register source. */
-                bool element_index =
-                    funct3 == 2 && (insn >> 26) == 0x14;
+                /* The funct6 010100 family selects its operation in vs1, so
+                 * that field never names a register. viota.m does read vs2. */
+                bool mask_scan = funct3 == 2 && (insn >> 26) == 0x14;
+                /* vid.v is the only member that reads no vector source at
+                 * all; viota.m reads vs2 as the mask it accumulates. */
+                bool element_index = mask_scan &&
+                    ((insn >> 15) & 0x1f) == 17;
                 /* vmadd/vnmsub/vmacc/vnmsac: the destination is the third
                  * operand, so it must be a defined vector register. */
                 bool multiply_accumulate =
@@ -874,7 +888,7 @@ static inline bool opengpu_shader_validate_words_profile(
                     (multiply_accumulate && !vector_defined[rd]) ||
                     ((insn >> 26) == 0x0e && !vector_defined[rd]) ||
                     ((funct3 == 0 || funct3 == 2) && (insn >> 26) != 0x12 &&
-                     !vmv_xs && !element_index &&
+                     !vmv_xs && !mask_scan &&
                      !vector_defined[rs1]) ||
                     /* Binary OPFVV reads vs1. VFUNARY0/1 encode the op there. */
                     (opfvv && !vfunary0 && !vfunary1 && !vfmv_fs &&

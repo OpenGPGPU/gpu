@@ -23,6 +23,7 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
     dut.io.in.bits.predicateMask.poke("b1111".U)
     dut.io.in.bits.scalar.poke(0.U)
     dut.io.in.bits.immediate.poke(0.U)
+    dut.io.in.bits.vs1Field.poke(0.U)
     dut.io.in.bits.funct6.poke(0.U)
     dut.io.in.bits.operandType.poke(0.U)
     dut.io.in.bits.vm.poke(true.B)
@@ -855,6 +856,41 @@ class VectorIntegerAluSpec extends AnyFlatSpec {
       dut.io.out.bits.data(1).expect(101.U)
       dut.io.out.bits.data(2).expect(2.U)
       dut.io.out.bits.data(3).expect(103.U)
+    }
+  }
+
+  // viota.m is the funct6 010100 member selected by vs1 = 10000: each element
+  // receives the number of set mask bits below it. Elements the mask disables
+  // do not contribute, and an inactive element keeps the old destination.
+  it should "write each element's rank with viota" in {
+    simulate(new VectorIntegerAlu(config)) { dut =>
+      defaults(dut)
+      // vs2 element 0 holds the mask bits 1011: lanes 0, 1 and 3 are set.
+      dut.io.in.bits.vs2(0).poke(0b1011.U)
+      dut.io.in.bits.funct6.poke("h14".U)
+      dut.io.in.bits.operandType.poke("b010".U)
+      dut.io.in.bits.vs1Field.poke(0b10000.U)
+
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(7)
+      Seq(0, 1, 2, 2).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.out.bits.data(lane).expect(value.U)
+      }
+
+      // Masking with v0 = 1010 counts only lanes 1 and 3's bits, so the ranks
+      // are 0 and 1 there, and the two elements v0 clears keep the old
+      // destination instead of a rank.
+      dut.io.in.bits.vm.poke(false.B)
+      dut.io.in.bits.predicateMask.poke("b1010".U)
+      dut.io.in.valid.poke(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      dut.clock.step(7)
+      Seq(100, 0, 102, 1).zipWithIndex.foreach { case (value, lane) =>
+        dut.io.out.bits.data(lane).expect(value.U)
+      }
     }
   }
 

@@ -204,6 +204,8 @@ class VectorBackend(
   integerAlu.io.in.bits.vl := vectorState.vl
   integerAlu.io.in.bits.immediate :=
     dispatch.io.alu.bits.decode.instruction(19, 15)
+  integerAlu.io.in.bits.vs1Field :=
+    dispatch.io.alu.bits.decode.instruction(19, 15)
   integerAlu.io.in.bits.funct6 :=
     dispatch.io.alu.bits.decode.decoded.funct6
   integerAlu.io.in.bits.operandType :=
@@ -256,6 +258,8 @@ class VectorBackend(
   divideAlu.io.in.bits.scalar := dispatch.io.divide.bits.scalarRs1Data
   divideAlu.io.in.bits.vl := vectorState.vl
   divideAlu.io.in.bits.immediate := 0.U
+  divideAlu.io.in.bits.vs1Field :=
+    dispatch.io.divide.bits.decode.instruction(19, 15)
   divideAlu.io.in.bits.funct6 :=
     dispatch.io.divide.bits.decode.decoded.funct6
   divideAlu.io.in.bits.operandType :=

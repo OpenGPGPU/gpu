@@ -42,10 +42,15 @@ The eight single-width integer reductions combine the active `vs2` lanes with
 the scalar seed in `vs1[0]` and write the result to `vd[0]`. It also implements
 `vrgather.vv/vx/vi`; each destination lane selects a source element
 independently, and indices outside VLMAX produce zero.
-`vid.v` writes each element's own index and reads no vector source: its vs2
-field is fixed to v0 and its vs1 field carries the EEW/EMUL selector rather
-than a register number. It shares funct6 `010100` with nothing else in the
-fixed profile.
+funct6 `010100` in OPMVV is a family selected by the vs1 field rather than by
+vs1 as a register. `vid.v` (vs1 = 10001) writes each element's own index and
+reads no vector source: its vs2 field is fixed to v0. `viota.m` (vs1 = 10000)
+writes each element the number of set mask bits below it, reading vs2 as the
+mask; masked, only enabled elements contribute to the count and an inactive
+element keeps the old destination. `vmsbf.m` (vs1 = 00001) is the set-before-first
+member of the same family and is not implemented. All three reuse the prefix
+popcount that `vcompress` needs, and the integer request carries the encoded
+vs1 field for the selector.
 
 `vcompress.vm` packs the elements of `vs2` selected by the mask in `vs1` into
 the low elements of `vd`, in element order, leaving the rest of `vd`
