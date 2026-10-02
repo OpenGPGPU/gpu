@@ -325,7 +325,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         if (funct6 == 0x10)
             return (insn & (1u << 25)) && ((insn >> 15) & 0x1f) == 0;
         return funct6 <= 0x07 || funct6 == 0x12 ||
-               (funct6 >= 0x20 && funct6 <= 0x27);
+               (funct6 >= 0x20 && funct6 <= 0x27) ||
+               (funct6 == 0x29 || funct6 == 0x2b || funct6 == 0x2d ||
+                funct6 == 0x2f);
     case 6: /* vslide1*.vx, vmv.s.x, or multiply/divide vx */
         /* vslide1up.vx / vslide1down.vx insert the scalar and shift by one. */
         if (funct6 == 0x0e || funct6 == 0x0f)
@@ -333,7 +335,9 @@ static inline bool opengpu_shader_vector_alu_valid(opengpu_shader_u32 insn)
         /* vmv.s.x: VRXUNARY0, vs2 = v0, unmasked. */
         if (funct6 == 0x10)
             return (insn & (1u << 25)) && vs2 == 0;
-        return funct6 >= 0x20 && funct6 <= 0x27;
+        return (funct6 >= 0x20 && funct6 <= 0x27) ||
+               funct6 == 0x29 || funct6 == 0x2b || funct6 == 0x2d ||
+               funct6 == 0x2f;
     case 1: { /* OPFVV: FP32 VFUNARY1 plus unmasked binary FVV */
         opengpu_shader_u32 vs1 = (insn >> 15) & 0x1f;
 
@@ -562,6 +566,10 @@ static inline void opengpu_shader_define_integer(
  * defined vs1, so each lane shifts by its own amount rather than by one
  * shared scalar or immediate. The vslideup rules carry over unchanged: vd
  * must already be defined and must not overlap vs2.
+ * vmadd, vnmsub, vmacc and vnmsac read the destination as their third
+ * operand, so vd must already be a defined vector register; the sources must
+ * be defined as for any other multiply. Only the low half of the product is
+ * architecturally visible, so there is no signedness distinction.
  * vfredusum.vs and vfredosum.vs fold vs1[0] and the participating vs2
  * elements into element 0 of vd and keep the old destination in every other
  * element, so vd must already be defined. vs1 is the seed register, not an
@@ -813,6 +821,12 @@ static inline bool opengpu_shader_validate_words_profile(
                 /* vfredusum.vs / vfredosum.vs. vs1 holds the seed. */
                 bool fp_reduction = opfvv &&
                     ((insn >> 26) == 0x01 || (insn >> 26) == 0x03);
+                /* vmadd/vnmsub/vmacc/vnmsac: the destination is the third
+                 * operand, so it must be a defined vector register. */
+                bool multiply_accumulate =
+                    (funct3 == 2 || funct3 == 6) &&
+                    ((insn >> 26) == 0x29 || (insn >> 26) == 0x2b ||
+                     (insn >> 26) == 0x2d || (insn >> 26) == 0x2f);
 
                 if (!state.vector_length ||
                     !opengpu_shader_vector_alu_valid(insn) ||
@@ -834,6 +848,7 @@ static inline bool opengpu_shader_validate_words_profile(
                     /* A reduction only rewrites element 0 and reads the old
                      * destination for the rest, so vd must be defined. */
                     (fp_reduction && !vector_defined[rd]) ||
+                    (multiply_accumulate && !vector_defined[rd]) ||
                     ((insn >> 26) == 0x0e && !vector_defined[rd]) ||
                     ((funct3 == 0 || funct3 == 2) && (insn >> 26) != 0x12 &&
                      !vmv_xs &&

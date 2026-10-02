@@ -194,7 +194,14 @@ private object VectorDecodeTable {
     VectorInstruction("vmulhu",  0x24, Seq(MVV, MVX), unit = 2),
     VectorInstruction("vmul",    0x25, Seq(MVV, MVX), unit = 2),
     VectorInstruction("vmulhsu", 0x26, Seq(MVV, MVX), unit = 2),
-    VectorInstruction("vmulh",   0x27, Seq(MVV, MVX), unit = 2)
+    VectorInstruction("vmulh",   0x27, Seq(MVV, MVX), unit = 2),
+    // Single-width multiply-accumulate. The destination is an operand, so the
+    // low half of the product is added to or subtracted from it: vmacc and
+    // vnmsac accumulate into vd, vmadd and vnmsub into vs2.
+    VectorInstruction("vmadd",   0x29, Seq(MVV, MVX), unit = 2),
+    VectorInstruction("vnmsub",  0x2b, Seq(MVV, MVX), unit = 2),
+    VectorInstruction("vmacc",   0x2d, Seq(MVV, MVX), unit = 2),
+    VectorInstruction("vnmsac",  0x2f, Seq(MVV, MVX), unit = 2)
   )
 
   private val floatingPointInstructions = Seq(

@@ -56,6 +56,8 @@ threads, is dropped by `sbt clean`, and `-Dopengpu.simCache=off` turns it off.
   and NV/NX flags, and flw/fsw memory execution in the FPU backend
 - Precise allow-listed RVV arithmetic, mask, configuration, and vector-memory routing
 - RVV integer divide/remainder (`vdivu/vdiv/vremu/vrem`) in vv/vx forms
+- RVV single-width integer multiply-accumulate (`vmadd/vnmsub/vmacc/vnmsac`)
+  in vv/vx forms, accumulating into the destination or into `vs2`
 - RVV FP32 lane-local operations: sign injection, min/max, comparisons,
   add/sub/mul/div, vfrdiv/vfrsub, vfmv.v.f/vfmerge.vfm, the
   vfcvt.xu.f.v/vfcvt.x.f.v/vfcvt.f.xu.v/vfcvt.f.x.v and the four rtz

@@ -14,6 +14,12 @@ private class VectorMultiplyMetadata(config: GpuConfig) extends Bundle {
   val highHalf = Bool()
   val saturating = Bool()
   val vxrm = UInt(2.W)
+  // Multiply-accumulate: the destination is an operand rather than only a
+  // result. `addend` is the vector the low product is added to, which is the
+  // old destination for vmacc/vnmsac and vs2 for vmadd/vnmsub.
+  val addend = Vec(config.lanes, UInt(config.xLen.W))
+  val accumulate = Bool()
+  val subtract = Bool()
 }
 
 private class VectorBoothStageOne(config: GpuConfig) extends Bundle {
@@ -54,9 +60,24 @@ private class VectorRoundingStage(config: GpuConfig) extends Bundle {
   val saturation = UInt(config.lanes.W)
 }
 
+private object VectorMultiplyAdd {
+  /** vmadd 0x29 and vnmsub 0x2b multiply by the old destination. */
+  def isMultiplyAdd(funct6: UInt): Bool =
+    funct6 === "h29".U || funct6 === "h2b".U
+  /** vmacc 0x2d and vnmsac 0x2f add into the destination. */
+  def isMultiplyAcc(funct6: UInt): Bool =
+    funct6 === "h2d".U || funct6 === "h2f".U
+  def isAccumulate(funct6: UInt): Bool = isMultiplyAdd(funct6) || isMultiplyAcc(funct6)
+}
+
 /** Lane-parallel RVV integer multiplier for the fixed SEW=32 profile.
   *
-  * Implements vmul, vmulh, vmulhu, and vmulhsu in vv and vx forms. Each lane
+  * Implements vmul, vmulh, vmulhu, and vmulhsu in vv and vx forms, plus the
+  * single-width multiply-accumulate family: vmacc/vnmsac add the low product
+  * to the destination and vmadd/vnmsub add it to vs2, in both cases with the
+  * destination as the third operand. Only the low half of the product is
+  * architecturally visible, so a signed and an unsigned product agree there
+  * and the accumulate needs no rounding or saturation path. Each lane
   * contains a four-stage elastic radix-4 Booth datapath. Once full, the unit
   * accepts one complete vector operation per cycle and preserves inactive
   * destination elements.
@@ -138,7 +159,8 @@ class VectorMultiplyAlu(config: GpuConfig = GpuConfig()) extends Module {
   private val isSaturatingVv = io.in.bits.operandType === "b000".U
   private val isSaturatingVx = io.in.bits.operandType === "b100".U
   private val supportedMultiplyFunct6 =
-    io.in.bits.funct6 >= "h24".U && io.in.bits.funct6 <= "h27".U
+    (io.in.bits.funct6 >= "h24".U && io.in.bits.funct6 <= "h27".U) ||
+      VectorMultiplyAdd.isAccumulate(io.in.bits.funct6)
   private val saturatingOperation =
     io.in.bits.funct6 === "h27".U &&
       (isSaturatingVv || isSaturatingVx)
@@ -250,9 +272,20 @@ class VectorMultiplyAlu(config: GpuConfig = GpuConfig()) extends Module {
           ),
           roundingBits.multiplyResult(lane)
         )
+        // The accumulate family adds the low product to its addend. Only the
+        // low half of the product is architecturally visible, so the signed
+        // and unsigned products agree here. Chisel's UInt subtraction drops a
+        // bit of width, so accumulate one bit wider and keep the low word:
+        // the architectural result wraps modulo 2^32.
+        val wideAddend = Cat(0.U(1.W), roundingBits.metadata.addend(lane))
+        val wideProduct = Cat(0.U(1.W), roundingBits.multiplyResult(lane))
+        val accumulated = (Mux(
+          roundingBits.metadata.subtract,
+          wideAddend - wideProduct,
+          wideAddend +& wideProduct))(config.xLen - 1, 0)
         outputBits.data(lane) := Mux(
           roundingBits.metadata.enabled(lane),
-          selected,
+          Mux(roundingBits.metadata.accumulate, accumulated, selected),
           roundingBits.metadata.oldVd(lane)
         )
         saturatedLanes(lane) :=
@@ -323,16 +356,33 @@ class VectorMultiplyAlu(config: GpuConfig = GpuConfig()) extends Module {
             Fill(config.lanes, 1.U),
             inputBits.predicateMask
           )
-      boothBits.metadata.highHalf := inputBits.funct6 =/= "h25".U
+      boothBits.metadata.highHalf :=
+        inputBits.funct6 =/= "h25".U &&
+          !VectorMultiplyAdd.isAccumulate(inputBits.funct6)
       boothBits.metadata.saturating := inputSaturatingOperation
       boothBits.metadata.vxrm := inputBits.vxrm
+      boothBits.metadata.accumulate :=
+        VectorMultiplyAdd.isAccumulate(inputBits.funct6)
+      boothBits.metadata.subtract :=
+        inputBits.funct6 === "h2b".U || inputBits.funct6 === "h2f".U
+      // vmacc/vnmsac add into the destination; vmadd/vnmsub add into vs2.
+      for (lane <- 0 until config.lanes) {
+        boothBits.metadata.addend(lane) := Mux(
+          VectorMultiplyAdd.isMultiplyAdd(inputBits.funct6),
+          inputBits.vs2(lane),
+          inputBits.oldVd(lane)
+        )
+      }
       for (lane <- 0 until config.lanes) {
         val vectorRhs = inputIsMultiplyVv || inputIsSaturatingVv
         val rhsData = Mux(vectorRhs, inputBits.vs1(lane), inputBits.scalar)
-        val lhs = Cat(
-          inputLhsSigned && inputBits.vs2(lane)(31),
+        // vmadd/vnmsub multiply vs1 by the old destination instead of by vs2.
+        val multiplicand = Mux(
+          VectorMultiplyAdd.isMultiplyAdd(inputBits.funct6),
+          inputBits.oldVd(lane),
           inputBits.vs2(lane)
         )
+        val lhs = Cat(inputLhsSigned && multiplicand(31), multiplicand)
         val rhs = Cat(inputRhsSigned && rhsData(31), rhsData)
         boothBits.terms(lane) := VecInit(boothTerms(lhs, rhs))
       }

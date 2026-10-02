@@ -138,6 +138,43 @@ class ExtensionDecoderSpec extends AnyFlatSpec {
       dut.io.decoded.valid.expect(true.B)
       dut.io.decoded.unit.expect(VectorUnit.alu)
 
+      // Single-width multiply-accumulate. Both operand forms are admitted and
+      // both keep vs1/vs2 as vector sources; the destination is an operand too,
+      // which the unit reads from the old vd.
+      for (funct6 <- Seq(0x29, 0x2b, 0x2d, 0x2f); form <- Seq(2, 6);
+           vm <- Seq(0, 1)) {
+        dut.io.instruction.poke(
+          ((BigInt(funct6) << 26) | (BigInt(vm) << 25) | (BigInt(2) << 20) |
+            (BigInt(3) << 15) | (BigInt(form) << 12) | (BigInt(7) << 7) |
+            0x57).U)
+        dut.io.decoded.recognized.expect(true.B)
+        dut.io.decoded.valid.expect(true.B)
+        dut.io.decoded.unit.expect(VectorUnit.multiply)
+        dut.io.decoded.readsVs2.expect(true.B)
+        dut.io.decoded.writesVd.expect(true.B)
+        dut.io.decoded.vm.expect((vm == 1).B)
+        dut.io.decoded.readsVs1.expect((form == 2).B)
+        dut.io.decoded.readsScalar.expect((form == 6).B)
+        // The operand form is what keeps these apart from the immediates that
+        // share the funct6: 0x29/0x2b are vsra.vi/vssra.vi and 0x2d/0x2f are
+        // the narrowing clip immediates, all routed to the integer ALU.
+        dut.io.instruction.poke(
+          ((BigInt(funct6) << 26) | (BigInt(vm) << 25) | (BigInt(2) << 20) |
+            (BigInt(3) << 15) | (BigInt(3) << 12) | (BigInt(7) << 7) |
+            0x57).U)
+        dut.io.decoded.recognized.expect(true.B)
+        dut.io.decoded.valid.expect(true.B)
+        dut.io.decoded.unit.expect(VectorUnit.alu)
+      }
+      // vmadd.vv at funct6 0x29 keeps the plain multiply funct6 range clear:
+      // 0x28 is reserved, so a shift-by-funct6 lookup cannot reach it.
+      dut.io.instruction.poke(
+        ((BigInt(0x28) << 26) | (BigInt(1) << 25) | (BigInt(2) << 20) |
+          (BigInt(3) << 15) | (BigInt(2) << 12) | (BigInt(7) << 7) |
+          0x57).U)
+      dut.io.decoded.recognized.expect(true.B)
+      dut.io.decoded.valid.expect(false.B)
+
       // vfredusum.vs and vfredosum.vs are the OPFRED sums. vs1 is the seed
       // register, not a selector, and only OPFVV admits the funct6.
       for (funct6 <- Seq(0x01, 0x03); vm <- Seq(0, 1)) {

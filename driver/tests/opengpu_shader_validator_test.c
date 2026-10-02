@@ -422,6 +422,10 @@ int main(void)
 
             if (form == 1)
                 continue;
+            /* 0x2b is also vnmsub.vv/vx in the multiply unit, which has its
+             * own destination-is-an-operand rules below. */
+            if (fn == 0x2b && (form == 2 || form == 6))
+                continue;
             program[0] = vsetivli(4);
             program[1] = vector_alu(0x00, 3, 31, 1, 0);
             program[2] = vector_alu(fn, form, 31, 31, 1);
@@ -461,6 +465,62 @@ int main(void)
         program[3] = vluxei32(3, 1, 2);
         program[4] = OPENGPU_SHADER_CEASE;
         assert(!opengpu_compute_shader_validate_words(program, 5, 64, 4));
+    }
+
+    /* Single-width multiply-accumulate. The destination is the third operand,
+     * so it must be defined in the unmasked forms too, not just under a mask. */
+    {
+        const unsigned int forms[] = { 0x29, 0x2b, 0x2d, 0x2f };
+        uint32_t unmasked[6] = { 0 };
+        uint32_t masked[7] = { 0 };
+        unsigned int fn, form;
+
+        for (fn = 0; fn < sizeof(forms) / sizeof(forms[0]); fn++) {
+            for (form = 2; form <= 6; form += 4) {
+                /* vs1 in the vector-vector form, the kernarg base otherwise. */
+                unsigned int operand = form == 2 ? 4 : 1;
+
+                unmasked[0] = vsetivli(4);
+                unmasked[1] = vle32(2, 1);
+                unmasked[2] = vle32(3, 1);
+                unmasked[3] = vle32(4, 1);
+                unmasked[4] = vector_alu(forms[fn], form, 3, 2, operand);
+                unmasked[5] = OPENGPU_SHADER_CEASE;
+                assert(opengpu_compute_shader_validate_words(unmasked, 6, 64, 4));
+                assert(opengpu_shader_validate_words(unmasked, 6, 288, 8,
+                                                     false));
+                assert(opengpu_vertex_shader_validate_words(unmasked, 6, 512, 8,
+                                                            false));
+                unmasked[4] = vector_alu(forms[fn], form, 5, 2, operand);
+                assert(!opengpu_compute_shader_validate_words(unmasked, 6, 64,
+                                                              4));
+                unmasked[4] = vector_alu(forms[fn], form, 3, 6, operand);
+                assert(!opengpu_compute_shader_validate_words(unmasked, 6, 64,
+                                                              4));
+                unmasked[4] = vector_alu(forms[fn], form, 3, 2, 10);
+                assert(!opengpu_compute_shader_validate_words(unmasked, 6, 64,
+                                                              4));
+
+                masked[0] = vsetivli(4);
+                masked[1] = vector_alu(0x18, 0, 0, 1, 1); /* vmseq.vv v0 */
+                masked[2] = vle32(2, 1);
+                masked[3] = vle32(3, 1);
+                masked[4] = vle32(4, 1);
+                masked[5] = vector_alu(forms[fn], form, 3, 2, operand) &
+                            ~(1u << 25);
+                masked[6] = OPENGPU_SHADER_CEASE;
+                assert(opengpu_compute_shader_validate_words(masked, 7, 64, 4));
+                masked[1] = vle32(2, 1); /* no v0 */
+                assert(!opengpu_compute_shader_validate_words(masked, 7, 64, 4));
+                masked[1] = vector_alu(0x18, 0, 0, 1, 1);
+                masked[3] = vle32(2, 1); /* no old vd */
+                assert(!opengpu_compute_shader_validate_words(masked, 7, 64, 4));
+                masked[3] = vle32(3, 1);
+                masked[5] = vector_alu(forms[fn], form, 0, 2, operand) &
+                            ~(1u << 25); /* masked vd = v0 */
+                assert(!opengpu_compute_shader_validate_words(masked, 7, 64, 4));
+            }
+        }
     }
 
     /* Narrowing uses a defined even/odd source pair in all three forms. */

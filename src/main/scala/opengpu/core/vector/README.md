@@ -58,6 +58,19 @@ their values at primitive edges.
 implements `vsmul` with all four `vxrm` rounding modes and reports saturation
 for the per-warp `vxsat` state.
 
+The same unit implements the single-width multiply-accumulate family in `vv`
+and `vx` forms. `vmacc` and `vnmsac` add or subtract the low half of the
+product into the destination; `vmadd` and `vnmsub` add or subtract it into
+`vs2` with the destination as the third operand, so the destination is a
+source of those two as well. Because only the low half of the product is
+architecturally visible there is no signedness distinction and no rounding or
+saturation path. The encodings come from the assembler: `vmadd` is funct6
+`101001`, `vnmsub` `101011`, `vmacc` `101101`, and `vnmsac` `101111`, with the
+`.vv` and `.vx` forms differing only in funct3. The spec requires `vstart` to
+be zero for these; nothing in this profile can set `vstart` (there is no
+`vsetvstart`, and only `vset{i}vl{i}` writes the state, always to zero), so
+prestart elements cannot occur.
+
 `VectorConfigurationUnit` owns independent `vl`, `vtype`, `vstart`, `vxrm`,
 and `vxsat` state for every warp. It implements `vsetvli`, `vsetivli`, and
 `vsetvl` for the fixed SEW=32, LMUL=1 profile and sets `vill` for unsupported

@@ -777,6 +777,18 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    produce, and `KernelShaderStageSpec` ("reduce a vector of floats into element
    zero on the shader CU") runs both forms end to end. The corpus shader
    `fp_reduce.S` and `examples/fp_reduce` check them under ARTI.
+   The single-width integer multiply-accumulate family (`vmadd`, `vnmsub`,
+   `vmacc`, `vnmsac`, funct6 `101001`/`101011`/`101101`/`101111` in `vv` and
+   `vx`) rides the existing radix-4 Booth pipeline: `vmacc`/`vnmsac` add the
+   low product into the destination and `vmadd`/`vnmsub` into `vs2` with the
+   destination as the third operand, so the destination register is a source
+   as well and the driver requires it to be defined in the unmasked forms too.
+   Only the low half of the product is architecturally visible, which is why
+   the family needs neither a signedness distinction nor a rounding path.
+   `VectorMultiplyAluSpec` covers all four forms, the vector-scalar form, the
+   masked form and the signed/unsigned agreement of the low product, and
+   `KernelShaderStageSpec` ("multiply-accumulate on the shader CU") runs
+   `vmacc.vv` and `vmadd.vv` end to end on the shader CU.
    `vslideup.vv` and `vslidedown.vv` read the offset from a defined vector
    instead of a scalar or immediate, so each element shifts by its own amount.
    The offset register was already routed to the slide network for the `.vx`

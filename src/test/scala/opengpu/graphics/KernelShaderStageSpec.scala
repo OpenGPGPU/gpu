@@ -504,6 +504,59 @@ class KernelShaderStageSpec extends AnyFlatSpec {
     }
   }
 
+  // vmacc accumulates into the destination and vmadd into vs2, with the
+  // destination also acting as a multiplicand in the vmadd form. The two
+  // differ here because the destinations start from different values, and the
+  // harness launches three lanes so only three elements are stored.
+  it should "multiply-accumulate on the shader CU" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val program = Seq(
+        BigInt(0x1000) -> BigInt("c1027057", 16), // vsetivli x0,4,e32,m1,ta,ma
+        BigInt(0x1004) -> BigInt("0200e107", 16), // vle32.v v2, (x1)
+        BigInt(0x1008) -> BigInt("01008313", 16), // addi x6, x1, 16
+        BigInt(0x100c) -> BigInt("02036187", 16), // vle32.v v3, (x6)
+        BigInt(0x1010) -> BigInt("02008313", 16), // addi x6, x1, 32
+        BigInt(0x1014) -> BigInt("02036207", 16), // vle32.v v4, (x6)
+        BigInt(0x1018) -> BigInt("b62221d7", 16), // vmacc.vv v3, v4, v2
+        BigInt(0x101c) -> BigInt("03008313", 16), // addi x6, x1, 48
+        BigInt(0x1020) -> BigInt("020361a7", 16), // vse32.v v3, (x6)
+        BigInt(0x1024) -> BigInt("04008313", 16), // addi x6, x1, 64
+        BigInt(0x1028) -> BigInt("02036307", 16), // vle32.v v6, (x6)
+        BigInt(0x102c) -> BigInt("a6222357", 16), // vmadd.vv v6, v4, v2
+        BigInt(0x1030) -> BigInt("05008313", 16), // addi x6, x1, 80
+        BigInt(0x1034) -> BigInt("02036327", 16), // vse32.v v6, (x6)
+        BigInt(0x1038) -> BigInt("30500073", 16)) // cease
+      program.foreach { case (addr, word) => mem.putWord(addr, word) }
+      Seq(3, 5, 7, 9).zipWithIndex.foreach { case (value, lane) =>
+        mem.putWord(BigInt(0x8000) + lane * 4, BigInt(value)) // v2
+        mem.putWord(BigInt(0x8010) + lane * 4, BigInt(value)) // v3
+      }
+      Seq(2, 4, 6, 8).zipWithIndex.foreach { case (value, lane) =>
+        mem.putWord(BigInt(0x8020) + lane * 4, BigInt(value)) // v4
+      }
+      Seq(100, 200, 300, 400).zipWithIndex.foreach { case (value, lane) =>
+        mem.putWord(BigInt(0x8040) + lane * 4, BigInt(value)) // v6
+      }
+
+      val result = runShader(dut, mem, limit = 4000)
+      assert(result.traps.isEmpty, show(result.traps))
+      // vmacc: v3 += v4 * v2 -> 3+6, 5+20, 7+42.
+      val accumulated = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8030) + lane * 4))
+      assert(accumulated == Seq(BigInt(9), BigInt(25), BigInt(49)),
+        s"vmacc stored ${accumulated.mkString(",")}")
+      // vmadd: v6 = v4 * v6 + v2 -> 2*100+3, 4*200+5, 6*300+7.
+      val summed = (0 until 3).map(lane =>
+        storedWord(result.writes, BigInt(0x8050) + lane * 4))
+      assert(summed == Seq(BigInt(203), BigInt(805), BigInt(1807)),
+        s"vmadd stored ${summed.mkString(",")}")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
   // The OPFRED sums fold into element 0 and leave the rest of the destination
 // alone. vfredosum.vs is funct6 000011 rather than a vs1 selector, so both
 // forms are ordinary OPFVV three-operand encodings.
