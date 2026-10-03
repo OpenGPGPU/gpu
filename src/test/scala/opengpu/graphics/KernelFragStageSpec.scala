@@ -443,7 +443,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
     * reach the output stream. */
   private case class Frag(x: Int, y: Int, depth: Int,
     r: Int = 0xab, g: Int = 0xcd, b: Int = 0xef, covered: Boolean = true,
-    coverageMask: Int = 1)
+    coverageMask: Int = 1, alpha: Int = 0xff)
 
   /** Pokes all four lanes of `fragIn` (TL/TR/BL/BR), their UVs and their
     * per-sample depths without firing; lanes beyond `frags.length` become
@@ -461,6 +461,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.fragIn.bits.lanes(k).color.r.poke(f.r.U)
       dut.io.fragIn.bits.lanes(k).color.g.poke(f.g.U)
       dut.io.fragIn.bits.lanes(k).color.b.poke(f.b.U)
+      dut.io.fragIn.bits.lanes(k).alpha.poke(f.alpha.U)
       dut.io.fragUv(k).u.poke(uvs(k)._1.U)
       dut.io.fragUv(k).v.poke(uvs(k)._2.U)
       for (s <- 0 until dut.io.fragDepths(k).length)
@@ -493,7 +494,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       mem.putWord(0x1000L, 1, sw(10, 1, 192))
       mem.putWord(0x1000L, 2, cease)
 
-      fireQuad(dut, Seq(Frag(3, 4, 0x20)))
+      fireQuad(dut, Seq(Frag(3, 4, 0x20, alpha = 0x80)))
 
       // Flush the (non-empty) batch: draw boundary.
       dut.io.flush.poke(true.B)
@@ -508,6 +509,7 @@ class KernelFragStageSpec extends AnyFlatSpec {
       dut.io.out.bits.color.r.expect(0xab.U)
       dut.io.out.bits.color.g.expect(0xcd.U)
       dut.io.out.bits.color.b.expect(0xef.U)
+      dut.io.out.bits.alpha.expect(0x80.U)
     }
   }
 

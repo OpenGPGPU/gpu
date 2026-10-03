@@ -24,11 +24,13 @@ class FragmentInterpolatorSpec extends AnyFlatSpec {
       dut.io.c0.r.poke(90.U); dut.io.c0.g.poke(60.U); dut.io.c0.b.poke(30.U)
       dut.io.c1.r.poke(30.U); dut.io.c1.g.poke(90.U); dut.io.c1.b.poke(60.U)
       dut.io.c2.r.poke(60.U); dut.io.c2.g.poke(30.U); dut.io.c2.b.poke(90.U)
+      dut.io.a0.poke(30.U); dut.io.a1.poke(90.U); dut.io.a2.poke(60.U)
       dut.clock.step()
 
       dut.io.color.r.expect(60.U) // (90+30+60)/3
       dut.io.color.g.expect(60.U) // (60+90+30)/3
       dut.io.color.b.expect(60.U) // (30+60+90)/3
+      dut.io.alpha.expect(60.U) // (30+90+60)/3
     }
   }
 

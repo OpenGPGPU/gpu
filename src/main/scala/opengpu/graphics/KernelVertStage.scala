@@ -338,6 +338,7 @@ class KernelVertStage(
     io.vertOut.bits.color(k).r := outColor(vi)(31, 24)
     io.vertOut.bits.color(k).g := outColor(vi)(23, 16)
     io.vertOut.bits.color(k).b := outColor(vi)(15, 8)
+    io.vertOut.bits.alpha(k) := outColor(vi)(7, 0)
     io.vertOut.bits.depth(k) := outDepth(vi)
     io.vertOut.bits.uv(k).u := outTexU(vi)
     io.vertOut.bits.uv(k).v := outTexV(vi)

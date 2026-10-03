@@ -21,6 +21,8 @@ import opengpu.core.memory.{
 class SceneTriangle(config: GraphicsConfig) extends Bundle with HasDrawState {
   val clip = Vec(3, new ClipVertex)
   val color = Vec(3, new Varyings)
+  /** Per-vertex alpha. Fixed-function records have no alpha and stay opaque. */
+  val alpha = Vec(3, UInt(8.W))
   val depth = Vec(3, SInt(32.W))
   /** Per-vertex texture coordinates (unsigned Q16.16; see TexUV). */
   val uv = Vec(3, new TexUV)
@@ -236,6 +238,7 @@ class RenderPipeline(
     clipper.io.tri(i).z := triSource.bits.clip(i).z
     clipper.io.tri(i).w := triSource.bits.clip(i).w
     clipper.io.tri(i).color := triSource.bits.color(i)
+    clipper.io.tri(i).alpha := triSource.bits.alpha(i)
     clipper.io.tri(i).depth := triSource.bits.depth(i)
     clipper.io.tri(i).uv := triSource.bits.uv(i)
   }
@@ -349,6 +352,7 @@ class RenderPipeline(
   shader.io.draw.bits.v2.y := geo.io.out(2).sy(31, 0).asSInt
   for (i <- 0 until 3) {
     shader.io.colors(i) := clippedVertices(i).color
+    shader.io.alphas(i) := clippedVertices(i).alpha
     shader.io.depths(i) := clippedVertices(i).depth
   }
   shader.io.cullMode := drawState.cullMode

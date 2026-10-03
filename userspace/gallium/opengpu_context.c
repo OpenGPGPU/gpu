@@ -66,7 +66,7 @@ struct opengpu_context {
     unsigned nr_ve;
     struct pipe_rasterizer_state rast;
     struct pipe_depth_stencil_alpha_state dsa;
-    int blend_enabled;
+    struct pipe_blend_state blend;
     struct pipe_opengpu_resource *packed;
     uint32_t packed_bytes;
 };
@@ -497,9 +497,80 @@ static void *create_blend(struct pipe_context *pipe,
 
 static void bind_blend(struct pipe_context *pipe, void *hw)
 {
-    const struct pipe_blend_state *blend = hw;
+    struct opengpu_context *ctx = octx(pipe);
 
-    octx(pipe)->blend_enabled = blend && blend->rt[0].blend_enable;
+    if (hw)
+        ctx->blend = *(const struct pipe_blend_state *)hw;
+    else
+        memset(&ctx->blend, 0, sizeof(ctx->blend));
+}
+
+/* Gallium's factor enum is not GL order. The RTL word is GL order, 0..10. */
+static int hw_blend_factor(unsigned factor, unsigned *out)
+{
+    switch (factor) {
+    case PIPE_BLENDFACTOR_ZERO:
+        *out = 0;
+        return 0;
+    case PIPE_BLENDFACTOR_ONE:
+        *out = 1;
+        return 0;
+    case PIPE_BLENDFACTOR_SRC_COLOR:
+        *out = 2;
+        return 0;
+    case PIPE_BLENDFACTOR_INV_SRC_COLOR:
+        *out = 3;
+        return 0;
+    case PIPE_BLENDFACTOR_SRC_ALPHA:
+        *out = 4;
+        return 0;
+    case PIPE_BLENDFACTOR_INV_SRC_ALPHA:
+        *out = 5;
+        return 0;
+    case PIPE_BLENDFACTOR_DST_COLOR:
+        *out = 6;
+        return 0;
+    case PIPE_BLENDFACTOR_INV_DST_COLOR:
+        *out = 7;
+        return 0;
+    case PIPE_BLENDFACTOR_DST_ALPHA:
+        *out = 8;
+        return 0;
+    case PIPE_BLENDFACTOR_INV_DST_ALPHA:
+        *out = 9;
+        return 0;
+    case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
+        *out = 10;
+        return 0;
+    default:
+        return -1;
+    }
+}
+
+static int hw_blend(const struct pipe_blend_state *blend, uint32_t *config)
+{
+    const struct pipe_rt_blend_state *rt = &blend->rt[0];
+    unsigned src, dst;
+
+    *config = 0;
+    if (!rt->blend_enable)
+        return 0;
+    if (blend->independent_blend_enable || blend->logicop_enable ||
+        blend->alpha_to_coverage || blend->alpha_to_one ||
+        blend->advanced_blend_func || rt->colormask != PIPE_MASK_RGBA ||
+        rt->rgb_func != rt->alpha_func ||
+        rt->rgb_src_factor != rt->alpha_src_factor ||
+        rt->rgb_dst_factor != rt->alpha_dst_factor ||
+        rt->rgb_func > PIPE_BLEND_MAX)
+        return -1;
+    if (hw_blend_factor(rt->rgb_src_factor, &src) ||
+        hw_blend_factor(rt->rgb_dst_factor, &dst))
+        return -1;
+    *config = OPENGPU_DRAW_BLEND_PRESENT |
+              (src << OPENGPU_DRAW_BLEND_SRC_SHIFT) |
+              (dst << OPENGPU_DRAW_BLEND_DST_SHIFT) |
+              (rt->rgb_func << OPENGPU_DRAW_BLEND_EQ_SHIFT);
+    return 0;
 }
 
 static void *create_rast(struct pipe_context *pipe,
@@ -933,8 +1004,8 @@ static void draw_vbo(struct pipe_context *pipe,
         reject("draw needs a non-indexed triangle list on the GPU");
         return;
     }
-    if (ctx->blend_enabled || ctx->dsa.alpha_enabled) {
-        reject("blend and alpha test are not lowered onto the GPU yet");
+    if (ctx->dsa.alpha_enabled) {
+        reject("alpha test is not lowered onto the GPU yet");
         return;
     }
     for (draw_i = 0; draw_i < num_draws; draw_i++) {
@@ -952,7 +1023,7 @@ static void draw_vbo(struct pipe_context *pipe,
             struct hw_vertex verts[3];
             struct drm_opengpu_vertex_draw vdraw;
             struct pipe_opengpu_fence *fence = NULL;
-            uint32_t cull = 0, depth_bits = 0;
+            uint32_t cull = 0, depth_bits = 0, blend_config = 0;
             unsigned v;
 
             for (v = 0; v < 3; v++) {
@@ -999,10 +1070,17 @@ static void draw_vbo(struct pipe_context *pipe,
                 reject("cull or depth state does not map onto the GPU");
                 return;
             }
+            if (hw_blend(&ctx->blend, &blend_config)) {
+                reject("blend state does not map onto the GPU");
+                return;
+            }
+            fprintf(stderr, "opengpu: blend 0x%x color 0x%08x\n",
+                    blend_config, verts[0].color);
             memset(&vdraw, 0, sizeof(vdraw));
             vdraw.vertex_count = 3;
             vdraw.vertex_stride = sizeof(verts[0]);
             vdraw.fragment_kernarg_bank_stride = 320;
+            vdraw.blend_config = blend_config;
             vdraw.state = OPENGPU_DRAW_STATE_OVERRIDE | depth_bits |
                           (cull << OPENGPU_DRAW_STATE_CULL_SHIFT);
             if (ctx->fs->samples) {

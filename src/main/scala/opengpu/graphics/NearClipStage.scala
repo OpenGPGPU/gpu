@@ -10,6 +10,7 @@ class ClipVertexColor(config: GraphicsConfig) extends Bundle {
   val z = SInt(32.W)
   val w = SInt(32.W)
   val color = new Varyings
+  val alpha = UInt(8.W)
   val depth = SInt(32.W)
   val uv = new TexUV
 }
@@ -125,7 +126,7 @@ class NearClipStage(config: GraphicsConfig) extends Module {
       }
     }
   }.elsewhen(state === sInterpolate) {
-    // Select one attribute per cycle so all ten fields share the same exact
+    // Select one attribute per cycle so all eleven fields share the same exact
     // signed divider instead of instantiating a combinational divider array.
     val a = MuxLookup(field, edgePrev.x.pad(64))(Seq(
       0.U -> edgePrev.x.pad(64),
@@ -135,6 +136,7 @@ class NearClipStage(config: GraphicsConfig) extends Module {
       4.U -> edgePrev.color.r.pad(64).asSInt,
       5.U -> edgePrev.color.g.pad(64).asSInt,
       6.U -> edgePrev.color.b.pad(64).asSInt,
+      10.U -> edgePrev.alpha.pad(64).asSInt,
       7.U -> edgePrev.depth.pad(64),
       8.U -> edgePrev.uv.u.pad(64).asSInt,
       9.U -> edgePrev.uv.v.pad(64).asSInt
@@ -147,6 +149,7 @@ class NearClipStage(config: GraphicsConfig) extends Module {
       4.U -> edgeCur.color.r.pad(64).asSInt,
       5.U -> edgeCur.color.g.pad(64).asSInt,
       6.U -> edgeCur.color.b.pad(64).asSInt,
+      10.U -> edgeCur.alpha.pad(64).asSInt,
       7.U -> edgeCur.depth.pad(64),
       8.U -> edgeCur.uv.u.pad(64).asSInt,
       9.U -> edgeCur.uv.v.pad(64).asSInt
@@ -164,10 +167,11 @@ class NearClipStage(config: GraphicsConfig) extends Module {
       is(5.U) { intersection.color.g := value(7, 0) }
       is(6.U) { intersection.color.b := value(7, 0) }
       is(7.U) { intersection.depth := value(31, 0).asSInt }
+      is(10.U) { intersection.alpha := value(7, 0) }
       is(8.U) { intersection.uv.u := value(31, 0) }
       is(9.U) { intersection.uv.v := value(31, 0) }
     }
-    when(field === 9.U) {
+    when(field === 10.U) {
       state := sAppend
     }.otherwise {
       field := field + 1.U

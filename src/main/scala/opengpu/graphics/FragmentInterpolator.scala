@@ -29,6 +29,9 @@ class FragmentInterpolator(config: GraphicsConfig) extends Module {
     val c0 = Input(new Varyings)
     val c1 = Input(new Varyings)
     val c2 = Input(new Varyings)
+    val a0 = Input(UInt(8.W))
+    val a1 = Input(UInt(8.W))
+    val a2 = Input(UInt(8.W))
     val d0 = Input(SInt(32.W))
     val d1 = Input(SInt(32.W))
     val d2 = Input(SInt(32.W))
@@ -37,6 +40,7 @@ class FragmentInterpolator(config: GraphicsConfig) extends Module {
     val e2 = Input(SInt(config.edgeWidth.W))
     val area = Input(SInt(config.edgeWidth.W))
     val color = Output(new Varyings)
+    val alpha = Output(UInt(8.W))
     val depth = Output(SInt(32.W))
   })
 
@@ -53,6 +57,7 @@ class FragmentInterpolator(config: GraphicsConfig) extends Module {
   io.color.r := interp(io.c0.r, io.c1.r, io.c2.r)
   io.color.g := interp(io.c0.g, io.c1.g, io.c2.g)
   io.color.b := interp(io.c0.b, io.c1.b, io.c2.b)
+  io.alpha := interp(io.a0, io.a1, io.a2)
   io.depth := interpS(io.d0, io.d1, io.d2)
 }
 
@@ -98,6 +103,7 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
   val io = IO(new Bundle {
     val draw = Flipped(Decoupled(new TriangleVertices(config)))
     val colors = Input(Vec(3, new Varyings))
+    val alphas = Input(Vec(3, UInt(8.W)))
     val depths = Input(Vec(3, SInt(32.W)))
     val cullMode = Input(UInt(2.W))
     val sampleMode = Input(UInt(2.W))
@@ -126,6 +132,9 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
       laneInterps(k).io.c0 := io.colors(0)
       laneInterps(k).io.c1 := io.colors(1)
       laneInterps(k).io.c2 := io.colors(2)
+      laneInterps(k).io.a0 := io.alphas(0)
+      laneInterps(k).io.a1 := io.alphas(1)
+      laneInterps(k).io.a2 := io.alphas(2)
       laneInterps(k).io.d0 := io.depths(0)
       laneInterps(k).io.d1 := io.depths(1)
       laneInterps(k).io.d2 := io.depths(2)
@@ -137,7 +146,7 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
       io.quad.bits.lanes(k).x := raster.io.quad.bits.lanes(k).x
       io.quad.bits.lanes(k).y := raster.io.quad.bits.lanes(k).y
       io.quad.bits.lanes(k).color := laneInterps(k).io.color
-      io.quad.bits.lanes(k).alpha := 0xff.U
+      io.quad.bits.lanes(k).alpha := laneInterps(k).io.alpha
       io.quad.bits.lanes(k).depth := laneInterps(k).io.depth
       io.quad.bits.lanes(k).e0 := raster.io.quad.bits.lanes(k).e0
       io.quad.bits.lanes(k).e1 := raster.io.quad.bits.lanes(k).e1
@@ -178,6 +187,9 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
     interp.io.c0 := io.colors(0)
     interp.io.c1 := io.colors(1)
     interp.io.c2 := io.colors(2)
+    interp.io.a0 := io.alphas(0)
+    interp.io.a1 := io.alphas(1)
+    interp.io.a2 := io.alphas(2)
     interp.io.d0 := io.depths(0)
     interp.io.d1 := io.depths(1)
     interp.io.d2 := io.depths(2)
@@ -206,7 +218,7 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
     io.pixel.bits.x := raster.io.pixel.bits.x
     io.pixel.bits.y := raster.io.pixel.bits.y
     io.pixel.bits.color := interp.io.color
-    io.pixel.bits.alpha := 0xff.U
+    io.pixel.bits.alpha := interp.io.alpha
     io.pixel.bits.depth := interp.io.depth
     io.pixel.bits.e0 := raster.io.pixel.bits.e0
     io.pixel.bits.e1 := raster.io.pixel.bits.e1

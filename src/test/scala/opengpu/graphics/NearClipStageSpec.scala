@@ -27,6 +27,7 @@ class NearClipStageSpec extends AnyFlatSpec {
       dut.io.tri(i).color.r.poke(verts(i)._5._1.U)
       dut.io.tri(i).color.g.poke(verts(i)._5._2.U)
       dut.io.tri(i).color.b.poke(verts(i)._5._3.U)
+      dut.io.tri(i).alpha.poke(0x80.U)
       dut.io.tri(i).depth.poke((i * 100).S)
       dut.io.tri(i).uv.u.poke((i * q(0.25)).U)
       dut.io.tri(i).uv.v.poke((i * q(0.125)).U)
@@ -36,8 +37,8 @@ class NearClipStageSpec extends AnyFlatSpec {
     dut.io.start.poke(false.B)
     // Run through all plane/edge phases.
     var i = 0
-    while (dut.io.busy.peek().litToBoolean && i < 200) { dut.clock.step(); i += 1 }
-    assert(i < 200, "clipper did not complete")
+    while (dut.io.busy.peek().litToBoolean && i < 400) { dut.clock.step(); i += 1 }
+    assert(i < 400, "clipper did not complete")
     dut.clock.step()
   }
 
@@ -61,6 +62,8 @@ class NearClipStageSpec extends AnyFlatSpec {
          dut.io.out(i).color.b.peek().litValue.toInt)
       ).toSet
       assert(colors == Set((255, 0, 0), (0, 255, 0), (0, 0, 255)))
+      for (i <- 0 until 3)
+        assert(dut.io.out(i).alpha.peek().litValue.toInt == 0x80)
     }
   }
 
@@ -101,6 +104,9 @@ class NearClipStageSpec extends AnyFlatSpec {
         dut.io.out(i).color.r.peek().litValue.toInt == 255
       }
       assert(hasV0)
+      for (i <- 0 until 3)
+        assert(dut.io.out(i).alpha.peek().litValue.toInt == 0x80,
+          "clipped vertex dropped its alpha")
     }
   }
 

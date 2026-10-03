@@ -262,6 +262,7 @@ class RenderPipelineSpec extends AnyFlatSpec {
         draw.clip(i).z.poke(0.S)
         draw.clip(i).w.poke(q(1.0).S)
         draw.color(i).r.poke(255.U)
+        draw.alpha(i).poke(0xff.U)
         draw.depth(i).poke(0x10.S)
       }
       dut.io.draw.valid.poke(true.B)
@@ -558,6 +559,7 @@ class RenderPipelineSpec extends AnyFlatSpec {
           drawBits.color(i).r.poke(255.U)
           drawBits.color(i).g.poke(0.U)
           drawBits.color(i).b.poke(0.U)
+          drawBits.alpha(i).poke(0xff.U)
           drawBits.depth(i).poke(vertexDepth.S)
         }
         dut.io.draw.valid.poke(true.B)

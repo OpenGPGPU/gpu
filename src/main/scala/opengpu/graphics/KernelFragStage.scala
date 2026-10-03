@@ -514,9 +514,6 @@ class KernelFragStage(
     wpFirst := prodCount === 0.U
     for (k <- 0 until 4) {
       wpRecord.lanes(k) := io.fragIn.bits.lanes(k)
-      // The graphics ABI uses opaque RGBA8888 fragment inputs; the raster
-      // quad source carries RGB varyings and leaves alpha unspecified.
-      wpRecord.lanes(k).alpha := 0xff.U
       wpRecord.u(k) := io.fragUv(k).u
       wpRecord.v(k) := io.fragUv(k).v
       for (s <- 0 until gfxConfig.maxSampleCount)

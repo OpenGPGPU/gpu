@@ -126,6 +126,11 @@ class CommandBufferStage(config: GraphicsConfig, vertCore: Boolean = false) exte
     d.color(2).r := words(18)(7, 0)
     d.color(2).g := words(19)(7, 0)
     d.color(2).b := words(20)(7, 0)
+    // Fixed-function records store RGB only. Leave them opaque so existing
+    // draws keep the alpha the rasterizer used to force.
+    d.alpha(0) := 0xff.U
+    d.alpha(1) := 0xff.U
+    d.alpha(2) := 0xff.U
     d.depth(0) := words(21).asSInt
     d.depth(1) := words(22).asSInt
     d.depth(2) := words(23).asSInt
