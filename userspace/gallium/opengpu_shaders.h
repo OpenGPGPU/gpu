@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /* GPU shader binaries for the Gallium driver. These words are the corpus
- * shaders fragment_color.S and vertex_passthrough.S. The vertex core runs
- * the copy, and the fragment core runs the colour copy. */
+ * shaders fragment_color.S, fragment_sample.S and vertex_passthrough.S.
+ * The vertex core runs the copy. The fragment core either copies the
+ * interpolated colour or samples a texture with vtex.sample. */
 #ifndef OPENGPU_GALLIUM_SHADERS_H
 #define OPENGPU_GALLIUM_SHADERS_H
 
@@ -24,7 +25,14 @@ static const uint32_t opengpu_vertex_passthrough[] = {
     0x30500073u,
 };
 
+static const uint32_t opengpu_fragment_sample[] = {
+    0x00241293u, 0x005082b3u, 0xc1027057u, 0x08028313u,
+    0x02036087u, 0x0a028313u, 0x02036107u, 0x0620812bu,
+    0x0c028313u, 0x02036127u, 0x30500073u,
+};
+
 #define OPENGPU_FRAGMENT_COLOR_BYTES (sizeof(opengpu_fragment_color))
+#define OPENGPU_FRAGMENT_SAMPLE_BYTES (sizeof(opengpu_fragment_sample))
 #define OPENGPU_VERTEX_PASSTHROUGH_BYTES (sizeof(opengpu_vertex_passthrough))
 
 #endif

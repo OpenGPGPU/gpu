@@ -61,10 +61,11 @@ python3 scripts/validate_shader_corpus.py --emit fragment_tint /tmp/tint.bin
 
 `userspace/gallium/` is the out-of-tree pipe. `scripts/stage_mesa_opengpu.sh`
 copies it into the pinned Mesa 22.3 checkout at `depends/mesa` and registers
-an `opengpu` DRI driver. `draw_vbo` lowers a TGSI passthrough (MOV of an
-input or an immediate) onto `vertex_passthrough.S` and `fragment_color.S`,
-packs the fixed Q16.16 vertex, and submits `OPENGPU_SUBMIT_VERTEX_CORE`.
-Any other shader fails. The driver does not call llvmpipe, softpipe, or the
+an `opengpu` DRI driver. `draw_vbo` lowers a TGSI colour copy onto `vertex_passthrough.S` and
+`fragment_color.S`, and a 2D `TEX` onto `fragment_sample.S` (`vtex.sample`
+of the interpolated Q16.16 UV, base mip, clamp). It packs the fixed vertex,
+binds the texture GEM, and submits `OPENGPU_SUBMIT_VERTEX_CORE`. Any other
+shader fails. The driver does not call llvmpipe, softpipe, or the
 Gallium `draw` module.
 
 ## Goals

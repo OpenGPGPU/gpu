@@ -29,6 +29,10 @@ struct pipe_opengpu_resource *pipe_opengpu_resource_create(
 /* 2D RGBA8888 dumb GEM (native pitch). Sized for render and KMS present. */
 struct pipe_opengpu_resource *pipe_opengpu_resource_create_2d(
     struct pipe_opengpu_screen *screen, uint32_t width, uint32_t height);
+/* Tightly packed RGBA8888, pitch = width * 4. The sampler walks mip 0 with
+ * no row padding, so a texture cannot use a dumb-buffer pitch. */
+struct pipe_opengpu_resource *pipe_opengpu_resource_create_linear(
+    struct pipe_opengpu_screen *screen, uint32_t width, uint32_t height);
 void *pipe_opengpu_resource_map(struct pipe_opengpu_resource *res);
 uint64_t pipe_opengpu_resource_size(const struct pipe_opengpu_resource *res);
 uint32_t pipe_opengpu_resource_width(const struct pipe_opengpu_resource *res);

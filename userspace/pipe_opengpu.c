@@ -261,6 +261,30 @@ fail:
     return NULL;
 }
 
+struct pipe_opengpu_resource *pipe_opengpu_resource_create_linear(
+    struct pipe_opengpu_screen *screen, uint32_t width, uint32_t height)
+{
+    struct pipe_opengpu_resource *res;
+    uint64_t bytes;
+
+    if (!screen || !width || !height) {
+        errno = EINVAL;
+        return NULL;
+    }
+    bytes = (uint64_t)width * height * 4u;
+    if (bytes > 0x7fffffffu) {
+        errno = EINVAL;
+        return NULL;
+    }
+    res = pipe_opengpu_resource_create(screen, (uint32_t)bytes);
+    if (!res)
+        return NULL;
+    res->width = width;
+    res->height = height;
+    res->pitch = width * 4u;
+    return res;
+}
+
 void *pipe_opengpu_resource_map(struct pipe_opengpu_resource *res)
 {
     return res ? res->buffer.map : NULL;

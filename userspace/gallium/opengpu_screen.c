@@ -262,8 +262,15 @@ static struct pipe_resource *resource_create(struct pipe_screen *screen,
         templ->format == PIPE_FORMAT_Z24_UNORM_S8_UINT ||
         templ->format == PIPE_FORMAT_Z24X8_UNORM) {
         res->gpu = pipe_opengpu_resource_create(opengpu_screen_gpu(screen), bytes);
-    } else {
+    } else if (templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
+                              PIPE_BIND_SHARED)) {
         res->gpu = pipe_opengpu_resource_create_2d(
+            opengpu_screen_gpu(screen), (uint32_t)templ->width0,
+            (uint32_t)templ->height0);
+    } else if (templ->last_level == 0) {
+        /* Sampler textures are tightly packed. A mip chain is not a GPU
+         * texture yet, so a request for one fails the allocation. */
+        res->gpu = pipe_opengpu_resource_create_linear(
             opengpu_screen_gpu(screen), (uint32_t)templ->width0,
             (uint32_t)templ->height0);
     }

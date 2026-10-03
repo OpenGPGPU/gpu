@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 /* Gallium context. A draw is a GPU vertex-core submit: the vertex shader and
  * the fragment shader binaries in opengpu_shaders.h run on the shader cores,
- * and the RTL rasterizes the triangle. A TGSI program that is not a
- * passthrough MOV fails the draw. The Gallium draw module is not used. */
+ * and the RTL rasterizes the triangle. A TGSI program that is not a colour
+ * copy or a 2D texture sample fails the draw. The Gallium draw module is
+ * not used. */
 #include "opengpu_internal.h"
 #include "opengpu_shaders.h"
 
@@ -22,13 +23,33 @@
 #define OPENGPU_VB_SLOTS 8u
 #define OPENGPU_ATTRIBS 8u
 
+/* A vertex output the fragment shader can match by semantic. src is the
+ * attribute slot; imm means the output is a constant, not an attribute. */
+struct opengpu_link {
+    int semantic;
+    int index;
+    int src;
+    int imm;
+    float value[4];
+};
+
 struct opengpu_shader {
     int is_fs;
     int pos_src;
     int color_src;
+    int color_sem;
+    int color_sem_index;
     int color_imm;
     float color[4];
+    int samples;
+    int sample_sem;
+    int sample_sem_index;
+    struct opengpu_link link[4];
+    int nlink;
 };
+
+/* temp_file value: the temporary holds the vtex.sample result. */
+#define TEMP_SAMPLE (-2)
 
 struct opengpu_context {
     struct pipe_context base;
@@ -39,6 +60,7 @@ struct opengpu_context {
     uint32_t height;
     struct opengpu_shader *vs;
     struct opengpu_shader *fs;
+    struct pipe_sampler_view *fs_view;
     struct pipe_vertex_buffer vb[OPENGPU_VB_SLOTS];
     struct pipe_vertex_element ve[OPENGPU_ATTRIBS];
     unsigned nr_ve;
@@ -96,6 +118,30 @@ static int color_semantic(unsigned sem)
            sem == TGSI_SEMANTIC_TEXCOORD;
 }
 
+/* X and Y must be the coordinate. Z and W are unused by the sampler. */
+static int xy_swizzle(const struct tgsi_src_register *src)
+{
+    return !src->Indirect && !src->Absolute && !src->Negate &&
+           src->SwizzleX == TGSI_SWIZZLE_X && src->SwizzleY == TGSI_SWIZZLE_Y;
+}
+
+static int add_link(struct opengpu_shader *shader, int semantic, int index,
+                    int src, int imm, const float *value)
+{
+    struct opengpu_link *link;
+
+    if (shader->nlink >= 4)
+        return -1;
+    link = &shader->link[shader->nlink++];
+    link->semantic = semantic;
+    link->index = index;
+    link->src = src;
+    link->imm = imm;
+    if (imm && value)
+        memcpy(link->value, value, sizeof(link->value));
+    return 0;
+}
+
 /* Record which input feeds gl_Position and which feeds the colour. Anything
  * other than MOV/END, or a write the fixed vertex format cannot carry, fails. */
 static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state,
@@ -105,6 +151,8 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
     struct opengpu_shader *shader;
     int sem_in[OPENGPU_ATTRIBS];
     int sem_out[OPENGPU_ATTRIBS];
+    int sem_in_index[OPENGPU_ATTRIBS];
+    int sem_out_index[OPENGPU_ATTRIBS];
     int temp_file[OPENGPU_ATTRIBS];
     int temp_index[OPENGPU_ATTRIBS];
     float imm[4];
@@ -120,6 +168,7 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
 
     for (i = 0; i < (int)OPENGPU_ATTRIBS; i++) {
         sem_in[i] = sem_out[i] = -1;
+        sem_in_index[i] = sem_out_index[i] = 0;
         temp_file[i] = -1;
         temp_index[i] = -1;
     }
@@ -131,6 +180,8 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
     shader->is_fs = want_fs;
     shader->pos_src = -1;
     shader->color_src = -1;
+    shader->color_sem = -1;
+    shader->sample_sem = -1;
 
     while (!tgsi_parse_end_of_tokens(&parse)) {
         const struct tgsi_full_instruction *insn;
@@ -144,7 +195,8 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
             file = decl->Declaration.File;
             if (file == TGSI_FILE_TEMPORARY || file == TGSI_FILE_CONSTANT ||
                 file == TGSI_FILE_CONSTBUF || file == TGSI_FILE_SYSTEM_VALUE ||
-                file == TGSI_FILE_ADDRESS || file == TGSI_FILE_NULL)
+                file == TGSI_FILE_ADDRESS || file == TGSI_FILE_NULL ||
+                file == TGSI_FILE_SAMPLER || file == TGSI_FILE_SAMPLER_VIEW)
                 break;
             if (decl->Range.First != decl->Range.Last ||
                 decl->Range.First >= OPENGPU_ATTRIBS)
@@ -163,10 +215,13 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
             if (!decl->Declaration.Semantic)
                 goto fail;
             sem = decl->Semantic.Name;
-            if (file == TGSI_FILE_INPUT)
+            if (file == TGSI_FILE_INPUT) {
                 sem_in[index] = (int)sem;
-            else
+                sem_in_index[index] = (int)decl->Semantic.Index;
+            } else {
                 sem_out[index] = (int)sem;
+                sem_out_index[index] = (int)decl->Semantic.Index;
+            }
             break;
         case TGSI_TOKEN_TYPE_IMMEDIATE:
             if (nimm || parse.FullToken.FullImmediate.Immediate.NrTokens < 5)
@@ -179,6 +234,52 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
             insn = &parse.FullToken.FullInstruction;
             if (insn->Instruction.Opcode == TGSI_OPCODE_END) {
                 saw_end = 1;
+                break;
+            }
+            if (insn->Instruction.Opcode == TGSI_OPCODE_TEX) {
+                unsigned src_file, src;
+                int src_index;
+
+                if (!want_fs || shader->samples || insn->Instruction.Saturate ||
+                    insn->Instruction.NumDstRegs != 1 ||
+                    insn->Instruction.NumSrcRegs < 1 ||
+                    insn->Texture.Texture != TGSI_TEXTURE_2D)
+                    goto fail;
+                if (insn->Instruction.NumSrcRegs >= 2 &&
+                    (insn->Src[1].Register.File != TGSI_FILE_SAMPLER ||
+                     insn->Src[1].Register.Index != 0))
+                    goto fail;
+                if (insn->Dst[0].Register.WriteMask != TGSI_WRITEMASK_XYZW ||
+                    insn->Dst[0].Register.Indirect || !xy_swizzle(&insn->Src[0].Register))
+                    goto fail;
+                src_file = insn->Src[0].Register.File;
+                src_index = insn->Src[0].Register.Index;
+                if (src_file == TGSI_FILE_TEMPORARY) {
+                    if (src_index < 0 || src_index >= (int)OPENGPU_ATTRIBS ||
+                        temp_file[src_index] < 0)
+                        goto fail;
+                    src_file = (unsigned)temp_file[src_index];
+                    src_index = temp_index[src_index];
+                }
+                if (src_file != TGSI_FILE_INPUT)
+                    goto fail;
+                src = (unsigned)src_index;
+                if (src >= OPENGPU_ATTRIBS || sem_in[src] < 0)
+                    goto fail;
+                index = (unsigned)insn->Dst[0].Register.Index;
+                if (index >= OPENGPU_ATTRIBS)
+                    goto fail;
+                if (insn->Dst[0].Register.File == TGSI_FILE_TEMPORARY) {
+                    temp_file[index] = TEMP_SAMPLE;
+                    temp_index[index] = 0;
+                } else if (insn->Dst[0].Register.File != TGSI_FILE_OUTPUT ||
+                           sem_out[index] < 0 ||
+                           !color_semantic((unsigned)sem_out[index])) {
+                    goto fail;
+                }
+                shader->samples = 1;
+                shader->sample_sem = sem_in[src];
+                shader->sample_sem_index = sem_in_index[src];
                 break;
             }
             if (insn->Instruction.Opcode != TGSI_OPCODE_MOV ||
@@ -194,10 +295,21 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                 sem_out[insn->Dst[0].Register.Index] >= 0 &&
                 ignored_output((unsigned)sem_out[insn->Dst[0].Register.Index]))
                 break;
-            if (insn->Dst[0].Register.WriteMask != TGSI_WRITEMASK_XYZW)
-                goto fail;
-            if (!identity_swizzle(&insn->Src[0].Register))
-                goto fail;
+            /* A vec2 varying is MOV OUT.xy, IN.xyxx. X and Y still come from
+             * the attribute; the rasterizer only interpolates those two. */
+            if (insn->Dst[0].Register.WriteMask != TGSI_WRITEMASK_XYZW ||
+                !identity_swizzle(&insn->Src[0].Register)) {
+                int sem = -1;
+
+                if (insn->Dst[0].Register.File == TGSI_FILE_OUTPUT &&
+                    insn->Dst[0].Register.Index < OPENGPU_ATTRIBS)
+                    sem = sem_out[insn->Dst[0].Register.Index];
+                if (sem < 0 || sem == TGSI_SEMANTIC_POSITION ||
+                    (insn->Dst[0].Register.WriteMask & TGSI_WRITEMASK_XY) !=
+                        TGSI_WRITEMASK_XY ||
+                    !xy_swizzle(&insn->Src[0].Register))
+                    goto fail;
+            }
             index = (unsigned)insn->Dst[0].Register.Index;
             if (index >= OPENGPU_ATTRIBS)
                 goto fail;
@@ -206,8 +318,13 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                 int src_index = insn->Src[0].Register.Index;
 
                 if (src_file == TGSI_FILE_TEMPORARY) {
-                    if (src_index < 0 || src_index >= (int)OPENGPU_ATTRIBS ||
-                        temp_file[src_index] < 0)
+                    if (src_index < 0 || src_index >= (int)OPENGPU_ATTRIBS)
+                        goto fail;
+                    if (temp_file[src_index] == TEMP_SAMPLE) {
+                        temp_file[index] = TEMP_SAMPLE;
+                        break;
+                    }
+                    if (temp_file[src_index] < 0)
                         goto fail;
                     src_file = (unsigned)temp_file[src_index];
                     src_index = temp_index[src_index];
@@ -226,8 +343,14 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                 int src_index = insn->Src[0].Register.Index;
 
                 if (src_file == TGSI_FILE_TEMPORARY) {
-                    if (src_index < 0 || src_index >= (int)OPENGPU_ATTRIBS ||
-                        temp_file[src_index] < 0)
+                    if (src_index < 0 || src_index >= (int)OPENGPU_ATTRIBS)
+                        goto fail;
+                    if (temp_file[src_index] == TEMP_SAMPLE) {
+                        if (!want_fs || !color_semantic(sem))
+                            goto fail;
+                        break;
+                    }
+                    if (temp_file[src_index] < 0)
                         goto fail;
                     src_file = (unsigned)temp_file[src_index];
                     src_index = temp_index[src_index];
@@ -235,10 +358,16 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                 if (src_file == TGSI_FILE_IMMEDIATE) {
                     if (!nimm || src_index != 0)
                         goto fail;
-                    if (!color_semantic(sem))
-                        goto fail;
-                    shader->color_imm = 1;
-                    memcpy(shader->color, imm, sizeof(shader->color));
+                    if (!want_fs) {
+                        if (add_link(shader, (int)sem, sem_out_index[index],
+                                     -1, 1, imm))
+                            goto fail;
+                    } else {
+                        if (!color_semantic(sem))
+                            goto fail;
+                        shader->color_imm = 1;
+                        memcpy(shader->color, imm, sizeof(shader->color));
+                    }
                 } else if (src_file == TGSI_FILE_INPUT) {
                     unsigned src = (unsigned)src_index;
 
@@ -248,10 +377,16 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                         if (shader->pos_src >= 0)
                             goto fail;
                         shader->pos_src = (int)src;
+                    } else if (!want_fs) {
+                        if (add_link(shader, (int)sem, sem_out_index[index],
+                                     (int)src, 0, NULL))
+                            goto fail;
                     } else if (color_semantic(sem)) {
                         if (shader->color_src >= 0 || shader->color_imm)
                             goto fail;
                         shader->color_src = (int)src;
+                        shader->color_sem = sem_in[src];
+                        shader->color_sem_index = sem_in_index[src];
                     } else {
                         goto fail;
                     }
@@ -267,7 +402,10 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
         }
     }
     tgsi_parse_free(&parse);
-    if (!saw_end || (want_fs && shader->color_src < 0 && !shader->color_imm) ||
+    if (!saw_end ||
+        (want_fs && !shader->samples && shader->color_src < 0 &&
+         !shader->color_imm) ||
+        (want_fs && shader->samples && shader->sample_sem < 0) ||
         (!want_fs && shader->pos_src < 0)) {
         FREE(shader);
         return NULL;
@@ -311,9 +449,16 @@ static void bind_fs_state(struct pipe_context *pipe, void *hw)
     struct opengpu_context *ctx = octx(pipe);
 
     ctx->fs = hw;
-    if (hw && pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_color,
-                                   OPENGPU_FRAGMENT_COLOR_BYTES))
+    if (!hw)
+        return;
+    if (ctx->fs->samples) {
+        if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_sample,
+                                 OPENGPU_FRAGMENT_SAMPLE_BYTES))
+            reject("fragment shader bind failed");
+    } else if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_color,
+                                    OPENGPU_FRAGMENT_COLOR_BYTES)) {
         reject("fragment shader bind failed");
+    }
 }
 
 static void bind_vs_state(struct pipe_context *pipe, void *hw)
@@ -636,15 +781,29 @@ static int load_color(const uint8_t *ptr, unsigned format, unsigned comps,
     return 0;
 }
 
+static const struct opengpu_link *find_link(const struct opengpu_shader *vs,
+                                            int semantic, int index)
+{
+    int i;
+
+    for (i = 0; i < vs->nlink; i++) {
+        if (vs->link[i].semantic == semantic && vs->link[i].index == index)
+            return &vs->link[i];
+    }
+    return NULL;
+}
+
 static int pack_one(struct opengpu_context *ctx, unsigned vertex,
                     const struct opengpu_shader *vs,
                     const struct opengpu_shader *fs, struct hw_vertex *out)
 {
     const struct pipe_vertex_element *ve;
+    const struct opengpu_link *link = NULL;
     const uint8_t *ptr;
     unsigned comps = 0;
     float p[4] = { 0, 0, 0, 1 };
     float c[4] = { 1, 1, 1, 1 };
+    float uv[2] = { 0, 0 };
 
     ptr = attrib_ptr(ctx, (unsigned)vs->pos_src, vertex, &comps);
     if (!ptr)
@@ -653,17 +812,34 @@ static int pack_one(struct opengpu_context *ctx, unsigned vertex,
     if (ve->src_format == PIPE_FORMAT_R8G8B8A8_UNORM)
         return -1;
     memcpy(p, ptr, sizeof(float) * (comps < 4 ? comps : 4));
+    if (fs->samples)
+        link = find_link(vs, fs->sample_sem, fs->sample_sem_index);
+    else if (!fs->color_imm && fs->color_sem >= 0)
+        link = find_link(vs, fs->color_sem, fs->color_sem_index);
     if (fs->color_imm)
         memcpy(c, fs->color, sizeof(c));
-    else if (vs->color_imm)
-        memcpy(c, vs->color, sizeof(c));
-    else if (vs->color_src >= 0) {
+    else if (link && link->imm)
+        memcpy(c, link->value, sizeof(c));
+    else if (!fs->samples && link && link->src >= 0) {
         unsigned cc = 0;
-        const uint8_t *cp =
-            attrib_ptr(ctx, (unsigned)vs->color_src, vertex, &cc);
+        const uint8_t *cp = attrib_ptr(ctx, (unsigned)link->src, vertex, &cc);
 
-        if (!cp || load_color(cp, ctx->ve[vs->color_src].src_format, cc, c))
+        if (!cp || load_color(cp, ctx->ve[link->src].src_format, cc, c))
             return -1;
+    } else if (!fs->samples && !fs->color_imm) {
+        return -1;
+    }
+    if (fs->samples) {
+        unsigned uc = 0;
+        const uint8_t *up;
+
+        if (!link || link->src < 0 || link->imm)
+            return -1;
+        up = attrib_ptr(ctx, (unsigned)link->src, vertex, &uc);
+        if (!up || ctx->ve[link->src].src_format == PIPE_FORMAT_R8G8B8A8_UNORM ||
+            uc < 2)
+            return -1;
+        memcpy(uv, up, sizeof(uv));
     }
     out->x = q16(p[0]);
     out->y = q16(p[1]);
@@ -671,8 +847,8 @@ static int pack_one(struct opengpu_context *ctx, unsigned vertex,
     out->w = q16(p[3]);
     out->color = pack_color(c);
     out->depth = 0x10;
-    out->u = 0;
-    out->v = 0;
+    out->u = (uint32_t)q16(uv[0]);
+    out->v = (uint32_t)q16(uv[1]);
     return 0;
 }
 
@@ -829,6 +1005,31 @@ static void draw_vbo(struct pipe_context *pipe,
             vdraw.fragment_kernarg_bank_stride = 320;
             vdraw.state = OPENGPU_DRAW_STATE_OVERRIDE | depth_bits |
                           (cull << OPENGPU_DRAW_STATE_CULL_SHIFT);
+            if (ctx->fs->samples) {
+                struct pipe_resource *tex;
+                struct opengpu_resource *gpu;
+                uint32_t tw, th;
+
+                if (!ctx->fs_view || !ctx->fs_view->texture) {
+                    reject("texture sample without a bound texture");
+                    return;
+                }
+                tex = ctx->fs_view->texture;
+                gpu = opengpu_resource(tex);
+                tw = tex->width0;
+                th = tex->height0;
+                if (!gpu || !tw || !th ||
+                    pipe_opengpu_bind_texture(
+                        ctx->gpu, gpu->gpu, tw, th, tw * th * 4u,
+                        OPENGPU_RESOURCE_TEXTURE_CLAMP |
+                            OPENGPU_RESOURCE_UNCACHED)) {
+                    reject("texture bind failed");
+                    return;
+                }
+                /* Base level only. Wrap is clamp; the sampler is bilinear. */
+                vdraw.state |= OPENGPU_DRAW_STATE_TEX_ENABLE |
+                               OPENGPU_DRAW_STATE_TEX_CLAMP;
+            }
             if (pipe_opengpu_draw_vertex(ctx->gpu, &vdraw, &fence) ||
                 pipe_opengpu_fence_finish(ctx->gpu, fence, OPENGPU_FENCE_TIMEOUT_MS))
                 gpu_failed("GPU draw failed");
@@ -969,6 +1170,35 @@ static void set_constant_buffer(struct pipe_context *pipe,
     pipe_resource_reference(&owned, NULL);
 }
 
+static struct pipe_sampler_view *create_sampler_view(
+    struct pipe_context *pipe, struct pipe_resource *texture,
+    const struct pipe_sampler_view *templ)
+{
+    struct pipe_sampler_view *view;
+
+    if (!texture || !templ || texture->target != PIPE_TEXTURE_2D ||
+        templ->format != PIPE_FORMAT_R8G8B8A8_UNORM ||
+        templ->u.tex.first_level != 0 || templ->u.tex.last_level != 0)
+        return NULL;
+    view = CALLOC_STRUCT(pipe_sampler_view);
+    if (!view)
+        return NULL;
+    *view = *templ;
+    view->reference.count = 1;
+    view->texture = NULL;
+    view->context = pipe;
+    pipe_resource_reference(&view->texture, texture);
+    return view;
+}
+
+static void sampler_view_destroy(struct pipe_context *pipe,
+                                 struct pipe_sampler_view *view)
+{
+    (void)pipe;
+    pipe_resource_reference(&view->texture, NULL);
+    FREE(view);
+}
+
 static void *create_sampler_state(struct pipe_context *pipe,
                                   const struct pipe_sampler_state *state)
 {
@@ -993,16 +1223,31 @@ static void set_sampler_views(struct pipe_context *pipe,
                               unsigned num, unsigned unbind, bool take_ownership,
                               struct pipe_sampler_view **views)
 {
+    struct opengpu_context *ctx = octx(pipe);
     unsigned i;
 
-    (void)pipe;
-    (void)shader;
-    (void)start;
-    (void)unbind;
-    if (!take_ownership || !views)
+    if (shader != PIPE_SHADER_FRAGMENT) {
+        if (take_ownership && views) {
+            for (i = 0; i < num; i++)
+                pipe_sampler_view_reference(&views[i], NULL);
+        }
         return;
-    for (i = 0; i < num; i++)
-        pipe_sampler_view_reference(&views[i], NULL);
+    }
+    for (i = 0; i < num; i++) {
+        unsigned slot = start + i;
+        struct pipe_sampler_view *view = views ? views[i] : NULL;
+
+        if (slot != 0)
+            continue;
+        if (take_ownership) {
+            pipe_sampler_view_reference(&ctx->fs_view, NULL);
+            ctx->fs_view = view;
+        } else {
+            pipe_sampler_view_reference(&ctx->fs_view, view);
+        }
+    }
+    if (start <= 0 && start + num + unbind > 0 && (num == 0 || !views))
+        pipe_sampler_view_reference(&ctx->fs_view, NULL);
 }
 
 static void flush(struct pipe_context *pipe, struct pipe_fence_handle **fence,
@@ -1039,6 +1284,7 @@ static void context_destroy(struct pipe_context *pipe)
     ctx->base.const_uploader = NULL;
     pipe_surface_reference(&ctx->cbuf, NULL);
     pipe_surface_reference(&ctx->zsbuf, NULL);
+    pipe_sampler_view_reference(&ctx->fs_view, NULL);
     for (i = 0; i < OPENGPU_VB_SLOTS; i++) {
         if (!ctx->vb[i].is_user_buffer)
             pipe_resource_reference(&ctx->vb[i].buffer.resource, NULL);
@@ -1103,6 +1349,8 @@ struct pipe_context *opengpu_pipe_context_create(struct pipe_screen *screen,
     ctx->base.set_polygon_stipple = set_polygon_stipple;
     ctx->base.set_constant_buffer = set_constant_buffer;
     ctx->base.set_inlinable_constants = set_inlinable_constants;
+    ctx->base.create_sampler_view = create_sampler_view;
+    ctx->base.sampler_view_destroy = sampler_view_destroy;
     ctx->base.create_sampler_state = create_sampler_state;
     ctx->base.bind_sampler_states = bind_sampler_states;
     ctx->base.delete_sampler_state = delete_state;
