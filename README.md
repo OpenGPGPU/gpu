@@ -110,7 +110,9 @@ command buffer are all software-allocated shared memory; hardware only computes
 addresses and issues reads/writes. Core-backed vertex and fragment shaders share
 one SIMT compute unit. The Linux DRM/KMS driver exposes validated resource
 bindings, queued fence-aware submission, vertex/fragment shader sandboxes and
-ARTI/QEMU end-to-end display tests. See `docs/GRAPHICS_ROADMAP.md`.
+ARTI/QEMU end-to-end display tests. Scanout pixels are the pixels those GPU
+jobs wrote: shading and rasterization run on this RTL, and a CPU paint of the
+framebuffer is not the graphics proof. See `docs/GRAPHICS_ROADMAP.md`.
 
 Current development continues on RVV coverage, CSR/trap semantics, host
 integration and physical timing closure. Status:

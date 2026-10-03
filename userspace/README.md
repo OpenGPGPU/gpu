@@ -148,7 +148,10 @@ discard / `vquad.dfdx`), `fragment_fp.S` (fragment-profile OPFVV; guest
 `fp_compare.S` (`vmfeq`/`vmflt`), `fp_scalar.S` (`flw` plus OPFVF,
 validated with the scalar-FPU compute profile) and `fp_reduce.S` (OPFRED
 `vfredusum.vs`/`vfredosum.vs`), `fragment_tint.S` (per-lane colour XOR;
-guest `examples/fragment_tint` and `examples/pipe_desktop`), and compiles two
+guest `examples/fragment_tint` and `examples/pipe_desktop`),
+`fragment_color.S` (per-lane colour copy for the Gallium driver),
+`vertex_passthrough.S` (vertex-core copy of the fixed 32-byte vertex),
+and compiles two
 small C shaders with `riscv64-unknown-elf-gcc`, adapts the C argument base to
 OpenGPU's direct `x1` kernarg convention, and replaces the C return with the
 OpenGPU cease instruction. The script checks every binary with the production

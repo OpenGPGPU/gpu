@@ -163,14 +163,24 @@ scanout are the pixels those jobs wrote. The QEMU window is a view of guest
 memory. Host simulation time is not part of the proof; wall-clock numbers
 later in this file size the model, and they do not gate this goal.
 
+Graphics rendering uses this GPU. Vertex shading runs on the vertex core,
+fragment shading runs on the fragment core, and raster, sample, depth,
+stencil, and blend run in the fixed-function RTL. Fill, blit, strided copy,
+and resolve are RTL jobs as well. The guest CPU packs vertex buffers, shader
+binaries, and ioctls, then waits on the fence. It does not execute a shader,
+rasterize a primitive, or write colour pixels in place of those jobs. A Mesa
+state tracker is in scope only when its Gallium driver submits through that
+same path. llvmpipe, softpipe, and the Gallium `draw` module are not a
+stand-in for a shader or a rasterizer that the RTL does not yet run. A shader
+that does not lower into the sandbox fails the draw.
+
 `opengpu_drm_test`, `opengpu_triangle_present`, and the `pipe_*` examples
 already take that path. `triangle_present` calls `opengpu_render`, waits for
 the fence, checks the colour GEM, then `SETCRTC`s that buffer. The 320x240
 Debian run (38,160 red triangle pixels, pixel (1,1) `ff0000`) is
 fixed-function RTL output. Boot now defaults to both shader cores and to
 `OPENGPU_AUTO_DISPLAY=desktop`. `gradient` and `opengpu_kms_present` paint
-the framebuffer on the CPU, so a desktop built that way does not prove the
-graphics RTL.
+the framebuffer on the CPU, so they stay outside this proof.
 
 Still to do:
 

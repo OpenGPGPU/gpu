@@ -73,23 +73,19 @@ static int finish_or_hand_off(struct pipe_opengpu_context *ctx,
 static int apply_depth_submit(struct pipe_opengpu_context *ctx,
                               struct drm_opengpu_submit *submit);
 
-struct pipe_opengpu_screen *pipe_opengpu_screen_create(const char *path)
+static struct pipe_opengpu_screen *screen_from_fd(int fd)
 {
     struct pipe_opengpu_screen *screen;
-    int fd;
 
     screen = calloc(1, sizeof(*screen));
     if (!screen) {
         errno = ENOMEM;
-        return NULL;
-    }
-    fd = opengpu_open(path);
-    if (fd < 0) {
-        free(screen);
+        close(fd);
         return NULL;
     }
     if (opengpu_capabilities(fd, &screen->caps)) {
         int saved = errno;
+
         close(fd);
         free(screen);
         errno = saved;
@@ -97,6 +93,29 @@ struct pipe_opengpu_screen *pipe_opengpu_screen_create(const char *path)
     }
     screen->fd = fd;
     return screen;
+}
+
+struct pipe_opengpu_screen *pipe_opengpu_screen_create(const char *path)
+{
+    int fd = opengpu_open(path);
+
+    if (fd < 0)
+        return NULL;
+    return screen_from_fd(fd);
+}
+
+struct pipe_opengpu_screen *pipe_opengpu_screen_create_fd(int fd)
+{
+    int owned;
+
+    if (fd < 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    owned = dup(fd);
+    if (owned < 0)
+        return NULL;
+    return screen_from_fd(owned);
 }
 
 void pipe_opengpu_screen_destroy(struct pipe_opengpu_screen *screen)
@@ -265,6 +284,11 @@ uint32_t pipe_opengpu_resource_height(const struct pipe_opengpu_resource *res)
 uint32_t pipe_opengpu_resource_pitch(const struct pipe_opengpu_resource *res)
 {
     return res ? res->pitch : 0;
+}
+
+uint32_t pipe_opengpu_resource_handle(const struct pipe_opengpu_resource *res)
+{
+    return res ? res->buffer.handle : 0;
 }
 
 void pipe_opengpu_resource_destroy(struct pipe_opengpu_screen *screen,
@@ -516,7 +540,7 @@ static int finish_or_hand_off(struct pipe_opengpu_context *ctx,
         *out_fence = fence;
         return 0;
     }
-    if (pipe_opengpu_fence_finish(ctx, fence, 30000)) {
+    if (pipe_opengpu_fence_finish(ctx, fence, 300000)) {
         pipe_opengpu_fence_reference(&fence, NULL);
         return -1;
     }

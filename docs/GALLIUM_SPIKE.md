@@ -5,6 +5,13 @@ Evaluate a thin `pipe_opengpu` against the stable DRM ABI already used by
 and a representative draw path first, then wire a Mesa submodule only if that
 path stays green under `scripts/qualify_functional.sh`.
 
+Pixels come from the OpenGPU RTL under ARTI. Clear, blit, raster, the vertex
+shader, and the fragment shader are submitted jobs. The CPU packs the vertex
+buffer into the fixed Q16.16 layout and selects a validator-admitted shader
+binary. It does not run that shader or rasterize the triangle. llvmpipe,
+softpipe, and the Gallium `draw` module stay out of this path. A GL draw
+whose shader does not lower onto the shader cores fails.
+
 ## First code drop (landed)
 
 Out-of-tree winsys in-tree under `userspace/`:
@@ -50,6 +57,16 @@ Emit a single corpus binary without a full corpus validate:
 python3 scripts/validate_shader_corpus.py --emit fragment_tint /tmp/tint.bin
 ```
 
+## Gallium driver
+
+`userspace/gallium/` is the out-of-tree pipe. `scripts/stage_mesa_opengpu.sh`
+copies it into the pinned Mesa 22.3 checkout at `depends/mesa` and registers
+an `opengpu` DRI driver. `draw_vbo` lowers a TGSI passthrough (MOV of an
+input or an immediate) onto `vertex_passthrough.S` and `fragment_color.S`,
+packs the fixed Q16.16 vertex, and submits `OPENGPU_SUBMIT_VERTEX_CORE`.
+Any other shader fails. The driver does not call llvmpipe, softpipe, or the
+Gallium `draw` module.
+
 ## Goals
 
 1. One `pipe_screen` / `pipe_context` that can clear and draw one triangle.
@@ -60,9 +77,13 @@ python3 scripts/validate_shader_corpus.py --emit fragment_tint /tmp/tint.bin
 
 ## Non-goals (first spike)
 
-- Softpipe fallback, NIR lowering, or texture multi-sampling.
+- NIR lowering or texture multi-sampling in the first GL draw. The first draw
+  binds a shader the cores already run.
 - Shipping inside upstream Mesa; treat this as an out-of-tree winsys + pipe.
 - New ISA work driven by Mesa (add ops only when a spike shader needs them).
+- Any CPU shader or CPU raster path, including llvmpipe, softpipe, and the
+  Gallium `draw` module. See "Debian graphical desktop" in
+  [GRAPHICS_ROADMAP.md](GRAPHICS_ROADMAP.md).
 
 KMS present is in-tree via `pipe_opengpu_present` / `examples/pipe_present`
 (still no Mesa winsys display integration).

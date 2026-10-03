@@ -15,6 +15,10 @@ AGENTS.md
 # CVFPU remains an optional local reference checkout.  YunSuan is a tracked
 # Chisel source dependency because its FloatFMA is compiled directly.
 depends/cvfpu/
+depends/mesa/
+depends/libdrm/
+depends/aarch64-root/
+depends/mesa-build/
 
 # Generated RTL and physical-design work products are reproducible and can be
 # tens of gigabytes.  Keep constraints, scripts, benchmarks, and libraries.

@@ -14,6 +14,8 @@ struct pipe_opengpu_resource;
 struct pipe_opengpu_fence;
 
 struct pipe_opengpu_screen *pipe_opengpu_screen_create(const char *path);
+/* dup(fd) and take ownership of the duplicate. Mesa's loader keeps its own fd. */
+struct pipe_opengpu_screen *pipe_opengpu_screen_create_fd(int fd);
 void pipe_opengpu_screen_destroy(struct pipe_opengpu_screen *screen);
 int pipe_opengpu_screen_fd(const struct pipe_opengpu_screen *screen);
 uint64_t pipe_opengpu_screen_capabilities(const struct pipe_opengpu_screen *screen);
@@ -32,6 +34,7 @@ uint64_t pipe_opengpu_resource_size(const struct pipe_opengpu_resource *res);
 uint32_t pipe_opengpu_resource_width(const struct pipe_opengpu_resource *res);
 uint32_t pipe_opengpu_resource_height(const struct pipe_opengpu_resource *res);
 uint32_t pipe_opengpu_resource_pitch(const struct pipe_opengpu_resource *res);
+uint32_t pipe_opengpu_resource_handle(const struct pipe_opengpu_resource *res);
 void pipe_opengpu_resource_destroy(struct pipe_opengpu_screen *screen,
                                    struct pipe_opengpu_resource *res);
 
