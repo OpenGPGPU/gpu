@@ -101,6 +101,11 @@ class CommandBufferStage(config: GraphicsConfig, vertCore: Boolean = false) exte
     d.stencilRef := words(37)(7, 0)
     d.stencilReadMask := words(37)(15, 8)
     d.stencilWriteMask := words(37)(23, 16)
+    d.scissorEnable := words(32)(18)
+    d.scissorMinX := words(38)(15, 0)
+    d.scissorMinY := words(38)(31, 16)
+    d.scissorMaxX := words(39)(15, 0)
+    d.scissorMaxY := words(39)(31, 16)
     d
   } else {
     val d = Wire(new SceneTriangle(config))
@@ -166,6 +171,11 @@ class CommandBufferStage(config: GraphicsConfig, vertCore: Boolean = false) exte
     d.stencilRef := words(37)(7, 0)
     d.stencilReadMask := words(37)(15, 8)
     d.stencilWriteMask := words(37)(23, 16)
+    d.scissorEnable := words(32)(18)
+    d.scissorMinX := words(38)(15, 0)
+    d.scissorMinY := words(38)(31, 16)
+    d.scissorMaxX := words(39)(15, 0)
+    d.scissorMaxY := words(39)(31, 16)
     d
   }
 

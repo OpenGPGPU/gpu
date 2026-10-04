@@ -405,7 +405,8 @@ struct gpu_draw_record {
     u32 blend_config;
     u32 stencil_config;
     u32 stencil_ref;
-    u32 reserved[2];
+    u32 scissor_min;
+    u32 scissor_max;
 };
 
 /* word 35 (blend config) layout */
@@ -514,7 +515,8 @@ struct gpu_draw_record {
  *   optional blend config (same encoding as legacy word 35)            [35]
  *   stencil config (same encoding as legacy word 36)                   [36]
  *   stencil ref/masks (same encoding as legacy word 37)                [37]
- *   reserved                                                           [38..39]
+ *   scissor min x | (min y << 16), half-open, with STATE_SCISSOR       [38]
+ *   scissor max x | (max y << 16)                                      [39]
  *
  * Vertex buffer layout (format=0, 32 bytes per vertex):
  *   word 0-3: posX/Y/Z/W (Q16.16 signed)
@@ -543,7 +545,8 @@ struct gpu_vert_draw_record {
     u32 blend_config;
     u32 stencil_config;
     u32 stencil_ref;
-    u32 reserved2[2];
+    u32 scissor_min;
+    u32 scissor_max;
 };
 
 /* ---------------------------------------------------------------------------

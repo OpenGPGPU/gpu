@@ -68,7 +68,9 @@ binds the texture GEM, and submits `OPENGPU_SUBMIT_VERTEX_CORE`. Enabled
 blend maps onto draw-record word 35 (GL factors 0–10, one equation for
 every channel). The source alpha is the interpolated vertex colour alpha.
 Constant-colour factors, a separate alpha equation, and any other shader
-fail. The driver does not call llvmpipe, softpipe, or the Gallium `draw`
+fail. An enabled scissor is the half-open scanout rectangle in draw-record
+words 38 and 39; the rasterizer drops fragments outside it. The screen
+reports one viewport, which is what lets Mesa's scissor enable stick. The driver does not call llvmpipe, softpipe, or the Gallium `draw`
 module.
 
 ## Goals

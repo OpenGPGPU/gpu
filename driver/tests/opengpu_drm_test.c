@@ -987,10 +987,10 @@ static int reject_unsafe_command(int fd, uint32_t context_id,
     if (ret != -1 || errno != EINVAL)
         goto fail;
 
-    commands->map->reserved[0] = 1;
+    commands->map->scissor_min = 1;
     errno = 0;
     ret = submit_render(fd, context_id, commands, fb, 1, 0, 0, 0, 0, 0);
-    commands->map->reserved[0] = 0;
+    commands->map->scissor_min = 0;
     if (ret != -1 || errno != EINVAL)
         goto fail;
 

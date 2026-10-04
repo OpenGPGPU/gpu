@@ -28,7 +28,10 @@ struct drm_opengpu_draw {
     __u32 blend_config;
     __u32 stencil_config;
     __u32 stencil_ref;
-    __u32 reserved[2];
+    /* Half-open scissor in scanout pixels. Meaningful only with
+     * OPENGPU_DRAW_STATE_SCISSOR; otherwise both words must be zero. */
+    __u32 scissor_min;
+    __u32 scissor_max;
 };
 
 /* Vertex-core form of the same 40-word command record. All addresses are
@@ -52,7 +55,10 @@ struct drm_opengpu_vertex_draw {
     __u32 blend_config;
     __u32 stencil_config;
     __u32 stencil_ref;
-    __u32 reserved2[2];
+    /* Half-open scissor in scanout pixels. Meaningful only with
+     * OPENGPU_DRAW_STATE_SCISSOR; otherwise both words must be zero. */
+    __u32 scissor_min;
+    __u32 scissor_max;
 };
 
 /* Per-draw state override. Resource addresses and extents remain job-owned. */
@@ -69,7 +75,8 @@ struct drm_opengpu_vertex_draw {
 #define OPENGPU_DRAW_STATE_MAX_MIP_MASK   (0xfu << 12)
 #define OPENGPU_DRAW_STATE_BLEND_ENABLE   (1u << 16)
 #define OPENGPU_DRAW_STATE_STENCIL_TEST   (1u << 17)
-#define OPENGPU_DRAW_STATE_VALID_MASK     0x3ffffu
+#define OPENGPU_DRAW_STATE_SCISSOR        (1u << 18)
+#define OPENGPU_DRAW_STATE_VALID_MASK     0x7ffffu
 
 /* Signed integer LOD bias plus an inclusive minimum-level clamp. */
 #define OPENGPU_DRAW_SAMPLER_LOD_BIAS_MASK 0x1fu

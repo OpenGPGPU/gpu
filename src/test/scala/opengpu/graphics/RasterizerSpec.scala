@@ -113,6 +113,32 @@ class RasterizerSpec extends AnyFlatSpec {
         if (inside(x, y)) Some((x, y)) else None
       } }.toSet
       assert(covered == expected, s"coverage mismatch: ${(covered -- expected)} vs ${(expected -- covered)}")
+
+      // A second draw of the same triangle, clipped to [4,8) x [4,8).
+      dut.io.scissorEnable.poke(true.B)
+      dut.io.scissorMinX.poke(4.U)
+      dut.io.scissorMinY.poke(4.U)
+      dut.io.scissorMaxX.poke(8.U)
+      dut.io.scissorMaxY.poke(8.U)
+      dut.io.draw.valid.poke(true.B)
+      while (!dut.io.draw.ready.peek().litToBoolean) dut.clock.step()
+      dut.clock.step()
+      dut.io.draw.valid.poke(false.B)
+      var clipped = Set.empty[(Int, Int)]
+      cycles = 0
+      while (!dut.io.draw.ready.peek().litToBoolean && cycles < 10000) {
+        if (dut.io.pixel.valid.peek().litToBoolean) {
+          val px = dut.io.pixel.bits.x.peek().litValue.toInt
+          val py = dut.io.pixel.bits.y.peek().litValue.toInt
+          clipped += ((px, py))
+        }
+        dut.clock.step()
+        cycles += 1
+      }
+      val box = expected.filter { case (x, y) => x >= 4 && x < 8 && y >= 4 && y < 8 }
+      assert(clipped == box,
+        s"scissor mismatch: extra ${(clipped -- box)} missing ${(box -- clipped)}")
+      dut.io.scissorEnable.poke(false.B)
     }
   }
 

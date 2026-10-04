@@ -307,6 +307,12 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
     val cullMode = Input(UInt(2.W))
     /** 0=1x, 1=2x, 2=4x fixed sample positions (see [[Msaa.positions]]). */
     val sampleMode = Input(UInt(2.W))
+    /** Half-open pixel rectangle. Disabled covers the whole target. */
+    val scissorEnable = Input(Bool())
+    val scissorMinX = Input(UInt(16.W))
+    val scissorMinY = Input(UInt(16.W))
+    val scissorMaxX = Input(UInt(16.W))
+    val scissorMaxY = Input(UInt(16.W))
     val pixel = Decoupled(new RasterPixel(config))
     val quad = Decoupled(new RasterQuad(config))
     /** Registered per-triangle edge-plane coefficients, exported so the
@@ -363,6 +369,16 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   // Registered inputs shared by the setup stages.
   private val vHold = Reg(new TriangleVertices(config))
   private val cullReg = Reg(UInt(2.W))
+  private val scissorEnableReg = RegInit(false.B)
+  private val scissorMinXReg = Reg(UInt(16.W))
+  private val scissorMinYReg = Reg(UInt(16.W))
+  private val scissorMaxXReg = Reg(UInt(16.W))
+  private val scissorMaxYReg = Reg(UInt(16.W))
+
+  private def inScissor(x: UInt, y: UInt): Bool =
+    !scissorEnableReg ||
+      (x >= scissorMinXReg && x < scissorMaxXReg &&
+        y >= scissorMinYReg && y < scissorMaxYReg)
 
   private class Coeffs extends Bundle {
     val a = Vec(3, SInt(34.W)) // y/x differences
@@ -473,23 +489,25 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
       io.quad.bits.lanes(k).e2 := quadCov.io.e2(k)
       io.quad.bits.lanes(k).area := areaReg
       val inBounds = laneX < config.screenWidth.U && laneY < config.screenHeight.U
-      io.quad.bits.lanes(k).covered := quadCoverage(k).orR && inBounds
+      val scOk = inScissor(laneX, laneY)
+      io.quad.bits.lanes(k).covered := quadCoverage(k).orR && inBounds && scOk
       io.quad.bits.lanes(k).coverageMask :=
-        Mux(inBounds, quadCoverage(k), 0.U(config.maxSampleCount.W))
+        Mux(inBounds && scOk, quadCoverage(k), 0.U(config.maxSampleCount.W))
     }
   } else {
     io.quad.valid := false.B
     io.quad.bits := 0.U.asTypeOf(new RasterQuad(config))
 
-    io.pixel.valid := active && curCoveredAny
+    val scOk = inScissor(curX, curY)
+    io.pixel.valid := active && curCoveredAny && scOk
     io.pixel.bits.x := curX.asSInt
     io.pixel.bits.y := curY.asSInt
     io.pixel.bits.e0 := edgeReg.e(0)
     io.pixel.bits.e1 := edgeReg.e(1)
     io.pixel.bits.e2 := edgeReg.e(2)
     io.pixel.bits.area := areaReg
-    io.pixel.bits.covered := curCoveredAny
-    io.pixel.bits.coverageMask := curCoverage
+    io.pixel.bits.covered := curCoveredAny && scOk
+    io.pixel.bits.coverageMask := Mux(scOk, curCoverage, 0.U)
   }
 
   // ---------------------------------------------------------------------
@@ -520,7 +538,7 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   } else {
     when(active) {
       // Advance on a fire or a miss; never stall on a covered sample.
-      when(!curCoveredAny || io.pixel.fire) {
+      when(!curCoveredAny || !inScissor(curX, curY) || io.pixel.fire) {
         when(curX < maxX) {
           curX := curX + 1.U
           edgeReg.e.zipWithIndex.foreach { case (r, i) => r := edgeNextCol(i) }
@@ -565,6 +583,11 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   when(io.draw.fire) {
     vHold := io.draw.bits
     cullReg := io.cullMode
+    scissorEnableReg := io.scissorEnable
+    scissorMinXReg := io.scissorMinX
+    scissorMinYReg := io.scissorMinY
+    scissorMaxXReg := io.scissorMaxX
+    scissorMaxYReg := io.scissorMaxY
     setupState := stCoeffs
   }
 

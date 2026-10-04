@@ -72,6 +72,11 @@ static int screen_get_param(struct pipe_screen *screen, enum pipe_cap param)
         return 100;
     case PIPE_CAP_MAX_RENDER_TARGETS:
         return 1;
+    case PIPE_CAP_MAX_VIEWPORTS:
+        /* glEnable(GL_SCISSOR_TEST) expands to (1 << MaxViewports) - 1.
+         * Zero viewports leaves the enable flag clear, so the rectangle
+         * never reaches the rasterizer. */
+        return 1;
     case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
         return 2048;
     case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:

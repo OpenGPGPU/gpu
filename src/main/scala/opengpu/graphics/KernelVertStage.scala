@@ -34,6 +34,11 @@ class VertexDrawCommand(config: GraphicsConfig) extends Bundle with HasDrawState
   val fragShaderPc = UInt(32.W)
   val fragKernarg = UInt(32.W)
   val fragKernargBankStride = UInt(32.W)
+  val scissorEnable = Bool()
+  val scissorMinX = UInt(16.W)
+  val scissorMinY = UInt(16.W)
+  val scissorMaxX = UInt(16.W)
+  val scissorMaxY = UInt(16.W)
 }
 
 /** Core-backed vertex shader stage.
@@ -117,6 +122,11 @@ class KernelVertStage(
     val texMaxLevel = Input(UInt(4.W))
     val texLodBias = Input(SInt(5.W))
     val texMinLevel = Input(UInt(4.W))
+    val scissorEnable = Input(Bool())
+    val scissorMinX = Input(UInt(16.W))
+    val scissorMinY = Input(UInt(16.W))
+    val scissorMaxX = Input(UInt(16.W))
+    val scissorMaxY = Input(UInt(16.W))
     val vertOut = Decoupled(new SceneTriangle(gfxConfig))
     val memReq = Decoupled(new ComputeMemoryRequest(config))
     val memResp = Flipped(Decoupled(new ComputeMemoryResponse()))
@@ -302,6 +312,11 @@ class KernelVertStage(
   private val snapTexMaxLevel = Reg(UInt(4.W))
   private val snapTexLodBias = Reg(SInt(5.W))
   private val snapTexMinLevel = Reg(UInt(4.W))
+  private val snapScissorEnable = Reg(Bool())
+  private val snapScissorMinX = Reg(UInt(16.W))
+  private val snapScissorMinY = Reg(UInt(16.W))
+  private val snapScissorMaxX = Reg(UInt(16.W))
+  private val snapScissorMaxY = Reg(UInt(16.W))
 
   // -- Word bridge request generation --
   wordValid := (state === sReadVB || state === sWrite || state === sReadback) && !wordPending
@@ -367,8 +382,13 @@ class KernelVertStage(
   io.vertOut.bits.texEnable := snapTexEnable
   io.vertOut.bits.texWrapClamp := snapTexWrapClamp
   io.vertOut.bits.texMaxLevel := snapTexMaxLevel
-  io.vertOut.bits.texLodBias := snapTexLodBias
-  io.vertOut.bits.texMinLevel := snapTexMinLevel
+    io.vertOut.bits.texLodBias := snapTexLodBias
+    io.vertOut.bits.texMinLevel := snapTexMinLevel
+    io.vertOut.bits.scissorEnable := snapScissorEnable
+    io.vertOut.bits.scissorMinX := snapScissorMinX
+    io.vertOut.bits.scissorMinY := snapScissorMinY
+    io.vertOut.bits.scissorMaxX := snapScissorMaxX
+    io.vertOut.bits.scissorMaxY := snapScissorMaxY
 
   io.done := state === sIdle
 
@@ -411,6 +431,11 @@ class KernelVertStage(
         snapTexMaxLevel := io.texMaxLevel
         snapTexLodBias := io.texLodBias
         snapTexMinLevel := io.texMinLevel
+        snapScissorEnable := io.scissorEnable
+        snapScissorMinX := io.scissorMinX
+        snapScissorMinY := io.scissorMinY
+        snapScissorMaxX := io.scissorMaxX
+        snapScissorMaxY := io.scissorMaxY
         drawVertBase := 0.U
         remainingVerts := io.vertCount
         emitTriTotal := io.vertCount / 3.U

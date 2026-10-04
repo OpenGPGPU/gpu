@@ -26,6 +26,12 @@ class SceneTriangle(config: GraphicsConfig) extends Bundle with HasDrawState {
   val depth = Vec(3, SInt(32.W))
   /** Per-vertex texture coordinates (unsigned Q16.16; see TexUV). */
   val uv = Vec(3, new TexUV)
+  /** Half-open scanout scissor. Disabled records cover the whole target. */
+  val scissorEnable = Bool()
+  val scissorMinX = UInt(16.W)
+  val scissorMinY = UInt(16.W)
+  val scissorMaxX = UInt(16.W)
+  val scissorMaxY = UInt(16.W)
   val shaderPc = UInt(32.W)
   val shaderKernarg = UInt(32.W)
   val kernargBankStride = UInt(32.W)
@@ -187,6 +193,11 @@ class RenderPipeline(
     kernelVert.io.texMaxLevel := io.draw.bits.asInstanceOf[VertexDrawCommand].texMaxLevel
     kernelVert.io.texLodBias := io.draw.bits.asInstanceOf[VertexDrawCommand].texLodBias
     kernelVert.io.texMinLevel := io.draw.bits.asInstanceOf[VertexDrawCommand].texMinLevel
+    kernelVert.io.scissorEnable := io.draw.bits.asInstanceOf[VertexDrawCommand].scissorEnable
+    kernelVert.io.scissorMinX := io.draw.bits.asInstanceOf[VertexDrawCommand].scissorMinX
+    kernelVert.io.scissorMinY := io.draw.bits.asInstanceOf[VertexDrawCommand].scissorMinY
+    kernelVert.io.scissorMaxX := io.draw.bits.asInstanceOf[VertexDrawCommand].scissorMaxX
+    kernelVert.io.scissorMaxY := io.draw.bits.asInstanceOf[VertexDrawCommand].scissorMaxY
     kernelVert.io.memReq.ready := false.B
     kernelVert.io.memResp.valid := false.B
     kernelVert.io.memResp.bits := 0.U.asTypeOf(kernelVert.io.memResp.bits)
@@ -357,6 +368,11 @@ class RenderPipeline(
   }
   shader.io.cullMode := drawState.cullMode
   shader.io.sampleMode := drawState.sampleMode
+  shader.io.scissorEnable := drawHold.scissorEnable
+  shader.io.scissorMinX := drawHold.scissorMinX
+  shader.io.scissorMinY := drawHold.scissorMinY
+  shader.io.scissorMaxX := drawHold.scissorMaxX
+  shader.io.scissorMaxY := drawHold.scissorMaxY
 
   // The source remains stopped until every triangle in the clipped fan has
   // entered rasterization. This also keeps the source metadata snapshot stable.

@@ -67,6 +67,8 @@ struct opengpu_context {
     struct pipe_rasterizer_state rast;
     struct pipe_depth_stencil_alpha_state dsa;
     struct pipe_blend_state blend;
+    struct pipe_scissor_state scissor;
+    int scissor_set;
     struct pipe_opengpu_resource *packed;
     uint32_t packed_bytes;
 };
@@ -1076,6 +1078,14 @@ static void draw_vbo(struct pipe_context *pipe,
             }
             fprintf(stderr, "opengpu: blend 0x%x color 0x%08x\n",
                     blend_config, verts[0].color);
+            if (ctx->rast.scissor) {
+                if (!ctx->scissor_set ||
+                    ctx->scissor.minx > 0xffffu || ctx->scissor.miny > 0xffffu ||
+                    ctx->scissor.maxx > 0xffffu || ctx->scissor.maxy > 0xffffu) {
+                    reject("scissor does not map onto the GPU");
+                    return;
+                }
+            }
             memset(&vdraw, 0, sizeof(vdraw));
             vdraw.vertex_count = 3;
             vdraw.vertex_stride = sizeof(verts[0]);
@@ -1083,6 +1093,16 @@ static void draw_vbo(struct pipe_context *pipe,
             vdraw.blend_config = blend_config;
             vdraw.state = OPENGPU_DRAW_STATE_OVERRIDE | depth_bits |
                           (cull << OPENGPU_DRAW_STATE_CULL_SHIFT);
+            if (ctx->rast.scissor) {
+                vdraw.state |= OPENGPU_DRAW_STATE_SCISSOR;
+                vdraw.scissor_min = ctx->scissor.minx |
+                                    (ctx->scissor.miny << 16);
+                vdraw.scissor_max = ctx->scissor.maxx |
+                                    (ctx->scissor.maxy << 16);
+                fprintf(stderr, "opengpu: scissor [%u,%u) [%u,%u)\n",
+                        ctx->scissor.minx, ctx->scissor.maxx,
+                        ctx->scissor.miny, ctx->scissor.maxy);
+            }
             if (ctx->fs->samples) {
                 struct pipe_resource *tex;
                 struct opengpu_resource *gpu;
@@ -1167,8 +1187,9 @@ static void buffer_unmap(struct pipe_context *pipe, struct pipe_transfer *xfer)
 }
 
 /* Mesa sets these on every draw. The RTL viewport is the colour target
- * (GeometryStage maps clip ±w onto the full framebuffer), so a GL viewport,
- * scissor, or clip plane that is not that target is not a GPU job yet.
+ * (GeometryStage maps clip ±w onto the full framebuffer), so a GL viewport
+ * or clip plane that is not that target is not a GPU job yet. The scissor
+ * rectangle is already in scanout pixels when the window is FlipY.
  * Constant buffers and samplers are unused by the passthrough shaders. */
 static void set_viewport_states(struct pipe_context *pipe, unsigned start,
                                 unsigned num, const struct pipe_viewport_state *state)
@@ -1182,10 +1203,12 @@ static void set_viewport_states(struct pipe_context *pipe, unsigned start,
 static void set_scissor_states(struct pipe_context *pipe, unsigned start,
                                unsigned num, const struct pipe_scissor_state *state)
 {
-    (void)pipe;
-    (void)start;
-    (void)num;
-    (void)state;
+    struct opengpu_context *ctx = octx(pipe);
+
+    if (start == 0 && num >= 1 && state) {
+        ctx->scissor = state[0];
+        ctx->scissor_set = 1;
+    }
 }
 
 static void set_blend_color(struct pipe_context *pipe,

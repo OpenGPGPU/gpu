@@ -107,6 +107,11 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
     val depths = Input(Vec(3, SInt(32.W)))
     val cullMode = Input(UInt(2.W))
     val sampleMode = Input(UInt(2.W))
+    val scissorEnable = Input(Bool())
+    val scissorMinX = Input(UInt(16.W))
+    val scissorMinY = Input(UInt(16.W))
+    val scissorMaxX = Input(UInt(16.W))
+    val scissorMaxY = Input(UInt(16.W))
     val done = Output(Bool())
     val pixel = Decoupled(new RasterFragment(config))
     val quad = Decoupled(new FragmentQuad(config))
@@ -124,6 +129,11 @@ class RasterShader(config: GraphicsConfig, quadMode: Boolean = false) extends Mo
   raster.io.draw <> io.draw
   raster.io.cullMode := io.cullMode
   raster.io.sampleMode := io.sampleMode
+  raster.io.scissorEnable := io.scissorEnable
+  raster.io.scissorMinX := io.scissorMinX
+  raster.io.scissorMinY := io.scissorMinY
+  raster.io.scissorMaxX := io.scissorMaxX
+  raster.io.scissorMaxY := io.scissorMaxY
   io.done := raster.io.draw.ready
 
   if (quadMode) {

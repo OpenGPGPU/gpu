@@ -1143,7 +1143,7 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
 
     BUILD_BUG_ON(sizeof(struct drm_opengpu_draw) !=
                  sizeof(struct gpu_draw_record));
-    BUILD_BUG_ON(offsetof(struct gpu_draw_record, reserved) !=
+    BUILD_BUG_ON(offsetof(struct gpu_draw_record, scissor_min) !=
                  38u * sizeof(u32));
     for (i = 0; i < args->command_count; i++) {
         struct gpu_draw_record *record = &records[i];
@@ -1156,9 +1156,9 @@ static int opengpu_validate_commands(struct opengpu_device *gpu,
                 record->c2[j] > 255)
                 return -EINVAL;
         }
-        for (j = 0; j < ARRAY_SIZE(record->reserved); j++)
-            if (record->reserved[j])
-                return -EINVAL;
+        if (!(record->state & OPENGPU_DRAW_STATE_SCISSOR) &&
+            (record->scissor_min || record->scissor_max))
+            return -EINVAL;
         if (record->state & ~OPENGPU_DRAW_STATE_VALID_MASK)
             return -EINVAL;
         if (record->sampler & ~OPENGPU_DRAW_SAMPLER_VALID_MASK)
@@ -1250,7 +1250,7 @@ static int opengpu_validate_vertex_commands(
 
     BUILD_BUG_ON(sizeof(struct drm_opengpu_vertex_draw) !=
                  sizeof(struct gpu_vert_draw_record));
-    BUILD_BUG_ON(offsetof(struct gpu_vert_draw_record, reserved2) !=
+    BUILD_BUG_ON(offsetof(struct gpu_vert_draw_record, scissor_min) !=
                  38u * sizeof(u32));
     for (i = 0; i < args->command_count; i++) {
         struct gpu_vert_draw_record *record = &records[i];
@@ -1266,9 +1266,9 @@ static int opengpu_validate_vertex_commands(
         for (j = 0; j < ARRAY_SIZE(record->reserved1); j++)
             if (record->reserved1[j])
                 return -EINVAL;
-        for (j = 0; j < ARRAY_SIZE(record->reserved2); j++)
-            if (record->reserved2[j])
-                return -EINVAL;
+        if (!(record->state & OPENGPU_DRAW_STATE_SCISSOR) &&
+            (record->scissor_min || record->scissor_max))
+            return -EINVAL;
         if (record->state & ~OPENGPU_DRAW_STATE_VALID_MASK ||
             record->sampler & ~OPENGPU_DRAW_SAMPLER_VALID_MASK)
             return -EINVAL;
