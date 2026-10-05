@@ -113,6 +113,38 @@ qemu_linked_backend() {
     esac
 }
 
+# The FlashSim model is a compiled artifact, and nothing in this flow rebuilds
+# it, so a QEMU binary can keep serving a model that predates the emitter by
+# months. That is silent and expensive: the model that shipped before the
+# g_chg_tail settle fix burns the full 500k-tick MMIO cap on every guest
+# register read while the scanout free-runs, which measured ~120x the ticks
+# per host access and ~5x the cost per tick. Warn rather than fail, because
+# deliberately pinning an old model is a legitimate thing to do.
+warn_if_model_stale() {
+    local bin="$1" d src=""
+    [ -f "$bin" ] || return 0
+    # -print -quit, not a pipe into head: under `set -o pipefail` an early
+    # closing reader gives the writer SIGPIPE, which would fail the whole
+    # script. find stopping on its own cannot do that.
+    for d in "$FLASHSIM_DIR/flashsim" \
+             "$GPU_DIR/generated/debian-$GPU_MODE" \
+             "$ARTI_DIR/examples/linux_arti_driver"; do
+        [ -d "$d" ] || continue
+        src="$(find "$d" -type f \( -name '*.py' -o -name '*.sv' \
+                   -o -name '*.sh' \) -newer "$bin" -print -quit 2>/dev/null)"
+        [ -n "$src" ] && break
+    done
+    [ -n "$src" ] || return 0
+    echo
+    echo "WARN: the linked model is older than its sources."
+    echo "  QEMU  : $bin"
+    echo "  Newer : $src"
+    echo "  Simulation speed tracks the model, so rebuild before trusting any"
+    echo "  timing from this run:"
+    echo "    GPU_SIM=$GPU_SIM ./scripts/build_arti_debian_display.sh"
+    echo
+}
+
 resolve_qemu() {
     local cand linked
     case "$GPU_SIM" in
@@ -167,6 +199,9 @@ or rebuild/switch the binary:
     fail "ARTI repository not found at $ARTI_DIR (set ARTI_DIR)"
 [ -f "$INTEGRATION_CONFIG" ] || fail "integration profile not found: $INTEGRATION_CONFIG"
 resolve_qemu
+if [ "$GPU_SIM" = "flashsim" ]; then
+    warn_if_model_stale "$QEMU"
+fi
 [ -f "$KERNEL" ] || fail "kernel Image not found at $KERNEL"
 [ -f "$DRIVER_KO" ] || fail "driver not found at $DRIVER_KO — build with scripts/build_arti_debian_display.sh"
 [ -f "$ARTI_DIR/examples/linux_arti_driver/build_cloudinit.sh" ] || \
