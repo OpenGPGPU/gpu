@@ -131,6 +131,16 @@ int pipe_opengpu_bind_texture(struct pipe_opengpu_context *ctx,
 int pipe_opengpu_bind_vs(struct pipe_opengpu_context *ctx,
                          const void *code, size_t bytes);
 
+/* Copy a column-major mat4 and the Q16.16 scale into the vertex kernarg
+ * uniform area and drop stale GPU lines before the next vertex launch. */
+int pipe_opengpu_write_vs_matrix(struct pipe_opengpu_context *ctx,
+                                 const float matrix[16]);
+
+/* Print the lane-0 position, clip result, uniform words and the probes
+ * vertex_mvp.S leaves in the depth and UV slices. Coherent DMA makes the
+ * shader's stores visible after the draw fence. */
+void pipe_opengpu_log_vs_kernarg(struct pipe_opengpu_context *ctx);
+
 /* Bind a vertex-buffer GEM (fixed 32-byte vertex format). Pass vb=NULL to
  * unbind. */
 int pipe_opengpu_set_vertex_buffer(struct pipe_opengpu_context *ctx,

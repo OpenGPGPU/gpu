@@ -41,7 +41,10 @@ static int validate(const char *path, int profile)
     /* Fragment profile on hardware advertising the scalar FPU: the shader CU
      * carries the FP backend whenever bit22 is set, so flw is admissible. */
     case 6: valid = opengpu_shader_validate_words(words, count, 320, 8, true); break;
-    case 7: valid = opengpu_vertex_shader_validate_words(words, count, 320, 8, true); break;
+    /* Vertex profile with the scalar FPU. The uniform matrix is 16 floats
+     * at byte 512 and the Q16.16 scale is one float at byte 576. Output
+     * slices still end at byte 512. */
+    case 7: valid = opengpu_vertex_shader_validate_words(words, count, 640, 8, true); break;
     default: return 1;
     }
     if (!valid) {

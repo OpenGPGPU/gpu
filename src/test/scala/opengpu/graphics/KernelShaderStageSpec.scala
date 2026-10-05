@@ -63,7 +63,7 @@ class KernelShaderStageSpec extends AnyFlatSpec {
 
   /** Launch the shader at 0x1000 with kernarg at 0x8000 and run to completion. */
   private def runShader(dut: KernelShaderStage, mem: Mem,
-                        limit: Int = 400): Result = {
+                        limit: Int = 400, latency: Int = 1): Result = {
     dut.io.launch.kernelPc.poke(0x1000.U)
     dut.io.launch.kernargAddress.poke(0x8000.U)
     dut.io.launch.localX.poke(3.U)
@@ -75,6 +75,7 @@ class KernelShaderStageSpec extends AnyFlatSpec {
     val writes = scala.collection.mutable.Map[BigInt, BigInt]()
     val traps = scala.collection.mutable.ArrayBuffer[(BigInt, BigInt)]()
     val reqs = scala.collection.mutable.ArrayBuffer[String]()
+    val inflight = scala.collection.mutable.Queue[(Int, BigInt, BigInt)]()
     var resp = false
     var id = BigInt(0)
     var data = BigInt(0)
@@ -83,28 +84,51 @@ class KernelShaderStageSpec extends AnyFlatSpec {
     while (!done && guard < limit) {
       // Re-present the pending response every cycle, the way
       // KernelFragStageSpec's pump does, so a beat is never dropped.
+      // A response is held until the cycle after its request, matching the
+      // interconnect's one-cycle minimum, then for latency-1 further cycles.
       dut.io.memoryResponse.valid.poke(resp)
       if (resp) {
         dut.io.memoryResponse.bits.transactionId.poke(id.U)
         dut.io.memoryResponse.bits.readData.poke(data.U)
         dut.io.memoryResponse.bits.fault.poke(false.B)
       }
+      val accepted = resp && dut.io.memoryResponse.ready.peek().litToBoolean
       val fired = dut.io.memoryRequest.valid.peek().litToBoolean &&
         dut.io.memoryRequest.ready.peek().litToBoolean
       if (fired) {
         val addr = dut.io.memoryRequest.bits.address.peek().litValue
-        id = dut.io.memoryRequest.bits.transactionId.peek().litValue
-        if (dut.io.memoryRequest.bits.isWrite.peek().litToBoolean) {
-          val strobe = dut.io.memoryRequest.bits.byteMask.peek().litValue
-          val word = dut.io.memoryRequest.bits.writeData.peek().litValue
-          (0 until 64).foreach { i =>
-            if (strobe.testBit(i)) writes(addr + i) = (word >> (8 * i)) & 0xff
+        val reqId = dut.io.memoryRequest.bits.transactionId.peek().litValue
+        val lineData =
+          if (dut.io.memoryRequest.bits.isWrite.peek().litToBoolean) {
+            val strobe = dut.io.memoryRequest.bits.byteMask.peek().litValue
+            val word = dut.io.memoryRequest.bits.writeData.peek().litValue
+            (0 until 64).foreach { i =>
+              if (strobe.testBit(i)) writes(addr + i) = (word >> (8 * i)) & 0xff
+            }
+            reqs += s"W 0x${addr.toString(16)} mask=0x${strobe.toString(16)} data=0x${word.toString(16)}"
+            BigInt(0)
+          } else {
+            reqs += s"R 0x${addr.toString(16)}"
+            mem.line(addr)
           }
-          data = BigInt(0)
-          reqs += s"W 0x${addr.toString(16)} mask=0x${strobe.toString(16)} data=0x${word.toString(16)}"
-        } else { data = mem.line(addr); reqs += s"R 0x${addr.toString(16)}" }
-        resp = true
-      } else resp = false
+        inflight.enqueue((latency, reqId, lineData))
+      }
+      if (accepted) resp = false
+      // In-order: only the oldest request counts down, and its response is
+      // presented on the following cycle. latency=1 matches the interconnect's
+      // one-cycle minimum.
+      if (!resp && inflight.nonEmpty) {
+        val head = inflight.front
+        if (head._1 <= 1) {
+          val ready = inflight.dequeue()
+          id = ready._2
+          data = ready._3
+          resp = true
+        } else {
+          val pending = inflight.dequeue()
+          inflight.prepend((pending._1 - 1, pending._2, pending._3))
+        }
+      }
       if (dut.io.trap.valid.peek().litToBoolean)
         traps += ((dut.io.trap.bits.pc.peek().litValue,
           dut.io.trap.bits.cause.peek().litValue))
@@ -1168,6 +1192,67 @@ class KernelShaderStageSpec extends AnyFlatSpec {
         storedWord(result.writes, BigInt(0x8080) + lane * 4))
       assert(down == Seq(BigInt(11), BigInt(33), BigInt(0)),
         s"vslidedown.vv stored ${down.map(_.toString(16))}")
+      dut.io.completion.bits.success.expect(true.B)
+    }
+  }
+
+  it should "dot a clip-x row from kernarg floats" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new KernelShaderStage(config)) { dut =>
+      idle(dut)
+      val mem = new Mem
+      val header = scala.io.Source.fromFile(
+        "userspace/gallium/opengpu_shaders.h").mkString
+      val start = header.indexOf("opengpu_vertex_mvp[]")
+      val body = header.slice(start, header.indexOf("#define", start))
+      val words = "0x([0-9a-fA-F]+)u".r.findAllMatchIn(body).map(_.group(1)).toSeq
+      words.zipWithIndex.foreach { case (word, i) =>
+        mem.putWord(BigInt(0x1000 + i * 4), BigInt(word, 16))
+      }
+      val negOne = BigInt("bf800000", 16)
+      val one = BigInt("3f800000", 16)
+      val half = BigInt("3f000000", 16)
+      // Lane 0 is vertex (-1,-1,0,1). Stride between attributes is 32.
+      // Three vertices, attribute-major, 32-byte stride. Lane 0 alone hides a
+      // cross-lane store/FMA fault the guest hits on this triangle.
+      val px = Seq(negOne, one, negOne)
+      val py = Seq(negOne, negOne, one)
+      val pz = Seq(BigInt(0), BigInt(0), BigInt(0))
+      val pw = Seq(one, one, one)
+      Seq(px, py, pz, pw).zipWithIndex.foreach { case (attr, attrIndex) =>
+        attr.zipWithIndex.foreach { case (value, lane) =>
+          mem.putWord(BigInt(0x8000) + attrIndex * 32 + lane * 4, value)
+        }
+      }
+      val matrix = Seq(
+        one, BigInt(0), BigInt(0), BigInt(0),
+        BigInt(0), one, BigInt(0), BigInt(0),
+        BigInt(0), BigInt(0), one, BigInt(0),
+        half, BigInt(0), BigInt(0), one
+      )
+      matrix.zipWithIndex.foreach { case (value, i) =>
+        mem.putWord(BigInt(0x8200) + i * 4, value)
+      }
+      mem.putWord(BigInt(0x8240), BigInt("47800000", 16))
+
+      val result = runShader(dut, mem, limit = 20000)
+      assert(result.traps.isEmpty, show(result.traps))
+      val raw = storedWord(result.writes, BigInt(0x81c0))
+      val cx = storedWord(result.writes, BigInt(0x8100))
+      val cy = storedWord(result.writes, BigInt(0x8120))
+      val cz = storedWord(result.writes, BigInt(0x8140))
+      val cw = storedWord(result.writes, BigInt(0x8160))
+      val m00ld = storedWord(result.writes, BigInt(0x81a0))
+      val partial = storedWord(result.writes, BigInt(0x81e0))
+      val f2ld = storedWord(result.writes, BigInt(0x81d0))
+      assert(cx == BigInt("ffff8000", 16) &&
+        cy == BigInt("ffff0000", 16) &&
+        cz == BigInt(0) &&
+        cw == BigInt("10000", 16),
+        s"m00ld 0x${m00ld.toString(16)} partial 0x${partial.toString(16)} " +
+          s"f2ld 0x${f2ld.toString(16)} rawx 0x${raw.toString(16)} " +
+          s"cx 0x${cx.toString(16)} cy 0x${cy.toString(16)} " +
+          s"cz 0x${cz.toString(16)} cw 0x${cw.toString(16)}")
       dut.io.completion.bits.success.expect(true.B)
     }
   }

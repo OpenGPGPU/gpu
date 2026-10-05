@@ -2,8 +2,8 @@
 /* Gallium context. A draw is a GPU vertex-core submit: the vertex shader and
  * the fragment shader binaries in opengpu_shaders.h run on the shader cores,
  * and the RTL rasterizes the triangle. A TGSI program that is not a colour
- * copy or a 2D texture sample fails the draw. The Gallium draw module is
- * not used. */
+ * copy, a mat4 position multiply, or a 2D texture sample fails the draw.
+ * The Gallium draw module is not used. */
 #include "opengpu_internal.h"
 #include "opengpu_shaders.h"
 
@@ -44,12 +44,15 @@ struct opengpu_shader {
     int samples;
     int sample_sem;
     int sample_sem_index;
+    int mvp;
     struct opengpu_link link[4];
     int nlink;
 };
 
 /* temp_file value: the temporary holds the vtex.sample result. */
 #define TEMP_SAMPLE (-2)
+/* temp_file value: the temporary holds mat4 * position. */
+#define TEMP_MVP (-3)
 
 struct opengpu_context {
     struct pipe_context base;
@@ -69,6 +72,8 @@ struct opengpu_context {
     struct pipe_blend_state blend;
     struct pipe_scissor_state scissor;
     int scissor_set;
+    float mvp[16];
+    int mvp_set;
     struct pipe_opengpu_resource *packed;
     uint32_t packed_bytes;
 };
@@ -144,8 +149,123 @@ static int add_link(struct opengpu_shader *shader, int semantic, int index,
     return 0;
 }
 
+static int plain_swizzle(const struct tgsi_src_register *src)
+{
+    return !src->Indirect && !src->Absolute && !src->Negate &&
+           src->SwizzleX == TGSI_SWIZZLE_X && src->SwizzleY == TGSI_SWIZZLE_Y &&
+           src->SwizzleZ == TGSI_SWIZZLE_Z && src->SwizzleW == TGSI_SWIZZLE_W;
+}
+
+static int broadcast_swizzle(const struct tgsi_src_register *src,
+                             unsigned channel)
+{
+    return !src->Indirect && !src->Dimension && !src->Absolute && !src->Negate &&
+           src->SwizzleX == channel && src->SwizzleY == channel &&
+           src->SwizzleZ == channel && src->SwizzleW == channel;
+}
+
+/* CONST[0][index], the column Mesa uploads for a column-major mat4. */
+static int const_column(const struct tgsi_full_src_register *src, int index)
+{
+    if (src->Register.File != TGSI_FILE_CONSTANT || src->Register.Indirect ||
+        src->Register.Index != index || src->Register.Negate ||
+        src->Register.Absolute || !plain_swizzle(&src->Register))
+        return 0;
+    if (src->Register.Dimension &&
+        (src->Dimension.Indirect || src->Dimension.Index != 0))
+        return 0;
+    return 1;
+}
+
+/* Column index of CONST[0][n], or -1. The broadcast channel is that column. */
+static int mvp_column(const struct tgsi_full_src_register *a,
+                      const struct tgsi_full_src_register *b,
+                      unsigned *src_in)
+{
+    const struct tgsi_full_src_register *col = NULL;
+    const struct tgsi_full_src_register *in = NULL;
+    int index;
+
+    if (a->Register.File == TGSI_FILE_CONSTANT &&
+        b->Register.File == TGSI_FILE_INPUT) {
+        col = a;
+        in = b;
+    } else if (b->Register.File == TGSI_FILE_CONSTANT &&
+               a->Register.File == TGSI_FILE_INPUT) {
+        col = b;
+        in = a;
+    } else {
+        return -1;
+    }
+    index = col->Register.Index;
+    if (index < 0 || index > 3 || !const_column(col, index) ||
+        !broadcast_swizzle(&in->Register, (unsigned)index) ||
+        in->Register.Index < 0 || in->Register.Index >= (int)OPENGPU_ATTRIBS)
+        return -1;
+    *src_in = (unsigned)in->Register.Index;
+    return index;
+}
+
+/* gl_Position = u_mvp * pos. Mesa may emit the four columns in any order.
+ * The first term is a MUL into a temporary. Each later term is a MAD that
+ * adds the same temporary. The last term may write that temporary or
+ * OUT.POSITION directly. */
+static int match_mvp(const struct tgsi_full_instruction *insn, int *used,
+                     int *temp, int *input, struct opengpu_shader *shader,
+                     const int *sem_out)
+{
+    const struct tgsi_dst_register *dst = &insn->Dst[0].Register;
+    unsigned opcode = insn->Instruction.Opcode;
+    unsigned src_in = 0;
+    int column, to_position;
+
+    if (insn->Instruction.Saturate || insn->Instruction.NumDstRegs != 1 ||
+        dst->Indirect || dst->WriteMask != TGSI_WRITEMASK_XYZW)
+        return -1;
+    if (*used == 0) {
+        if (opcode != TGSI_OPCODE_MUL || insn->Instruction.NumSrcRegs != 2)
+            return -1;
+    } else if (*used != 0xf) {
+        if (opcode != TGSI_OPCODE_MAD || insn->Instruction.NumSrcRegs != 3 ||
+            insn->Src[2].Register.File != TGSI_FILE_TEMPORARY ||
+            insn->Src[2].Register.Index != *temp ||
+            !plain_swizzle(&insn->Src[2].Register))
+            return -1;
+    } else {
+        return -1;
+    }
+    column = mvp_column(&insn->Src[0], &insn->Src[1], &src_in);
+    if (column < 0 || (*used & (1 << column)))
+        return -1;
+    if (*used == 0) {
+        if (dst->File != TGSI_FILE_TEMPORARY || dst->Index >= OPENGPU_ATTRIBS)
+            return -1;
+        *temp = dst->Index;
+        *input = (int)src_in;
+    } else if ((int)src_in != *input) {
+        return -1;
+    }
+    *used |= 1 << column;
+    to_position = dst->File == TGSI_FILE_OUTPUT &&
+                  dst->Index < OPENGPU_ATTRIBS &&
+                  sem_out[dst->Index] == TGSI_SEMANTIC_POSITION;
+    if (*used != 0xf) {
+        if (dst->File != TGSI_FILE_TEMPORARY || dst->Index != *temp)
+            return -1;
+        return 0;
+    }
+    if (dst->File == TGSI_FILE_TEMPORARY && dst->Index == *temp)
+        return 0;
+    if (!to_position || shader->pos_src >= 0)
+        return -1;
+    shader->mvp = 1;
+    shader->pos_src = *input;
+    return 0;
+}
+
 /* Record which input feeds gl_Position and which feeds the colour. Anything
- * other than MOV/END, or a write the fixed vertex format cannot carry, fails. */
+ * other than MOV/END, a mat4 multiply, or a write the fixed vertex format
+ * cannot carry, fails. */
 static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state,
                                            int want_fs)
 {
@@ -159,6 +279,7 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
     int temp_index[OPENGPU_ATTRIBS];
     float imm[4];
     int nimm = 0, saw_end = 0, i;
+    int mvp_used = 0, mvp_temp = -1, mvp_in = -1;
 
     if (!state || state->type != PIPE_SHADER_IR_TGSI || !state->tokens)
         return NULL;
@@ -236,6 +357,16 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
             insn = &parse.FullToken.FullInstruction;
             if (insn->Instruction.Opcode == TGSI_OPCODE_END) {
                 saw_end = 1;
+                break;
+            }
+            if (!want_fs &&
+                (insn->Instruction.Opcode == TGSI_OPCODE_MUL ||
+                 insn->Instruction.Opcode == TGSI_OPCODE_MAD)) {
+                if (match_mvp(insn, &mvp_used, &mvp_temp, &mvp_in, shader,
+                              sem_out))
+                    goto fail;
+                temp_file[mvp_temp] = TEMP_MVP;
+                temp_index[mvp_temp] = mvp_in;
                 break;
             }
             if (insn->Instruction.Opcode == TGSI_OPCODE_TEX) {
@@ -347,6 +478,14 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                 if (src_file == TGSI_FILE_TEMPORARY) {
                     if (src_index < 0 || src_index >= (int)OPENGPU_ATTRIBS)
                         goto fail;
+                    if (temp_file[src_index] == TEMP_MVP) {
+                        if (want_fs || sem != TGSI_SEMANTIC_POSITION ||
+                            shader->mvp || mvp_used != 0xf)
+                            goto fail;
+                        shader->mvp = 1;
+                        shader->pos_src = mvp_in;
+                        break;
+                    }
                     if (temp_file[src_index] == TEMP_SAMPLE) {
                         if (!want_fs || !color_semantic(sem))
                             goto fail;
@@ -408,7 +547,8 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
         (want_fs && !shader->samples && shader->color_src < 0 &&
          !shader->color_imm) ||
         (want_fs && shader->samples && shader->sample_sem < 0) ||
-        (!want_fs && shader->pos_src < 0)) {
+        (!want_fs && shader->pos_src < 0) ||
+        (mvp_used != 0 && !shader->mvp)) {
         FREE(shader);
         return NULL;
     }
@@ -468,9 +608,16 @@ static void bind_vs_state(struct pipe_context *pipe, void *hw)
     struct opengpu_context *ctx = octx(pipe);
 
     ctx->vs = hw;
-    if (hw && pipe_opengpu_bind_vs(ctx->gpu, opengpu_vertex_passthrough,
-                                   OPENGPU_VERTEX_PASSTHROUGH_BYTES))
+    if (!hw)
+        return;
+    if (ctx->vs->mvp) {
+        if (pipe_opengpu_bind_vs(ctx->gpu, opengpu_vertex_mvp,
+                                 OPENGPU_VERTEX_MVP_BYTES))
+            reject("vertex shader bind failed");
+    } else if (pipe_opengpu_bind_vs(ctx->gpu, opengpu_vertex_passthrough,
+                                    OPENGPU_VERTEX_PASSTHROUGH_BYTES)) {
         reject("vertex shader bind failed");
+    }
 }
 
 static void delete_shader(struct pipe_context *pipe, void *hw)
@@ -914,10 +1061,18 @@ static int pack_one(struct opengpu_context *ctx, unsigned vertex,
             return -1;
         memcpy(uv, up, sizeof(uv));
     }
-    out->x = q16(p[0]);
-    out->y = q16(p[1]);
-    out->z = q16(p[2]);
-    out->w = q16(p[3]);
+    if (vs->mvp) {
+        /* The vertex core multiplies these floats. Q16.16 is its output. */
+        memcpy(&out->x, &p[0], sizeof(out->x));
+        memcpy(&out->y, &p[1], sizeof(out->y));
+        memcpy(&out->z, &p[2], sizeof(out->z));
+        memcpy(&out->w, &p[3], sizeof(out->w));
+    } else {
+        out->x = q16(p[0]);
+        out->y = q16(p[1]);
+        out->z = q16(p[2]);
+        out->w = q16(p[3]);
+    }
     out->color = pack_color(c);
     out->depth = 0x10;
     out->u = (uint32_t)q16(uv[0]);
@@ -1020,6 +1175,15 @@ static void draw_vbo(struct pipe_context *pipe,
         if (count % 3u) {
             reject("triangle list count is not a multiple of 3");
             return;
+        }
+        if (ctx->vs->mvp) {
+            if (!ctx->mvp_set ||
+                pipe_opengpu_write_vs_matrix(ctx->gpu, ctx->mvp)) {
+                reject("vertex matrix did not reach the vertex core");
+                return;
+            }
+            fprintf(stderr, "opengpu: mvp m00=%g m03=%g m33=%g\n",
+                    ctx->mvp[0], ctx->mvp[12], ctx->mvp[15]);
         }
         for (tri = 0; tri < count; tri += 3) {
             struct hw_vertex verts[3];
@@ -1131,6 +1295,8 @@ static void draw_vbo(struct pipe_context *pipe,
             if (pipe_opengpu_draw_vertex(ctx->gpu, &vdraw, &fence) ||
                 pipe_opengpu_fence_finish(ctx->gpu, fence, OPENGPU_FENCE_TIMEOUT_MS))
                 gpu_failed("GPU draw failed");
+            else if (ctx->vs->mvp)
+                pipe_opengpu_log_vs_kernarg(ctx->gpu);
             pipe_opengpu_fence_reference(&fence, NULL);
         }
     }
@@ -1260,15 +1426,32 @@ static void set_constant_buffer(struct pipe_context *pipe,
                                 bool take_ownership,
                                 const struct pipe_constant_buffer *buf)
 {
-    struct pipe_resource *owned;
+    struct opengpu_context *ctx = octx(pipe);
+    const uint8_t *src = NULL;
 
-    (void)pipe;
-    (void)shader;
-    (void)index;
-    if (!take_ownership || !buf || !buf->buffer)
-        return;
-    owned = buf->buffer;
-    pipe_resource_reference(&owned, NULL);
+    if (shader == PIPE_SHADER_VERTEX && index == 0)
+        ctx->mvp_set = 0;
+    if (shader == PIPE_SHADER_VERTEX && index == 0 && buf &&
+        buf->buffer_size >= sizeof(ctx->mvp)) {
+        if (buf->user_buffer) {
+            src = buf->user_buffer;
+        } else if (buf->buffer) {
+            uint8_t *map = pipe_opengpu_resource_map(
+                opengpu_resource(buf->buffer)->gpu);
+
+            if (map)
+                src = map + buf->buffer_offset;
+        }
+        if (src) {
+            memcpy(ctx->mvp, src, sizeof(ctx->mvp));
+            ctx->mvp_set = 1;
+        }
+    }
+    if (take_ownership && buf && buf->buffer) {
+        struct pipe_resource *owned = buf->buffer;
+
+        pipe_resource_reference(&owned, NULL);
+    }
 }
 
 static struct pipe_sampler_view *create_sampler_view(

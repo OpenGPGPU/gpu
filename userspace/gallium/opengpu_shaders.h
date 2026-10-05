@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: MIT */
 /* GPU shader binaries for the Gallium driver. These words are the corpus
- * shaders fragment_color.S, fragment_sample.S and vertex_passthrough.S.
- * The vertex core runs the copy. The fragment core either copies the
- * interpolated colour or samples a texture with vtex.sample. */
+ * shaders fragment_color.S, fragment_sample.S, vertex_passthrough.S and
+ * vertex_mvp.S. The vertex core copies attributes, or multiplies a position
+ * by the uniform matrix at kernarg byte 512, then by 65536.0 at byte 576.
+ * The fragment core either copies
+ * the interpolated colour or samples a texture with vtex.sample. */
 #ifndef OPENGPU_GALLIUM_SHADERS_H
 #define OPENGPU_GALLIUM_SHADERS_H
 
@@ -31,8 +33,43 @@ static const uint32_t opengpu_fragment_sample[] = {
     0x0c028313u, 0x02036127u, 0x30500073u,
 };
 
+static const uint32_t opengpu_vertex_mvp[] = {
+    0x00241293u, 0x005082b3u, 0xc1027057u, 0x00028313u,
+    0x02036087u, 0x02028313u, 0x02036107u, 0x04028313u,
+    0x02036187u, 0x06028313u, 0x02036207u, 0x08028313u,
+    0x02036487u, 0x18028313u, 0x020364a7u, 0x0a028313u,
+    0x02036507u, 0x1a028313u, 0x02036527u, 0x2400a107u,
+    0x2440a187u, 0x9211d2d7u, 0x2000a087u, 0xb210d2d7u,
+    0x925152d7u, 0x4a5092d7u, 0x9221d6d7u, 0x2100a087u,
+    0xb220d6d7u, 0x92d156d7u, 0x4ad096d7u, 0x025682d7u,
+    0x9231d6d7u, 0x2200a087u, 0xb230d6d7u, 0x92d156d7u,
+    0x4ad096d7u, 0x025682d7u, 0x9241d6d7u, 0x2300a087u,
+    0xb240d6d7u, 0x92d156d7u, 0x4ad096d7u, 0x025682d7u,
+    0x9211d357u, 0x2040a087u, 0xb210d357u, 0x92615357u,
+    0x4a609357u, 0x9221d6d7u, 0x2140a087u, 0xb220d6d7u,
+    0x92d156d7u, 0x4ad096d7u, 0x02668357u, 0x9231d6d7u,
+    0x2240a087u, 0xb230d6d7u, 0x92d156d7u, 0x4ad096d7u,
+    0x02668357u, 0x9241d6d7u, 0x2340a087u, 0xb240d6d7u,
+    0x92d156d7u, 0x4ad096d7u, 0x02668357u, 0x9211d3d7u,
+    0x2080a087u, 0xb210d3d7u, 0x927153d7u, 0x4a7093d7u,
+    0x9221d6d7u, 0x2180a087u, 0xb220d6d7u, 0x92d156d7u,
+    0x4ad096d7u, 0x027683d7u, 0x9231d6d7u, 0x2280a087u,
+    0xb230d6d7u, 0x92d156d7u, 0x4ad096d7u, 0x027683d7u,
+    0x9241d6d7u, 0x2380a087u, 0xb240d6d7u, 0x92d156d7u,
+    0x4ad096d7u, 0x027683d7u, 0x9211d457u, 0x20c0a087u,
+    0xb210d457u, 0x92815457u, 0x4a809457u, 0x9221d6d7u,
+    0x21c0a087u, 0xb220d6d7u, 0x92d156d7u, 0x4ad096d7u,
+    0x02868457u, 0x9231d6d7u, 0x22c0a087u, 0xb230d6d7u,
+    0x92d156d7u, 0x4ad096d7u, 0x02868457u, 0x9241d6d7u,
+    0x23c0a087u, 0xb240d6d7u, 0x92d156d7u, 0x4ad096d7u,
+    0x02868457u, 0x10028313u, 0x020362a7u, 0x12028313u,
+    0x02036327u, 0x14028313u, 0x020363a7u, 0x16028313u,
+    0x02036427u, 0x30500073u
+};
+
 #define OPENGPU_FRAGMENT_COLOR_BYTES (sizeof(opengpu_fragment_color))
 #define OPENGPU_FRAGMENT_SAMPLE_BYTES (sizeof(opengpu_fragment_sample))
 #define OPENGPU_VERTEX_PASSTHROUGH_BYTES (sizeof(opengpu_vertex_passthrough))
+#define OPENGPU_VERTEX_MVP_BYTES (sizeof(opengpu_vertex_mvp))
 
 #endif
