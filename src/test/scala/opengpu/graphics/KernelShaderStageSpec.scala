@@ -1219,10 +1219,16 @@ class KernelShaderStageSpec extends AnyFlatSpec {
       val py = Seq(negOne, negOne, one)
       val pz = Seq(BigInt(0), BigInt(0), BigInt(0))
       val pw = Seq(one, one, one)
-      Seq(px, py, pz, pw).zipWithIndex.foreach { case (attr, attrIndex) =>
-        attr.zipWithIndex.foreach { case (value, lane) =>
-          mem.putWord(BigInt(0x8000) + attrIndex * 32 + lane * 4, value)
-        }
+      val color = Seq(BigInt("ffff00ff", 16), BigInt("ffff00ff", 16),
+        BigInt("ffff00ff", 16))
+      val depth = Seq(BigInt(0x10), BigInt(0x10), BigInt(0x10))
+      val tu = Seq(BigInt(0), BigInt("10000", 16), BigInt("8000", 16))
+      val tv = Seq(BigInt(0), BigInt(0), BigInt("10000", 16))
+      Seq(px, py, pz, pw, color, depth, tu, tv).zipWithIndex.foreach {
+        case (attr, attrIndex) =>
+          attr.zipWithIndex.foreach { case (value, lane) =>
+            mem.putWord(BigInt(0x8000) + attrIndex * 32 + lane * 4, value)
+          }
       }
       val matrix = Seq(
         one, BigInt(0), BigInt(0), BigInt(0),
@@ -1237,22 +1243,29 @@ class KernelShaderStageSpec extends AnyFlatSpec {
 
       val result = runShader(dut, mem, limit = 20000)
       assert(result.traps.isEmpty, show(result.traps))
-      val raw = storedWord(result.writes, BigInt(0x81c0))
-      val cx = storedWord(result.writes, BigInt(0x8100))
-      val cy = storedWord(result.writes, BigInt(0x8120))
-      val cz = storedWord(result.writes, BigInt(0x8140))
-      val cw = storedWord(result.writes, BigInt(0x8160))
-      val m00ld = storedWord(result.writes, BigInt(0x81a0))
-      val partial = storedWord(result.writes, BigInt(0x81e0))
-      val f2ld = storedWord(result.writes, BigInt(0x81d0))
-      assert(cx == BigInt("ffff8000", 16) &&
-        cy == BigInt("ffff0000", 16) &&
-        cz == BigInt(0) &&
-        cw == BigInt("10000", 16),
-        s"m00ld 0x${m00ld.toString(16)} partial 0x${partial.toString(16)} " +
-          s"f2ld 0x${f2ld.toString(16)} rawx 0x${raw.toString(16)} " +
-          s"cx 0x${cx.toString(16)} cy 0x${cy.toString(16)} " +
-          s"cz 0x${cz.toString(16)} cw 0x${cw.toString(16)}")
+      def laneWord(base: Int, lane: Int) =
+        storedWord(result.writes, BigInt(base) + lane * 4)
+      val expectClip = Seq(
+        Seq(BigInt("ffff8000", 16), BigInt("ffff0000", 16), BigInt(0),
+          BigInt("10000", 16)),
+        Seq(BigInt("18000", 16), BigInt("ffff0000", 16), BigInt(0),
+          BigInt("10000", 16)),
+        Seq(BigInt("ffff8000", 16), BigInt("10000", 16), BigInt(0),
+          BigInt("10000", 16)))
+      val clipBases = Seq(0x8100, 0x8120, 0x8140, 0x8160)
+      (0 until 3).foreach { lane =>
+        val got = clipBases.map(base => laneWord(base, lane))
+        assert(got == expectClip(lane),
+          s"lane $lane clip ${got.map(v => f"0x$v%x")}")
+        assert(laneWord(0x8180, lane) == color(lane),
+          s"lane $lane color 0x${laneWord(0x8180, lane).toString(16)}")
+        assert(laneWord(0x81a0, lane) == BigInt(0),
+          s"lane $lane depth 0x${laneWord(0x81a0, lane).toString(16)}")
+        assert(laneWord(0x81c0, lane) == tu(lane) &&
+          laneWord(0x81e0, lane) == tv(lane),
+          s"lane $lane uv 0x${laneWord(0x81c0, lane).toString(16)} " +
+            s"0x${laneWord(0x81e0, lane).toString(16)}")
+      }
       dut.io.completion.bits.success.expect(true.B)
     }
   }
