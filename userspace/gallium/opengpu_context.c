@@ -2,7 +2,8 @@
 /* Gallium context. A draw is a GPU vertex-core submit: the vertex shader and
  * the fragment shader binaries in opengpu_shaders.h run on the shader cores,
  * and the RTL rasterizes the triangle. A TGSI program that is not a colour
- * copy, a mat4 position multiply, or a 2D texture sample fails the draw.
+ * copy, a mat4 position multiply, a 2D texture sample, or that sample
+ * multiplied by an interpolated colour fails the draw.
  * The Gallium draw module is not used. */
 #include "opengpu_internal.h"
 #include "opengpu_shaders.h"
@@ -42,6 +43,7 @@ struct opengpu_shader {
     int color_imm;
     float color[4];
     int samples;
+    int modulate;
     int sample_sem;
     int sample_sem_index;
     int mvp;
@@ -51,6 +53,8 @@ struct opengpu_shader {
 
 /* temp_file value: the temporary holds the vtex.sample result. */
 #define TEMP_SAMPLE (-2)
+/* temp_file value: the temporary holds sample * colour. */
+#define TEMP_MODULATE (-4)
 /* temp_file value: the temporary holds mat4 * position. */
 #define TEMP_MVP (-3)
 
@@ -280,6 +284,7 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
     float imm[4];
     int nimm = 0, saw_end = 0, i;
     int mvp_used = 0, mvp_temp = -1, mvp_in = -1;
+    int saw_modulate = 0;
 
     if (!state || state->type != PIPE_SHADER_IR_TGSI || !state->tokens)
         return NULL;
@@ -415,6 +420,67 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                 shader->sample_sem_index = sem_in_index[src];
                 break;
             }
+            /* gl_FragColor = texture2D(tex, uv) * v_color. One source is the
+             * sample temporary. The other is the colour varying. */
+            if (want_fs && insn->Instruction.Opcode == TGSI_OPCODE_MUL) {
+                int sample_src = -1, color_src = -1, which;
+
+                if (shader->modulate || saw_modulate ||
+                    insn->Instruction.Saturate ||
+                    insn->Instruction.NumDstRegs != 1 ||
+                    insn->Instruction.NumSrcRegs != 2 ||
+                    insn->Dst[0].Register.Indirect ||
+                    insn->Dst[0].Register.WriteMask != TGSI_WRITEMASK_XYZW)
+                    goto fail;
+                for (which = 0; which < 2; which++) {
+                    unsigned src_file = insn->Src[which].Register.File;
+                    int src_index = insn->Src[which].Register.Index;
+
+                    if (!plain_swizzle(&insn->Src[which].Register))
+                        goto fail;
+                    if (src_file == TGSI_FILE_TEMPORARY) {
+                        if (src_index < 0 || src_index >= (int)OPENGPU_ATTRIBS)
+                            goto fail;
+                        if (temp_file[src_index] == TEMP_SAMPLE) {
+                            if (sample_src >= 0)
+                                goto fail;
+                            sample_src = src_index;
+                            continue;
+                        }
+                        if (temp_file[src_index] < 0)
+                            goto fail;
+                        src_file = (unsigned)temp_file[src_index];
+                        src_index = temp_index[src_index];
+                    }
+                    if (src_file != TGSI_FILE_INPUT || src_index < 0 ||
+                        src_index >= (int)OPENGPU_ATTRIBS ||
+                        sem_in[src_index] < 0 ||
+                        !color_semantic((unsigned)sem_in[src_index]))
+                        goto fail;
+                    if (color_src >= 0)
+                        goto fail;
+                    color_src = src_index;
+                }
+                if (sample_src < 0 || color_src < 0)
+                    goto fail;
+                index = (unsigned)insn->Dst[0].Register.Index;
+                if (index >= OPENGPU_ATTRIBS)
+                    goto fail;
+                shader->color_sem = sem_in[color_src];
+                shader->color_sem_index = sem_in_index[color_src];
+                saw_modulate = 1;
+                if (insn->Dst[0].Register.File == TGSI_FILE_TEMPORARY) {
+                    temp_file[index] = TEMP_MODULATE;
+                    temp_index[index] = color_src;
+                    break;
+                }
+                if (insn->Dst[0].Register.File != TGSI_FILE_OUTPUT ||
+                    sem_out[index] < 0 ||
+                    !color_semantic((unsigned)sem_out[index]))
+                    goto fail;
+                shader->modulate = 1;
+                break;
+            }
             if (insn->Instruction.Opcode != TGSI_OPCODE_MOV ||
                 insn->Instruction.Saturate || insn->Instruction.NumDstRegs != 1 ||
                 insn->Instruction.NumSrcRegs != 1)
@@ -491,6 +557,12 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                             goto fail;
                         break;
                     }
+                    if (temp_file[src_index] == TEMP_MODULATE) {
+                        if (!want_fs || !color_semantic(sem))
+                            goto fail;
+                        shader->modulate = 1;
+                        break;
+                    }
                     if (temp_file[src_index] < 0)
                         goto fail;
                     src_file = (unsigned)temp_file[src_index];
@@ -548,7 +620,8 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
          !shader->color_imm) ||
         (want_fs && shader->samples && shader->sample_sem < 0) ||
         (!want_fs && shader->pos_src < 0) ||
-        (mvp_used != 0 && !shader->mvp)) {
+        (mvp_used != 0 && !shader->mvp) ||
+        (saw_modulate && !shader->modulate)) {
         FREE(shader);
         return NULL;
     }
@@ -593,7 +666,11 @@ static void bind_fs_state(struct pipe_context *pipe, void *hw)
     ctx->fs = hw;
     if (!hw)
         return;
-    if (ctx->fs->samples) {
+    if (ctx->fs->modulate) {
+        if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_modulate,
+                                 OPENGPU_FRAGMENT_MODULATE_BYTES))
+            reject("fragment shader bind failed");
+    } else if (ctx->fs->samples) {
         if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_sample,
                                  OPENGPU_FRAGMENT_SAMPLE_BYTES))
             reject("fragment shader bind failed");
@@ -1060,6 +1137,18 @@ static int pack_one(struct opengpu_context *ctx, unsigned vertex,
             uc < 2)
             return -1;
         memcpy(uv, up, sizeof(uv));
+    }
+    if (fs->modulate) {
+        const struct opengpu_link *clink =
+            find_link(vs, fs->color_sem, fs->color_sem_index);
+        unsigned cc = 0;
+        const uint8_t *cp;
+
+        if (!clink || clink->imm || clink->src < 0)
+            return -1;
+        cp = attrib_ptr(ctx, (unsigned)clink->src, vertex, &cc);
+        if (!cp || load_color(cp, ctx->ve[clink->src].src_format, cc, c))
+            return -1;
     }
     if (vs->mvp) {
         /* The vertex core multiplies these floats. Q16.16 is its output. */

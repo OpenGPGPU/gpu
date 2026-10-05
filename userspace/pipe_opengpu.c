@@ -13,7 +13,9 @@
 
 #define PIPE_FS_SLOT 2u
 #define PIPE_KERNARG_SLOT 3u
-#define PIPE_FS_GEM_BYTES 128u
+/* The kernel requires a multiple of 64, up to the 256-instruction
+ * sandbox. 128 bytes only holds the copy and sample shaders. */
+#define PIPE_FS_GEM_BYTES 256u
 #define PIPE_KERNARG_BYTES 640u
 #define PIPE_CS_SLOT 1u
 #define PIPE_CS_KERNARG_SLOT 2u
