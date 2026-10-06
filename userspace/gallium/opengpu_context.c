@@ -3,7 +3,7 @@
  * the fragment shader binaries in opengpu_shaders.h run on the shader cores,
  * and the RTL rasterizes the triangle. A TGSI program that is not a colour
  * copy, a mat4 position multiply, a 2D texture sample, or that sample
- * multiplied by an interpolated colour fails the draw.
+ * multiplied by an interpolated colour or a fragment uniform fails the draw.
  * The Gallium draw module is not used. */
 #include "opengpu_internal.h"
 #include "opengpu_shaders.h"
@@ -44,6 +44,9 @@ struct opengpu_shader {
     float color[4];
     int samples;
     int modulate;
+    /* The modulate colour is fragment CONST[0][0], packed into the
+     * interpolant. The fragment core still does the multiply. */
+    int color_const;
     int sample_sem;
     int sample_sem_index;
     int mvp;
@@ -78,6 +81,8 @@ struct opengpu_context {
     int scissor_set;
     float mvp[16];
     int mvp_set;
+    float fs_const[4];
+    int fs_const_set;
     struct pipe_opengpu_resource *packed;
     uint32_t packed_bytes;
 };
@@ -420,10 +425,10 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                 shader->sample_sem_index = sem_in_index[src];
                 break;
             }
-            /* gl_FragColor = texture2D(tex, uv) * v_color. One source is the
-             * sample temporary. The other is the colour varying. */
+            /* gl_FragColor = texture2D(tex, uv) * colour. One source is the
+             * sample temporary. The other is a colour varying or CONST[0][0]. */
             if (want_fs && insn->Instruction.Opcode == TGSI_OPCODE_MUL) {
-                int sample_src = -1, color_src = -1, which;
+                int sample_src = -1, color_src = -1, color_const = 0, which;
 
                 if (shader->modulate || saw_modulate ||
                     insn->Instruction.Saturate ||
@@ -452,22 +457,33 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                         src_file = (unsigned)temp_file[src_index];
                         src_index = temp_index[src_index];
                     }
+                    if (src_file == TGSI_FILE_CONSTANT) {
+                        if (color_const || color_src >= 0 ||
+                            !const_column(&insn->Src[which], 0))
+                            goto fail;
+                        color_const = 1;
+                        continue;
+                    }
                     if (src_file != TGSI_FILE_INPUT || src_index < 0 ||
                         src_index >= (int)OPENGPU_ATTRIBS ||
                         sem_in[src_index] < 0 ||
                         !color_semantic((unsigned)sem_in[src_index]))
                         goto fail;
-                    if (color_src >= 0)
+                    if (color_src >= 0 || color_const)
                         goto fail;
                     color_src = src_index;
                 }
-                if (sample_src < 0 || color_src < 0)
+                if (sample_src < 0 || (color_src < 0 && !color_const))
                     goto fail;
                 index = (unsigned)insn->Dst[0].Register.Index;
                 if (index >= OPENGPU_ATTRIBS)
                     goto fail;
-                shader->color_sem = sem_in[color_src];
-                shader->color_sem_index = sem_in_index[color_src];
+                if (color_const) {
+                    shader->color_const = 1;
+                } else {
+                    shader->color_sem = sem_in[color_src];
+                    shader->color_sem_index = sem_in_index[color_src];
+                }
                 saw_modulate = 1;
                 if (insn->Dst[0].Register.File == TGSI_FILE_TEMPORARY) {
                     temp_file[index] = TEMP_MODULATE;
@@ -1139,16 +1155,22 @@ static int pack_one(struct opengpu_context *ctx, unsigned vertex,
         memcpy(uv, up, sizeof(uv));
     }
     if (fs->modulate) {
-        const struct opengpu_link *clink =
-            find_link(vs, fs->color_sem, fs->color_sem_index);
-        unsigned cc = 0;
-        const uint8_t *cp;
+        if (fs->color_const) {
+            if (!ctx->fs_const_set)
+                return -1;
+            memcpy(c, ctx->fs_const, sizeof(c));
+        } else {
+            const struct opengpu_link *clink =
+                find_link(vs, fs->color_sem, fs->color_sem_index);
+            unsigned cc = 0;
+            const uint8_t *cp;
 
-        if (!clink || clink->imm || clink->src < 0)
-            return -1;
-        cp = attrib_ptr(ctx, (unsigned)clink->src, vertex, &cc);
-        if (!cp || load_color(cp, ctx->ve[clink->src].src_format, cc, c))
-            return -1;
+            if (!clink || clink->imm || clink->src < 0)
+                return -1;
+            cp = attrib_ptr(ctx, (unsigned)clink->src, vertex, &cc);
+            if (!cp || load_color(cp, ctx->ve[clink->src].src_format, cc, c))
+                return -1;
+        }
     }
     if (vs->mvp) {
         /* The vertex core multiplies these floats. Q16.16 is its output. */
@@ -1534,6 +1556,26 @@ static void set_constant_buffer(struct pipe_context *pipe,
         if (src) {
             memcpy(ctx->mvp, src, sizeof(ctx->mvp));
             ctx->mvp_set = 1;
+        }
+    }
+    if (shader == PIPE_SHADER_FRAGMENT && index == 0)
+        ctx->fs_const_set = 0;
+    if (shader == PIPE_SHADER_FRAGMENT && index == 0 && buf &&
+        buf->buffer_size >= sizeof(ctx->fs_const)) {
+        const uint8_t *fsrc = NULL;
+
+        if (buf->user_buffer) {
+            fsrc = buf->user_buffer;
+        } else if (buf->buffer) {
+            uint8_t *map = pipe_opengpu_resource_map(
+                opengpu_resource(buf->buffer)->gpu);
+
+            if (map)
+                fsrc = map + buf->buffer_offset;
+        }
+        if (fsrc) {
+            memcpy(ctx->fs_const, fsrc, sizeof(ctx->fs_const));
+            ctx->fs_const_set = 1;
         }
     }
     if (take_ownership && buf && buf->buffer) {
