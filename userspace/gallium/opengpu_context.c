@@ -6,6 +6,8 @@
  * multiplied by an interpolated colour, a fragment vec4, or a replicated
  * float uniform fails the draw. A vec2 sprite position may be padded to
  * (x, y, 0, 1) when it is packed; the vertex core still multiplies it.
+ * A fragment vec4 uniform may be copied into that colour interpolant.
+ * The fragment core copies it.
  * The Gallium draw module is not used. */
 #include "opengpu_internal.h"
 #include "opengpu_shaders.h"
@@ -65,6 +67,8 @@ struct opengpu_shader {
 #define TEMP_MODULATE (-4)
 /* temp_file value: the temporary holds mat4 * position. */
 #define TEMP_MVP (-3)
+/* temp_file value: the temporary holds fragment CONST[0][0]. */
+#define TEMP_CONST (-5)
 
 struct opengpu_context {
     struct pipe_context base;
@@ -365,6 +369,47 @@ static int match_mvp(const struct tgsi_full_instruction *insn, int *used,
     return 0;
 }
 
+/* gl_FragColor = u_color. The uniform is packed into the colour interpolant
+ * and the fragment core copies it. Returns 0 when this MOV is that copy.
+ * A temporary may hold the uniform first. */
+static int match_fill_mov(const struct tgsi_full_instruction *insn,
+                          int *temp_file, int *temp_index,
+                          struct opengpu_shader *shader, const int *sem_out)
+{
+    const struct tgsi_dst_register *dst = &insn->Dst[0].Register;
+    const struct tgsi_src_register *src = &insn->Src[0].Register;
+    int from_const;
+
+    if (insn->Instruction.Opcode != TGSI_OPCODE_MOV ||
+        insn->Instruction.Saturate || insn->Instruction.NumDstRegs != 1 ||
+        insn->Instruction.NumSrcRegs != 1 || dst->Indirect ||
+        dst->WriteMask != TGSI_WRITEMASK_XYZW)
+        return -1;
+    from_const = const_column(&insn->Src[0], 0);
+    if (!from_const) {
+        if (src->File != TGSI_FILE_TEMPORARY || src->Indirect ||
+            src->Index < 0 || src->Index >= (int)OPENGPU_ATTRIBS ||
+            temp_file[src->Index] != TEMP_CONST || !plain_swizzle(src))
+            return -1;
+    }
+    if (dst->File == TGSI_FILE_TEMPORARY) {
+        if (!from_const || dst->Index >= OPENGPU_ATTRIBS)
+            return -1;
+        temp_file[dst->Index] = TEMP_CONST;
+        temp_index[dst->Index] = 0;
+        return 0;
+    }
+    if (dst->File != TGSI_FILE_OUTPUT || dst->Index >= OPENGPU_ATTRIBS ||
+        sem_out[dst->Index] < 0 ||
+        !color_semantic((unsigned)sem_out[dst->Index]) ||
+        shader->color_const || shader->color_src >= 0 || shader->color_imm ||
+        shader->samples || shader->modulate)
+        return -1;
+    shader->color_const = 1;
+    shader->color_const_chan = -1;
+    return 0;
+}
+
 /* Record which input feeds gl_Position and which feeds the colour. Anything
  * other than MOV/END, a mat4 multiply, or a write the fixed vertex format
  * cannot carry, fails. */
@@ -612,6 +657,17 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                 shader->modulate = 1;
                 break;
             }
+            if (want_fs && insn->Instruction.Opcode == TGSI_OPCODE_MOV &&
+                insn->Instruction.NumSrcRegs == 1 &&
+                (insn->Src[0].Register.File == TGSI_FILE_CONSTANT ||
+                 (insn->Src[0].Register.File == TGSI_FILE_TEMPORARY &&
+                  insn->Src[0].Register.Index >= 0 &&
+                  insn->Src[0].Register.Index < (int)OPENGPU_ATTRIBS &&
+                  temp_file[insn->Src[0].Register.Index] == TEMP_CONST))) {
+                if (match_fill_mov(insn, temp_file, temp_index, shader, sem_out))
+                    goto fail;
+                break;
+            }
             if (insn->Instruction.Opcode != TGSI_OPCODE_MOV ||
                 insn->Instruction.Saturate || insn->Instruction.NumDstRegs != 1 ||
                 insn->Instruction.NumSrcRegs != 1)
@@ -748,7 +804,7 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
     tgsi_parse_free(&parse);
     if (!saw_end ||
         (want_fs && !shader->samples && shader->color_src < 0 &&
-         !shader->color_imm) ||
+         !shader->color_imm && !shader->color_const) ||
         (want_fs && shader->samples && shader->sample_sem < 0) ||
         (!want_fs && shader->pos_src < 0) ||
         (mvp_used != 0 && !shader->mvp) ||
@@ -1256,8 +1312,19 @@ static int pack_one(struct opengpu_context *ctx, unsigned vertex,
 
         if (!cp || load_color(cp, ctx->ve[link->src].src_format, cc, c))
             return -1;
-    } else if (!fs->samples && !fs->color_imm) {
+    } else if (!fs->samples && !fs->color_imm && !fs->color_const) {
         return -1;
+    }
+    if (fs->color_const && !fs->modulate) {
+        if (!ctx->fs_const_set)
+            return -1;
+        if (fs->color_const_chan >= 0) {
+            float s = ctx->fs_const[fs->color_const_chan];
+
+            c[0] = c[1] = c[2] = c[3] = s;
+        } else {
+            memcpy(c, ctx->fs_const, sizeof(c));
+        }
     }
     if (fs->samples) {
         unsigned uc = 0;
