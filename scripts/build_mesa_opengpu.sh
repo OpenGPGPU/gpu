@@ -101,6 +101,12 @@ mkdir -p "$PREFIX/bin"
     "$GPU_DIR/userspace/examples/gl_tint.c" \
     -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
     -lEGL -lGLESv2 -lgbm -ldrm
+"$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
+    -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
+    -o "$PREFIX/bin/opengpu_gl_opacity" \
+    "$GPU_DIR/userspace/examples/gl_opacity.c" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -lEGL -lGLESv2 -lgbm -ldrm
 
 echo "Built $PREFIX/bin/opengpu_gl_triangle"
 
@@ -126,6 +132,7 @@ if [ -d "$DRIVER_OUTPUT" ]; then
     cp -L "$PREFIX/bin/opengpu_gl_textransform" "$DRIVER_OUTPUT/opengpu_gl_textransform.bin"
     cp -L "$PREFIX/bin/opengpu_gl_modulate" "$DRIVER_OUTPUT/opengpu_gl_modulate.bin"
     cp -L "$PREFIX/bin/opengpu_gl_tint" "$DRIVER_OUTPUT/opengpu_gl_tint.bin"
+    cp -L "$PREFIX/bin/opengpu_gl_opacity" "$DRIVER_OUTPUT/opengpu_gl_opacity.bin"
     aarch64-linux-gnu-strip "$DRIVER_OUTPUT"/libEGL.so.1 \
         "$DRIVER_OUTPUT"/libGLESv2.so.2 "$DRIVER_OUTPUT"/libgbm.so.1 \
         "$DRIVER_OUTPUT"/libglapi.so.0 "$DRIVER_OUTPUT"/libdrm.so.2 \
@@ -137,7 +144,8 @@ if [ -d "$DRIVER_OUTPUT" ]; then
         "$DRIVER_OUTPUT"/opengpu_gl_transform.bin \
         "$DRIVER_OUTPUT"/opengpu_gl_textransform.bin \
         "$DRIVER_OUTPUT"/opengpu_gl_modulate.bin \
-        "$DRIVER_OUTPUT"/opengpu_gl_tint.bin
+        "$DRIVER_OUTPUT"/opengpu_gl_tint.bin \
+        "$DRIVER_OUTPUT"/opengpu_gl_opacity.bin
     cp "$GPU_DIR/userspace/examples/opengpu_gl_triangle.sh" \
         "$DRIVER_OUTPUT/opengpu_gl_triangle"
     cp "$GPU_DIR/userspace/examples/opengpu_gl_texture.sh" \
@@ -154,6 +162,8 @@ if [ -d "$DRIVER_OUTPUT" ]; then
         "$DRIVER_OUTPUT/opengpu_gl_modulate"
     cp "$GPU_DIR/userspace/examples/opengpu_gl_tint.sh" \
         "$DRIVER_OUTPUT/opengpu_gl_tint"
+    cp "$GPU_DIR/userspace/examples/opengpu_gl_opacity.sh" \
+        "$DRIVER_OUTPUT/opengpu_gl_opacity"
     chmod +x "$DRIVER_OUTPUT/opengpu_gl_triangle" \
         "$DRIVER_OUTPUT/opengpu_gl_triangle.bin" \
         "$DRIVER_OUTPUT/opengpu_gl_texture" \
@@ -169,6 +179,8 @@ if [ -d "$DRIVER_OUTPUT" ]; then
         "$DRIVER_OUTPUT/opengpu_gl_modulate" \
         "$DRIVER_OUTPUT/opengpu_gl_modulate.bin" \
         "$DRIVER_OUTPUT/opengpu_gl_tint" \
-        "$DRIVER_OUTPUT/opengpu_gl_tint.bin"
+        "$DRIVER_OUTPUT/opengpu_gl_tint.bin" \
+        "$DRIVER_OUTPUT/opengpu_gl_opacity" \
+        "$DRIVER_OUTPUT/opengpu_gl_opacity.bin"
     echo "Staged GL triangle into $DRIVER_OUTPUT"
 fi

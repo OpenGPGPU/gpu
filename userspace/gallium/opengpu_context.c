@@ -3,7 +3,8 @@
  * the fragment shader binaries in opengpu_shaders.h run on the shader cores,
  * and the RTL rasterizes the triangle. A TGSI program that is not a colour
  * copy, a mat4 position multiply, a 2D texture sample, or that sample
- * multiplied by an interpolated colour or a fragment uniform fails the draw.
+ * multiplied by an interpolated colour, a fragment vec4, or a replicated
+ * float uniform fails the draw.
  * The Gallium draw module is not used. */
 #include "opengpu_internal.h"
 #include "opengpu_shaders.h"
@@ -45,8 +46,11 @@ struct opengpu_shader {
     int samples;
     int modulate;
     /* The modulate colour is fragment CONST[0][0], packed into the
-     * interpolant. The fragment core still does the multiply. */
+     * interpolant. The fragment core still does the multiply.
+     * color_const_chan is -1 for the whole vec4, or 0..3 when one
+     * channel is replicated (a float opacity). */
     int color_const;
+    int color_const_chan;
     int sample_sem;
     int sample_sem_index;
     int mvp;
@@ -186,6 +190,23 @@ static int const_column(const struct tgsi_full_src_register *src, int index)
     return 1;
 }
 
+/* CONST[0][index].cccc, one float replicated across the colour. */
+static int const_scalar(const struct tgsi_full_src_register *src, int index,
+                        unsigned channel)
+{
+    const struct tgsi_src_register *reg = &src->Register;
+
+    if (reg->File != TGSI_FILE_CONSTANT || reg->Indirect ||
+        reg->Index != index || reg->Negate || reg->Absolute ||
+        reg->SwizzleX != channel || reg->SwizzleY != channel ||
+        reg->SwizzleZ != channel || reg->SwizzleW != channel)
+        return 0;
+    if (reg->Dimension &&
+        (src->Dimension.Indirect || src->Dimension.Index != 0))
+        return 0;
+    return 1;
+}
+
 /* Column index of CONST[0][n], or -1. The broadcast channel is that column. */
 static int mvp_column(const struct tgsi_full_src_register *a,
                       const struct tgsi_full_src_register *b,
@@ -315,6 +336,7 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
     shader->color_src = -1;
     shader->color_sem = -1;
     shader->sample_sem = -1;
+    shader->color_const_chan = -1;
 
     while (!tgsi_parse_end_of_tokens(&parse)) {
         const struct tgsi_full_instruction *insn;
@@ -426,9 +448,11 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                 break;
             }
             /* gl_FragColor = texture2D(tex, uv) * colour. One source is the
-             * sample temporary. The other is a colour varying or CONST[0][0]. */
+             * sample temporary. The other is a colour varying, CONST[0][0],
+             * or one channel of that constant replicated across RGBA. */
             if (want_fs && insn->Instruction.Opcode == TGSI_OPCODE_MUL) {
                 int sample_src = -1, color_src = -1, color_const = 0, which;
+                int const_chan = -1;
 
                 if (shader->modulate || saw_modulate ||
                     insn->Instruction.Saturate ||
@@ -440,7 +464,27 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                 for (which = 0; which < 2; which++) {
                     unsigned src_file = insn->Src[which].Register.File;
                     int src_index = insn->Src[which].Register.Index;
+                    unsigned chan;
 
+                    if (src_file == TGSI_FILE_CONSTANT) {
+                        if (color_const || color_src >= 0)
+                            goto fail;
+                        if (const_column(&insn->Src[which], 0)) {
+                            color_const = 1;
+                            const_chan = -1;
+                            continue;
+                        }
+                        for (chan = 0; chan < 4; chan++) {
+                            if (const_scalar(&insn->Src[which], 0, chan)) {
+                                color_const = 1;
+                                const_chan = (int)chan;
+                                break;
+                            }
+                        }
+                        if (!color_const)
+                            goto fail;
+                        continue;
+                    }
                     if (!plain_swizzle(&insn->Src[which].Register))
                         goto fail;
                     if (src_file == TGSI_FILE_TEMPORARY) {
@@ -456,13 +500,6 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                             goto fail;
                         src_file = (unsigned)temp_file[src_index];
                         src_index = temp_index[src_index];
-                    }
-                    if (src_file == TGSI_FILE_CONSTANT) {
-                        if (color_const || color_src >= 0 ||
-                            !const_column(&insn->Src[which], 0))
-                            goto fail;
-                        color_const = 1;
-                        continue;
                     }
                     if (src_file != TGSI_FILE_INPUT || src_index < 0 ||
                         src_index >= (int)OPENGPU_ATTRIBS ||
@@ -480,6 +517,7 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                     goto fail;
                 if (color_const) {
                     shader->color_const = 1;
+                    shader->color_const_chan = const_chan;
                 } else {
                     shader->color_sem = sem_in[color_src];
                     shader->color_sem_index = sem_in_index[color_src];
@@ -1158,7 +1196,13 @@ static int pack_one(struct opengpu_context *ctx, unsigned vertex,
         if (fs->color_const) {
             if (!ctx->fs_const_set)
                 return -1;
-            memcpy(c, ctx->fs_const, sizeof(c));
+            if (fs->color_const_chan >= 0) {
+                float s = ctx->fs_const[fs->color_const_chan];
+
+                c[0] = c[1] = c[2] = c[3] = s;
+            } else {
+                memcpy(c, ctx->fs_const, sizeof(c));
+            }
         } else {
             const struct opengpu_link *clink =
                 find_link(vs, fs->color_sem, fs->color_sem_index);
