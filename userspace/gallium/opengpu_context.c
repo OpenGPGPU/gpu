@@ -4,7 +4,8 @@
  * and the RTL rasterizes the triangle. A TGSI program that is not a colour
  * copy, a mat4 position multiply, a 2D texture sample, or that sample
  * multiplied by an interpolated colour, a fragment vec4, or a replicated
- * float uniform fails the draw.
+ * float uniform fails the draw. A vec2 sprite position may be padded to
+ * (x, y, 0, 1) when it is packed; the vertex core still multiplies it.
  * The Gallium draw module is not used. */
 #include "opengpu_internal.h"
 #include "opengpu_shaders.h"
@@ -236,6 +237,77 @@ static int mvp_column(const struct tgsi_full_src_register *a,
     return index;
 }
 
+/* gl_Position = u_mvp * vec4(pos.xy, 0, 1). Mesa drops the zero column and
+ * adds column 3, the w=1 term, as a vector. The packed vertex is still
+ * (x, y, 0, 1), so the full matrix program computes the same product.
+ * One MAD is "column * component + column 3". The other adds that
+ * temporary. Returns 0 when this MAD is part of that product. */
+static int match_sprite_mad(const struct tgsi_full_instruction *insn,
+                            int *sprite_temp, int *sprite_in, int *sprite_xy,
+                            int *sprite_w, struct opengpu_shader *shader,
+                            const int *sem_out)
+{
+    const struct tgsi_full_src_register *col, *in, *add;
+    const struct tgsi_dst_register *dst = &insn->Dst[0].Register;
+    int column, input;
+
+    if (insn->Instruction.Opcode != TGSI_OPCODE_MAD ||
+        insn->Instruction.Saturate || insn->Instruction.NumDstRegs != 1 ||
+        insn->Instruction.NumSrcRegs != 3 || dst->Indirect ||
+        dst->WriteMask != TGSI_WRITEMASK_XYZW)
+        return -1;
+    add = &insn->Src[2];
+    if (insn->Src[0].Register.File == TGSI_FILE_CONSTANT) {
+        col = &insn->Src[0];
+        in = &insn->Src[1];
+    } else if (insn->Src[1].Register.File == TGSI_FILE_CONSTANT) {
+        col = &insn->Src[1];
+        in = &insn->Src[0];
+    } else {
+        return -1;
+    }
+    column = col->Register.Index;
+    if ((column != 0 && column != 1) || !const_column(col, column) ||
+        in->Register.File != TGSI_FILE_INPUT ||
+        !broadcast_swizzle(&in->Register, (unsigned)column))
+        return -1;
+    input = in->Register.Index;
+    if (input < 0 || input >= (int)OPENGPU_ATTRIBS ||
+        (*sprite_in >= 0 && *sprite_in != input) ||
+        (*sprite_xy & (1 << column)))
+        return -1;
+    if (add->Register.File == TGSI_FILE_CONSTANT) {
+        if (*sprite_w || !const_column(add, 3) ||
+            dst->File != TGSI_FILE_TEMPORARY ||
+            dst->Index >= OPENGPU_ATTRIBS)
+            return -1;
+        *sprite_w = 1;
+        *sprite_temp = dst->Index;
+    } else if (add->Register.File == TGSI_FILE_TEMPORARY) {
+        if (*sprite_temp < 0 || add->Register.Index != *sprite_temp ||
+            !plain_swizzle(&add->Register))
+            return -1;
+        if (dst->File == TGSI_FILE_TEMPORARY) {
+            if (dst->Index != *sprite_temp)
+                return -1;
+        } else if (dst->File == TGSI_FILE_OUTPUT) {
+            if (dst->Index >= OPENGPU_ATTRIBS ||
+                sem_out[dst->Index] != TGSI_SEMANTIC_POSITION ||
+                shader->mvp)
+                return -1;
+            shader->mvp = 1;
+            shader->pos_src = input;
+        } else {
+            return -1;
+        }
+    } else {
+        return -1;
+    }
+    *sprite_in = input;
+    *sprite_xy |= 1 << column;
+    return 0;
+}
+
 /* gl_Position = u_mvp * pos. Mesa may emit the four columns in any order.
  * The first term is a MUL into a temporary. Each later term is a MAD that
  * adds the same temporary. The last term may write that temporary or
@@ -311,6 +383,7 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
     int nimm = 0, saw_end = 0, i;
     int mvp_used = 0, mvp_temp = -1, mvp_in = -1;
     int saw_modulate = 0;
+    int sprite_temp = -1, sprite_in = -1, sprite_xy = 0, sprite_w = 0;
 
     if (!state || state->type != PIPE_SHADER_IR_TGSI || !state->tokens)
         return NULL;
@@ -394,12 +467,16 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
             if (!want_fs &&
                 (insn->Instruction.Opcode == TGSI_OPCODE_MUL ||
                  insn->Instruction.Opcode == TGSI_OPCODE_MAD)) {
-                if (match_mvp(insn, &mvp_used, &mvp_temp, &mvp_in, shader,
-                              sem_out))
-                    goto fail;
-                temp_file[mvp_temp] = TEMP_MVP;
-                temp_index[mvp_temp] = mvp_in;
-                break;
+                if (!match_mvp(insn, &mvp_used, &mvp_temp, &mvp_in, shader,
+                               sem_out)) {
+                    temp_file[mvp_temp] = TEMP_MVP;
+                    temp_index[mvp_temp] = mvp_in;
+                    break;
+                }
+                if (!match_sprite_mad(insn, &sprite_temp, &sprite_in,
+                                      &sprite_xy, &sprite_w, shader, sem_out))
+                    break;
+                goto fail;
             }
             if (insn->Instruction.Opcode == TGSI_OPCODE_TEX) {
                 unsigned src_file, src;
@@ -675,7 +752,9 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
         (want_fs && shader->samples && shader->sample_sem < 0) ||
         (!want_fs && shader->pos_src < 0) ||
         (mvp_used != 0 && !shader->mvp) ||
-        (saw_modulate && !shader->modulate)) {
+        (saw_modulate && !shader->modulate) ||
+        ((sprite_xy || sprite_w) &&
+         (!shader->mvp || sprite_xy != 0x3 || !sprite_w))) {
         FREE(shader);
         return NULL;
     }
