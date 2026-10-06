@@ -5,7 +5,8 @@
  * by the uniform matrix at kernarg byte 512, then by 65536.0 at byte 576.
  * The same vertex program copies colour and the Q16.16 UVs.
  * The fragment core copies the interpolated colour, samples a texture,
- * or multiplies that texel by the interpolated colour. */
+ * multiplies that texel by the interpolated colour, or multiplies again
+ * by the opacity word at byte 288 of the fragment kernarg bank. */
 #ifndef OPENGPU_GALLIUM_SHADERS_H
 #define OPENGPU_GALLIUM_SHADERS_H
 
@@ -85,8 +86,26 @@ static const uint32_t opengpu_fragment_modulate[] = {
     0x30500073u,
 };
 
+static const uint32_t opengpu_fragment_shade[] = {
+    0x00241293u, 0x005082b3u, 0xc1027057u, 0x08028313u,
+    0x02036087u, 0x0a028313u, 0x02036107u, 0x0620812bu,
+    0x06028313u, 0x02036087u, 0x0ff00393u, 0x1200a483u,
+    0x5e04c357u, 0x2663c357u, 0xa22c3257u, 0x2643c257u,
+    0xa21c32d7u, 0x2653c2d7u, 0x9642a257u, 0xa2443257u,
+    0x96432257u, 0xa2443257u, 0x964c3257u, 0x2a4201d7u,
+    0xa2283257u, 0x2643c257u, 0xa21832d7u, 0x2653c2d7u,
+    0x9642a257u, 0xa2443257u, 0x96432257u, 0xa2443257u,
+    0x96483257u, 0x2a3201d7u, 0xa2243257u, 0x2643c257u,
+    0xa21432d7u, 0x2653c2d7u, 0x9642a257u, 0xa2443257u,
+    0x96432257u, 0xa2443257u, 0x96443257u, 0x2a3201d7u,
+    0x2a210257u, 0x2643c257u, 0x2a1082d7u, 0x2653c2d7u,
+    0x9642a257u, 0xa2443257u, 0x96432257u, 0xa2443257u,
+    0x2a3201d7u, 0x0c028313u, 0x020361a7u, 0x30500073u,
+};
+
 #define OPENGPU_FRAGMENT_SAMPLE_BYTES (sizeof(opengpu_fragment_sample))
 #define OPENGPU_FRAGMENT_MODULATE_BYTES (sizeof(opengpu_fragment_modulate))
+#define OPENGPU_FRAGMENT_SHADE_BYTES (sizeof(opengpu_fragment_shade))
 #define OPENGPU_VERTEX_PASSTHROUGH_BYTES (sizeof(opengpu_vertex_passthrough))
 #define OPENGPU_VERTEX_MVP_BYTES (sizeof(opengpu_vertex_mvp))
 

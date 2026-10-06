@@ -7,7 +7,9 @@
  * float uniform fails the draw. A vec2 sprite position may be padded to
  * (x, y, 0, 1) when it is packed; the vertex core still multiplies it.
  * A fragment vec4 uniform may be copied into that colour interpolant.
- * The fragment core copies it.
+ * The fragment core copies it. One extra multiply of that product by
+ * CONST[0][0].xxxx runs on the fragment core. The CPU only packs the
+ * float into the fragment kernarg uniform.
  * The Gallium draw module is not used. */
 #include "opengpu_internal.h"
 #include "opengpu_shaders.h"
@@ -54,6 +56,10 @@ struct opengpu_shader {
      * channel is replicated (a float opacity). */
     int color_const;
     int color_const_chan;
+    /* After sample * colour, multiply by CONST[0][0].xxxx. The byte is
+     * packed into both fragment kernarg banks at byte 288. */
+    int scale_const;
+    int scale_const_chan;
     int sample_sem;
     int sample_sem_index;
     int mvp;
@@ -369,6 +375,44 @@ static int match_mvp(const struct tgsi_full_instruction *insn, int *used,
     return 0;
 }
 
+/* gl_FragColor = (texture * v_color) * u_opacity, the second MUL only.
+ * The first MUL left sample * colour in a temporary. This one writes the
+ * colour output and multiplies by CONST[0][0].xxxx. Returns 0 on that
+ * program. */
+static int match_shade_mul(const struct tgsi_full_instruction *insn,
+                           const int *temp_file, struct opengpu_shader *shader,
+                           const int *sem_out)
+{
+    const struct tgsi_full_src_register *temp = &insn->Src[0];
+    const struct tgsi_full_src_register *factor = &insn->Src[1];
+    int index;
+
+    if (shader->modulate || shader->color_const || shader->scale_const ||
+        insn->Instruction.Saturate ||
+        insn->Instruction.NumDstRegs != 1 ||
+        insn->Instruction.NumSrcRegs != 2 ||
+        insn->Dst[0].Register.Indirect ||
+        insn->Dst[0].Register.File != TGSI_FILE_OUTPUT ||
+        insn->Dst[0].Register.WriteMask != TGSI_WRITEMASK_XYZW)
+        return -1;
+    index = insn->Dst[0].Register.Index;
+    if (index < 0 || index >= (int)OPENGPU_ATTRIBS || sem_out[index] < 0 ||
+        !color_semantic((unsigned)sem_out[index]))
+        return -1;
+    if (temp->Register.File != TGSI_FILE_TEMPORARY ||
+        temp->Register.Indirect || !plain_swizzle(&temp->Register) ||
+        temp->Register.Index < 0 ||
+        temp->Register.Index >= (int)OPENGPU_ATTRIBS ||
+        temp_file[temp->Register.Index] != TEMP_MODULATE)
+        return -1;
+    if (!const_scalar(factor, 0, 0))
+        return -1;
+    shader->scale_const = 1;
+    shader->scale_const_chan = 0;
+    shader->modulate = 1;
+    return 0;
+}
+
 /* gl_FragColor = u_color. The uniform is packed into the colour interpolant
  * and the fragment core copies it. Returns 0 when this MOV is that copy.
  * A temporary may hold the uniform first. */
@@ -576,6 +620,11 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                 int sample_src = -1, color_src = -1, color_const = 0, which;
                 int const_chan = -1;
 
+                if (saw_modulate && !shader->modulate) {
+                    if (match_shade_mul(insn, temp_file, shader, sem_out))
+                        goto fail;
+                    break;
+                }
                 if (shader->modulate || saw_modulate ||
                     insn->Instruction.Saturate ||
                     insn->Instruction.NumDstRegs != 1 ||
@@ -855,7 +904,11 @@ static void bind_fs_state(struct pipe_context *pipe, void *hw)
     ctx->fs = hw;
     if (!hw)
         return;
-    if (ctx->fs->modulate) {
+    if (ctx->fs->scale_const) {
+        if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_shade,
+                                 OPENGPU_FRAGMENT_SHADE_BYTES))
+            reject("fragment shader bind failed");
+    } else if (ctx->fs->modulate) {
         if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_modulate,
                                  OPENGPU_FRAGMENT_MODULATE_BYTES))
             reject("fragment shader bind failed");
@@ -1485,6 +1538,27 @@ static void draw_vbo(struct pipe_context *pipe,
             }
             fprintf(stderr, "opengpu: mvp m00=%g m03=%g m33=%g\n",
                     ctx->mvp[0], ctx->mvp[12], ctx->mvp[15]);
+        }
+        if (ctx->fs->scale_const) {
+            float s;
+            uint32_t byte, word;
+
+            if (!ctx->fs_const_set || ctx->fs->scale_const_chan != 0) {
+                reject("fragment opacity did not reach the fragment core");
+                return;
+            }
+            s = ctx->fs_const[0];
+            if (s < 0.0f)
+                s = 0.0f;
+            if (s > 1.0f)
+                s = 1.0f;
+            byte = (uint32_t)(s * 255.0f + 0.5f);
+            word = (byte << 24) | (byte << 16) | (byte << 8) | byte;
+            if (pipe_opengpu_write_fs_uniform(ctx->gpu, word)) {
+                reject("fragment opacity did not reach the fragment core");
+                return;
+            }
+            fprintf(stderr, "opengpu: shade 0x%08x\n", word);
         }
         for (tri = 0; tri < count; tri += 3) {
             struct hw_vertex verts[3];

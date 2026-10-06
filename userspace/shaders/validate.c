@@ -45,6 +45,10 @@ static int validate(const char *path, int profile)
      * at byte 512 and the Q16.16 scale is one float at byte 576. Output
      * slices still end at byte 512. */
     case 7: valid = opengpu_vertex_shader_validate_words(words, count, 640, 8, true); break;
+    /* Fragment+texture. The per-draw uniform is one word at byte 288 of a
+     * 320-byte kernarg bank, so profile 3's 288-byte window is too small. */
+    case 8: valid = opengpu_shader_validate_words_with_texture(
+                words, count, 320, 8, true, false); break;
     default: return 1;
     }
     if (!valid) {

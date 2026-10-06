@@ -1016,6 +1016,43 @@ int pipe_opengpu_write_vs_matrix(struct pipe_opengpu_context *ctx,
     return finish_or_hand_off(ctx, fence, NULL);
 }
 
+int pipe_opengpu_write_fs_uniform(struct pipe_opengpu_context *ctx,
+                                  uint32_t word)
+{
+    /* Bank stride is 320. The uniform sits 32 bytes into the 64-byte line
+     * that starts at byte 256 of each bank. */
+    static const uint32_t lines[] = { 256u, 576u };
+    static const uint32_t words[] = { 288u, 608u };
+    unsigned i;
+
+    if (!ctx || !ctx->fs_bound || !ctx->kernarg.map ||
+        ctx->kernarg.size < 640u) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (i = 0; i < 2; i++) {
+        struct drm_opengpu_invalidate invalidate = { 0 };
+        struct pipe_opengpu_fence *fence;
+
+        memcpy((uint8_t *)ctx->kernarg.map + words[i], &word, sizeof(word));
+        fence = alloc_fence(ctx->screen->fd);
+        if (!fence)
+            return -1;
+        invalidate.context_id = ctx->context_id;
+        invalidate.handle = ctx->kernarg.handle;
+        invalidate.offset = lines[i];
+        invalidate.bytes = 64;
+        invalidate.out_syncobj = fence->handle;
+        if (opengpu_invalidate(ctx->screen->fd, &invalidate)) {
+            pipe_opengpu_fence_reference(&fence, NULL);
+            return -1;
+        }
+        if (finish_or_hand_off(ctx, fence, NULL))
+            return -1;
+    }
+    return 0;
+}
+
 void pipe_opengpu_log_vs_kernarg(struct pipe_opengpu_context *ctx)
 {
     const uint32_t *w;
