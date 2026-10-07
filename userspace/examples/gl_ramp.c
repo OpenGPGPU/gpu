@@ -1,10 +1,8 @@
-/* GLES2 clear and one triangle shifted by a uniform matrix, then
- * composited with source-alpha blending. Positions are vec2 and every
- * vertex is green. The vertex core multiplies gl_Position = u_mvp * pos
- * and copies the colour. The fragment core multiplies that colour by
- * u_opacity. The blend unit composites the result over the clear. This
- * program packs the vertex buffer, uploads the matrix and the opacity,
- * and reads the GEM back.
+/* GLES2 clear and one triangle with a different colour at each vertex.
+ * Positions are vec2. The vertex core multiplies gl_Position = u_mvp * pos
+ * and copies the colour. The rasterizer interpolates that colour and the
+ * fragment core copies it. This program packs the vertex buffer, uploads
+ * the matrix, and reads the GEM back.
  */
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -25,10 +23,11 @@
 #include <unistd.h>
 
 #define COLOR_CLEAR 0x0000ffffu /* glClearColor(0, 0, 1, 1) */
-/* Shader writes green * 0.5 = (0, 127, 0, 127). Source-alpha over the
- * blue clear (0, 0, 255, 255): srcA=127, inv=128,
- * (c * m + 127) / 255 per term. G=63, B=128, A=191. */
-#define COLOR_GLASS 0x003f80bfu
+/* Screen-space barycentric mix at scanout (133, 50): red/green/blue
+ * vertices, integer (e0*c0 + e1*c1 + e2*c2) / area. */
+#define COLOR_RAMP 0x555455ffu
+/* Same mix at scanout (90, 20), close to the red vertex. */
+#define COLOR_RAMP_RED 0xe20f0cffu
 
 static const char *vs_src =
     "attribute vec2 pos;\n"
@@ -40,34 +39,34 @@ static const char *vs_src =
     "  v_color = color;\n"
     "}\n";
 
-/* Column-major. Adds 0.5 to clip x, so the left edge moves to scanout x=80. */
+/* Column-major identity. The positions below are already clip coordinates. */
 static const float mvp[16] = {
     1.f, 0.f, 0.f, 0.f,
     0.f, 1.f, 0.f, 0.f,
     0.f, 0.f, 1.f, 0.f,
-    0.5f, 0.f, 0.f, 1.f,
+    0.f, 0.f, 0.f, 1.f,
 };
 
 static const char *fs_src =
     "precision mediump float;\n"
     "varying vec4 v_color;\n"
-    "uniform float u_opacity;\n"
     "void main() {\n"
-    "  gl_FragColor = v_color * u_opacity;\n"
+    "  gl_FragColor = v_color;\n"
     "}\n";
 
-/* Clip triangle covering the GPU's top-left half. Every vertex is green. */
+/* On-screen right triangle. Clip (x, y) maps to scanout pixels
+ * (80, 15), (240, 15), (80, 120). Red, green, blue. */
 static const float verts[] = {
-    -1.f, -1.f, 0.f, 1.f, 0.f, 1.f,
-     1.f, -1.f, 0.f, 1.f, 0.f, 1.f,
-    -1.f,  1.f, 0.f, 1.f, 0.f, 1.f,
+    -0.5f, -0.875f, 1.f, 0.f, 0.f, 1.f,
+     0.5f, -0.875f, 0.f, 1.f, 0.f, 1.f,
+    -0.5f,  0.f,    0.f, 0.f, 1.f, 1.f,
 };
 
 static void crash(int sig)
 {
     void *frames[32];
     int n = backtrace(frames, 32);
-    static const char msg[] = "gl_glass: fatal signal, backtrace:\n";
+    static const char msg[] = "gl_ramp: fatal signal, backtrace:\n";
 
     write(2, msg, sizeof(msg) - 1);
     backtrace_symbols_fd(frames, n, 2);
@@ -77,24 +76,24 @@ static void crash(int sig)
 
 static void step(const char *what)
 {
-    fprintf(stderr, "gl_glass: %s\n", what);
+    fprintf(stderr, "gl_ramp: %s\n", what);
 }
 
 static void die(const char *what)
 {
-    fprintf(stderr, "gl_glass: %s\n", what);
+    fprintf(stderr, "gl_ramp: %s\n", what);
     exit(1);
 }
 
 static void die_errno(const char *what)
 {
-    fprintf(stderr, "gl_glass: %s: %s\n", what, strerror(errno));
+    fprintf(stderr, "gl_ramp: %s: %s\n", what, strerror(errno));
     exit(1);
 }
 
 static void die_gl(const char *what)
 {
-    fprintf(stderr, "gl_glass: %s (egl 0x%x)\n", what, eglGetError());
+    fprintf(stderr, "gl_ramp: %s (egl 0x%x)\n", what, eglGetError());
     exit(1);
 }
 
@@ -109,7 +108,7 @@ static GLuint compile_shader(GLenum type, const char *src)
     glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
     if (!ok) {
         glGetShaderInfoLog(shader, sizeof(log), NULL, log);
-        fprintf(stderr, "gl_glass: shader compile failed: %s\n", log);
+        fprintf(stderr, "gl_ramp: shader compile failed: %s\n", log);
         exit(1);
     }
     return shader;
@@ -140,10 +139,10 @@ int main(void)
     EGLSurface surface = EGL_NO_SURFACE;
     EGLint major = 0, minor = 0, nconfig = 0;
     GLuint program, vbo, vs, fs;
-    GLint linked = 0, mvp_loc, opacity_loc;
+    GLint linked = 0, mvp_loc;
     uint32_t crtc_id, fb = 0;
     uint32_t handles[4] = { 0 }, pitches[4] = { 0 }, offsets[4] = { 0 };
-    uint32_t outside, inside, clear;
+    uint32_t outside, inside, redish, clear;
     int i;
     const EGLint config_attribs[] = {
         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
@@ -213,7 +212,7 @@ int main(void)
         die_gl("eglBindAPI");
     if (!eglChooseConfig(dpy, config_attribs, &config, 1, &nconfig) ||
         nconfig < 1) {
-        fprintf(stderr, "gl_glass: eglChooseConfig matched %d configs\n",
+        fprintf(stderr, "gl_ramp: eglChooseConfig matched %d configs\n",
                 nconfig);
         return 1;
     }
@@ -239,7 +238,7 @@ int main(void)
     glGetProgramiv(program, GL_LINK_STATUS, &linked);
     if (!linked) {
         glGetProgramInfoLog(program, sizeof(log), NULL, log);
-        fprintf(stderr, "gl_glass: link failed: %s\n", log);
+        fprintf(stderr, "gl_ramp: link failed: %s\n", log);
         return 1;
     }
     glUseProgram(program);
@@ -247,10 +246,6 @@ int main(void)
     if (mvp_loc < 0)
         die("u_mvp uniform missing");
     glUniformMatrix4fv(mvp_loc, 1, GL_FALSE, mvp);
-    opacity_loc = glGetUniformLocation(program, "u_opacity");
-    if (opacity_loc < 0)
-        die("u_opacity uniform missing");
-    glUniform1f(opacity_loc, 0.5f);
 
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -263,8 +258,7 @@ int main(void)
                           (void *)(2 * sizeof(float)));
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_BLEND);
     glViewport(0, 0, mode.hdisplay, mode.vdisplay);
     glClearColor(0.f, 0.f, 1.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -273,18 +267,19 @@ int main(void)
     glFinish();
     step("draw finished");
 
-    /* NDC y=-1 is scanout row 0. Row 8 is the wide end: x=8 is left of the
-     * shifted edge and x=100 is inside. GL y=8 is the narrow end, where
-     * x=W-8 stays the clear colour. */
+    /* NDC y=-1 is scanout row 0. (133, 50) is the mixed interior.
+     * (90, 20) is the same triangle, nearer the red vertex. */
     outside = pixel_word(8, mode.vdisplay - 1 - 8);
-    inside = pixel_word(100, mode.vdisplay - 1 - 8);
+    inside = pixel_word(133, mode.vdisplay - 1 - 50);
+    redish = pixel_word(90, mode.vdisplay - 1 - 20);
     clear = pixel_word(mode.hdisplay - 8, 8);
-    printf("gl_glass: mode %ux%u outside=0x%08x inside=0x%08x clear=0x%08x\n",
-           mode.hdisplay, mode.vdisplay, outside, inside, clear);
+    printf("gl_ramp: mode %ux%u outside=0x%08x inside=0x%08x "
+           "redish=0x%08x clear=0x%08x\n",
+           mode.hdisplay, mode.vdisplay, outside, inside, redish, clear);
     fflush(stdout);
-    if (outside != COLOR_CLEAR || inside != COLOR_GLASS ||
-        clear != COLOR_CLEAR) {
-        fprintf(stderr, "gl_glass: pixel mismatch\n");
+    if (outside != COLOR_CLEAR || inside != COLOR_RAMP ||
+        redish != COLOR_RAMP_RED || clear != COLOR_CLEAR) {
+        fprintf(stderr, "gl_ramp: pixel mismatch\n");
         return 1;
     }
 
@@ -301,11 +296,11 @@ int main(void)
         die_errno("drmModeAddFB2");
     if (drmModeSetCrtc(fd, crtc_id, fb, 0, 0, &conn->connector_id, 1, &mode))
         die_errno("drmModeSetCrtc (another DRM master holds the display?)");
-    printf("OPENGPU GL GLASS PASS\n");
+    printf("OPENGPU GL RAMP PASS\n");
     fflush(stdout);
     if (getenv("OPENGPU_GL_EXIT"))
         return 0;
-    fprintf(stderr, "gl_glass: holding the frame; Ctrl-C to exit\n");
+    fprintf(stderr, "gl_ramp: holding the frame; Ctrl-C to exit\n");
     for (;;)
         pause();
     return 0;
