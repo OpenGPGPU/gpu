@@ -42,8 +42,8 @@ advanced:
 display:
   enabled: true
   source: guest-memory
-  width: 320
-  height: 240
+  width: 640
+  height: 480
   format: a8r8g8b8
   address_register: 0x44
   stride_register: 0x48
@@ -52,4 +52,4 @@ display:
   height_register: 0x50
   format_register: 0x54
   refresh_hz: 30
-  framebuffer_size: 0x4b000  # 320 * 240 * 4 bytes
+  framebuffer_size: 0x12c000  # 640 * 480 * 4 bytes

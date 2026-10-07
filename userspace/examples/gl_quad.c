@@ -37,7 +37,7 @@ static const char *vs_src =
     "  v_color = color;\n"
     "}\n";
 
-/* Column-major. Adds 0.5 to clip x, so the left edge moves to scanout x=80. */
+/* Column-major. Adds 0.5 to clip x, so the left edge sits at a quarter of the width. */
 static const float mvp[16] = {
     1.f, 0.f, 0.f, 0.f,
     0.f, 1.f, 0.f, 0.f,
@@ -53,16 +53,15 @@ static const char *fs_src =
     "  gl_FragColor = v_color * u_opacity;\n"
     "}\n";
 
-/* Rectangle in clip space before the +0.5 x shift: x in [-1, 0], y in
- * [-1, 0]. After the matrix that is scanout x 80..240, rows 0..120.
- * Two triangles, both green. */
+/* Rectangle before the +0.5 x shift: x in [-1, -0.5], y in [-1, -0.75].
+ * At 640x480 that is scanout x 160..320, rows 0..60. Two triangles. */
 static const float verts[] = {
-    -1.f, -1.f, 0.f, 1.f, 0.f, 1.f,
-     0.f, -1.f, 0.f, 1.f, 0.f, 1.f,
-    -1.f,  0.f, 0.f, 1.f, 0.f, 1.f,
-     0.f, -1.f, 0.f, 1.f, 0.f, 1.f,
-     0.f,  0.f, 0.f, 1.f, 0.f, 1.f,
-    -1.f,  0.f, 0.f, 1.f, 0.f, 1.f,
+    -1.f, -1.f,   0.f, 1.f, 0.f, 1.f,
+    -0.5f, -1.f,  0.f, 1.f, 0.f, 1.f,
+    -1.f, -0.75f, 0.f, 1.f, 0.f, 1.f,
+    -0.5f, -1.f,  0.f, 1.f, 0.f, 1.f,
+    -0.5f, -0.75f, 0.f, 1.f, 0.f, 1.f,
+    -1.f, -0.75f, 0.f, 1.f, 0.f, 1.f,
 };
 
 static void crash(int sig)
@@ -275,11 +274,11 @@ int main(void)
     step("draw finished");
 
     /* NDC y=-1 is scanout row 0. x=8 is left of the shifted edge.
-     * (100, row 8) is the first triangle; (200, row 80) is the second.
-     * (W-8, GL y=8) is below the rectangle and stays the clear colour. */
+     * The two inside samples are one per triangle, scaled from 320x240. */
     outside = pixel_word(8, mode.vdisplay - 1 - 8);
-    inside = pixel_word(100, mode.vdisplay - 1 - 8);
-    inside_b = pixel_word(200, mode.vdisplay - 1 - 80);
+    inside = pixel_word(100 * mode.hdisplay / 320, mode.vdisplay - 1 - 8);
+    inside_b = pixel_word(140 * mode.hdisplay / 320,
+                          mode.vdisplay - 1 - 22 * mode.vdisplay / 240);
     clear = pixel_word(mode.hdisplay - 8, 8);
     printf("gl_quad: mode %ux%u outside=0x%08x inside=0x%08x "
            "inside_b=0x%08x clear=0x%08x\n",

@@ -38,7 +38,7 @@ static const char *vs_src =
     "  v_color = color;\n"
     "}\n";
 
-/* Column-major. Adds 0.5 to clip x, so the left edge moves to scanout x=80. */
+/* Column-major. Adds 0.5 to clip x, so the left edge sits at a quarter of the width. */
 static const float mvp[16] = {
     1.f, 0.f, 0.f, 0.f,
     0.f, 1.f, 0.f, 0.f,
@@ -57,8 +57,8 @@ static const char *fs_src =
 /* Clip triangle covering the GPU's top-left half. Every vertex is green. */
 static const float verts[] = {
     -1.f, -1.f, 0.f, 1.f, 0.f, 1.f,
-     1.f, -1.f, 0.f, 1.f, 0.f, 1.f,
-    -1.f,  1.f, 0.f, 1.f, 0.f, 1.f,
+     0.f, -1.f, 0.f, 1.f, 0.f, 1.f,
+    -1.f, -0.75f, 0.f, 1.f, 0.f, 1.f,
 };
 
 static void crash(int sig)
@@ -267,19 +267,23 @@ int main(void)
     glClear(GL_COLOR_BUFFER_BIT);
     step("clear submitted");
     /* GL y=0 is the bottom. Mesa flips a window scissor into scanout
-     * pixels, so this box is scanout x [80, 160), rows [0, 16). */
+     * pixels. The box is the top strip of the shifted triangle: at
+     * 320x240 it is x [80, 160), rows [0, 16), and both axes scale. */
     glEnable(GL_SCISSOR_TEST);
-    glScissor(80, (int)mode.vdisplay - 16, 80, 16);
+    glScissor(80 * (int)mode.hdisplay / 320,
+              (int)mode.vdisplay - 16 * (int)mode.vdisplay / 240,
+              80 * (int)mode.hdisplay / 320,
+              16 * (int)mode.vdisplay / 240);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glFinish();
     step("draw finished");
 
-    /* NDC y=-1 is scanout row 0. x=8 is left of the triangle. x=100 is
-     * inside the scissor. x=200 is inside the triangle and outside the
-     * scissor, so it stays the clear colour. */
+    /* NDC y=-1 is scanout row 0. x=8 is left of the triangle. The inside
+     * sample scales from (100, 8) and stays in the scissor. The clipped
+     * sample scales from (180, 8): inside the triangle, outside the scissor. */
     outside = pixel_word(8, mode.vdisplay - 1 - 8);
-    inside = pixel_word(100, mode.vdisplay - 1 - 8);
-    clipped = pixel_word(200, mode.vdisplay - 1 - 8);
+    inside = pixel_word(100 * mode.hdisplay / 320, mode.vdisplay - 1 - 8);
+    clipped = pixel_word(180 * mode.hdisplay / 320, mode.vdisplay - 1 - 8);
     clear = pixel_word(mode.hdisplay - 8, 8);
     printf("gl_pane: mode %ux%u outside=0x%08x inside=0x%08x "
            "clipped=0x%08x clear=0x%08x\n",

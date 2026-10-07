@@ -196,7 +196,9 @@ echo "Built $PREFIX/bin/opengpu_gl_triangle"
 
 # Flat /root layout used by the OPENGPU modules ISO. The wrapper is the
 # command; the ELF and the DRI driver sit beside it.
-DRIVER_OUTPUT="${DRIVER_OUTPUT:-$GPU_DIR/../arti-work/debian-320x240/opengpu-driver}"
+eval "$(python3 "$GPU_DIR/scripts/gpu_display_config.py" --shell \
+    "${INTEGRATION_CONFIG:-$GPU_DIR/driver/gpu_integration_debian.yaml}")"
+DRIVER_OUTPUT="${DRIVER_OUTPUT:-$GPU_DIR/../arti-work/debian-${GPU_MODE}/opengpu-driver}"
 if [ -d "$DRIVER_OUTPUT" ]; then
     copy_lib() {
         cp -L "$PREFIX/lib/$1" "$DRIVER_OUTPUT/$1"

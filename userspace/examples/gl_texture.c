@@ -43,10 +43,12 @@ static const char *fs_src =
 
 /* Clip triangle covering the GPU's top-left half. UVs stay near texel 0 at
  * the first vertex, which is scanout row 0. */
+/* Small top-left triangle. At 640x480 the vertices land on (0, 0),
+ * (160, 0) and (0, 60). */
 static const float verts[] = {
-    -1.f, -1.f, 0.f, 1.f, 0.f, 0.f,
-     1.f, -1.f, 0.f, 1.f, 1.f, 0.f,
-    -1.f,  1.f, 0.f, 1.f, 0.f, 1.f,
+    -1.f, -1.f,   0.f, 1.f, 0.f, 0.f,
+    -0.5f, -1.f,  0.f, 1.f, 1.f, 0.f,
+    -1.f, -0.75f, 0.f, 1.f, 0.f, 1.f,
 };
 
 static void crash(int sig)

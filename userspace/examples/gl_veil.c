@@ -63,12 +63,13 @@ static const char *fs_src =
     "  gl_FragColor = texture2D(tex, v_uv) * v_color * u_opacity;\n"
     "}\n";
 
-/* On-screen triangle, scanout (80, 15), (240, 15), (80, 120). Every
- * vertex is red. The texture is white, so the shaded colour is constant. */
+/* On-screen triangle. At 640x480 the vertices land on (160, 30),
+ * (320, 30), (160, 120). Every vertex is red. The texture is white,
+ * so the shaded colour is constant. */
 static const float verts[] = {
     -0.5f, -0.875f, 0.f, 0.f, 1.f, 0.f, 0.f, 1.f,
-     0.5f, -0.875f, 1.f, 0.f, 1.f, 0.f, 0.f, 1.f,
-    -0.5f,  0.f,    0.f, 1.f, 1.f, 0.f, 0.f, 1.f,
+     0.f,  -0.875f, 1.f, 0.f, 1.f, 0.f, 0.f, 1.f,
+    -0.5f, -0.5f,   0.f, 1.f, 1.f, 0.f, 0.f, 1.f,
 };
 
 static void crash(int sig)
@@ -301,10 +302,11 @@ int main(void)
     glFinish();
     step("draw finished");
 
-    /* NDC y=-1 is scanout row 0. (133, 50) is inside the triangle.
+    /* NDC y=-1 is scanout row 0. The inside sample scales from (100, 30).
      * (8, 8) and the bottom-right stay the clear colour. */
     outside = pixel_word(8, mode.vdisplay - 1 - 8);
-    inside = pixel_word(133, mode.vdisplay - 1 - 50);
+    inside = pixel_word(100 * mode.hdisplay / 320,
+                        mode.vdisplay - 1 - 30 * mode.vdisplay / 240);
     clear = pixel_word(mode.hdisplay - 8, 8);
     printf("gl_veil: mode %ux%u outside=0x%08x inside=0x%08x clear=0x%08x\n",
            mode.hdisplay, mode.vdisplay, outside, inside, clear);

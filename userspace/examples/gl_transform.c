@@ -51,9 +51,9 @@ static const char *fs_src =
 
 /* Clip triangle covering the GPU's top-left half: NDC y=-1 is scanout row 0. */
 static const float verts[] = {
-    -1.f, -1.f, 0.f, 1.f, 1.f, 1.f, 0.f, 1.f,
-     1.f, -1.f, 0.f, 1.f, 1.f, 1.f, 0.f, 1.f,
-    -1.f,  1.f, 0.f, 1.f, 1.f, 1.f, 0.f, 1.f,
+    -1.f, -1.f,   0.f, 1.f, 1.f, 1.f, 0.f, 1.f,
+     0.f, -1.f,   0.f, 1.f, 1.f, 1.f, 0.f, 1.f,
+    -1.f, -0.75f, 0.f, 1.f, 1.f, 1.f, 0.f, 1.f,
 };
 
 /* The guest has no debugger. Print library+offset frames so a fault can be
@@ -273,12 +273,11 @@ int main(void)
     step("draw finished");
 
     /* Window framebuffers are FlipY: GL y = H-1-gpu_y reads scanout row gpu_y,
-     * and NDC y=-1 is scanout row 0. The matrix adds 0.5 to clip x, so the
-     * left edge is scanout x=80. Row 8 is the wide end (x=8 clear, x=100
-     * yellow) and still reaches the right edge after clipping. GL y=8 is the
-     * narrow end, where x=W-8 stays the clear colour. */
+     * and NDC y=-1 is scanout row 0. The matrix adds 0.5 to clip x. x=8 is
+     * left of that edge. The inside sample is x=100 at 320x240 and scales
+     * with the width. */
     tri = pixel_word(8, mode.vdisplay - 1 - 8);
-    shifted = pixel_word(100, mode.vdisplay - 1 - 8);
+    shifted = pixel_word(100 * mode.hdisplay / 320, mode.vdisplay - 1 - 8);
     clear = pixel_word(mode.hdisplay - 8, 8);
     printf("gl_transform: mode %ux%u outside=0x%08x inside=0x%08x clear=0x%08x\n",
            mode.hdisplay, mode.vdisplay, tri, shifted, clear);

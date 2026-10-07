@@ -43,10 +43,12 @@ static const char *fs_src =
     "}\n";
 
 /* Clip triangle covering the GPU's top-left half: NDC y=-1 is scanout row 0. */
+/* Small top-left triangle. At 640x480 the vertices land on (0, 0),
+ * (160, 0) and (0, 60), so the blend finishes inside the fence. */
 static const float verts[] = {
-    -1.f, -1.f, 0.f, 1.f, 1.f, 1.f, 0.f, 0.5f,
-     1.f, -1.f, 0.f, 1.f, 1.f, 1.f, 0.f, 0.5f,
-    -1.f,  1.f, 0.f, 1.f, 1.f, 1.f, 0.f, 0.5f,
+    -1.f, -1.f,   0.f, 1.f, 1.f, 1.f, 0.f, 0.5f,
+    -0.5f, -1.f,  0.f, 1.f, 1.f, 1.f, 0.f, 0.5f,
+    -1.f, -0.75f, 0.f, 1.f, 1.f, 1.f, 0.f, 0.5f,
 };
 
 /* The guest has no debugger. Print library+offset frames so a fault can be

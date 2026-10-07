@@ -39,11 +39,12 @@ static const char *fs_src =
     "  gl_FragColor = v_color;\n"
     "}\n";
 
-/* Clip triangle covering the GPU's top-left half: NDC y=-1 is scanout row 0. */
+/* Small top-left triangle, taller than the 16-row scissor. At 640x480
+ * the vertices land on (0, 0), (160, 0) and (0, 60). */
 static const float verts[] = {
-    -1.f, -1.f, 0.f, 1.f, 1.f, 1.f, 0.f, 1.f,
-     1.f, -1.f, 0.f, 1.f, 1.f, 1.f, 0.f, 1.f,
-    -1.f,  1.f, 0.f, 1.f, 1.f, 1.f, 0.f, 1.f,
+    -1.f, -1.f,   0.f, 1.f, 1.f, 1.f, 0.f, 1.f,
+    -0.5f, -1.f,  0.f, 1.f, 1.f, 1.f, 0.f, 1.f,
+    -1.f, -0.75f, 0.f, 1.f, 1.f, 1.f, 0.f, 1.f,
 };
 
 /* The guest has no debugger. Print library+offset frames so a fault can be
@@ -262,11 +263,10 @@ int main(void)
     glFinish();
     step("draw finished");
 
-    /* Window framebuffers are FlipY: GL y=0 is the bottom scanout row.
-     * Scanout (8, 100) is inside the triangle and outside the scissor, so
-     * it stays the clear colour. */
+    /* Scanout (8, 8) is inside the scissor. The clipped sample scales from
+     * (8, 24): inside the triangle and below the 16-row scissor. */
     tri = pixel_word(8, mode.vdisplay - 1 - 8);
-    clipped = pixel_word(8, mode.vdisplay - 1 - 100);
+    clipped = pixel_word(8, mode.vdisplay - 1 - 24 * mode.vdisplay / 240);
     clear = pixel_word(mode.hdisplay - 8, mode.vdisplay - 1 - 8);
     printf("gl_scissor: mode %ux%u inside=0x%08x clipped=0x%08x clear=0x%08x\n",
            mode.hdisplay, mode.vdisplay, tri, clipped, clear);

@@ -27,11 +27,11 @@
 #include <unistd.h>
 
 #define COLOR_CLEAR 0x0000ffffu /* glClearColor(0, 0, 1, 1) */
-/* Grade pixel (42, 41, 42, 127) over the blue clear. srcA=127, inv=128,
+/* Shaded pixel (52, 31, 42, 127) over the blue clear. srcA=127, inv=128,
  * (c * m + 127) / 255 per term. */
-#define COLOR_HAZE 0x151495bfu
-/* Grade pixel (112, 7, 5, 127) over the same clear. */
-#define COLOR_HAZE_RED 0x380382bfu
+#define COLOR_HAZE 0x1a0f95bfu
+/* Shaded pixel (100, 12, 13, 127) over the same clear. */
+#define COLOR_HAZE_RED 0x320686bfu
 
 static const char *vs_src =
     "attribute vec2 pos;\n"
@@ -64,12 +64,13 @@ static const char *fs_src =
     "  gl_FragColor = texture2D(tex, v_uv) * v_color * u_opacity;\n"
     "}\n";
 
-/* On-screen triangle, scanout (80, 15) red, (240, 15) green,
- * (80, 120) blue. The texture is white. */
+/* On-screen triangle. At 640x480 the vertices land on (160, 30) red,
+ * (320, 30) green, (160, 120) blue, about 7200 pixels, so the blend
+ * finishes inside the fence. The texture is white. */
 static const float verts[] = {
     -0.5f, -0.875f, 0.f, 0.f, 1.f, 0.f, 0.f, 1.f,
-     0.5f, -0.875f, 1.f, 0.f, 0.f, 1.f, 0.f, 1.f,
-    -0.5f,  0.f,    0.f, 1.f, 0.f, 0.f, 1.f, 1.f,
+     0.f,  -0.875f, 1.f, 0.f, 0.f, 1.f, 0.f, 1.f,
+    -0.5f, -0.5f,   0.f, 1.f, 0.f, 0.f, 1.f, 1.f,
 };
 
 static void crash(int sig)
@@ -302,11 +303,13 @@ int main(void)
     glFinish();
     step("draw finished");
 
-    /* NDC y=-1 is scanout row 0. (133, 50) is the mixed interior.
-     * (90, 20) is nearer the red vertex. */
+    /* NDC y=-1 is scanout row 0. The sample points are the 320x240
+     * locations scaled by the mode, so the barycentric mix is unchanged. */
     outside = pixel_word(8, mode.vdisplay - 1 - 8);
-    inside = pixel_word(133, mode.vdisplay - 1 - 50);
-    redish = pixel_word(90, mode.vdisplay - 1 - 20);
+    inside = pixel_word(100 * mode.hdisplay / 320,
+                        mode.vdisplay - 1 - 30 * mode.vdisplay / 240);
+    redish = pixel_word(88 * mode.hdisplay / 320,
+                        mode.vdisplay - 1 - 20 * mode.vdisplay / 240);
     clear = pixel_word(mode.hdisplay - 8, 8);
     printf("gl_haze: mode %ux%u outside=0x%08x inside=0x%08x "
            "redish=0x%08x clear=0x%08x\n",

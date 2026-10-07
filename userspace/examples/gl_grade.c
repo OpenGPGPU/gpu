@@ -27,11 +27,11 @@
 
 #define COLOR_CLEAR 0x0000ffffu /* glClearColor(0, 0, 1, 1) */
 /* White texel times the interpolated colour times 0.5.
- * (133, 50) interpolates to (85, 84, 85, 255), then
+ * The scaled (100, 30) sample interpolates to (106, 63, 85, 255), then
  * ((255 * c) >> 8) * 128 >> 8. */
-#define COLOR_GRADE 0x2a292a7fu
-/* (90, 20) interpolates to (226, 15, 12, 255), then the same scale. */
-#define COLOR_GRADE_RED 0x7007057fu
+#define COLOR_GRADE 0x341f2a7fu
+/* The scaled (88, 20) sample interpolates to (201, 25, 28, 255). */
+#define COLOR_GRADE_RED 0x640c0d7fu
 
 static const char *vs_src =
     "attribute vec2 pos;\n"
@@ -64,12 +64,12 @@ static const char *fs_src =
     "  gl_FragColor = texture2D(tex, v_uv) * v_color * u_opacity;\n"
     "}\n";
 
-/* On-screen triangle, scanout (80, 15) red, (240, 15) green,
- * (80, 120) blue. The texture is white. */
+/* On-screen triangle. At 640x480 the vertices land on (160, 30) red,
+ * (320, 30) green, (160, 120) blue. The texture is white. */
 static const float verts[] = {
     -0.5f, -0.875f, 0.f, 0.f, 1.f, 0.f, 0.f, 1.f,
-     0.5f, -0.875f, 1.f, 0.f, 0.f, 1.f, 0.f, 1.f,
-    -0.5f,  0.f,    0.f, 1.f, 0.f, 0.f, 1.f, 1.f,
+     0.f,  -0.875f, 1.f, 0.f, 0.f, 1.f, 0.f, 1.f,
+    -0.5f, -0.5f,   0.f, 1.f, 0.f, 0.f, 1.f, 1.f,
 };
 
 static void crash(int sig)
@@ -301,11 +301,13 @@ int main(void)
     glFinish();
     step("draw finished");
 
-    /* NDC y=-1 is scanout row 0. (133, 50) is the mixed interior.
-     * (90, 20) is nearer the red vertex. */
+    /* NDC y=-1 is scanout row 0. The samples scale from (100, 30) and
+     * (88, 20) at 320x240, so the barycentric mix is unchanged. */
     outside = pixel_word(8, mode.vdisplay - 1 - 8);
-    inside = pixel_word(133, mode.vdisplay - 1 - 50);
-    redish = pixel_word(90, mode.vdisplay - 1 - 20);
+    inside = pixel_word(100 * mode.hdisplay / 320,
+                        mode.vdisplay - 1 - 30 * mode.vdisplay / 240);
+    redish = pixel_word(88 * mode.hdisplay / 320,
+                        mode.vdisplay - 1 - 20 * mode.vdisplay / 240);
     clear = pixel_word(mode.hdisplay - 8, 8);
     printf("gl_grade: mode %ux%u outside=0x%08x inside=0x%08x "
            "redish=0x%08x clear=0x%08x\n",

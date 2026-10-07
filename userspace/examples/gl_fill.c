@@ -31,7 +31,7 @@ static const char *vs_src =
     "  gl_Position = u_mvp * vec4(pos, 0.0, 1.0);\n"
     "}\n";
 
-/* Column-major. Adds 0.5 to clip x, so the left edge moves to scanout x=80. */
+/* Column-major. Adds 0.5 to clip x, so the left edge sits at a quarter of the width. */
 static const float mvp[16] = {
     1.f, 0.f, 0.f, 0.f,
     0.f, 1.f, 0.f, 0.f,
@@ -49,8 +49,8 @@ static const char *fs_src =
 /* Clip triangle covering the GPU's top-left half. */
 static const float verts[] = {
     -1.f, -1.f,
-     1.f, -1.f,
-    -1.f,  1.f,
+     0.f, -1.f,
+    -1.f, -0.75f,
 };
 
 static void crash(int sig)
@@ -262,7 +262,7 @@ int main(void)
      * shifted edge and x=100 is inside. GL y=8 is the narrow end, where
      * x=W-8 stays the clear colour. u_color (1, 0, 0, 1) is 0xff0000ff. */
     outside = pixel_word(8, mode.vdisplay - 1 - 8);
-    inside = pixel_word(100, mode.vdisplay - 1 - 8);
+    inside = pixel_word(100 * mode.hdisplay / 320, mode.vdisplay - 1 - 8);
     clear = pixel_word(mode.hdisplay - 8, 8);
     printf("gl_fill: mode %ux%u outside=0x%08x inside=0x%08x clear=0x%08x\n",
            mode.hdisplay, mode.vdisplay, outside, inside, clear);

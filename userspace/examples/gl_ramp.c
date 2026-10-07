@@ -23,11 +23,11 @@
 #include <unistd.h>
 
 #define COLOR_CLEAR 0x0000ffffu /* glClearColor(0, 0, 1, 1) */
-/* Screen-space barycentric mix at scanout (133, 50): red/green/blue
- * vertices, integer (e0*c0 + e1*c1 + e2*c2) / area. */
-#define COLOR_RAMP 0x555455ffu
-/* Same mix at scanout (90, 20), close to the red vertex. */
-#define COLOR_RAMP_RED 0xe20f0cffu
+/* Screen-space barycentric mix at the scaled (100, 30) sample:
+ * red/green/blue vertices, integer (e0*c0 + e1*c1 + e2*c2) / area. */
+#define COLOR_RAMP 0x6a3f55ffu
+/* Same mix at the scaled (88, 20) sample, close to the red vertex. */
+#define COLOR_RAMP_RED 0xc9191cffu
 
 static const char *vs_src =
     "attribute vec2 pos;\n"
@@ -54,12 +54,12 @@ static const char *fs_src =
     "  gl_FragColor = v_color;\n"
     "}\n";
 
-/* On-screen right triangle. Clip (x, y) maps to scanout pixels
- * (80, 15), (240, 15), (80, 120). Red, green, blue. */
+/* On-screen right triangle. At 640x480 the vertices land on (160, 30)
+ * red, (320, 30) green, (160, 120) blue. */
 static const float verts[] = {
     -0.5f, -0.875f, 1.f, 0.f, 0.f, 1.f,
-     0.5f, -0.875f, 0.f, 1.f, 0.f, 1.f,
-    -0.5f,  0.f,    0.f, 0.f, 1.f, 1.f,
+     0.f,  -0.875f, 0.f, 1.f, 0.f, 1.f,
+    -0.5f, -0.5f,   0.f, 0.f, 1.f, 1.f,
 };
 
 static void crash(int sig)
@@ -267,11 +267,13 @@ int main(void)
     glFinish();
     step("draw finished");
 
-    /* NDC y=-1 is scanout row 0. (133, 50) is the mixed interior.
-     * (90, 20) is the same triangle, nearer the red vertex. */
+    /* NDC y=-1 is scanout row 0. The samples scale from (100, 30) and
+     * (88, 20) at 320x240, so the barycentric mix is unchanged. */
     outside = pixel_word(8, mode.vdisplay - 1 - 8);
-    inside = pixel_word(133, mode.vdisplay - 1 - 50);
-    redish = pixel_word(90, mode.vdisplay - 1 - 20);
+    inside = pixel_word(100 * mode.hdisplay / 320,
+                        mode.vdisplay - 1 - 30 * mode.vdisplay / 240);
+    redish = pixel_word(88 * mode.hdisplay / 320,
+                        mode.vdisplay - 1 - 20 * mode.vdisplay / 240);
     clear = pixel_word(mode.hdisplay - 8, 8);
     printf("gl_ramp: mode %ux%u outside=0x%08x inside=0x%08x "
            "redish=0x%08x clear=0x%08x\n",

@@ -38,7 +38,7 @@ static const char *vs_src =
     "  v_uv = uv;\n"
     "}\n";
 
-/* Column-major. Adds 0.5 to clip x, so the left edge moves to scanout x=80. */
+/* Column-major. Adds 0.5 to clip x, so the left edge sits at a quarter of the width. */
 static const float mvp[16] = {
     1.f, 0.f, 0.f, 0.f,
     0.f, 1.f, 0.f, 0.f,
@@ -58,9 +58,9 @@ static const char *fs_src =
 /* Clip triangle covering the GPU's top-left half. UVs stay near texel 0 at
  * the first vertex, which is scanout row 0. */
 static const float verts[] = {
-    -1.f, -1.f, 0.f, 1.f, 0.f, 0.f,
-     1.f, -1.f, 0.f, 1.f, 1.f, 0.f,
-    -1.f,  1.f, 0.f, 1.f, 0.f, 1.f,
+    -1.f, -1.f,   0.f, 1.f, 0.f, 0.f,
+     0.f, -1.f,   0.f, 1.f, 1.f, 0.f,
+    -1.f, -0.75f, 0.f, 1.f, 0.f, 1.f,
 };
 
 static void crash(int sig)
@@ -293,7 +293,7 @@ int main(void)
      * x=W-8 stays the clear colour. The white texel times 0.5 is 127
      * on every channel. */
     outside = pixel_word(8, mode.vdisplay - 1 - 8);
-    inside = pixel_word(100, mode.vdisplay - 1 - 8);
+    inside = pixel_word(100 * mode.hdisplay / 320, mode.vdisplay - 1 - 8);
     clear = pixel_word(mode.hdisplay - 8, 8);
     printf("gl_opacity: mode %ux%u outside=0x%08x inside=0x%08x clear=0x%08x\n",
            mode.hdisplay, mode.vdisplay, outside, inside, clear);

@@ -63,15 +63,16 @@ static const char *fs_src =
     "  gl_FragColor = texture2D(tex, v_uv) * v_color * u_opacity;\n"
     "}\n";
 
-/* Rectangle scanout x 80..240, rows 15..120. Two triangles, every
- * vertex red. The texture is white, so the shaded colour is constant. */
+/* Rectangle. At 640x480 it is scanout x 160..320, rows 30..120.
+ * Two triangles, every vertex red. The texture is white, so the shaded
+ * colour is constant. */
 static const float verts[] = {
     -0.5f, -0.875f, 0.f, 0.f, 1.f, 0.f, 0.f, 1.f,
-     0.5f, -0.875f, 1.f, 0.f, 1.f, 0.f, 0.f, 1.f,
-    -0.5f,  0.f,    0.f, 1.f, 1.f, 0.f, 0.f, 1.f,
-     0.5f, -0.875f, 1.f, 0.f, 1.f, 0.f, 0.f, 1.f,
-     0.5f,  0.f,    1.f, 1.f, 1.f, 0.f, 0.f, 1.f,
-    -0.5f,  0.f,    0.f, 1.f, 1.f, 0.f, 0.f, 1.f,
+     0.f,  -0.875f, 1.f, 0.f, 1.f, 0.f, 0.f, 1.f,
+    -0.5f, -0.5f,   0.f, 1.f, 1.f, 0.f, 0.f, 1.f,
+     0.f,  -0.875f, 1.f, 0.f, 1.f, 0.f, 0.f, 1.f,
+     0.f,  -0.5f,   1.f, 1.f, 1.f, 0.f, 0.f, 1.f,
+    -0.5f, -0.5f,   0.f, 1.f, 1.f, 0.f, 0.f, 1.f,
 };
 
 static void crash(int sig)
@@ -304,11 +305,13 @@ int main(void)
     glFinish();
     step("draw finished");
 
-    /* NDC y=-1 is scanout row 0. (133, 50) is the first triangle.
-     * (200, 80) is the second. (8, 8) and the bottom-right stay clear. */
+    /* NDC y=-1 is scanout row 0. The samples scale from (100, 30) and
+     * (140, 50): one point in each triangle. */
     outside = pixel_word(8, mode.vdisplay - 1 - 8);
-    inside = pixel_word(133, mode.vdisplay - 1 - 50);
-    inside_b = pixel_word(200, mode.vdisplay - 1 - 80);
+    inside = pixel_word(100 * mode.hdisplay / 320,
+                        mode.vdisplay - 1 - 30 * mode.vdisplay / 240);
+    inside_b = pixel_word(140 * mode.hdisplay / 320,
+                          mode.vdisplay - 1 - 50 * mode.vdisplay / 240);
     clear = pixel_word(mode.hdisplay - 8, 8);
     printf("gl_sheet: mode %ux%u outside=0x%08x inside=0x%08x "
            "inside_b=0x%08x clear=0x%08x\n",
