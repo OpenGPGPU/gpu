@@ -173,6 +173,12 @@ mkdir -p "$PREFIX/bin"
     "$GPU_DIR/userspace/examples/gl_veil.c" \
     -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
     -lEGL -lGLESv2 -lgbm -ldrm
+"$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
+    -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
+    -o "$PREFIX/bin/opengpu_gl_sheet" \
+    "$GPU_DIR/userspace/examples/gl_sheet.c" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -lEGL -lGLESv2 -lgbm -ldrm
 
 echo "Built $PREFIX/bin/opengpu_gl_triangle"
 
@@ -210,6 +216,7 @@ if [ -d "$DRIVER_OUTPUT" ]; then
     cp -L "$PREFIX/bin/opengpu_gl_wash" "$DRIVER_OUTPUT/opengpu_gl_wash.bin"
     cp -L "$PREFIX/bin/opengpu_gl_ramp" "$DRIVER_OUTPUT/opengpu_gl_ramp.bin"
     cp -L "$PREFIX/bin/opengpu_gl_veil" "$DRIVER_OUTPUT/opengpu_gl_veil.bin"
+    cp -L "$PREFIX/bin/opengpu_gl_sheet" "$DRIVER_OUTPUT/opengpu_gl_sheet.bin"
     aarch64-linux-gnu-strip "$DRIVER_OUTPUT"/libEGL.so.1 \
         "$DRIVER_OUTPUT"/libGLESv2.so.2 "$DRIVER_OUTPUT"/libgbm.so.1 \
         "$DRIVER_OUTPUT"/libglapi.so.0 "$DRIVER_OUTPUT"/libdrm.so.2 \
@@ -233,7 +240,8 @@ if [ -d "$DRIVER_OUTPUT" ]; then
         "$DRIVER_OUTPUT"/opengpu_gl_pane.bin \
         "$DRIVER_OUTPUT"/opengpu_gl_wash.bin \
         "$DRIVER_OUTPUT"/opengpu_gl_ramp.bin \
-        "$DRIVER_OUTPUT"/opengpu_gl_veil.bin
+        "$DRIVER_OUTPUT"/opengpu_gl_veil.bin \
+        "$DRIVER_OUTPUT"/opengpu_gl_sheet.bin
     cp "$GPU_DIR/userspace/examples/opengpu_gl_triangle.sh" \
         "$DRIVER_OUTPUT/opengpu_gl_triangle"
     cp "$GPU_DIR/userspace/examples/opengpu_gl_texture.sh" \
@@ -274,6 +282,8 @@ if [ -d "$DRIVER_OUTPUT" ]; then
         "$DRIVER_OUTPUT/opengpu_gl_ramp"
     cp "$GPU_DIR/userspace/examples/opengpu_gl_veil.sh" \
         "$DRIVER_OUTPUT/opengpu_gl_veil"
+    cp "$GPU_DIR/userspace/examples/opengpu_gl_sheet.sh" \
+        "$DRIVER_OUTPUT/opengpu_gl_sheet"
     chmod +x "$DRIVER_OUTPUT/opengpu_gl_triangle" \
         "$DRIVER_OUTPUT/opengpu_gl_triangle.bin" \
         "$DRIVER_OUTPUT/opengpu_gl_texture" \
@@ -313,6 +323,8 @@ if [ -d "$DRIVER_OUTPUT" ]; then
         "$DRIVER_OUTPUT/opengpu_gl_ramp" \
         "$DRIVER_OUTPUT/opengpu_gl_ramp.bin" \
         "$DRIVER_OUTPUT/opengpu_gl_veil" \
-        "$DRIVER_OUTPUT/opengpu_gl_veil.bin"
+        "$DRIVER_OUTPUT/opengpu_gl_veil.bin" \
+        "$DRIVER_OUTPUT/opengpu_gl_sheet" \
+        "$DRIVER_OUTPUT/opengpu_gl_sheet.bin"
     echo "Staged GL triangle into $DRIVER_OUTPUT"
 fi
