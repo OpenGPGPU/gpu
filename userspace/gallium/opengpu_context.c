@@ -7,9 +7,10 @@
  * float uniform fails the draw. A vec2 sprite position may be padded to
  * (x, y, 0, 1) when it is packed; the vertex core still multiplies it.
  * A fragment vec4 uniform may be copied into that colour interpolant.
- * The fragment core copies it. One extra multiply of that product by
- * CONST[0][0].xxxx runs on the fragment core. The CPU only packs the
- * float into the fragment kernarg uniform.
+ * The fragment core copies it. One extra multiply of a sampled product
+ * by CONST[0][0].xxxx runs on the fragment core, as does a multiply of
+ * an interpolated colour by that same swizzle when there is no sample.
+ * The CPU only packs the float into the fragment kernarg uniform.
  * The Gallium draw module is not used. */
 #include "opengpu_internal.h"
 #include "opengpu_shaders.h"
@@ -413,6 +414,47 @@ static int match_shade_mul(const struct tgsi_full_instruction *insn,
     return 0;
 }
 
+/* gl_FragColor = v_color * u_opacity, with no texture. The colour is the
+ * interpolated varying and the factor is CONST[0][0].xxxx. Returns 0 on
+ * that program. */
+static int match_fade_mul(const struct tgsi_full_instruction *insn,
+                          struct opengpu_shader *shader, const int *sem_in,
+                          const int *sem_in_index, const int *sem_out)
+{
+    const struct tgsi_full_src_register *color = &insn->Src[0];
+    const struct tgsi_full_src_register *factor = &insn->Src[1];
+    int index, src;
+
+    if (shader->samples || shader->modulate || shader->scale_const ||
+        shader->color_src >= 0 || shader->color_const || shader->color_imm ||
+        insn->Instruction.Saturate ||
+        insn->Instruction.NumDstRegs != 1 ||
+        insn->Instruction.NumSrcRegs != 2 ||
+        insn->Dst[0].Register.Indirect ||
+        insn->Dst[0].Register.File != TGSI_FILE_OUTPUT ||
+        insn->Dst[0].Register.WriteMask != TGSI_WRITEMASK_XYZW)
+        return -1;
+    index = insn->Dst[0].Register.Index;
+    if (index < 0 || index >= (int)OPENGPU_ATTRIBS || sem_out[index] < 0 ||
+        !color_semantic((unsigned)sem_out[index]))
+        return -1;
+    if (color->Register.File != TGSI_FILE_INPUT ||
+        color->Register.Indirect || !plain_swizzle(&color->Register))
+        return -1;
+    src = color->Register.Index;
+    if (src < 0 || src >= (int)OPENGPU_ATTRIBS || sem_in[src] < 0 ||
+        !color_semantic((unsigned)sem_in[src]))
+        return -1;
+    if (!const_scalar(factor, 0, 0))
+        return -1;
+    shader->color_src = src;
+    shader->color_sem = sem_in[src];
+    shader->color_sem_index = sem_in_index[src];
+    shader->scale_const = 1;
+    shader->scale_const_chan = 0;
+    return 0;
+}
+
 /* gl_FragColor = u_color. The uniform is packed into the colour interpolant
  * and the fragment core copies it. Returns 0 when this MOV is that copy.
  * A temporary may hold the uniform first. */
@@ -625,6 +667,8 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                         goto fail;
                     break;
                 }
+                if (!match_fade_mul(insn, shader, sem_in, sem_in_index, sem_out))
+                    break;
                 if (shader->modulate || saw_modulate ||
                     insn->Instruction.Saturate ||
                     insn->Instruction.NumDstRegs != 1 ||
@@ -904,13 +948,17 @@ static void bind_fs_state(struct pipe_context *pipe, void *hw)
     ctx->fs = hw;
     if (!hw)
         return;
-    if (ctx->fs->scale_const) {
+    if (ctx->fs->scale_const && ctx->fs->modulate) {
         if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_shade,
                                  OPENGPU_FRAGMENT_SHADE_BYTES))
             reject("fragment shader bind failed");
     } else if (ctx->fs->modulate) {
         if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_modulate,
                                  OPENGPU_FRAGMENT_MODULATE_BYTES))
+            reject("fragment shader bind failed");
+    } else if (ctx->fs->scale_const) {
+        if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_fade,
+                                 OPENGPU_FRAGMENT_FADE_BYTES))
             reject("fragment shader bind failed");
     } else if (ctx->fs->samples) {
         if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_sample,
