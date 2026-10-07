@@ -137,6 +137,24 @@ mkdir -p "$PREFIX/bin"
     "$GPU_DIR/userspace/examples/gl_fade.c" \
     -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
     -lEGL -lGLESv2 -lgbm -ldrm
+"$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
+    -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
+    -o "$PREFIX/bin/opengpu_gl_glass" \
+    "$GPU_DIR/userspace/examples/gl_glass.c" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -lEGL -lGLESv2 -lgbm -ldrm
+"$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
+    -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
+    -o "$PREFIX/bin/opengpu_gl_quad" \
+    "$GPU_DIR/userspace/examples/gl_quad.c" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -lEGL -lGLESv2 -lgbm -ldrm
+"$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
+    -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
+    -o "$PREFIX/bin/opengpu_gl_pane" \
+    "$GPU_DIR/userspace/examples/gl_pane.c" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -lEGL -lGLESv2 -lgbm -ldrm
 
 echo "Built $PREFIX/bin/opengpu_gl_triangle"
 
@@ -168,6 +186,9 @@ if [ -d "$DRIVER_OUTPUT" ]; then
     cp -L "$PREFIX/bin/opengpu_gl_icon" "$DRIVER_OUTPUT/opengpu_gl_icon.bin"
     cp -L "$PREFIX/bin/opengpu_gl_shade" "$DRIVER_OUTPUT/opengpu_gl_shade.bin"
     cp -L "$PREFIX/bin/opengpu_gl_fade" "$DRIVER_OUTPUT/opengpu_gl_fade.bin"
+    cp -L "$PREFIX/bin/opengpu_gl_glass" "$DRIVER_OUTPUT/opengpu_gl_glass.bin"
+    cp -L "$PREFIX/bin/opengpu_gl_quad" "$DRIVER_OUTPUT/opengpu_gl_quad.bin"
+    cp -L "$PREFIX/bin/opengpu_gl_pane" "$DRIVER_OUTPUT/opengpu_gl_pane.bin"
     aarch64-linux-gnu-strip "$DRIVER_OUTPUT"/libEGL.so.1 \
         "$DRIVER_OUTPUT"/libGLESv2.so.2 "$DRIVER_OUTPUT"/libgbm.so.1 \
         "$DRIVER_OUTPUT"/libglapi.so.0 "$DRIVER_OUTPUT"/libdrm.so.2 \
@@ -185,7 +206,10 @@ if [ -d "$DRIVER_OUTPUT" ]; then
         "$DRIVER_OUTPUT"/opengpu_gl_fill.bin \
         "$DRIVER_OUTPUT"/opengpu_gl_icon.bin \
         "$DRIVER_OUTPUT"/opengpu_gl_shade.bin \
-        "$DRIVER_OUTPUT"/opengpu_gl_fade.bin
+        "$DRIVER_OUTPUT"/opengpu_gl_fade.bin \
+        "$DRIVER_OUTPUT"/opengpu_gl_glass.bin \
+        "$DRIVER_OUTPUT"/opengpu_gl_quad.bin \
+        "$DRIVER_OUTPUT"/opengpu_gl_pane.bin
     cp "$GPU_DIR/userspace/examples/opengpu_gl_triangle.sh" \
         "$DRIVER_OUTPUT/opengpu_gl_triangle"
     cp "$GPU_DIR/userspace/examples/opengpu_gl_texture.sh" \
@@ -214,6 +238,12 @@ if [ -d "$DRIVER_OUTPUT" ]; then
         "$DRIVER_OUTPUT/opengpu_gl_shade"
     cp "$GPU_DIR/userspace/examples/opengpu_gl_fade.sh" \
         "$DRIVER_OUTPUT/opengpu_gl_fade"
+    cp "$GPU_DIR/userspace/examples/opengpu_gl_glass.sh" \
+        "$DRIVER_OUTPUT/opengpu_gl_glass"
+    cp "$GPU_DIR/userspace/examples/opengpu_gl_quad.sh" \
+        "$DRIVER_OUTPUT/opengpu_gl_quad"
+    cp "$GPU_DIR/userspace/examples/opengpu_gl_pane.sh" \
+        "$DRIVER_OUTPUT/opengpu_gl_pane"
     chmod +x "$DRIVER_OUTPUT/opengpu_gl_triangle" \
         "$DRIVER_OUTPUT/opengpu_gl_triangle.bin" \
         "$DRIVER_OUTPUT/opengpu_gl_texture" \
@@ -241,6 +271,12 @@ if [ -d "$DRIVER_OUTPUT" ]; then
         "$DRIVER_OUTPUT/opengpu_gl_shade" \
         "$DRIVER_OUTPUT/opengpu_gl_shade.bin" \
         "$DRIVER_OUTPUT/opengpu_gl_fade" \
-        "$DRIVER_OUTPUT/opengpu_gl_fade.bin"
+        "$DRIVER_OUTPUT/opengpu_gl_fade.bin" \
+        "$DRIVER_OUTPUT/opengpu_gl_glass" \
+        "$DRIVER_OUTPUT/opengpu_gl_glass.bin" \
+        "$DRIVER_OUTPUT/opengpu_gl_quad" \
+        "$DRIVER_OUTPUT/opengpu_gl_quad.bin" \
+        "$DRIVER_OUTPUT/opengpu_gl_pane" \
+        "$DRIVER_OUTPUT/opengpu_gl_pane.bin"
     echo "Staged GL triangle into $DRIVER_OUTPUT"
 fi

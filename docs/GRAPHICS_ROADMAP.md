@@ -270,7 +270,11 @@ opengpu.system.GpuHostSystemAxiSpec -- -z "replay randomized commands"'`.
    /root/opengpu_triangle_present --hold
    ```
    (`BUILD_USERSPACE=0` skips the cross-build.) Mesa only if NIR stays small;
-   see [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md).
+   see [GALLIUM_SPIKE.md](GALLIUM_SPIKE.md). Guest GLES proofs on the
+   320×240 FlashSim desktop, after `gl_fade`: `opengpu_gl_glass` (source-alpha
+   over the clear, inside `0x003f80bf`), `opengpu_gl_quad` (two triangles,
+   both `0x007f007f`), and `opengpu_gl_pane` (scissor `[80,160)×[0,16)`,
+   clipped pixel stays the clear).
    **Display hardware is ARTI guest-memory GraphicHwOps** (`gpu_integration.yaml`:
    SCANOUT BASE/STRIDE/CONTROL/WIDTH/HEIGHT + `refresh_hz`). KMS programs those
    registers; QEMU presents guest GEM memory. ARTI uses the DRM soft timer with
