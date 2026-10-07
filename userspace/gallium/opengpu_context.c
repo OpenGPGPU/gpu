@@ -8,9 +8,10 @@
  * (x, y, 0, 1) when it is packed; the vertex core still multiplies it.
  * A fragment vec4 uniform may be copied into that colour interpolant.
  * The fragment core copies it. One extra multiply of a sampled product
- * by CONST[0][0].xxxx runs on the fragment core, as does a multiply of
- * an interpolated colour by that same swizzle when there is no sample.
- * The CPU only packs the float into the fragment kernarg uniform.
+ * by CONST[0][0].xxxx, or by the whole CONST[0][0] vec4, runs on the
+ * fragment core, as does a multiply of an interpolated colour by that
+ * same .xxxx swizzle when there is no sample. The CPU only packs the
+ * float or the vec4 into the fragment kernarg uniform.
  * The Gallium draw module is not used. */
 #include "opengpu_internal.h"
 #include "opengpu_shaders.h"
@@ -57,8 +58,9 @@ struct opengpu_shader {
      * channel is replicated (a float opacity). */
     int color_const;
     int color_const_chan;
-    /* After sample * colour, multiply by CONST[0][0].xxxx. The byte is
-     * packed into both fragment kernarg banks at byte 288. */
+    /* After sample * colour, multiply by CONST[0][0]. scale_const_chan
+     * is 0 when that factor is .xxxx, and -1 when it is the whole vec4.
+     * The packed word is written to both fragment kernarg banks at byte 288. */
     int scale_const;
     int scale_const_chan;
     int sample_sem;
@@ -414,6 +416,43 @@ static int match_shade_mul(const struct tgsi_full_instruction *insn,
     return 0;
 }
 
+/* gl_FragColor = (texture * v_color) * u_color, the second MUL only.
+ * Same shape as match_shade_mul, except the factor is the whole
+ * CONST[0][0] rather than .xxxx. Returns 0 on that program. */
+static int match_wash_mul(const struct tgsi_full_instruction *insn,
+                          const int *temp_file, struct opengpu_shader *shader,
+                          const int *sem_out)
+{
+    const struct tgsi_full_src_register *temp = &insn->Src[0];
+    const struct tgsi_full_src_register *factor = &insn->Src[1];
+    int index;
+
+    if (shader->modulate || shader->color_const || shader->scale_const ||
+        insn->Instruction.Saturate ||
+        insn->Instruction.NumDstRegs != 1 ||
+        insn->Instruction.NumSrcRegs != 2 ||
+        insn->Dst[0].Register.Indirect ||
+        insn->Dst[0].Register.File != TGSI_FILE_OUTPUT ||
+        insn->Dst[0].Register.WriteMask != TGSI_WRITEMASK_XYZW)
+        return -1;
+    index = insn->Dst[0].Register.Index;
+    if (index < 0 || index >= (int)OPENGPU_ATTRIBS || sem_out[index] < 0 ||
+        !color_semantic((unsigned)sem_out[index]))
+        return -1;
+    if (temp->Register.File != TGSI_FILE_TEMPORARY ||
+        temp->Register.Indirect || !plain_swizzle(&temp->Register) ||
+        temp->Register.Index < 0 ||
+        temp->Register.Index >= (int)OPENGPU_ATTRIBS ||
+        temp_file[temp->Register.Index] != TEMP_MODULATE)
+        return -1;
+    if (!const_column(factor, 0))
+        return -1;
+    shader->scale_const = 1;
+    shader->scale_const_chan = -1;
+    shader->modulate = 1;
+    return 0;
+}
+
 /* gl_FragColor = v_color * u_opacity, with no texture. The colour is the
  * interpolated varying and the factor is CONST[0][0].xxxx. Returns 0 on
  * that program. */
@@ -663,9 +702,10 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                 int const_chan = -1;
 
                 if (saw_modulate && !shader->modulate) {
-                    if (match_shade_mul(insn, temp_file, shader, sem_out))
-                        goto fail;
-                    break;
+                    if (!match_shade_mul(insn, temp_file, shader, sem_out) ||
+                        !match_wash_mul(insn, temp_file, shader, sem_out))
+                        break;
+                    goto fail;
                 }
                 if (!match_fade_mul(insn, shader, sem_in, sem_in_index, sem_out))
                     break;
@@ -948,7 +988,12 @@ static void bind_fs_state(struct pipe_context *pipe, void *hw)
     ctx->fs = hw;
     if (!hw)
         return;
-    if (ctx->fs->scale_const && ctx->fs->modulate) {
+    if (ctx->fs->scale_const && ctx->fs->modulate &&
+        ctx->fs->scale_const_chan < 0) {
+        if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_wash,
+                                 OPENGPU_FRAGMENT_WASH_BYTES))
+            reject("fragment shader bind failed");
+    } else if (ctx->fs->scale_const && ctx->fs->modulate) {
         if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_shade,
                                  OPENGPU_FRAGMENT_SHADE_BYTES))
             reject("fragment shader bind failed");
@@ -1590,18 +1635,25 @@ static void draw_vbo(struct pipe_context *pipe,
         if (ctx->fs->scale_const) {
             float s;
             uint32_t byte, word;
+            unsigned chan;
 
-            if (!ctx->fs_const_set || ctx->fs->scale_const_chan != 0) {
+            if (!ctx->fs_const_set || ctx->fs->scale_const_chan > 0) {
                 reject("fragment opacity did not reach the fragment core");
                 return;
             }
-            s = ctx->fs_const[0];
-            if (s < 0.0f)
-                s = 0.0f;
-            if (s > 1.0f)
-                s = 1.0f;
-            byte = (uint32_t)(s * 255.0f + 0.5f);
-            word = (byte << 24) | (byte << 16) | (byte << 8) | byte;
+            word = 0;
+            for (chan = 0; chan < 4; chan++) {
+                if (ctx->fs->scale_const_chan == 0)
+                    s = ctx->fs_const[0];
+                else
+                    s = ctx->fs_const[chan];
+                if (s < 0.0f)
+                    s = 0.0f;
+                if (s > 1.0f)
+                    s = 1.0f;
+                byte = (uint32_t)(s * 255.0f + 0.5f);
+                word |= byte << (8 * (3 - chan));
+            }
             if (pipe_opengpu_write_fs_uniform(ctx->gpu, word)) {
                 reject("fragment opacity did not reach the fragment core");
                 return;
