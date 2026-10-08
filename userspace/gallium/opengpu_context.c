@@ -10,8 +10,11 @@
  * The fragment core copies it. One extra multiply of a sampled product
  * by CONST[0][0].xxxx, or by the whole CONST[0][0] vec4, runs on the
  * fragment core, as does a multiply of an interpolated colour by that
- * same .xxxx swizzle when there is no sample. The CPU only packs the
- * float or the vec4 into the fragment kernarg uniform.
+ * same .xxxx swizzle when there is no sample. Qt's vertex-colour
+ * material multiplies the attribute by CONST[0][4].xxxx in the vertex
+ * shader. The vertex program has no bytes left for that scale, and the
+ * factor is constant, so the same fragment multiply runs it. The CPU
+ * only packs the float or the vec4 into the fragment kernarg uniform.
  * The Gallium draw module is not used. */
 #include "opengpu_internal.h"
 #include "opengpu_shaders.h"
@@ -66,6 +69,9 @@ struct opengpu_shader {
     int sample_sem;
     int sample_sem_index;
     int mvp;
+    /* OUT colour = IN colour * CONST[0][4].xxxx. The fragment core scales
+     * the copied colour; the vertex program only copies it. */
+    int vs_opacity;
     struct opengpu_link link[4];
     int nlink;
 };
@@ -99,6 +105,9 @@ struct opengpu_context {
     int scissor_set;
     float mvp[16];
     int mvp_set;
+    /* CONST[0][4].x from the vertex constant buffer. */
+    float vs_opacity;
+    int vs_opacity_set;
     float fs_const[4];
     int fs_const_set;
     struct pipe_opengpu_resource *packed;
@@ -453,6 +462,42 @@ static int match_wash_mul(const struct tgsi_full_instruction *insn,
     return 0;
 }
 
+/* OUT colour = IN colour * CONST[0][4].xxxx, once the mat4 has been
+ * matched. Returns 0 on that instruction. The caller only tries this
+ * after the matrix is complete, so a matrix column cannot land here. */
+static int match_vs_opacity(const struct tgsi_full_instruction *insn,
+                            struct opengpu_shader *shader,
+                            const int *sem_in, const int *sem_out,
+                            const int *sem_out_index)
+{
+    const struct tgsi_dst_register *dst = &insn->Dst[0].Register;
+    const struct tgsi_src_register *in;
+    int out_sem;
+
+    if (shader->vs_opacity || insn->Instruction.Opcode != TGSI_OPCODE_MUL ||
+        insn->Instruction.Saturate || insn->Instruction.NumDstRegs != 1 ||
+        insn->Instruction.NumSrcRegs != 2 || dst->Indirect ||
+        dst->WriteMask != TGSI_WRITEMASK_XYZW ||
+        dst->File != TGSI_FILE_OUTPUT || dst->Index >= OPENGPU_ATTRIBS)
+        return -1;
+    out_sem = sem_out[dst->Index];
+    if (out_sem < 0 || !color_semantic((unsigned)out_sem))
+        return -1;
+    in = &insn->Src[0].Register;
+    if (in->File != TGSI_FILE_INPUT || in->Indirect || !plain_swizzle(in) ||
+        in->Index < 0 || in->Index >= (int)OPENGPU_ATTRIBS ||
+        sem_in[in->Index] < 0 ||
+        !color_semantic((unsigned)sem_in[in->Index]))
+        return -1;
+    if (!const_scalar(&insn->Src[1], 4, 0))
+        return -1;
+    if (add_link(shader, out_sem, sem_out_index[dst->Index], (int)in->Index,
+                 0, NULL))
+        return -1;
+    shader->vs_opacity = 1;
+    return 0;
+}
+
 /* gl_FragColor = v_color * u_opacity, with no texture. The colour is the
  * interpolated varying and the factor is CONST[0][0].xxxx. Returns 0 on
  * that program. */
@@ -637,6 +682,10 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
             if (!want_fs &&
                 (insn->Instruction.Opcode == TGSI_OPCODE_MUL ||
                  insn->Instruction.Opcode == TGSI_OPCODE_MAD)) {
+                if (shader->mvp && mvp_used == 0xf &&
+                    !match_vs_opacity(insn, shader, sem_in, sem_out,
+                                      sem_out_index))
+                    break;
                 if (!match_mvp(insn, &mvp_used, &mvp_temp, &mvp_in, shader,
                                sem_out)) {
                     temp_file[mvp_temp] = TEMP_MVP;
@@ -1009,6 +1058,11 @@ static void bind_fs_state(struct pipe_context *pipe, void *hw)
         if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_sample,
                                  OPENGPU_FRAGMENT_SAMPLE_BYTES))
             reject("fragment shader bind failed");
+    } else if (ctx->vs && ctx->vs->vs_opacity && ctx->fs->color_src >= 0 &&
+               !ctx->fs->color_const && !ctx->fs->color_imm) {
+        if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_fade,
+                                 OPENGPU_FRAGMENT_FADE_BYTES))
+            reject("fragment shader bind failed");
     } else if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_color,
                                     OPENGPU_FRAGMENT_COLOR_BYTES)) {
         reject("fragment shader bind failed");
@@ -1029,6 +1083,15 @@ static void bind_vs_state(struct pipe_context *pipe, void *hw)
     } else if (pipe_opengpu_bind_vs(ctx->gpu, opengpu_vertex_passthrough,
                                     OPENGPU_VERTEX_PASSTHROUGH_BYTES)) {
         reject("vertex shader bind failed");
+    }
+    /* The fragment shader may already have been bound as a colour copy.
+     * This multiply is only visible once the vertex shader is bound. */
+    if (ctx->vs->vs_opacity && ctx->fs && ctx->fs->color_src >= 0 &&
+        !ctx->fs->samples && !ctx->fs->modulate && !ctx->fs->scale_const &&
+        !ctx->fs->color_const && !ctx->fs->color_imm) {
+        if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_fade,
+                                 OPENGPU_FRAGMENT_FADE_BYTES))
+            reject("fragment shader bind failed");
     }
 }
 
@@ -1632,6 +1695,30 @@ static void draw_vbo(struct pipe_context *pipe,
             fprintf(stderr, "opengpu: mvp m00=%g m03=%g m33=%g\n",
                     ctx->mvp[0], ctx->mvp[12], ctx->mvp[15]);
         }
+        if (ctx->vs->vs_opacity) {
+            float s;
+            uint32_t byte, word;
+            unsigned chan;
+
+            if (!ctx->vs_opacity_set) {
+                reject("vertex opacity did not reach the fragment core");
+                return;
+            }
+            s = ctx->vs_opacity;
+            if (s < 0.0f)
+                s = 0.0f;
+            if (s > 1.0f)
+                s = 1.0f;
+            byte = (uint32_t)(s * 255.0f + 0.5f);
+            word = 0;
+            for (chan = 0; chan < 4; chan++)
+                word |= byte << (8 * (3 - chan));
+            if (pipe_opengpu_write_fs_uniform(ctx->gpu, word)) {
+                reject("vertex opacity did not reach the fragment core");
+                return;
+            }
+            fprintf(stderr, "opengpu: vertex opacity 0x%08x\n", word);
+        }
         if (ctx->fs->scale_const) {
             float s;
             uint32_t byte, word;
@@ -1904,8 +1991,10 @@ static void set_constant_buffer(struct pipe_context *pipe,
     struct opengpu_context *ctx = octx(pipe);
     const uint8_t *src = NULL;
 
-    if (shader == PIPE_SHADER_VERTEX && index == 0)
+    if (shader == PIPE_SHADER_VERTEX && index == 0) {
         ctx->mvp_set = 0;
+        ctx->vs_opacity_set = 0;
+    }
     if (shader == PIPE_SHADER_VERTEX && index == 0 && buf &&
         buf->buffer_size >= sizeof(ctx->mvp)) {
         if (buf->user_buffer) {
@@ -1920,6 +2009,11 @@ static void set_constant_buffer(struct pipe_context *pipe,
         if (src) {
             memcpy(ctx->mvp, src, sizeof(ctx->mvp));
             ctx->mvp_set = 1;
+            if (buf->buffer_size >= 17u * sizeof(float)) {
+                memcpy(&ctx->vs_opacity, src + 16 * sizeof(float),
+                       sizeof(ctx->vs_opacity));
+                ctx->vs_opacity_set = 1;
+            }
         }
     }
     if (shader == PIPE_SHADER_FRAGMENT && index == 0)
