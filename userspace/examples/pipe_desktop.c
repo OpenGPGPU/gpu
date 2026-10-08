@@ -172,7 +172,8 @@ static uint32_t pixel_at(struct pipe_opengpu_resource *color, uint32_t x,
 static int wait_fence(struct pipe_opengpu_context *ctx,
                       struct pipe_opengpu_fence **fence)
 {
-    if (pipe_opengpu_fence_finish(ctx, *fence, 300000))
+    /* A 640x480 FlashSim clear can run past five minutes. */
+    if (pipe_opengpu_fence_finish(ctx, *fence, 900000))
         return -1;
     pipe_opengpu_fence_reference(fence, NULL);
     return 0;
