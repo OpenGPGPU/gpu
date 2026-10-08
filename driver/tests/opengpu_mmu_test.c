@@ -270,6 +270,16 @@ int main(void)
         assert(asid_flushes == asid_before + 1);
         assert(opengpu_mmu_vm_unmap(
                    &gpu, &vm, 0x30000000, MMU_PAGE_SIZE) == -ENOENT);
+        /* A retired job can revoke a window after the table's CPU mapping
+         * has already been dropped. That must fail closed, not write NULL. */
+        {
+            void *cpu = vm.l1[0].cpu;
+
+            vm.l1[0].cpu = NULL;
+            assert(opengpu_mmu_vm_unmap(&gpu, &vm, va, MMU_PAGE_SIZE) ==
+                   -ENOENT);
+            vm.l1[0].cpu = cpu;
+        }
         assert(asid_flushes == asid_before + 1);
         assert(opengpu_mmu_vm_unmap(&gpu, &vm, va, 0) == -EINVAL);
         assert(opengpu_mmu_vm_unmap(

@@ -416,13 +416,21 @@ int opengpu_mmu_vm_unmap(struct opengpu_device *gpu, struct opengpu_vm *vm,
     if (ret)
         goto out_submit;
     mutex_lock(&mmu->lock);
+    /* vm_destroy drops the CPU mappings under this lock. A free-job worker
+     * that already passed the unlocked enabled check must not write them. */
+    if (!vm->enabled) {
+        ret = -EINVAL;
+        goto out_mmu;
+    }
 
     /* Validate the whole range before revoking any leaf. A private mapping
-     * always owns an L1 table for each covered region. */
+     * always owns an L1 table for each covered region, and that table still
+     * has a CPU mapping. */
     for (p = start; p < end;) {
         u32 region = (u32)(p / MMU_SUPERPAGE_SIZE);
+        struct opengpu_buffer *l1 = vm_l1_find(vm, region);
 
-        if (!vm_l1_find(vm, region)) {
+        if (!l1 || !l1->cpu) {
             ret = -ENOENT;
             goto out_mmu;
         }
@@ -433,6 +441,10 @@ int opengpu_mmu_vm_unmap(struct opengpu_device *gpu, struct opengpu_vm *vm,
         u32 page = (u32)((p % MMU_SUPERPAGE_SIZE) / MMU_PAGE_SIZE);
         struct opengpu_buffer *l1 = vm_l1_find(vm, region);
 
+        if (!l1 || !l1->cpu) {
+            ret = -ENOENT;
+            goto out_mmu;
+        }
         ((u32 *)l1->cpu)[page] = 0;
     }
     dma_wmb();
@@ -458,15 +470,19 @@ void opengpu_mmu_vm_destroy(struct opengpu_device *gpu, struct opengpu_vm *vm)
      * (non-global) entries must not survive into the next owner, so if the
      * shootdown fails the ASID is leaked rather than handed out dirty. */
     ret = mmu_shootdown_asid(gpu, vm->asid);
+    /* Publish the VM as dead before dropping page tables, under the same
+     * locks unmap holds, so a retiring job cannot write a freed table. */
+    mutex_lock(&gpu->hw.submit_lock);
     mutex_lock(&mmu->lock);
+    vm->enabled = false;
     if (!ret)
         opengpu_asid_free(&mmu->asids, vm->asid);
-    mutex_unlock(&mmu->lock);
     for (i = 0; i < vm->l1_count; i++)
         opengpu_buffer_free(gpu, &vm->l1[i]);
     vm->l1_count = 0;
     opengpu_buffer_free(gpu, &vm->root);
-    vm->enabled = false;
+    mutex_unlock(&mmu->lock);
+    mutex_unlock(&gpu->hw.submit_lock);
 }
 
 void opengpu_mmu_fini(struct opengpu_device *gpu)
