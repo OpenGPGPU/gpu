@@ -29,8 +29,9 @@
 #define PIPE_VS_KERNARG_BYTES 768u
 /* Column-major mat4, past the 16 vertex slices of an 8-wide batch.
  * The next float is 65536.0, which the shader multiplies by before
- * converting clip space to Q16.16. Byte 584 is 1/65536 for the
- * intermediate product, and a second mat4 starts at byte 640. */
+ * converting clip space to Q16.16. A second mat4 starts at byte 640.
+ * The two-matrix program biases that integer itself and does not
+ * read byte 584. */
 #define PIPE_VS_MATRIX_OFFSET 512u
 #define PIPE_VS_MATRIX_BYTES 64u
 #define PIPE_VS_SCALE_OFFSET 576u

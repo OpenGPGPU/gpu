@@ -1,7 +1,10 @@
 /* Two mat4*vec4 products. Modelview at byte 640 is the proven
- * Q16.16 product. An arithmetic shift brings that integer back
- * into a small float (byte 584 holds 0.5), and projection at byte
- * 512 then runs the same product. vertex_mvp.S is unchanged. */
+ * Q16.16 product. Those integers are already scaled by 65536, so
+ * the projection at byte 512 must not scale them again. A negative
+ * integer does not convert back to a float here, so each component
+ * is biased by +2^23 before the convert and the same bias is
+ * removed with an integer subtract after the multiply. The z row
+ * of the projection is left 0. vertex_mvp.S is unchanged. */
     .option norvc
     .text
     .globl shader
@@ -123,117 +126,122 @@ shader:
     .word 0x92d156d7
     .word 0x4ad096d7
     .word 0x02868457
-    .word 0x2480a087
-    .word 0xa657b2d7
-    .word 0x4a5190d7
-    .word 0x9210d0d7
-    .word 0xa667b357
-    .word 0x4a619157
-    .word 0x9220d157
-    .word 0xa677b3d7
-    .word 0x4a7191d7
-    .word 0x9230d1d7
-    .word 0xa687b457
-    .word 0x4a819257
-    .word 0x9240d257
-    .word 0x9211d2d7
-    .word 0x2000a087
-    .word 0xb210d2d7
-    .word 0x925152d7
-    .word 0x4a5092d7
-    .word 0x9221d6d7
-    .word 0x2100a087
-    .word 0xb220d6d7
-    .word 0x92d156d7
-    .word 0x4ad096d7
-    .word 0x025682d7
-    .word 0x9231d6d7
-    .word 0x2200a087
-    .word 0xb230d6d7
-    .word 0x92d156d7
-    .word 0x4ad096d7
-    .word 0x025682d7
-    .word 0x9241d6d7
-    .word 0x2300a087
-    .word 0xb240d6d7
-    .word 0x92d156d7
-    .word 0x4ad096d7
-    .word 0x025682d7
-    .word 0x9211d357
-    .word 0x2040a087
-    .word 0xb210d357
-    .word 0x92615357
-    .word 0x4a609357
-    .word 0x9221d6d7
-    .word 0x2140a087
-    .word 0xb220d6d7
-    .word 0x92d156d7
-    .word 0x4ad096d7
-    .word 0x02668357
-    .word 0x9231d6d7
-    .word 0x2240a087
-    .word 0xb230d6d7
-    .word 0x92d156d7
-    .word 0x4ad096d7
-    .word 0x02668357
-    .word 0x9241d6d7
-    .word 0x2340a087
-    .word 0xb240d6d7
-    .word 0x92d156d7
-    .word 0x4ad096d7
-    .word 0x02668357
-    .word 0x9211d3d7
-    .word 0x2080a087
-    .word 0xb210d3d7
-    .word 0x927153d7
-    .word 0x4a7093d7
-    .word 0x9221d6d7
-    .word 0x2180a087
-    .word 0xb220d6d7
-    .word 0x92d156d7
-    .word 0x4ad096d7
-    .word 0x027683d7
-    .word 0x9231d6d7
-    .word 0x2280a087
-    .word 0xb230d6d7
-    .word 0x92d156d7
-    .word 0x4ad096d7
-    .word 0x027683d7
-    .word 0x9241d6d7
-    .word 0x2380a087
-    .word 0xb240d6d7
-    .word 0x92d156d7
-    .word 0x4ad096d7
-    .word 0x027683d7
-    .word 0x9211d457
-    .word 0x20c0a087
-    .word 0xb210d457
-    .word 0x92815457
-    .word 0x4a809457
-    .word 0x9221d6d7
-    .word 0x21c0a087
-    .word 0xb220d6d7
-    .word 0x92d156d7
-    .word 0x4ad096d7
-    .word 0x02868457
-    .word 0x9231d6d7
-    .word 0x22c0a087
-    .word 0xb230d6d7
-    .word 0x92d156d7
-    .word 0x4ad096d7
-    .word 0x02868457
-    .word 0x9241d6d7
-    .word 0x23c0a087
-    .word 0xb240d6d7
-    .word 0x92d156d7
-    .word 0x4ad096d7
-    .word 0x02868457
-    .word 0x10028313
-    .word 0x020362a7
-    .word 0x12028313
-    .word 0x02036327
-    .word 0x14028313
-    .word 0x020363a7
-    .word 0x16028313
-    .word 0x02036427
+    /* x6 = 8388608. v14 = float(8388608), reused for every term. */
+    lui x6, 2048
+    vmv.v.x v14, x6
+    vfcvt.f.x.v v14, v14
+    /* clip x: row 0 of the projection, sources v5..v8. */
+    vadd.vx v13, v5, x6
+    vfcvt.f.x.v v13, v13
+    flw f1, 512(x1)
+    vfmul.vf v13, v13, f1
+    vfcvt.x.f.v v13, v13
+    vfmul.vf v15, v14, f1
+    vfcvt.x.f.v v15, v15
+    vsub.vv v10, v13, v15
+    vadd.vx v13, v6, x6
+    vfcvt.f.x.v v13, v13
+    flw f1, 528(x1)
+    vfmul.vf v13, v13, f1
+    vfcvt.x.f.v v13, v13
+    vfmul.vf v15, v14, f1
+    vfcvt.x.f.v v15, v15
+    vsub.vv v13, v13, v15
+    vadd.vv v10, v10, v13
+    vadd.vx v13, v7, x6
+    vfcvt.f.x.v v13, v13
+    flw f1, 544(x1)
+    vfmul.vf v13, v13, f1
+    vfcvt.x.f.v v13, v13
+    vfmul.vf v15, v14, f1
+    vfcvt.x.f.v v15, v15
+    vsub.vv v13, v13, v15
+    vadd.vv v10, v10, v13
+    vadd.vx v13, v8, x6
+    vfcvt.f.x.v v13, v13
+    flw f1, 560(x1)
+    vfmul.vf v13, v13, f1
+    vfcvt.x.f.v v13, v13
+    vfmul.vf v15, v14, f1
+    vfcvt.x.f.v v15, v15
+    vsub.vv v13, v13, v15
+    vadd.vv v10, v10, v13
+    addi x7, x5, 256
+    vse32.v v10, (x7)
+    /* clip y */
+    vadd.vx v13, v5, x6
+    vfcvt.f.x.v v13, v13
+    flw f1, 516(x1)
+    vfmul.vf v13, v13, f1
+    vfcvt.x.f.v v13, v13
+    vfmul.vf v15, v14, f1
+    vfcvt.x.f.v v15, v15
+    vsub.vv v10, v13, v15
+    vadd.vx v13, v6, x6
+    vfcvt.f.x.v v13, v13
+    flw f1, 532(x1)
+    vfmul.vf v13, v13, f1
+    vfcvt.x.f.v v13, v13
+    vfmul.vf v15, v14, f1
+    vfcvt.x.f.v v15, v15
+    vsub.vv v13, v13, v15
+    vadd.vv v10, v10, v13
+    vadd.vx v13, v7, x6
+    vfcvt.f.x.v v13, v13
+    flw f1, 548(x1)
+    vfmul.vf v13, v13, f1
+    vfcvt.x.f.v v13, v13
+    vfmul.vf v15, v14, f1
+    vfcvt.x.f.v v15, v15
+    vsub.vv v13, v13, v15
+    vadd.vv v10, v10, v13
+    vadd.vx v13, v8, x6
+    vfcvt.f.x.v v13, v13
+    flw f1, 564(x1)
+    vfmul.vf v13, v13, f1
+    vfcvt.x.f.v v13, v13
+    vfmul.vf v15, v14, f1
+    vfcvt.x.f.v v15, v15
+    vsub.vv v13, v13, v15
+    vadd.vv v10, v10, v13
+    addi x7, x5, 288
+    vse32.v v10, (x7)
+    /* clip w. z at byte 320 stays the cleared 0. */
+    vadd.vx v13, v5, x6
+    vfcvt.f.x.v v13, v13
+    flw f1, 524(x1)
+    vfmul.vf v13, v13, f1
+    vfcvt.x.f.v v13, v13
+    vfmul.vf v15, v14, f1
+    vfcvt.x.f.v v15, v15
+    vsub.vv v10, v13, v15
+    vadd.vx v13, v6, x6
+    vfcvt.f.x.v v13, v13
+    flw f1, 540(x1)
+    vfmul.vf v13, v13, f1
+    vfcvt.x.f.v v13, v13
+    vfmul.vf v15, v14, f1
+    vfcvt.x.f.v v15, v15
+    vsub.vv v13, v13, v15
+    vadd.vv v10, v10, v13
+    vadd.vx v13, v7, x6
+    vfcvt.f.x.v v13, v13
+    flw f1, 556(x1)
+    vfmul.vf v13, v13, f1
+    vfcvt.x.f.v v13, v13
+    vfmul.vf v15, v14, f1
+    vfcvt.x.f.v v15, v15
+    vsub.vv v13, v13, v15
+    vadd.vv v10, v10, v13
+    vadd.vx v13, v8, x6
+    vfcvt.f.x.v v13, v13
+    flw f1, 572(x1)
+    vfmul.vf v13, v13, f1
+    vfcvt.x.f.v v13, v13
+    vfmul.vf v15, v14, f1
+    vfcvt.x.f.v v15, v15
+    vsub.vv v13, v13, v15
+    vadd.vv v10, v10, v13
+    addi x7, x5, 352
+    vse32.v v10, (x7)
     .insn i 0x73, 0, zero, zero, 0x305
