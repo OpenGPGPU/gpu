@@ -104,6 +104,11 @@ static int screen_get_param(struct pipe_screen *screen, enum pipe_cap param)
         return 0;
     case PIPE_CAP_VIDEO_MEMORY:
         return 64;
+    case PIPE_CAP_FS_COORD_ORIGIN_UPPER_LEFT:
+    case PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
+        /* Scanout row 0 is NDC y=-1. gl_FragCoord in GLES is lower-left,
+         * so NIR flips Y in the fragment program instead of aborting. */
+        return 1;
     default:
         return 0;
     }

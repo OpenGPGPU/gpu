@@ -233,6 +233,12 @@ mkdir -p "$PREFIX/bin"
     "$GPU_DIR/userspace/examples/gl_gtk_color.c" \
     -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
     -lEGL -lGLESv2 -lgbm -ldrm
+"$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
+    -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
+    -o "$PREFIX/bin/opengpu_gl_gtk_coverage" \
+    "$GPU_DIR/userspace/examples/gl_gtk_coverage.c" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -lEGL -lGLESv2 -lgbm -ldrm
 
 echo "Built $PREFIX/bin/opengpu_gl_triangle"
 
@@ -282,6 +288,7 @@ if [ -d "$DRIVER_OUTPUT" ]; then
     cp -L "$PREFIX/bin/opengpu_gl_qt_stencilclip" "$DRIVER_OUTPUT/opengpu_gl_qt_stencilclip.bin"
     cp -L "$PREFIX/bin/opengpu_gl_qt_rendernode" "$DRIVER_OUTPUT/opengpu_gl_qt_rendernode.bin"
     cp -L "$PREFIX/bin/opengpu_gl_gtk_color" "$DRIVER_OUTPUT/opengpu_gl_gtk_color.bin"
+    cp -L "$PREFIX/bin/opengpu_gl_gtk_coverage" "$DRIVER_OUTPUT/opengpu_gl_gtk_coverage.bin"
     aarch64-linux-gnu-strip "$DRIVER_OUTPUT"/libEGL.so.1 \
         "$DRIVER_OUTPUT"/libGLESv2.so.2 "$DRIVER_OUTPUT"/libgbm.so.1 \
         "$DRIVER_OUTPUT"/libglapi.so.0 "$DRIVER_OUTPUT"/libdrm.so.2 \
@@ -315,7 +322,8 @@ if [ -d "$DRIVER_OUTPUT" ]; then
         "$DRIVER_OUTPUT"/opengpu_gl_qt_vertexcolor.bin \
         "$DRIVER_OUTPUT"/opengpu_gl_qt_stencilclip.bin \
         "$DRIVER_OUTPUT"/opengpu_gl_qt_rendernode.bin \
-        "$DRIVER_OUTPUT"/opengpu_gl_gtk_color.bin
+        "$DRIVER_OUTPUT"/opengpu_gl_gtk_color.bin \
+        "$DRIVER_OUTPUT"/opengpu_gl_gtk_coverage.bin
     cp "$GPU_DIR/userspace/examples/opengpu_gl_triangle.sh" \
         "$DRIVER_OUTPUT/opengpu_gl_triangle"
     cp "$GPU_DIR/userspace/examples/opengpu_gl_texture.sh" \
@@ -414,6 +422,7 @@ if [ -d "$DRIVER_OUTPUT" ]; then
         "$DRIVER_OUTPUT/opengpu_gl_qt_vertexcolor.bin" \
         "$DRIVER_OUTPUT/opengpu_gl_qt_stencilclip.bin" \
         "$DRIVER_OUTPUT/opengpu_gl_qt_rendernode.bin" \
-        "$DRIVER_OUTPUT/opengpu_gl_gtk_color.bin"
+        "$DRIVER_OUTPUT/opengpu_gl_gtk_color.bin" \
+        "$DRIVER_OUTPUT/opengpu_gl_gtk_coverage.bin"
     echo "Staged GL triangle into $DRIVER_OUTPUT"
 fi
