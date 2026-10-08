@@ -291,6 +291,8 @@ int main(void)
         die_errno("drmModeSetCrtc (another DRM master holds the display?)");
     printf("OPENGPU GL SCISSOR PASS\n");
     fflush(stdout);
+    if (getenv("OPENGPU_GL_EXIT"))
+        return 0;
     /* Closing the fd removes the framebuffer and turns the CRTC off. */
     fprintf(stderr, "gl_scissor: holding the frame; Ctrl-C to exit\n");
     for (;;)
