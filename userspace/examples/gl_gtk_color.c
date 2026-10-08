@@ -44,12 +44,14 @@ static const char *fs_src =
     "    gl_FragColor = color;\n"
     "}\n";
 
-/* Column-major. Modelview scales x by 1/2. Projection then adds 1/2.
- * The two products do not commute, so a reversed multiply misses the
- * sample at x=420 and paints the sample at x=280. */
+/* Column-major. Modelview scales x by 1/2. Projection then adds 1/2
+ * and scales y by -1, the sign a window projection uses to flip Y.
+ * The products do not commute, so a reversed multiply misses x=420
+ * and paints x=280. A dropped negative scale leaves the triangle on
+ * the top row instead of the bottom. */
 static const float projection[16] = {
     1.f, 0.f, 0.f, 0.f,
-    0.f, 1.f, 0.f, 0.f,
+    0.f, -1.f, 0.f, 0.f,
     0.f, 0.f, 1.f, 0.f,
     0.5f, 0.f, 0.f, 1.f,
 };
@@ -61,7 +63,8 @@ static const float modelview[16] = {
 };
 
 /* Qt textmask writes the same two products, without its floor().
- * At 640x480 the triangle covers x=320..480 at the top. */
+ * At 640x480 the triangle covers x=320..480. The Y flip puts it on
+ * scanout rows 420..479, wide at the bottom and narrow at row 420. */
 static const float verts[] = {
     -1.f, -1.f,   0.f, 1.f,
      0.f, -1.f,   0.f, 1.f,
@@ -148,7 +151,7 @@ int main(void)
     GLint linked = 0, matrix_loc, color_loc;
     uint32_t crtc_id, fb = 0;
     uint32_t handles[4] = { 0 }, pitches[4] = { 0 }, offsets[4] = { 0 };
-    uint32_t inside, reversed, outside, clear;
+    uint32_t inside, top, reversed, outside, clear;
     int i;
     const EGLint config_attribs[] = {
         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
@@ -279,16 +282,20 @@ int main(void)
     glFinish();
     step("draw finished");
 
-    /* NDC y=-1 is scanout row 0. Scale then translate puts the triangle
-     * on x=320..480. Translate then scale would cover x=240..400. */
+    /* NDC y=-1 is scanout row 0. After the Y flip the triangle sits on
+     * the bottom. (360, row 450) is inside it. (420, row 8) is where the
+     * same triangle sits when the negative scale is dropped. */
+    if (mode.hdisplay != 640 || mode.vdisplay != 480)
+        die("gtk color proof expects 640x480");
     outside = pixel_word(8, mode.vdisplay - 1 - 8);
-    inside = pixel_word(420, mode.vdisplay - 1 - 8);
+    top = pixel_word(420, mode.vdisplay - 1 - 8);
+    inside = pixel_word(360, mode.vdisplay - 1 - (mode.vdisplay - 30));
     reversed = pixel_word(280, mode.vdisplay - 1 - 8);
     clear = pixel_word(mode.hdisplay - 8, 8);
-    printf("gl_gtk_color: mode %ux%u outside=0x%08x inside=0x%08x reversed=0x%08x clear=0x%08x\n",
-           mode.hdisplay, mode.vdisplay, outside, inside, reversed, clear);
+    printf("gl_gtk_color: mode %ux%u outside=0x%08x top=0x%08x inside=0x%08x reversed=0x%08x clear=0x%08x\n",
+           mode.hdisplay, mode.vdisplay, outside, top, inside, reversed, clear);
     fflush(stdout);
-    if (outside != COLOR_CLEAR || inside != COLOR_FILL ||
+    if (outside != COLOR_CLEAR || top != COLOR_CLEAR || inside != COLOR_FILL ||
         reversed != COLOR_CLEAR || clear != COLOR_CLEAR) {
         fprintf(stderr, "gl_gtk_color: pixel mismatch\n");
         return 1;

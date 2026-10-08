@@ -3,8 +3,10 @@
  * the projection at byte 512 must not scale them again. A negative
  * integer does not convert back to a float here, so each component
  * is biased by +2^23 before the convert and the same bias is
- * removed with an integer subtract after the multiply. The z row
- * of the projection is left 0. vertex_mvp.S is unchanged. */
+ * removed with an integer subtract after the multiply. A negative
+ * coefficient is multiplied as its absolute value, then the integer
+ * product is negated. The z column and the z row of the projection
+ * are left out so that sign fix fits. vertex_mvp.S is unchanged. */
     .option norvc
     .text
     .globl shader
@@ -130,118 +132,137 @@ shader:
     lui x6, 2048
     vmv.v.x v14, x6
     vfcvt.f.x.v v14, v14
-    /* clip x: row 0 of the projection, sources v5..v8. */
+    /* clip x */
     vadd.vx v13, v5, x6
     vfcvt.f.x.v v13, v13
     flw f1, 512(x1)
-    vfmul.vf v13, v13, f1
-    vfcvt.x.f.v v13, v13
-    vfmul.vf v15, v14, f1
+    vfmv.v.f v17, f1
+    vmflt.vf v0, v17, f3
+    vfsgnj.vf v17, v17, f2
+    vfmul.vv v16, v13, v17
+    vfcvt.x.f.v v16, v16
+    vfmul.vv v15, v14, v17
     vfcvt.x.f.v v15, v15
-    vsub.vv v10, v13, v15
+    vsub.vv v10, v16, v15
+    vrsub.vi v18, v10, 0
+    vmerge.vvm v10, v10, v18, v0
     vadd.vx v13, v6, x6
     vfcvt.f.x.v v13, v13
     flw f1, 528(x1)
-    vfmul.vf v13, v13, f1
-    vfcvt.x.f.v v13, v13
-    vfmul.vf v15, v14, f1
+    vfmv.v.f v17, f1
+    vmflt.vf v0, v17, f3
+    vfsgnj.vf v17, v17, f2
+    vfmul.vv v16, v13, v17
+    vfcvt.x.f.v v16, v16
+    vfmul.vv v15, v14, v17
     vfcvt.x.f.v v15, v15
-    vsub.vv v13, v13, v15
-    vadd.vv v10, v10, v13
-    vadd.vx v13, v7, x6
-    vfcvt.f.x.v v13, v13
-    flw f1, 544(x1)
-    vfmul.vf v13, v13, f1
-    vfcvt.x.f.v v13, v13
-    vfmul.vf v15, v14, f1
-    vfcvt.x.f.v v15, v15
-    vsub.vv v13, v13, v15
-    vadd.vv v10, v10, v13
+    vsub.vv v16, v16, v15
+    vrsub.vi v18, v16, 0
+    vmerge.vvm v16, v16, v18, v0
+    vadd.vv v10, v10, v16
     vadd.vx v13, v8, x6
     vfcvt.f.x.v v13, v13
     flw f1, 560(x1)
-    vfmul.vf v13, v13, f1
-    vfcvt.x.f.v v13, v13
-    vfmul.vf v15, v14, f1
+    vfmv.v.f v17, f1
+    vmflt.vf v0, v17, f3
+    vfsgnj.vf v17, v17, f2
+    vfmul.vv v16, v13, v17
+    vfcvt.x.f.v v16, v16
+    vfmul.vv v15, v14, v17
     vfcvt.x.f.v v15, v15
-    vsub.vv v13, v13, v15
-    vadd.vv v10, v10, v13
+    vsub.vv v16, v16, v15
+    vrsub.vi v18, v16, 0
+    vmerge.vvm v16, v16, v18, v0
+    vadd.vv v10, v10, v16
     addi x7, x5, 256
     vse32.v v10, (x7)
     /* clip y */
     vadd.vx v13, v5, x6
     vfcvt.f.x.v v13, v13
     flw f1, 516(x1)
-    vfmul.vf v13, v13, f1
-    vfcvt.x.f.v v13, v13
-    vfmul.vf v15, v14, f1
+    vfmv.v.f v17, f1
+    vmflt.vf v0, v17, f3
+    vfsgnj.vf v17, v17, f2
+    vfmul.vv v16, v13, v17
+    vfcvt.x.f.v v16, v16
+    vfmul.vv v15, v14, v17
     vfcvt.x.f.v v15, v15
-    vsub.vv v10, v13, v15
+    vsub.vv v10, v16, v15
+    vrsub.vi v18, v10, 0
+    vmerge.vvm v10, v10, v18, v0
     vadd.vx v13, v6, x6
     vfcvt.f.x.v v13, v13
     flw f1, 532(x1)
-    vfmul.vf v13, v13, f1
-    vfcvt.x.f.v v13, v13
-    vfmul.vf v15, v14, f1
+    vfmv.v.f v17, f1
+    vmflt.vf v0, v17, f3
+    vfsgnj.vf v17, v17, f2
+    vfmul.vv v16, v13, v17
+    vfcvt.x.f.v v16, v16
+    vfmul.vv v15, v14, v17
     vfcvt.x.f.v v15, v15
-    vsub.vv v13, v13, v15
-    vadd.vv v10, v10, v13
-    vadd.vx v13, v7, x6
-    vfcvt.f.x.v v13, v13
-    flw f1, 548(x1)
-    vfmul.vf v13, v13, f1
-    vfcvt.x.f.v v13, v13
-    vfmul.vf v15, v14, f1
-    vfcvt.x.f.v v15, v15
-    vsub.vv v13, v13, v15
-    vadd.vv v10, v10, v13
+    vsub.vv v16, v16, v15
+    vrsub.vi v18, v16, 0
+    vmerge.vvm v16, v16, v18, v0
+    vadd.vv v10, v10, v16
     vadd.vx v13, v8, x6
     vfcvt.f.x.v v13, v13
     flw f1, 564(x1)
-    vfmul.vf v13, v13, f1
-    vfcvt.x.f.v v13, v13
-    vfmul.vf v15, v14, f1
+    vfmv.v.f v17, f1
+    vmflt.vf v0, v17, f3
+    vfsgnj.vf v17, v17, f2
+    vfmul.vv v16, v13, v17
+    vfcvt.x.f.v v16, v16
+    vfmul.vv v15, v14, v17
     vfcvt.x.f.v v15, v15
-    vsub.vv v13, v13, v15
-    vadd.vv v10, v10, v13
+    vsub.vv v16, v16, v15
+    vrsub.vi v18, v16, 0
+    vmerge.vvm v16, v16, v18, v0
+    vadd.vv v10, v10, v16
     addi x7, x5, 288
     vse32.v v10, (x7)
-    /* clip w. z at byte 320 stays the cleared 0. */
+    /* clip w. z stays the cleared 0 */
     vadd.vx v13, v5, x6
     vfcvt.f.x.v v13, v13
     flw f1, 524(x1)
-    vfmul.vf v13, v13, f1
-    vfcvt.x.f.v v13, v13
-    vfmul.vf v15, v14, f1
+    vfmv.v.f v17, f1
+    vmflt.vf v0, v17, f3
+    vfsgnj.vf v17, v17, f2
+    vfmul.vv v16, v13, v17
+    vfcvt.x.f.v v16, v16
+    vfmul.vv v15, v14, v17
     vfcvt.x.f.v v15, v15
-    vsub.vv v10, v13, v15
+    vsub.vv v10, v16, v15
+    vrsub.vi v18, v10, 0
+    vmerge.vvm v10, v10, v18, v0
     vadd.vx v13, v6, x6
     vfcvt.f.x.v v13, v13
     flw f1, 540(x1)
-    vfmul.vf v13, v13, f1
-    vfcvt.x.f.v v13, v13
-    vfmul.vf v15, v14, f1
+    vfmv.v.f v17, f1
+    vmflt.vf v0, v17, f3
+    vfsgnj.vf v17, v17, f2
+    vfmul.vv v16, v13, v17
+    vfcvt.x.f.v v16, v16
+    vfmul.vv v15, v14, v17
     vfcvt.x.f.v v15, v15
-    vsub.vv v13, v13, v15
-    vadd.vv v10, v10, v13
-    vadd.vx v13, v7, x6
-    vfcvt.f.x.v v13, v13
-    flw f1, 556(x1)
-    vfmul.vf v13, v13, f1
-    vfcvt.x.f.v v13, v13
-    vfmul.vf v15, v14, f1
-    vfcvt.x.f.v v15, v15
-    vsub.vv v13, v13, v15
-    vadd.vv v10, v10, v13
+    vsub.vv v16, v16, v15
+    vrsub.vi v18, v16, 0
+    vmerge.vvm v16, v16, v18, v0
+    vadd.vv v10, v10, v16
     vadd.vx v13, v8, x6
     vfcvt.f.x.v v13, v13
     flw f1, 572(x1)
-    vfmul.vf v13, v13, f1
-    vfcvt.x.f.v v13, v13
-    vfmul.vf v15, v14, f1
+    vfmv.v.f v17, f1
+    vmflt.vf v0, v17, f3
+    vfsgnj.vf v17, v17, f2
+    vfmul.vv v16, v13, v17
+    vfcvt.x.f.v v16, v16
+    vfmul.vv v15, v14, v17
     vfcvt.x.f.v v15, v15
-    vsub.vv v13, v13, v15
-    vadd.vv v10, v10, v13
+    vsub.vv v16, v16, v15
+    vrsub.vi v18, v16, 0
+    vmerge.vvm v16, v16, v18, v0
+    vadd.vv v10, v10, v16
     addi x7, x5, 352
     vse32.v v10, (x7)
     .insn i 0x73, 0, zero, zero, 0x305
+
