@@ -178,6 +178,7 @@ libopengpu_gallium = static_library(
   files(
     'opengpu_screen.c',
     'opengpu_context.c',
+    'opengpu_fs_emit.c',
     'pipe_opengpu.c',
     'opengpu.c',
   ),

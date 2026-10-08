@@ -14,9 +14,10 @@
 #define PIPE_FS_SLOT 2u
 #define PIPE_KERNARG_SLOT 3u
 /* The kernel requires a multiple of 64, up to the 256-instruction
- * sandbox. 128 bytes only holds the copy and sample shaders. */
-#define PIPE_FS_GEM_BYTES 256u
-#define PIPE_KERNARG_BYTES 640u
+ * sandbox. The coverage fragment program needs the whole slot. */
+#define PIPE_FS_GEM_BYTES 1024u
+#define PIPE_KERNARG_BYTES 1024u
+#define PIPE_FS_BANK_STRIDE 512u
 #define PIPE_CS_SLOT 1u
 #define PIPE_CS_KERNARG_SLOT 2u
 #define PIPE_CS_GEM_BYTES 64u
@@ -439,6 +440,7 @@ int pipe_opengpu_bind_fs(struct pipe_opengpu_context *ctx,
     if (opengpu_buffer_create(fd, PIPE_FS_GEM_BYTES, &ctx->shader) ||
         opengpu_buffer_create(fd, PIPE_KERNARG_BYTES, &ctx->kernarg))
         return -1;
+    memset(ctx->shader.map, 0, PIPE_FS_GEM_BYTES);
     memcpy(ctx->shader.map, code, bytes);
     binding.context_id = ctx->context_id;
     binding.slot = PIPE_FS_SLOT;
@@ -1062,14 +1064,13 @@ int pipe_opengpu_write_vs_matrices(struct pipe_opengpu_context *ctx,
 int pipe_opengpu_write_fs_uniform(struct pipe_opengpu_context *ctx,
                                   uint32_t word)
 {
-    /* Bank stride is 320. The uniform sits 32 bytes into the 64-byte line
-     * that starts at byte 256 of each bank. */
-    static const uint32_t lines[] = { 256u, 576u };
-    static const uint32_t words[] = { 288u, 608u };
+    /* Each bank is 512 bytes. The uniform word is at byte 288 of both. */
+    static const uint32_t lines[] = { 256u, 256u + PIPE_FS_BANK_STRIDE };
+    static const uint32_t words[] = { 288u, 288u + PIPE_FS_BANK_STRIDE };
     unsigned i;
 
     if (!ctx || !ctx->fs_bound || !ctx->kernarg.map ||
-        ctx->kernarg.size < 640u) {
+        ctx->kernarg.size < PIPE_KERNARG_BYTES) {
         errno = EINVAL;
         return -1;
     }
@@ -1092,6 +1093,43 @@ int pipe_opengpu_write_fs_uniform(struct pipe_opengpu_context *ctx,
         }
         if (finish_or_hand_off(ctx, fence, NULL))
             return -1;
+    }
+    return 0;
+}
+
+int pipe_opengpu_write_fs_block(struct pipe_opengpu_context *ctx,
+                                const float *words, unsigned nfloats)
+{
+    unsigned bytes, bank, off;
+
+    if (!ctx || !words || !nfloats || !ctx->fs_bound || !ctx->kernarg.map ||
+        ctx->kernarg.size < PIPE_KERNARG_BYTES ||
+        288u + nfloats * 4u > PIPE_FS_BANK_STRIDE) {
+        errno = EINVAL;
+        return -1;
+    }
+    bytes = nfloats * 4u;
+    for (bank = 0; bank < 2; bank++) {
+        memcpy((uint8_t *)ctx->kernarg.map + bank * PIPE_FS_BANK_STRIDE + 288u,
+               words, bytes);
+        for (off = 256u; off < 288u + bytes; off += 64u) {
+            struct drm_opengpu_invalidate invalidate = { 0 };
+            struct pipe_opengpu_fence *fence = alloc_fence(ctx->screen->fd);
+
+            if (!fence)
+                return -1;
+            invalidate.context_id = ctx->context_id;
+            invalidate.handle = ctx->kernarg.handle;
+            invalidate.offset = bank * PIPE_FS_BANK_STRIDE + off;
+            invalidate.bytes = 64;
+            invalidate.out_syncobj = fence->handle;
+            if (opengpu_invalidate(ctx->screen->fd, &invalidate)) {
+                pipe_opengpu_fence_reference(&fence, NULL);
+                return -1;
+            }
+            if (finish_or_hand_off(ctx, fence, NULL))
+                return -1;
+        }
     }
     return 0;
 }

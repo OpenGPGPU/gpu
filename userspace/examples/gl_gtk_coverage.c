@@ -1,8 +1,7 @@
-/* GTK 4.14 color.glsl fragment: gskSetOutputColor(final_color).
- * The color program is not NO_CLIP, so this is gsk_rounded_rect_coverage
- * from preamble.fs.glsl, written in ESSL 100. The vertex program is the
- * plain position copy. The CPU only packs the vertex buffer and the
- * clip-rect uniforms.
+/* GTK's ellipsis_coverage from gsk_rounded_rect_coverage, written in
+ * ESSL 100. length() is the reciprocal square root on the fragment core.
+ * The vertex program copies the position. The CPU packs the vertex
+ * buffer and the center/radius uniform.
  */
 
 #include <EGL/egl.h>
@@ -36,9 +35,7 @@ static const char *vs_src =
 static const char *fs_src =
     "precision highp float;\n"
     "uniform lowp vec4 color;\n"
-    "uniform highp vec4 bounds;\n"
-    "uniform highp vec4 corner1;\n"
-    "uniform highp vec4 corner2;\n"
+    "uniform highp vec4 center_radius;\n"
     "float ellipsis_coverage(vec2 point, vec2 center, vec2 radius)\n"
     "{\n"
     "    vec2 p = point - center;\n"
@@ -50,34 +47,8 @@ static const char *fs_src =
     "}\n"
     "void main()\n"
     "{\n"
-    "    vec2 p = gl_FragCoord.xy;\n"
-    "    float coverage;\n"
-    "    if (p.x < bounds.x || p.y < bounds.y ||\n"
-    "        p.x >= bounds.z || p.y >= bounds.w)\n"
-    "        coverage = 0.0;\n"
-    "    else if (p.x >= corner1.x && p.x >= corner2.z &&\n"
-    "             p.x <= corner1.z && p.x <= corner2.x)\n"
-    "        coverage = 1.0;\n"
-    "    else if (p.y >= corner1.y && p.y >= corner1.w &&\n"
-    "             p.y <= corner2.w && p.y <= corner2.y)\n"
-    "        coverage = 1.0;\n"
-    "    else {\n"
-    "        vec2 rad_tl = corner1.xy - bounds.xy;\n"
-    "        vec2 rad_tr = vec2(corner1.z, corner1.w) - vec2(bounds.z, bounds.y);\n"
-    "        vec2 rad_br = corner2.xy - bounds.zw;\n"
-    "        vec2 rad_bl = vec2(corner2.z, corner2.w) - vec2(bounds.x, bounds.w);\n"
-    "        float d_tl = ellipsis_coverage(p, corner1.xy, rad_tl);\n"
-    "        float d_tr = ellipsis_coverage(p, vec2(corner1.z, corner1.w), rad_tr);\n"
-    "        float d_br = ellipsis_coverage(p, corner2.xy, rad_br);\n"
-    "        float d_bl = ellipsis_coverage(p, vec2(corner2.z, corner2.w), rad_bl);\n"
-    "        vec4 cover = 1.0 - vec4(d_tl, d_tr, d_br, d_bl);\n"
-    "        vec4 outside = vec4(\n"
-    "            float(p.x < corner1.x && p.y < corner1.y),\n"
-    "            float(p.x > corner1.z && p.y < corner1.w),\n"
-    "            float(p.x > corner2.x && p.y > corner2.y),\n"
-    "            float(p.x < corner2.z && p.y > corner2.w));\n"
-    "        coverage = 1.0 - dot(outside, cover);\n"
-    "    }\n"
+    "    float coverage = ellipsis_coverage(gl_FragCoord.xy,\n"
+    "        center_radius.xy, center_radius.zw);\n"
     "    gl_FragColor = color * coverage;\n"
     "}\n";
 
@@ -272,16 +243,12 @@ int main(void)
         die("color uniform missing");
     glUniform4f(color_loc, 1.f, 0.f, 0.f, 1.f);
     {
-        GLint bounds_loc = glGetUniformLocation(program, "bounds");
-        GLint c1_loc = glGetUniformLocation(program, "corner1");
-        GLint c2_loc = glGetUniformLocation(program, "corner2");
-        if (bounds_loc < 0 || c1_loc < 0 || c2_loc < 0)
-            die("coverage uniform missing");
-        /* Axis-aligned clip of the whole framebuffer. Corner references
-         * sit on the bounds, so a lowered shader covers the interior. */
-        glUniform4f(bounds_loc, 0.f, 0.f, (float)mode.hdisplay, (float)mode.vdisplay);
-        glUniform4f(c1_loc, 0.f, (float)mode.vdisplay, (float)mode.hdisplay, (float)mode.vdisplay);
-        glUniform4f(c2_loc, (float)mode.hdisplay, 0.f, 0.f, 0.f);
+        GLint disk_loc = glGetUniformLocation(program, "center_radius");
+        /* FragCoord.y at scanout row r is 480-r. Center (40, 460) is
+         * scanout (40, 20), inside the triangle, with radius 16. */
+        if (disk_loc < 0)
+            die("center_radius uniform missing");
+        glUniform4f(disk_loc, 40.f, 460.f, 16.f, 16.f);
     }
 
     glGenBuffers(1, &vbo);
@@ -301,17 +268,29 @@ int main(void)
     glFinish();
     step("draw finished");
 
-    /* NDC y=-1 is scanout row 0. The triangle covers x=0..160, rows 0..60.
-     * (8, row 8) is inside. The far corner stays the clear color. */
+    /* NDC y=-1 is scanout row 0. (44, row 20) is 4px from the disk
+     * center, so coverage clamps to 1. (60, row 20) is 20px out, past
+     * radius 16, so coverage is 0 and the fragment is black. Blend is
+     * off, so that write replaces the clear colour. Both samples are
+     * inside the triangle. */
     if (mode.hdisplay != 640 || mode.vdisplay != 480)
         die("gtk coverage proof expects 640x480");
-    inside = pixel_word(8, mode.vdisplay - 1 - 8);
-    outside = pixel_word(mode.hdisplay - 8, 8);
+    inside = pixel_word(44, mode.vdisplay - 1 - 20);
+    outside = pixel_word(60, mode.vdisplay - 1 - 20);
     printf("gl_gtk_coverage: mode %ux%u inside=0x%08x outside=0x%08x\n",
            mode.hdisplay, mode.vdisplay, inside, outside);
     fflush(stdout);
-    if (inside != COLOR_FILL || outside != COLOR_CLEAR) {
+    if (inside != COLOR_FILL || outside != 0u) {
+        int x;
+
         fprintf(stderr, "gl_gtk_coverage: pixel mismatch\n");
+        fprintf(stderr, "gl_gtk_coverage: row20");
+        for (x = 0; x <= 176; x += 8)
+            fprintf(stderr, " %d=0x%08x", x,
+                    pixel_word(x, mode.vdisplay - 1 - 20));
+        fprintf(stderr, "\n");
+        fprintf(stderr, "gl_gtk_coverage: off_triangle=0x%08x\n",
+                pixel_word(400, mode.vdisplay - 1 - 20));
         return 1;
     }
 

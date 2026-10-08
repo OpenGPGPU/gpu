@@ -143,9 +143,15 @@ int pipe_opengpu_write_vs_matrices(struct pipe_opengpu_context *ctx,
                                    const float modelview[16]);
 
 /* Copy one packed opacity word into both fragment kernarg banks.
- * Byte 288 is the per-draw uniform of a 320-byte bank. */
+ * Byte 288 is the per-draw uniform of a 512-byte bank. */
 int pipe_opengpu_write_fs_uniform(struct pipe_opengpu_context *ctx,
                                   uint32_t word);
+
+/* Copy float uniforms into both banks, starting at byte 288. */
+int pipe_opengpu_write_fs_block(struct pipe_opengpu_context *ctx,
+                                const float *words, unsigned nfloats);
+
+#define PIPE_OPENGPU_FS_BANK_STRIDE 512u
 
 /* Print the lane-0 position, clip result, uniform words and the probes
  * vertex_mvp.S leaves in the depth and UV slices. Coherent DMA makes the

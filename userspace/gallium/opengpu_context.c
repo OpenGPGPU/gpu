@@ -17,6 +17,7 @@
  * only packs the float or the vec4 into the fragment kernarg uniform.
  * The Gallium draw module is not used. */
 #include "opengpu_internal.h"
+#include "opengpu_fs_emit.h"
 #include "opengpu_shaders.h"
 
 #include "pipe/p_context.h"
@@ -77,6 +78,14 @@ struct opengpu_shader {
     int vs_opacity;
     struct opengpu_link link[4];
     int nlink;
+    /* Straight-line ALU fragment program, when the fixed matchers do not
+     * accept it. alu_code runs on the fragment core. */
+    int alu;
+    uint32_t alu_code[256];
+    unsigned alu_words;
+    unsigned alu_nconst;
+    float alu_imm[8];
+    unsigned alu_nimm;
 };
 
 /* temp_file value: the temporary holds the vtex.sample result. */
@@ -116,6 +125,8 @@ struct opengpu_context {
     int vs_opacity_set;
     float fs_const[4];
     int fs_const_set;
+    float fs_block[32];
+    unsigned fs_block_n;
     struct pipe_opengpu_resource *packed;
     uint32_t packed_bytes;
 };
@@ -611,6 +622,33 @@ static int match_fill_mov(const struct tgsi_full_instruction *insn,
     return 0;
 }
 
+static struct opengpu_shader *lower_fragment_alu(
+    const struct pipe_shader_state *state)
+{
+    struct opengpu_fs_alu alu;
+    struct opengpu_shader *shader;
+
+    if (!state || state->type != PIPE_SHADER_IR_TGSI || !state->tokens)
+        return NULL;
+    if (opengpu_fs_emit(state->tokens, &alu))
+        return NULL;
+    shader = CALLOC_STRUCT(opengpu_shader);
+    if (!shader)
+        return NULL;
+    shader->is_fs = 1;
+    shader->alu = 1;
+    shader->color_src = -1;
+    shader->color_sem = -1;
+    shader->sample_sem = -1;
+    shader->pos_src = -1;
+    shader->alu_words = alu.words;
+    shader->alu_nconst = alu.nconst;
+    shader->alu_nimm = alu.nimm;
+    memcpy(shader->alu_code, alu.code, alu.words * sizeof(uint32_t));
+    memcpy(shader->alu_imm, alu.imm, alu.nimm * sizeof(float));
+    return shader;
+}
+
 /* Record which input feeds gl_Position and which feeds the colour. Anything
  * other than MOV/END, a mat4 multiply, or a write the fixed vertex format
  * cannot carry, fails. */
@@ -1037,13 +1075,13 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
         ((sprite_xy || sprite_w) &&
          (!shader->mvp || sprite_xy != 0x3 || !sprite_w))) {
         FREE(shader);
-        return NULL;
+        return want_fs ? lower_fragment_alu(state) : NULL;
     }
     return shader;
 fail:
     tgsi_parse_free(&parse);
     FREE(shader);
-    return NULL;
+    return want_fs ? lower_fragment_alu(state) : NULL;
 }
 
 static void *create_shader(struct pipe_context *pipe,
@@ -1080,6 +1118,12 @@ static void bind_fs_state(struct pipe_context *pipe, void *hw)
     ctx->fs = hw;
     if (!hw)
         return;
+    if (ctx->fs->alu) {
+        if (pipe_opengpu_bind_fs(ctx->gpu, ctx->fs->alu_code,
+                                 ctx->fs->alu_words * sizeof(uint32_t)))
+            reject("fragment shader bind failed");
+        return;
+    }
     if (ctx->fs->scale_const && ctx->fs->modulate &&
         ctx->fs->scale_const_chan < 0) {
         if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_wash,
@@ -1134,6 +1178,7 @@ static void bind_vs_state(struct pipe_context *pipe, void *hw)
     /* The fragment shader may already have been bound as a colour copy.
      * This multiply is only visible once the vertex shader is bound. */
     if (ctx->vs->vs_opacity && ctx->fs && ctx->fs->color_src >= 0 &&
+        !ctx->fs->alu &&
         !ctx->fs->samples && !ctx->fs->modulate && !ctx->fs->scale_const &&
         !ctx->fs->color_const && !ctx->fs->color_imm) {
         if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_fade,
@@ -1568,7 +1613,7 @@ static int pack_one(struct opengpu_context *ctx, unsigned vertex,
 
         if (!cp || load_color(cp, ctx->ve[link->src].src_format, cc, c))
             return -1;
-    } else if (!fs->samples && !fs->color_imm && !fs->color_const) {
+    } else if (!fs->samples && !fs->color_imm && !fs->color_const && !fs->alu) {
         return -1;
     }
     if (fs->color_const && !fs->modulate) {
@@ -1805,6 +1850,24 @@ static void draw_vbo(struct pipe_context *pipe,
             }
             fprintf(stderr, "opengpu: shade 0x%08x\n", word);
         }
+        if (ctx->fs->alu) {
+            float block[40];
+            unsigned nconst = ctx->fs->alu_nconst * 4u;
+            unsigned n = nconst + ctx->fs->alu_nimm;
+
+            if (!n || nconst > ctx->fs_block_n || n > 40) {
+                reject("fragment constants did not reach the fragment core");
+                return;
+            }
+            memcpy(block, ctx->fs_block, nconst * sizeof(float));
+            if (ctx->fs->alu_nimm)
+                memcpy(block + nconst, ctx->fs->alu_imm,
+                       ctx->fs->alu_nimm * sizeof(float));
+            if (pipe_opengpu_write_fs_block(ctx->gpu, block, n)) {
+                reject("fragment constants did not reach the fragment core");
+                return;
+            }
+        }
         for (tri = 0; tri < count; tri += 3) {
             struct hw_vertex verts[3];
             struct drm_opengpu_vertex_draw vdraw;
@@ -1873,7 +1936,7 @@ static void draw_vbo(struct pipe_context *pipe,
             memset(&vdraw, 0, sizeof(vdraw));
             vdraw.vertex_count = 3;
             vdraw.vertex_stride = sizeof(verts[0]);
-            vdraw.fragment_kernarg_bank_stride = 320;
+            vdraw.fragment_kernarg_bank_stride = PIPE_OPENGPU_FS_BANK_STRIDE;
             vdraw.blend_config = blend_config;
             vdraw.state = OPENGPU_DRAW_STATE_OVERRIDE | depth_bits |
                           (cull << OPENGPU_DRAW_STATE_CULL_SHIFT);
@@ -2079,10 +2142,12 @@ static void set_constant_buffer(struct pipe_context *pipe,
             }
         }
     }
-    if (shader == PIPE_SHADER_FRAGMENT && index == 0)
+    if (shader == PIPE_SHADER_FRAGMENT && index == 0) {
         ctx->fs_const_set = 0;
+        ctx->fs_block_n = 0;
+    }
     if (shader == PIPE_SHADER_FRAGMENT && index == 0 && buf &&
-        buf->buffer_size >= sizeof(ctx->fs_const)) {
+        buf->buffer_size >= sizeof(float)) {
         const uint8_t *fsrc = NULL;
 
         if (buf->user_buffer) {
@@ -2095,8 +2160,16 @@ static void set_constant_buffer(struct pipe_context *pipe,
                 fsrc = map + buf->buffer_offset;
         }
         if (fsrc) {
-            memcpy(ctx->fs_const, fsrc, sizeof(ctx->fs_const));
-            ctx->fs_const_set = 1;
+            unsigned nfloat = buf->buffer_size / sizeof(float);
+
+            if (nfloat > 32)
+                nfloat = 32;
+            memcpy(ctx->fs_block, fsrc, nfloat * sizeof(float));
+            ctx->fs_block_n = nfloat;
+            if (nfloat >= 4) {
+                memcpy(ctx->fs_const, fsrc, sizeof(ctx->fs_const));
+                ctx->fs_const_set = 1;
+            }
         }
     }
     if (take_ownership && buf && buf->buffer) {
