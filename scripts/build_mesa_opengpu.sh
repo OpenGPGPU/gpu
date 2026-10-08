@@ -215,6 +215,18 @@ mkdir -p "$PREFIX/bin"
     "$GPU_DIR/userspace/examples/gl_qt_vertexcolor.c" \
     -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
     -lEGL -lGLESv2 -lgbm -ldrm
+"$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
+    -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
+    -o "$PREFIX/bin/opengpu_gl_qt_stencilclip" \
+    "$GPU_DIR/userspace/examples/gl_qt_stencilclip.c" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -lEGL -lGLESv2 -lgbm -ldrm
+"$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
+    -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
+    -o "$PREFIX/bin/opengpu_gl_qt_rendernode" \
+    "$GPU_DIR/userspace/examples/gl_qt_rendernode.c" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -lEGL -lGLESv2 -lgbm -ldrm
 
 echo "Built $PREFIX/bin/opengpu_gl_triangle"
 
@@ -261,6 +273,8 @@ if [ -d "$DRIVER_OUTPUT" ]; then
     cp -L "$PREFIX/bin/opengpu_gl_qt_texture" "$DRIVER_OUTPUT/opengpu_gl_qt_texture.bin"
     cp -L "$PREFIX/bin/opengpu_gl_qt_opacity" "$DRIVER_OUTPUT/opengpu_gl_qt_opacity.bin"
     cp -L "$PREFIX/bin/opengpu_gl_qt_vertexcolor" "$DRIVER_OUTPUT/opengpu_gl_qt_vertexcolor.bin"
+    cp -L "$PREFIX/bin/opengpu_gl_qt_stencilclip" "$DRIVER_OUTPUT/opengpu_gl_qt_stencilclip.bin"
+    cp -L "$PREFIX/bin/opengpu_gl_qt_rendernode" "$DRIVER_OUTPUT/opengpu_gl_qt_rendernode.bin"
     aarch64-linux-gnu-strip "$DRIVER_OUTPUT"/libEGL.so.1 \
         "$DRIVER_OUTPUT"/libGLESv2.so.2 "$DRIVER_OUTPUT"/libgbm.so.1 \
         "$DRIVER_OUTPUT"/libglapi.so.0 "$DRIVER_OUTPUT"/libdrm.so.2 \
@@ -291,7 +305,9 @@ if [ -d "$DRIVER_OUTPUT" ]; then
         "$DRIVER_OUTPUT"/opengpu_gl_qt_flatcolor.bin \
         "$DRIVER_OUTPUT"/opengpu_gl_qt_texture.bin \
         "$DRIVER_OUTPUT"/opengpu_gl_qt_opacity.bin \
-        "$DRIVER_OUTPUT"/opengpu_gl_qt_vertexcolor.bin
+        "$DRIVER_OUTPUT"/opengpu_gl_qt_vertexcolor.bin \
+        "$DRIVER_OUTPUT"/opengpu_gl_qt_stencilclip.bin \
+        "$DRIVER_OUTPUT"/opengpu_gl_qt_rendernode.bin
     cp "$GPU_DIR/userspace/examples/opengpu_gl_triangle.sh" \
         "$DRIVER_OUTPUT/opengpu_gl_triangle"
     cp "$GPU_DIR/userspace/examples/opengpu_gl_texture.sh" \
@@ -387,6 +403,8 @@ if [ -d "$DRIVER_OUTPUT" ]; then
         "$DRIVER_OUTPUT/opengpu_gl_qt_flatcolor.bin" \
         "$DRIVER_OUTPUT/opengpu_gl_qt_texture.bin" \
         "$DRIVER_OUTPUT/opengpu_gl_qt_opacity.bin" \
-        "$DRIVER_OUTPUT/opengpu_gl_qt_vertexcolor.bin"
+        "$DRIVER_OUTPUT/opengpu_gl_qt_vertexcolor.bin" \
+        "$DRIVER_OUTPUT/opengpu_gl_qt_stencilclip.bin" \
+        "$DRIVER_OUTPUT/opengpu_gl_qt_rendernode.bin"
     echo "Staged GL triangle into $DRIVER_OUTPUT"
 fi
