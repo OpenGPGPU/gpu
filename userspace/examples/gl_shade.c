@@ -326,6 +326,8 @@ int main(void)
         die_errno("drmModeSetCrtc (another DRM master holds the display?)");
     printf("OPENGPU GL SHADE PASS\n");
     fflush(stdout);
+    if (getenv("OPENGPU_GL_EXIT"))
+        return 0;
     fprintf(stderr, "gl_shade: holding the frame; Ctrl-C to exit\n");
     for (;;)
         pause();
