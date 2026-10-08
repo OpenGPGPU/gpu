@@ -25,15 +25,17 @@
 #define PIPE_VB_SLOT 4u
 #define PIPE_VS_SLOT 5u
 #define PIPE_VS_KERNARG_SLOT 6u
-#define PIPE_VS_GEM_BYTES 512u
-#define PIPE_VS_KERNARG_BYTES 640u
+#define PIPE_VS_GEM_BYTES 1024u
+#define PIPE_VS_KERNARG_BYTES 768u
 /* Column-major mat4, past the 16 vertex slices of an 8-wide batch.
  * The next float is 65536.0, which the shader multiplies by before
- * converting clip space to Q16.16. */
+ * converting clip space to Q16.16. Byte 584 is 1/65536 for the
+ * intermediate product, and a second mat4 starts at byte 640. */
 #define PIPE_VS_MATRIX_OFFSET 512u
 #define PIPE_VS_MATRIX_BYTES 64u
 #define PIPE_VS_SCALE_OFFSET 576u
-#define PIPE_VS_UNIFORM_BYTES 128u
+#define PIPE_VS_MATRIX2_OFFSET 640u
+#define PIPE_VS_UNIFORM_BYTES 256u
 
 struct pipe_opengpu_screen {
     int fd;
@@ -1016,6 +1018,46 @@ int pipe_opengpu_write_vs_matrix(struct pipe_opengpu_context *ctx,
     return finish_or_hand_off(ctx, fence, NULL);
 }
 
+int pipe_opengpu_write_vs_matrices(struct pipe_opengpu_context *ctx,
+                                   const float projection[16],
+                                   const float modelview[16])
+{
+    struct drm_opengpu_invalidate invalidate = { 0 };
+    struct pipe_opengpu_fence *fence;
+    float scale = 65536.0f;
+    float half = 0.5f;
+    float zero = 0.0f;
+    uint8_t *uniform;
+
+    if (!ctx || !projection || !modelview || !ctx->vs_bound ||
+        !ctx->vs_kernarg.map ||
+        ctx->vs_kernarg.size < PIPE_VS_MATRIX_OFFSET + PIPE_VS_UNIFORM_BYTES) {
+        errno = EINVAL;
+        return -1;
+    }
+    uniform = (uint8_t *)ctx->vs_kernarg.map + PIPE_VS_MATRIX_OFFSET;
+    memcpy(uniform, projection, PIPE_VS_MATRIX_BYTES);
+    memcpy(uniform + (PIPE_VS_SCALE_OFFSET - PIPE_VS_MATRIX_OFFSET), &scale,
+           sizeof(scale));
+    memcpy(uniform + 68, &zero, sizeof(zero));
+    memcpy(uniform + 72, &half, sizeof(half));
+    memcpy((uint8_t *)ctx->vs_kernarg.map + PIPE_VS_MATRIX2_OFFSET, modelview,
+           PIPE_VS_MATRIX_BYTES);
+    fence = alloc_fence(ctx->screen->fd);
+    if (!fence)
+        return -1;
+    invalidate.context_id = ctx->context_id;
+    invalidate.handle = ctx->vs_kernarg.handle;
+    invalidate.offset = PIPE_VS_MATRIX_OFFSET;
+    invalidate.bytes = PIPE_VS_UNIFORM_BYTES;
+    invalidate.out_syncobj = fence->handle;
+    if (opengpu_invalidate(ctx->screen->fd, &invalidate)) {
+        pipe_opengpu_fence_reference(&fence, NULL);
+        return -1;
+    }
+    return finish_or_hand_off(ctx, fence, NULL);
+}
+
 int pipe_opengpu_write_fs_uniform(struct pipe_opengpu_context *ctx,
                                   uint32_t word)
 {
@@ -1063,11 +1105,12 @@ void pipe_opengpu_log_vs_kernarg(struct pipe_opengpu_context *ctx)
     w = ctx->vs_kernarg.map;
     fprintf(stderr,
             "opengpu: kernarg px=%08x pw=%08x cx=%08x cy=%08x cz=%08x cw=%08x "
-            "color=%08x m00=%08x m03=%08x m33=%08x scale=%08x "
+            "color=%08x m00=%08x m03=%08x m33=%08x scale=%08x inv=%08x "
             "m00ld=%08x m01ld=%08x m02ld=%08x m03ld=%08x f2ld=%08x "
             "partial=%08x rawx=%08x\n",
             w[0], w[96 / 4], w[256 / 4], w[288 / 4], w[320 / 4], w[352 / 4],
             w[384 / 4], w[512 / 4], w[560 / 4], w[572 / 4], w[576 / 4],
+            w[584 / 4],
             w[416 / 4], w[420 / 4], w[424 / 4], w[428 / 4], w[464 / 4],
             w[480 / 4], w[448 / 4]);
 }

@@ -136,6 +136,12 @@ int pipe_opengpu_bind_vs(struct pipe_opengpu_context *ctx,
 int pipe_opengpu_write_vs_matrix(struct pipe_opengpu_context *ctx,
                                  const float matrix[16]);
 
+/* Copy both mat4s. projection is applied second and lives at byte 512.
+ * modelview is applied first and lives at byte 640. */
+int pipe_opengpu_write_vs_matrices(struct pipe_opengpu_context *ctx,
+                                   const float projection[16],
+                                   const float modelview[16]);
+
 /* Copy one packed opacity word into both fragment kernarg banks.
  * Byte 288 is the per-draw uniform of a 320-byte bank. */
 int pipe_opengpu_write_fs_uniform(struct pipe_opengpu_context *ctx,

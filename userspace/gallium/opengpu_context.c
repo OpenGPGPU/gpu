@@ -69,6 +69,9 @@ struct opengpu_shader {
     int sample_sem;
     int sample_sem_index;
     int mvp;
+    /* A second mat4 in CONST[0][4..7]. The vertex core multiplies that
+     * block first, then the matrix in CONST[0][0..3]. */
+    int mvp2;
     /* OUT colour = IN colour * CONST[0][4].xxxx. The fragment core scales
      * the copied colour; the vertex program only copies it. */
     int vs_opacity;
@@ -105,6 +108,9 @@ struct opengpu_context {
     int scissor_set;
     float mvp[16];
     int mvp_set;
+    /* CONST[0][4..7], the matrix applied before mvp. */
+    float mvp_b[16];
+    int mvp_b_set;
     /* CONST[0][4].x from the vertex constant buffer. */
     float vs_opacity;
     int vs_opacity_set;
@@ -230,33 +236,43 @@ static int const_scalar(const struct tgsi_full_src_register *src, int index,
     return 1;
 }
 
-/* Column index of CONST[0][n], or -1. The broadcast channel is that column. */
+/* Column of CONST[0][base + column]. base is 0 or 4. src_temp < 0 means
+ * the vector is an INPUT; otherwise it is that temporary. The broadcast
+ * channel is the column within the mat4, not the constant index. */
 static int mvp_column(const struct tgsi_full_src_register *a,
                       const struct tgsi_full_src_register *b,
-                      unsigned *src_in)
+                      int src_temp, unsigned *src_in, int *block)
 {
     const struct tgsi_full_src_register *col = NULL;
     const struct tgsi_full_src_register *in = NULL;
-    int index;
+    int index, column;
+    unsigned vector_file;
 
+    vector_file = src_temp < 0 ? TGSI_FILE_INPUT : TGSI_FILE_TEMPORARY;
     if (a->Register.File == TGSI_FILE_CONSTANT &&
-        b->Register.File == TGSI_FILE_INPUT) {
+        b->Register.File == vector_file) {
         col = a;
         in = b;
     } else if (b->Register.File == TGSI_FILE_CONSTANT &&
-               a->Register.File == TGSI_FILE_INPUT) {
+               a->Register.File == vector_file) {
         col = b;
         in = a;
     } else {
         return -1;
     }
     index = col->Register.Index;
-    if (index < 0 || index > 3 || !const_column(col, index) ||
-        !broadcast_swizzle(&in->Register, (unsigned)index) ||
+    if (index < 0 || index > 7)
+        return -1;
+    *block = index & ~3;
+    column = index & 3;
+    if ((*block != 0 && *block != 4) || !const_column(col, index) ||
+        !broadcast_swizzle(&in->Register, (unsigned)column) ||
         in->Register.Index < 0 || in->Register.Index >= (int)OPENGPU_ATTRIBS)
         return -1;
+    if (src_temp >= 0 && in->Register.Index != src_temp)
+        return -1;
     *src_in = (unsigned)in->Register.Index;
-    return index;
+    return column;
 }
 
 /* gl_Position = u_mvp * vec4(pos.xy, 0, 1). Mesa drops the zero column and
@@ -334,14 +350,20 @@ static int match_sprite_mad(const struct tgsi_full_instruction *insn,
  * The first term is a MUL into a temporary. Each later term is a MAD that
  * adds the same temporary. The last term may write that temporary or
  * OUT.POSITION directly. */
+/* gl_Position = u_mvp * pos, or one mat4 of a two-matrix product.
+ * base is 0 or 4 once the first column is seen. src_temp < 0 reads an
+ * INPUT; otherwise the vector is that temporary (the other matrix's
+ * result). pos_attr >= 0 records that attribute as the position source
+ * and marks the second matrix. A finished product may stay in *temp. */
 static int match_mvp(const struct tgsi_full_instruction *insn, int *used,
-                     int *temp, int *input, struct opengpu_shader *shader,
+                     int *temp, int *input, int *base, int src_temp,
+                     int pos_attr, struct opengpu_shader *shader,
                      const int *sem_out)
 {
     const struct tgsi_dst_register *dst = &insn->Dst[0].Register;
     unsigned opcode = insn->Instruction.Opcode;
     unsigned src_in = 0;
-    int column, to_position;
+    int column, block = -1, to_position;
 
     if (insn->Instruction.Saturate || insn->Instruction.NumDstRegs != 1 ||
         dst->Indirect || dst->WriteMask != TGSI_WRITEMASK_XYZW)
@@ -358,15 +380,19 @@ static int match_mvp(const struct tgsi_full_instruction *insn, int *used,
     } else {
         return -1;
     }
-    column = mvp_column(&insn->Src[0], &insn->Src[1], &src_in);
+    column = mvp_column(&insn->Src[0], &insn->Src[1], src_temp, &src_in,
+                        &block);
     if (column < 0 || (*used & (1 << column)))
         return -1;
     if (*used == 0) {
+        if (*base >= 0 && block != *base)
+            return -1;
         if (dst->File != TGSI_FILE_TEMPORARY || dst->Index >= OPENGPU_ATTRIBS)
             return -1;
+        *base = block;
         *temp = dst->Index;
         *input = (int)src_in;
-    } else if ((int)src_in != *input) {
+    } else if (block != *base || (int)src_in != *input) {
         return -1;
     }
     *used |= 1 << column;
@@ -382,8 +408,13 @@ static int match_mvp(const struct tgsi_full_instruction *insn, int *used,
         return 0;
     if (!to_position || shader->pos_src >= 0)
         return -1;
+    /* One matrix lives in CONST[0][0..3]. The second matrix of a pair
+     * may be either block; the other block was the first product. */
+    if (pos_attr < 0 && *base != 0)
+        return -1;
     shader->mvp = 1;
-    shader->pos_src = *input;
+    shader->mvp2 = pos_attr >= 0;
+    shader->pos_src = pos_attr >= 0 ? pos_attr : *input;
     return 0;
 }
 
@@ -596,7 +627,8 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
     int temp_index[OPENGPU_ATTRIBS];
     float imm[4];
     int nimm = 0, saw_end = 0, i;
-    int mvp_used = 0, mvp_temp = -1, mvp_in = -1;
+    int mvp_used = 0, mvp_temp = -1, mvp_in = -1, mvp_base = -1;
+    int chain_temp = -1, chain_attr = -1;
     int saw_modulate = 0;
     int sprite_temp = -1, sprite_in = -1, sprite_xy = 0, sprite_w = 0;
 
@@ -686,10 +718,21 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                     !match_vs_opacity(insn, shader, sem_in, sem_out,
                                       sem_out_index))
                     break;
-                if (!match_mvp(insn, &mvp_used, &mvp_temp, &mvp_in, shader,
-                               sem_out)) {
+                if (!match_mvp(insn, &mvp_used, &mvp_temp, &mvp_in, &mvp_base,
+                               chain_temp, chain_attr, shader, sem_out)) {
                     temp_file[mvp_temp] = TEMP_MVP;
                     temp_index[mvp_temp] = mvp_in;
+                    /* The first mat4 finished in a temporary. The next
+                     * one multiplies that result and uses the other
+                     * constant block. */
+                    if (!shader->mvp && mvp_used == 0xf && chain_temp < 0) {
+                        chain_attr = mvp_in;
+                        chain_temp = mvp_temp;
+                        mvp_base = mvp_base == 0 ? 4 : 0;
+                        mvp_used = 0;
+                        mvp_temp = -1;
+                        mvp_in = -1;
+                    }
                     break;
                 }
                 if (!match_sprite_mad(insn, &sprite_temp, &sprite_in,
@@ -1076,7 +1119,11 @@ static void bind_vs_state(struct pipe_context *pipe, void *hw)
     ctx->vs = hw;
     if (!hw)
         return;
-    if (ctx->vs->mvp) {
+    if (ctx->vs->mvp2) {
+        if (pipe_opengpu_bind_vs(ctx->gpu, opengpu_vertex_mvp2,
+                                 OPENGPU_VERTEX_MVP2_BYTES))
+            reject("vertex shader bind failed");
+    } else if (ctx->vs->mvp) {
         if (pipe_opengpu_bind_vs(ctx->gpu, opengpu_vertex_mvp,
                                  OPENGPU_VERTEX_MVP_BYTES))
             reject("vertex shader bind failed");
@@ -1686,7 +1733,18 @@ static void draw_vbo(struct pipe_context *pipe,
             reject("triangle list count is not a multiple of 3");
             return;
         }
-        if (ctx->vs->mvp) {
+        if (ctx->vs->mvp2) {
+            if (!ctx->mvp_set || !ctx->mvp_b_set ||
+                pipe_opengpu_write_vs_matrices(ctx->gpu, ctx->mvp,
+                                               ctx->mvp_b)) {
+                reject("vertex matrices did not reach the vertex core");
+                return;
+            }
+            fprintf(stderr,
+                    "opengpu: mvp m00=%g m03=%g m33=%g b00=%g b03=%g\n",
+                    ctx->mvp[0], ctx->mvp[12], ctx->mvp[15],
+                    ctx->mvp_b[0], ctx->mvp_b[12]);
+        } else if (ctx->vs->mvp) {
             if (!ctx->mvp_set ||
                 pipe_opengpu_write_vs_matrix(ctx->gpu, ctx->mvp)) {
                 reject("vertex matrix did not reach the vertex core");
@@ -1993,6 +2051,7 @@ static void set_constant_buffer(struct pipe_context *pipe,
 
     if (shader == PIPE_SHADER_VERTEX && index == 0) {
         ctx->mvp_set = 0;
+        ctx->mvp_b_set = 0;
         ctx->vs_opacity_set = 0;
     }
     if (shader == PIPE_SHADER_VERTEX && index == 0 && buf &&
@@ -2009,6 +2068,10 @@ static void set_constant_buffer(struct pipe_context *pipe,
         if (src) {
             memcpy(ctx->mvp, src, sizeof(ctx->mvp));
             ctx->mvp_set = 1;
+            if (buf->buffer_size >= 32u * sizeof(float)) {
+                memcpy(ctx->mvp_b, src + 16 * sizeof(float), sizeof(ctx->mvp_b));
+                ctx->mvp_b_set = 1;
+            }
             if (buf->buffer_size >= 17u * sizeof(float)) {
                 memcpy(&ctx->vs_opacity, src + 16 * sizeof(float),
                        sizeof(ctx->vs_opacity));

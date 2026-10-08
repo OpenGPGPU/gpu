@@ -21,14 +21,14 @@ ASSEMBLY = ("compute_copy", "round_modes", "masked_ops", "fixed_width",
             "fragment_color", "fragment_sample", "fragment_modulate",
             "fragment_shade", "fragment_fade", "fragment_wash",
             "vertex_passthrough",
-            "vertex_mvp")
+            "vertex_mvp", "vertex_mvp2")
 COMPILED = ("compute_increment", "vertex_offset")
 ALL = ASSEMBLY + COMPILED
 # validate.c profiles: 0=compute, 1=fragment, 2=vertex, 3=fragment+texture,
 # 4=compute/local4 with 128-byte kernarg (FP FMA stores past 64),
 # 5=profile 4 on hardware advertising the compute scalar FPU,
 # 6=fragment and 7=vertex on hardware advertising it
-PROFILES = (0, 0, 0, 0, 0, 3, 4, 4, 4, 4, 4, 5, 4, 1, 6, 1, 1, 3, 3, 8, 6, 8, 2, 7, 0, 2)
+PROFILES = (0, 0, 0, 0, 0, 3, 4, 4, 4, 4, 4, 5, 4, 1, 6, 1, 1, 3, 3, 8, 6, 8, 2, 7, 7, 0, 2)
 
 
 def run(args):
