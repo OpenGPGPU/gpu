@@ -14,14 +14,17 @@ eval "$(python3 "$GPU_DIR/scripts/gpu_display_config.py" --shell \
     "$INTEGRATION_CONFIG")"
 # Each size needs its own work tree: the generated RTL, the embedded model and
 # the QEMU build are all sized from it.
-DISPLAY_WORK="${DISPLAY_WORK:-$ARTI_WORK/debian-${GPU_MODE}}"
+GPU_TILE_BINNING="${GPU_TILE_BINNING:-0}"
+TILE_SUFFIX=""
+[ "$GPU_TILE_BINNING" != 1 ] || TILE_SUFFIX="-tile"
+DISPLAY_WORK="${DISPLAY_WORK:-$ARTI_WORK/debian-${GPU_MODE}${TILE_SUFFIX}}"
 
 export ARTI_WORK
 export GPU_WIDTH GPU_HEIGHT
 export WORK_DIR="$DISPLAY_WORK"
 export QEMU_BUILD="${QEMU_BUILD:-$DISPLAY_WORK/qemu-arti-build}"
 export DRIVER_OUTPUT="${DRIVER_OUTPUT:-$DISPLAY_WORK/opengpu-driver}"
-export GPU_RTL_DIR="${GPU_RTL_DIR:-$GPU_DIR/generated/debian-${GPU_MODE}}"
+export GPU_RTL_DIR="${GPU_RTL_DIR:-$GPU_DIR/generated/debian-${GPU_MODE}${TILE_SUFFIX}}"
 export INTEGRATION_CONFIG
 export GPU_SIM="${GPU_SIM:-verilator}"
 # Same defaults as run_arti_gpu.sh: both shader cores, unless the caller
@@ -35,6 +38,7 @@ if [ -z "${GPU_VERT_CORE:-}" ]; then
     fi
 fi
 export GPU_VERT_CORE
+export GPU_TILE_BINNING
 export ARTI_VERILATOR_BUILD_JOBS="${ARTI_VERILATOR_BUILD_JOBS:-4}"
 # ARTI's setup looks under WORK_DIR by default. Reuse the existing Debian
 # image in ARTI_WORK; setup only checks that DEBIAN_QCOW2 exists at this step.
@@ -47,7 +51,8 @@ fi
 export BUILD_ONLY=1
 
 "$GPU_DIR/scripts/run_arti_gpu.sh"
-printf 'mode=%s backend=%s frag=%s vert=%s\n' \
+printf 'mode=%s backend=%s frag=%s vert=%s tile_binning=%s\n' \
     "$GPU_MODE" "$GPU_SIM" "$GPU_FRAG_CORE" "$GPU_VERT_CORE" \
+    "$GPU_TILE_BINNING" \
     > "$DISPLAY_WORK/display-mode.txt"
 echo "$GPU_MODE Debian GPU ready. Boot with scripts/run_arti_debian.sh"

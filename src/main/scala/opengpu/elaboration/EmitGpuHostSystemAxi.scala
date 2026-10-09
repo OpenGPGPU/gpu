@@ -52,6 +52,8 @@ object EmitGpuHostSystemAxi {
           tileBinning = tileBinning),
         GpuConfig(),
         numComputeUnits = computeUnits,
+        // The graphics kernarg ABI still uses eight shader lanes per batch.
+        graphicsGpuConfig = Some(GpuConfig(lanes = 4, warps = 2)),
         fragCore = fragCore,
         vertCore = vertCore,
         enableFpuBackend = true,

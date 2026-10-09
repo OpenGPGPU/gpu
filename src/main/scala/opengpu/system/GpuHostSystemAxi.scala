@@ -55,9 +55,13 @@ class GpuHostSystemAxi(
   vectorCacheSets: Int = 64,
   vectorCacheWays: Int = 2,
   memoryAxiDataBytes: Int = 8,
-  exposePerformance: Boolean = false
+  exposePerformance: Boolean = false,
+  graphicsGpuConfig: Option[GpuConfig] = None
 ) extends RawModule {
+  private val shaderConfig = graphicsGpuConfig.getOrElse(gpuConfig)
   require(numComputeUnits > 0)
+  require(shaderConfig.xLen == gpuConfig.xLen,
+    "graphics and compute CUs must use the same address width")
   require(!vertCore || fragCore,
     "vertex-core graphics requires fragment-core graphics")
 
@@ -173,12 +177,12 @@ class GpuHostSystemAxi(
 
   withClockAndReset(io.s_axi_aclk, !io.s_axi_aresetn) {
     val host = Module(new GpuHostAxi(
-      graphicsConfig, gpuConfig, fragCore, vertCore,
+      graphicsConfig, shaderConfig, fragCore, vertCore,
       deviceId = deviceId, version = version,
       unifiedCommandMmio = true, commandIdWidth = commandIdWidth,
       textureFaultReporting = true,
       computeScalarFpu = enableFpuBackend && gpuConfig.enableFpu,
-      graphicsScalarFpu = enableFpuBackend && gpuConfig.enableFpu))
+      graphicsScalarFpu = enableFpuBackend && shaderConfig.enableFpu))
     val system = Module(new GpuSystem(
       gpuConfig,
       numComputeUnits = numComputeUnits,

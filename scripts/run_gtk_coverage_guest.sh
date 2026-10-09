@@ -11,15 +11,21 @@ ARTI_WORK="${ARTI_WORK:-$GPU_DIR/../arti-work}"
 PREFIX="${PREFIX:-$GPU_DIR/depends/aarch64-root}"
 MESA_SRC="${MESA_SRC:-$GPU_DIR/depends/mesa}"
 MESA_BUILD="${MESA_BUILD:-$GPU_DIR/depends/mesa-build}"
+GPU_TILE_BINNING="${GPU_TILE_BINNING:-0}"
 INTEGRATION_CONFIG="$GPU_DIR/driver/gpu_integration_debian.yaml"
 eval "$(python3 "$GPU_DIR/scripts/gpu_display_config.py" --shell "$INTEGRATION_CONFIG")"
 [ "$GPU_MODE" = 640x480 ] || {
     echo "expected the 640x480 coverage profile, got $GPU_MODE" >&2
     exit 1
 }
-DISPLAY_WORK="$ARTI_WORK/debian-$GPU_MODE"
+if [ "$GPU_TILE_BINNING" = 1 ]; then
+    DISPLAY_WORK="${DISPLAY_WORK:-$ARTI_WORK/debian-${GPU_MODE}-tile}"
+    PROOF_WORK="${PROOF_WORK:-$ARTI_WORK/gtk-coverage-proof-tile}"
+else
+    DISPLAY_WORK="${DISPLAY_WORK:-$ARTI_WORK/debian-$GPU_MODE}"
+    PROOF_WORK="${PROOF_WORK:-$ARTI_WORK/gtk-coverage-proof}"
+fi
 DRIVER_OUTPUT="$DISPLAY_WORK/opengpu-driver"
-PROOF_WORK="$ARTI_WORK/gtk-coverage-proof"
 mkdir -p "$PROOF_WORK"
 
 for tool in expect ssh python3 sbt meson ninja aarch64-linux-gnu-gcc; do
@@ -48,6 +54,7 @@ if [ "${GTK_PROOF_SKIP_BUILD:-0}" != 1 ]; then
     echo '=== Build FlashSim ARTI GPU ==='
     (cd "$FLASHSIM_DIR" && python3 -m flashsim setup-circt)
     ARTI_DIR="$ARTI_DIR" FLASHSIM_DIR="$FLASHSIM_DIR" ARTI_WORK="$ARTI_WORK" \
+        DISPLAY_WORK="$DISPLAY_WORK" \
         GPU_SIM=flashsim INTEGRATION_CONFIG="$INTEGRATION_CONFIG" \
         "$GPU_DIR/scripts/build_arti_debian_display.sh"
 
@@ -57,6 +64,13 @@ if [ "${GTK_PROOF_SKIP_BUILD:-0}" != 1 ]; then
         DRIVER_OUTPUT="$DRIVER_OUTPUT" \
         INTEGRATION_CONFIG="$INTEGRATION_CONFIG" \
         "$GPU_DIR/scripts/build_mesa_opengpu.sh"
+fi
+
+if [ "${GTK_PROOF_SKIP_BUILD:-0}" = 1 ] && [ "$GPU_TILE_BINNING" = 1 ]; then
+    grep -q 'tile_binning=1' "$DISPLAY_WORK/display-mode.txt" 2>/dev/null || {
+        echo "cached Debian GPU was not built with GPU_TILE_BINNING=1" >&2
+        exit 1
+    }
 fi
 
 for artifact in "$DISPLAY_WORK/qemu-arti-build/qemu-system-aarch64" \
@@ -104,7 +118,7 @@ echo "=== Boot fresh Debian guest on SSH port $PORT ==="
 ARTI_DIR="$ARTI_DIR" ARTI_WORK="$ARTI_WORK" FLASHSIM_DIR="$FLASHSIM_DIR" \
     DISPLAY_WORK="$DISPLAY_WORK" DRIVER_OUTPUT="$DRIVER_OUTPUT" \
     INTEGRATION_CONFIG="$INTEGRATION_CONFIG" GPU_SIM=flashsim \
-    QEMU_DISPLAY=none OPENGPU_AUTO_DISPLAY=0 BUILD_USERSPACE=0 \
+    QEMU_DISPLAY=none OPENGPU_AUTO_DISPLAY=0 BUILD_USERSPACE=1 \
     REBUILD_CLOUDINIT=1 CLOUDINIT_PACKAGES=0 \
     DISK="$DISK" DEBIAN_BASE="$BASE" SSH_PORT="$PORT" SERIAL_LOG="$SERIAL_LOG" \
     "$GPU_DIR/scripts/run_arti_debian.sh" > "$BOOT_LOG" 2>&1 &
@@ -117,7 +131,7 @@ for _ in $(seq 1 120); do
         exit 1
     }
     if "$GPU_DIR/scripts/gtk_coverage_guest.exp" "$PORT" 15 \
-        'test -x /root/opengpu_gl_gtk_coverage' >/dev/null 2>&1; then
+        'test -x /root/opengpu_gl_gtk_coverage.bin' >/dev/null 2>&1; then
         ready=1
         break
     fi
@@ -131,7 +145,7 @@ echo '=== Load guest GPU driver ==='
 
 echo '=== Check GTK ellipse coverage ==='
 "$GPU_DIR/scripts/gtk_coverage_guest.exp" "$PORT" 600 \
-    'OPENGPU_GL_EXIT=1 /root/opengpu_gl_gtk_coverage' | tee "$PROOF_LOG"
+    'LD_LIBRARY_PATH=/root LIBGL_DRIVERS_PATH=/root OPENGPU_GL_EXIT=1 /root/opengpu_gl_gtk_coverage.bin' | tee "$PROOF_LOG"
 grep -qF 'gl_gtk_coverage: mode 640x480 inside=0xff0000ff outside=0x00000000' "$PROOF_LOG"
 grep -qF 'OPENGPU GL GTK COVERAGE PASS' "$PROOF_LOG"
 echo 'GTK coverage guest proof: PASS'

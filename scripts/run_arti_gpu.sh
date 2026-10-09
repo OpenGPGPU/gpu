@@ -45,6 +45,7 @@ ARTI_SETUP_WORK="${WORK_DIR:-$ARTI_WORK}"
 QEMU_BUILD="${QEMU_BUILD:-$ARTI_SETUP_WORK/qemu-arti-build}"
 QEMU_DISPLAY="${QEMU_DISPLAY:-none}"
 GPU_FRAG_CORE="${GPU_FRAG_CORE:-1}"
+GPU_TILE_BINNING="${GPU_TILE_BINNING:-0}"
 # A fixed-function run sets GPU_FRAG_CORE=0 and leaves the vertex core unset.
 if [ -z "${GPU_VERT_CORE:-}" ]; then
     if [ "$GPU_FRAG_CORE" = "1" ]; then
@@ -133,6 +134,7 @@ case "$GPU_SIM" in
 esac
 echo "RTL sim     : $GPU_SIM"
 echo "GPU cores   : frag=$GPU_FRAG_CORE vert=$GPU_VERT_CORE"
+echo "Tile binning: $GPU_TILE_BINNING"
 echo "Fence slice : ${ARTI_GPU_FENCE_SLICE_MS}ms (0 = one blocking wait)"
 echo "ARTI work   : $ARTI_WORK"
 [ "$GPU_FRAG_CORE" = "0" ] || [ "$GPU_FRAG_CORE" = "1" ] || \
@@ -141,6 +143,12 @@ echo "ARTI work   : $ARTI_WORK"
     fail "GPU_VERT_CORE must be 0 or 1"
 [ "$GPU_VERT_CORE" = "0" ] || [ "$GPU_FRAG_CORE" = "1" ] || \
     fail "GPU_VERT_CORE=1 requires GPU_FRAG_CORE=1"
+[ "$GPU_TILE_BINNING" = "0" ] || [ "$GPU_TILE_BINNING" = "1" ] || \
+    fail "GPU_TILE_BINNING must be 0 or 1"
+TILE_OPTIONS=""
+if [ "$GPU_TILE_BINNING" = "1" ]; then
+    TILE_OPTIONS="--tile-size 16 --tile-attachments --tile-binning"
+fi
 # The 16x16 minimum and the framebuffer-size cross-check live in
 # gpu_display_config.py, so the profile is validated once, in one place.
 
@@ -255,17 +263,17 @@ if [ "${SKIP_RTL_EMIT:-0}" = "1" ]; then
     fi
 elif [ "$GPU_VERT_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
-        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi $GPU_RTL_DIR --frag-core --vert-core --width $GPU_WIDTH --height $GPU_HEIGHT")
+        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi $GPU_RTL_DIR --frag-core --vert-core --width $GPU_WIDTH --height $GPU_HEIGHT $TILE_OPTIONS")
     TIMEOUT="${TIMEOUT:-3600}"
 elif [ "$GPU_FRAG_CORE" = "1" ]; then
     (cd "$GPU_DIR" && \
-        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi $GPU_RTL_DIR --frag-core --width $GPU_WIDTH --height $GPU_HEIGHT")
+        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi $GPU_RTL_DIR --frag-core --width $GPU_WIDTH --height $GPU_HEIGHT $TILE_OPTIONS")
     # The 3-draw fragment stencil job has a 15x watchdog; allow the full
     # userspace suite to continue after that job completes.
     TIMEOUT="${TIMEOUT:-2400}"
 else
     (cd "$GPU_DIR" && \
-        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi $GPU_RTL_DIR --width $GPU_WIDTH --height $GPU_HEIGHT")
+        sbt "runMain opengpu.elaboration.EmitGpuHostSystemAxi $GPU_RTL_DIR --width $GPU_WIDTH --height $GPU_HEIGHT $TILE_OPTIONS")
     # FF + MSAA/persistent-depth DRM suite needs ~5+ minutes under FlashSim.
     TIMEOUT="${TIMEOUT:-600}"
 fi

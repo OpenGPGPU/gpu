@@ -58,7 +58,10 @@ fi
 eval "$(python3 "$GPU_DIR/scripts/gpu_display_config.py" --shell \
     "$INTEGRATION_CONFIG")"
 export GPU_WIDTH GPU_HEIGHT GPU_STRIDE GPU_FRAMEBUFFER_SIZE GPU_MODE
-DISPLAY_WORK="${DISPLAY_WORK:-$ARTI_WORK/debian-${GPU_MODE}}"
+GPU_TILE_BINNING="${GPU_TILE_BINNING:-0}"
+TILE_SUFFIX=""
+[ "$GPU_TILE_BINNING" != 1 ] || TILE_SUFFIX="-tile"
+DISPLAY_WORK="${DISPLAY_WORK:-$ARTI_WORK/debian-${GPU_MODE}${TILE_SUFFIX}}"
 echo "  Mode     : $GPU_MODE (from $(basename "$INTEGRATION_CONFIG"))"
 
 LINUX_BUILD="${LINUX_BUILD:-$ARTI_WORK/arti-linux-build}"
@@ -127,7 +130,7 @@ warn_if_model_stale() {
     # closing reader gives the writer SIGPIPE, which would fail the whole
     # script. find stopping on its own cannot do that.
     for d in "$FLASHSIM_DIR/flashsim" \
-             "$GPU_DIR/generated/debian-$GPU_MODE" \
+             "$GPU_DIR/generated/debian-${GPU_MODE}${TILE_SUFFIX}" \
              "$ARTI_DIR/examples/linux_arti_driver"; do
         [ -d "$d" ] || continue
         src="$(find "$d" -type f \( -name '*.py' -o -name '*.sv' \

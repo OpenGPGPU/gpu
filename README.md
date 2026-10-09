@@ -35,11 +35,13 @@ lanes per warp, eight resident warps (128 threads), 16 KiB of banked shared
 memory, and a 64 KiB, four-bank L2 (256 sets × four ways × 64-byte lines).
 `EmitGpuHostSystemAxi` uses four compute units by default, for 512 resident
 compute threads in total. `--compute-units N` overrides that count.
-The 16-thread warp follows [Arm's published Mali-G78 core configuration](https://documentation-service.arm.com/static/620e22c90ca305732a3a5dd0).
+The graphics shader CU retains its eight-thread batch until its kernarg ABI
+and guest shader bindings support a larger batch.
+The 16-thread compute warp follows [Arm's published Mali-G78 core configuration](https://documentation-service.arm.com/static/620e22c90ca305732a3a5dd0).
 The other values are OpenGPU sizing choices; in particular, shared memory is
 not a Mali load/store cache, and eight resident warps are well below the
 G78's published 1,024-thread maximum per shader core. The ARTI script uses
-this same default GPU configuration and four-CU system count. Other
+this compute configuration and four-CU system count. Other
 configurations can use explicit `GpuConfig` arguments.
 
 1. Install JDK 11 or newer and sbt.
