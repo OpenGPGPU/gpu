@@ -17,6 +17,8 @@ ARTI is pinned to `463df439`; FlashSim is pinned to `b93a07ff`, the versions
 used by the passing local proof. The job downloads checksum-checked Mesa
 22.3.6, libdrm 2.4.120, and expat 2.6.4 sources, builds the AArch64
 libraries, builds the model and guest driver, then boots a fresh Debian disk.
+RTL emission gives sbt a 6 GiB heap, matching the Scala CI shards, because the
+default 1 GiB heap cannot elaborate the full GPU.
 Update the dependency refs when testing newer ARTI or FlashSim commits.
 
 The first hosted run will establish the actual cold-build time and peak disk

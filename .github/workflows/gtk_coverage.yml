@@ -87,6 +87,10 @@ jobs:
         working-directory: gpu
         env:
           JOBS: '3'
+          # sbt's 1 GiB default heap is too small for the full GPU RTL emit.
+          # Keep the same 6 GiB ceiling used by the Scala CI shards.
+          JAVA_OPTS: -Xms1G -Xmx6G -Xss6M -XX:+UseG1GC -Dfile.encoding=UTF-8
+          JVM_OPTS: -Xms1G -Xmx6G -Xss6M -XX:+UseG1GC -Dfile.encoding=UTF-8
         run: bash scripts/ci_gtk_coverage.sh
       - name: Keep guest logs on failure
         if: failure()
