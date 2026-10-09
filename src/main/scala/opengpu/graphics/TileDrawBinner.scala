@@ -31,12 +31,22 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
     val done = Output(Bool())
   })
 
-  private val Seq(idle, collect, binStart, binScan, loadTile, captureTile,
-    send, waitDraw, nextTile, finishChunk, complete) = Enum(11)
+  private val Seq(idle, collect, boundsStart, boundsX, boundsY,
+    binStart, binScan, loadTile, captureTile, send, waitDraw,
+    nextTile, finishChunk, complete) = Enum(14)
   private val state = RegInit(idle)
   private val draws = Reg(Vec(capacity, new SceneTriangle(config)))
   private val tileMasks = SyncReadMem(tileCount, UInt(capacity.W))
   private val count = RegInit(0.U(log2Ceil(capacity + 1).W))
+  private val boundsIndex = RegInit(0.U(log2Ceil(capacity).W))
+  private val boundMinX = Reg(Vec(capacity, UInt(16.W)))
+  private val boundMaxX = Reg(Vec(capacity, UInt(16.W)))
+  private val boundMinY = Reg(Vec(capacity, UInt(16.W)))
+  private val boundMaxY = Reg(Vec(capacity, UInt(16.W)))
+  private val scanMinX = RegInit("hffff".U(16.W))
+  private val scanMaxX = RegInit(0.U(16.W))
+  private val scanMinY = RegInit("hffff".U(16.W))
+  private val scanMaxY = RegInit(0.U(16.W))
   private val scanMask = RegInit(0.U(capacity.W))
   private val scanIndex = PriorityEncoder(scanMask)
   private val tileIndex = RegInit(0.U(tileIndexWidth.W))
@@ -46,7 +56,10 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
   private val tileX = RegInit(0.U(16.W))
   private val tileY = RegInit(0.U(16.W))
 
-  private val selected = draws(Mux(state === binScan, scanIndex, emitIndex))
+  private val findingBounds = state === boundsStart ||
+    state === boundsX || state === boundsY
+  private val selected = draws(Mux(findingBounds, boundsIndex,
+    Mux(state === binScan, scanIndex, emitIndex)))
   private val readMask = tileMasks.read(tileIndex, state === loadTile)
   private val nextTileX = tileX +& 16.U
   private val nextTileY = tileY +& 16.U
@@ -63,7 +76,9 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
     val x1 = Mux(d.scissorEnable, d.scissorMaxX, config.screenWidth.U(16.W))
     val y1 = Mux(d.scissorEnable, d.scissorMaxY, config.screenHeight.U(16.W))
     i.U < count && x0 < tileMaxX && y0 < tileMaxY &&
-      x1 > tileX && y1 > tileY && x0 < x1 && y0 < y1
+      x1 > tileX && y1 > tileY && x0 < x1 && y0 < y1 &&
+      tileX >= boundMinX(i) && tileX <= boundMaxX(i) &&
+      tileY >= boundMinY(i) && tileY <= boundMaxY(i)
   }).asUInt
   private val originalMinX = Mux(selected.scissorEnable,
     selected.scissorMinX, 0.U(16.W))
@@ -99,8 +114,17 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
       comparisons.map(_._2).reduce(_ && _)
   }
   private val positiveW = selected.clip.map(_.w > 0.S).reduce(_ && _)
-  private val outsideGeometry = positiveW &&
-    (outsideAxis(true, loX, hiX) || outsideAxis(false, loY, hiY))
+  private val outsideX = outsideAxis(true, loX, hiX)
+  private val outsideY = outsideAxis(false, loY, hiY)
+  private val outsideGeometry = positiveW && (outsideX || outsideY)
+  private val axisHitX = !outsideX
+  private val axisHitY = !outsideY
+  private val nextMinX = Mux(axisHitX && scanMinX === "hffff".U,
+    tileX, scanMinX)
+  private val nextMaxX = Mux(axisHitX, tileX, scanMaxX)
+  private val nextMinY = Mux(axisHitY && scanMinY === "hffff".U,
+    tileY, scanMinY)
+  private val nextMaxY = Mux(axisHitY, tileY, scanMaxY)
   private val intersects = scissorIntersects && !outsideGeometry
   private val nextMask = buildMask |
     Mux(intersects, UIntToOH(scanIndex, capacity), 0.U(capacity.W))
@@ -119,6 +143,18 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
   io.drawOut.bits.scissorMaxY := maxY
   io.passEnd := state === finishChunk
   io.done := state === idle || state === complete
+
+  private def advanceBoundsDraw(): Unit = {
+    tileX := 0.U
+    tileY := 0.U
+    when(boundsIndex +& 1.U < count) {
+      boundsIndex := boundsIndex + 1.U
+      state := boundsStart
+    }.otherwise {
+      tileIndex := 0.U
+      state := binStart
+    }
+  }
 
   private def advanceBinTile(): Unit = {
     buildMask := 0.U
@@ -143,6 +179,7 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
   when(io.start) {
     state := collect
     count := 0.U
+    boundsIndex := 0.U
     scanMask := 0.U
     tileIndex := 0.U
     buildMask := 0.U
@@ -156,24 +193,74 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
           draws(count(log2Ceil(capacity) - 1, 0)) := io.drawIn.bits
           count := count + 1.U
           when(count === (capacity - 1).U) {
+            boundsIndex := 0.U
             scanMask := 0.U
             tileIndex := 0.U
             buildMask := 0.U
             tileX := 0.U
             tileY := 0.U
-            state := binStart
+            state := boundsStart
           }
         }.elsewhen(io.inputDone) {
           when(count === 0.U) {
             state := complete
           }.otherwise {
+            boundsIndex := 0.U
             scanMask := 0.U
             tileIndex := 0.U
             buildMask := 0.U
             tileX := 0.U
             tileY := 0.U
-            state := binStart
+            state := boundsStart
           }
+        }
+      }
+      is(boundsStart) {
+        when(selected.scissorEnable || !positiveW) {
+          // Scissor already provides a cheap range, and non-positive w may
+          // produce clipped vertices outside the original projected bounds.
+          boundMinX(boundsIndex) := 0.U
+          boundMaxX(boundsIndex) := (((config.screenWidth - 1) / 16) * 16).U
+          boundMinY(boundsIndex) := 0.U
+          boundMaxY(boundsIndex) := (((config.screenHeight - 1) / 16) * 16).U
+          advanceBoundsDraw()
+        }.otherwise {
+          scanMinX := "hffff".U
+          scanMaxX := 0.U
+          scanMinY := "hffff".U
+          scanMaxY := 0.U
+          tileX := 0.U
+          tileY := 0.U
+          state := boundsX
+        }
+      }
+      is(boundsX) {
+        scanMinX := nextMinX
+        scanMaxX := nextMaxX
+        when(nextTileX < config.screenWidth.U) {
+          tileX := nextTileX(15, 0)
+        }.otherwise {
+          boundMinX(boundsIndex) := nextMinX
+          boundMaxX(boundsIndex) := nextMaxX
+          tileX := 0.U
+          when(nextMinX === "hffff".U) {
+            boundMinY(boundsIndex) := "hffff".U
+            boundMaxY(boundsIndex) := 0.U
+            advanceBoundsDraw()
+          }.otherwise {
+            state := boundsY
+          }
+        }
+      }
+      is(boundsY) {
+        scanMinY := nextMinY
+        scanMaxY := nextMaxY
+        when(nextTileY < config.screenHeight.U) {
+          tileY := nextTileY(15, 0)
+        }.otherwise {
+          boundMinY(boundsIndex) := nextMinY
+          boundMaxY(boundsIndex) := nextMaxY
+          advanceBoundsDraw()
         }
       }
       is(binStart) {

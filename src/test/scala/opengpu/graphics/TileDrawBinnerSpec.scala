@@ -221,4 +221,87 @@ class TileDrawBinnerSpec extends AnyFlatSpec {
       assert(cycles < 160, s"sparse scissor binning took $cycles cycles")
     }
   }
+
+  it should "prefilter unscissored triangles by their conservative tile ranges" in {
+    val cfg = GraphicsConfig(screenWidth = 64, screenHeight = 64,
+      tileSize = 16, tileAttachments = true, tileBinning = true)
+    simulate(new TileDrawBinner(cfg)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.drawIn.valid.poke(false.B)
+      dut.io.drawOut.ready.poke(true.B)
+      dut.io.renderDrained.poke(true.B)
+      dut.io.passDone.poke(true.B)
+      dut.io.inputDone.poke(false.B)
+      dut.io.start.poke(true.B)
+      dut.clock.step()
+      dut.io.start.poke(false.B)
+
+      val xs = Seq(-65536, -52428, -39321)
+      val ys = Seq(-65536, -39321, -52428)
+      val ws = Seq(65536, 131072, 32768)
+      var sent = 0
+      val seen = scala.collection.mutable.ArrayBuffer.empty[(Int, Int, Int)]
+      var cycles = 0
+      while (!dut.io.done.peek().litToBoolean && cycles < 260) {
+        dut.io.drawIn.valid.poke((sent < 8).B)
+        dut.io.drawIn.bits.poke(0.U.asTypeOf(new SceneTriangle(cfg)))
+        if (sent < 8) {
+          dut.io.drawIn.bits.shaderPc.poke((sent + 1).U)
+          for (i <- 0 until 3) {
+            dut.io.drawIn.bits.clip(i).x.poke(((xs(i).toLong * ws(i)) / 65536).toInt.S)
+            dut.io.drawIn.bits.clip(i).y.poke(((ys(i).toLong * ws(i)) / 65536).toInt.S)
+            dut.io.drawIn.bits.clip(i).w.poke(ws(i).S)
+          }
+        }
+        if (sent < 8 && dut.io.drawIn.ready.peek().litToBoolean) sent += 1
+        if (sent == 8) dut.io.inputDone.poke(true.B)
+        if (dut.io.drawOut.valid.peek().litToBoolean)
+          seen += ((dut.io.drawOut.bits.shaderPc.peek().litValue.toInt,
+            dut.io.drawOut.bits.scissorMinX.peek().litValue.toInt,
+            dut.io.drawOut.bits.scissorMinY.peek().litValue.toInt))
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(seen.toSeq == (1 to 8).map(i => (i, 0, 0)))
+      assert(cycles < 210, s"unscissored bounds prefilter took $cycles cycles")
+    }
+  }
+
+  it should "omit an unscissored triangle entirely outside the target" in {
+    val cfg = GraphicsConfig(screenWidth = 32, screenHeight = 16,
+      tileSize = 16, tileAttachments = true, tileBinning = true)
+    simulate(new TileDrawBinner(cfg)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.drawIn.valid.poke(true.B)
+      dut.io.drawIn.bits.poke(0.U.asTypeOf(new SceneTriangle(cfg)))
+      for (i <- 0 until 3) {
+        dut.io.drawIn.bits.clip(i).x.poke((98304 + i * 16384).S)
+        dut.io.drawIn.bits.clip(i).w.poke(65536.S)
+      }
+      dut.io.drawOut.ready.poke(true.B)
+      dut.io.renderDrained.poke(true.B)
+      dut.io.passDone.poke(true.B)
+      dut.io.inputDone.poke(false.B)
+      dut.io.start.poke(true.B)
+      dut.clock.step()
+      dut.io.start.poke(false.B)
+      var sent = false
+      var emitted = 0
+      var cycles = 0
+      while (!dut.io.done.peek().litToBoolean && cycles < 100) {
+        dut.io.drawIn.valid.poke((!sent).B)
+        if (!sent && dut.io.drawIn.ready.peek().litToBoolean) sent = true
+        if (sent) dut.io.inputDone.poke(true.B)
+        if (dut.io.drawOut.valid.peek().litToBoolean) emitted += 1
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(cycles < 100)
+      assert(emitted == 0)
+    }
+  }
 }
