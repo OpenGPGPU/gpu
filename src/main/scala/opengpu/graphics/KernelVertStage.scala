@@ -134,6 +134,9 @@ class KernelVertStage(
     val wordMemResp = Flipped(Decoupled(new ComputeMemoryResponse(64, 2)))
     val l1Invalidate = Flipped(Decoupled(new CacheLineInvalidate(config)))
     val l1InvalidateDone = Decoupled(new CacheLineInvalidate(config))
+    /** Evict staged kernarg lines before the vertex kernel reuses a bank. */
+    val stagingInvalidate = Decoupled(new CacheLineInvalidate(config))
+    val stagingInvalidateDone = Flipped(Decoupled(new CacheLineInvalidate(config)))
     val globalAtomicRequest = Decoupled(new SharedAtomicRequest(config))
     val globalAtomicResponse = Flipped(Decoupled(new SharedAtomicResponse(config)))
     val kernelLaunch = new Bundle {
@@ -162,6 +165,11 @@ class KernelVertStage(
   private val bridge = Module(new OmWordToLinePort(
     config, uncached = true, maxOutstanding = 2))
   private val internalKernel = if (standaloneKernel) Some(Module(new KernelShaderStage(config))) else None
+  private val stagingReqActive = Wire(Bool())
+  private val stagingAckReady = Wire(Bool())
+  private val invalidateReady = Wire(Bool())
+  private val invalidateAck = Wire(Bool())
+  private val invalidateAckAddress = Wire(UInt(config.xLen.W))
   private val kernelLaunchReady = WireDefault(io.kernelLaunch.ready)
   private val kernelCompletionValid = WireDefault(io.kernelCompletion.valid)
   private val kernelCompletionSuccess = WireDefault(io.kernelCompletion.bits.success)
@@ -217,9 +225,27 @@ class KernelVertStage(
     kernel.io.simtBranch.bits := 0.U.asTypeOf(kernel.io.simtBranch.bits)
     io.memReq <> kernel.io.memoryRequest
     kernel.io.memoryResponse <> io.memResp
-    kernel.io.l1Invalidate.valid := false.B
-    kernel.io.l1Invalidate.bits := 0.U.asTypeOf(kernel.io.l1Invalidate.bits)
-    kernel.io.l1InvalidateDone.ready := true.B
+    val invalidateOwners = Module(new Queue(Bool(), 4))
+    val selectStaging = stagingReqActive
+    kernel.io.l1Invalidate.valid :=
+      Mux(selectStaging, true.B, io.l1Invalidate.valid) && invalidateOwners.io.enq.ready
+    kernel.io.l1Invalidate.bits := Mux(selectStaging,
+      io.stagingInvalidate.bits, io.l1Invalidate.bits)
+    io.l1Invalidate.ready := !selectStaging &&
+      kernel.io.l1Invalidate.ready && invalidateOwners.io.enq.ready
+    invalidateReady := selectStaging &&
+      kernel.io.l1Invalidate.ready && invalidateOwners.io.enq.ready
+    invalidateOwners.io.enq.valid := kernel.io.l1Invalidate.fire
+    invalidateOwners.io.enq.bits := selectStaging
+    val stagingAck = invalidateOwners.io.deq.valid && invalidateOwners.io.deq.bits
+    kernel.io.l1InvalidateDone.ready := invalidateOwners.io.deq.valid &&
+      Mux(stagingAck, stagingAckReady, io.l1InvalidateDone.ready)
+    invalidateOwners.io.deq.ready := kernel.io.l1InvalidateDone.fire
+    io.l1InvalidateDone.valid := kernel.io.l1InvalidateDone.valid &&
+      invalidateOwners.io.deq.valid && !invalidateOwners.io.deq.bits
+    io.l1InvalidateDone.bits := kernel.io.l1InvalidateDone.bits
+    invalidateAck := kernel.io.l1InvalidateDone.fire && stagingAck
+    invalidateAckAddress := kernel.io.l1InvalidateDone.bits.lineAddress
     kernel.io.globalAtomicRequest.ready := true.B
     kernel.io.globalAtomicResponse.valid := false.B
     kernel.io.globalAtomicResponse.bits := 0.U.asTypeOf(kernel.io.globalAtomicResponse.bits)
@@ -262,8 +288,7 @@ class KernelVertStage(
   // ---------------------------------------------------------------------
   // FSM.
   // ---------------------------------------------------------------------
-  private val sIdle :: sReadVB :: sWrite :: sLaunch :: sRun :: sReadback :: sEmitTri :: Nil =
-    Enum(7)
+  private val sIdle :: sReadVB :: sWrite :: sInvalidateReq :: sInvalidateAck :: sLaunch :: sRun :: sReadback :: sEmitTri :: Nil = Enum(9)
   private val state = RegInit(sIdle)
 
   private val vertIdx = RegInit(0.U(countWidth.W))
@@ -285,6 +310,17 @@ class KernelVertStage(
   private val snapKernargBase = Reg(UInt(32.W))
   private val snapKernargBankStride = Reg(UInt(32.W))
   private val snapKernarg = Reg(UInt(32.W))
+  private val invalidateAddress = CacheLineInvalidate.allLinesAddress(config)
+  stagingReqActive := state === sInvalidateReq
+  stagingAckReady := state === sInvalidateAck
+  io.stagingInvalidate.valid := state === sInvalidateReq && !standaloneKernel.B
+  io.stagingInvalidate.bits.lineAddress := invalidateAddress
+  io.stagingInvalidateDone.ready := state === sInvalidateAck && !standaloneKernel.B
+  if (!standaloneKernel) {
+    invalidateReady := io.stagingInvalidate.ready
+    invalidateAck := io.stagingInvalidateDone.fire
+    invalidateAckAddress := io.stagingInvalidateDone.bits.lineAddress
+  }
   private val kernargBank = RegInit(false.B)
   private val snapFragPc = Reg(UInt(32.W))
   private val snapFragKernarg = Reg(UInt(32.W))
@@ -488,11 +524,21 @@ class KernelVertStage(
           field := 0.U
           when(vertIdx === batchVertCount - 1.U) {
             vertIdx := 0.U
-            state := sLaunch
+            state := sInvalidateReq
           }.otherwise {
             vertIdx := vertIdx + 1.U
           }
         }
+      }
+    }
+    is(sInvalidateReq) {
+      when(invalidateReady) { state := sInvalidateAck }
+    }
+    is(sInvalidateAck) {
+      when(invalidateAck) {
+        assert(invalidateAckAddress === invalidateAddress,
+          "vertex staging invalidate acknowledged the wrong cache line")
+        state := sLaunch
       }
     }
     is(sLaunch) {
@@ -545,9 +591,9 @@ class KernelVertStage(
           remainingVerts := newRemaining
           drawVertBase := drawVertBase + batchVertCount
           when(newRemaining >= 3.U) {
-            // Alternate complete kernarg banks between batches.  Besides
-            // separating staging writes, this prevents a following batch
-            // from observing private-L1 lines left by the previous launch.
+            // Alternate complete kernarg banks between batches to separate
+            // staging writes. Invalidate before each launch as well, since a
+            // later batch can reuse a line cached from two batches earlier.
             snapKernarg := Mux(snapKernargBankStride.orR && !kernargBank,
               snapKernargBase + snapKernargBankStride, snapKernargBase)
             kernargBank := !kernargBank

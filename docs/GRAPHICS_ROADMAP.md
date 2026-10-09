@@ -230,17 +230,19 @@ before draw completion. The store retains one 16x16 tile with up to four
 samples per pixel. DMA clears/copies and render jobs are serialized in this
 mode because a resident tile is newer than external memory. Primitive binning
 across draws begins with opt-in `--tile-binning`, used alongside
-`--tile-size 16 --tile-attachments`. It buffers eight ordered inline triangle
-commands at a time and replays each group tile by tile. A tile stays resident
-across the group's draws and is flushed between groups. Command lists can
-exceed eight draws. A bin-building pass records an ordered eight-bit membership
-mask per tile. Parallel scissor checks discard empty tiles in one cycle;
+`--tile-size 16 --tile-attachments`. It buffers eight ordered triangles
+at a time and replays each group tile by tile. Inline triangles enter from the
+command buffer; vertex-core triangles enter after vertex shading. A tile stays
+resident across the group's draws and is flushed between groups. Command lists
+and vertex draws can exceed eight triangles. A bin-building pass records an
+ordered eight-bit membership mask per tile. Parallel scissor checks discard
+empty tiles in one cycle;
 unscissored positive-w triangles also get conservative column and row ranges.
 Small grids use an axis scan; larger grids use monotonic boundary searches.
 Candidate draws receive a final clip-space bounds test. Replay visits only
 members of each mask. The masks use one byte per tile.
 Full-screen unscissored triangles still require a bounds check for each
-draw/tile pair. Vertex-core commands are future work. Fragment-core shading
+draw/tile pair. Fragment-core shading
 and 1x/2x/4x samples are supported.
 The opt-in schedule assumes draws do not read the render target being written
 or depend on cross-pixel shader side effects within a command list.

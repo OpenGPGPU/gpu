@@ -8,6 +8,62 @@ import org.scalatest.flatspec.AnyFlatSpec
 class VectorDataCacheSpec extends AnyFlatSpec {
   behavior of "VectorDataCache"
 
+  it should "evict every resident line on a whole-cache invalidate" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new VectorDataCache(config, sets = 4, lineBytes = 16)) { dut =>
+      dut.io.in.valid.poke(false.B)
+      dut.io.out.ready.poke(true.B)
+      dut.io.lowerRequest.ready.poke(true.B)
+      dut.io.lowerResponse.valid.poke(false.B)
+      dut.io.invalidate.valid.poke(false.B)
+      dut.io.invalidateDone.ready.poke(true.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+
+      def request(address: Int): Unit = {
+        dut.io.in.valid.poke(true.B)
+        dut.io.in.bits.poke(0.U.asTypeOf(dut.io.in.bits))
+        dut.io.in.bits.lineAddress.poke(address.U)
+        dut.io.in.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+        dut.clock.step()
+      }
+      def fill(address: Int): Unit = {
+        request(address)
+        dut.io.lowerRequest.valid.expect(true.B)
+        dut.clock.step()
+        dut.io.lowerResponse.valid.poke(true.B)
+        dut.io.lowerResponse.bits.readData.poke(address.U)
+        dut.io.lowerResponse.bits.fault.poke(false.B)
+        dut.clock.step()
+        dut.io.lowerResponse.valid.poke(false.B)
+        dut.clock.step()
+      }
+      fill(0x40)
+      fill(0x50)
+      val all = (BigInt(1) << config.xLen) - 1
+      dut.io.invalidate.valid.poke(true.B)
+      dut.io.invalidate.bits.lineAddress.poke(all.U)
+      dut.io.invalidate.ready.expect(true.B)
+      dut.clock.step()
+      dut.io.invalidate.valid.poke(false.B)
+      dut.io.invalidateDone.valid.expect(true.B)
+      dut.io.invalidateDone.bits.lineAddress.expect(all.U)
+      dut.clock.step()
+      for (address <- Seq(0x40, 0x50)) {
+        request(address)
+        dut.io.lowerRequest.valid.expect(true.B)
+        dut.clock.step()
+        dut.io.lowerResponse.valid.poke(true.B)
+        dut.io.lowerResponse.bits.readData.poke(address.U)
+        dut.io.lowerResponse.bits.fault.poke(false.B)
+        dut.clock.step()
+        dut.io.lowerResponse.valid.poke(false.B)
+        dut.clock.step()
+      }
+    }
+  }
+
   for (sameLine <- Seq(false, true); concurrentRefill <- Seq(false, true)) {
     it should s"acknowledge a probe during a miss (same line=$sameLine, concurrent refill=$concurrentRefill)" in {
       simulate(new VectorDataCache(GpuConfig(lanes = 4, warps = 2), sets = 4)) { dut =>

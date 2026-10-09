@@ -53,6 +53,29 @@ class RenderCoreSpec extends AnyFlatSpec {
     }
   }
 
+  it should "elaborate tile replay after vertex shading" in {
+    simulate(new RenderCore(
+      GraphicsConfig(screenWidth = 16, screenHeight = 16,
+        tileSize = 16, tileAttachments = true, tileBinning = true),
+      GpuConfig(lanes = 4, warps = 2), fragCore = true, vertCore = true)) { dut =>
+      dut.io.sampleMode.poke(0.U)
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.cmdBase.poke(0.U)
+      dut.io.cmdCount.poke(0.U)
+      dut.io.start.poke(true.B)
+      dut.clock.step()
+      dut.io.start.poke(false.B)
+      var cycles = 0
+      while (!dut.io.done.peek().litToBoolean && cycles < 20) {
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(cycles < 20, "an empty vertex tile pass must drain")
+    }
+  }
+
   it should "apply independent per-draw state with and without tile replay" in {
     val requestCounts = scala.collection.mutable.ArrayBuffer.empty[Int]
     for (replay <- Seq(false, true)) {

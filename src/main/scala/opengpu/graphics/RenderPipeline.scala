@@ -132,8 +132,10 @@ class RenderPipeline(
     }
     val performance = Output(new GraphicsPerformanceEvents)
     val done = Output(Bool())
-    val tilePassEnd = if (config.tileBinning) Some(Input(Bool())) else None
-    val drawDrained = if (config.tileBinning) Some(Output(Bool())) else None
+    val tilePassEnd = if (config.tileBinning && !vertCore) Some(Input(Bool())) else None
+    val drawDrained = if (config.tileBinning && !vertCore) Some(Output(Bool())) else None
+    val tileStart = if (config.tileBinning && vertCore) Some(Input(Bool())) else None
+    val tileInputDone = if (config.tileBinning && vertCore) Some(Input(Bool())) else None
   })
 
   private val geo = Module(new GeometryStage(config))
@@ -146,6 +148,7 @@ class RenderPipeline(
   private val tileDrained = tileStoreOpt.map(_.io.drained).getOrElse(true.B)
   private val drawTileGate = if (config.tileBinning) true.B else tileDrained
   private val upstreamDone = Wire(Bool())
+  private val fragmentDrained = Wire(Bool())
   private val textured =
     Module(new TexturedFragStage(config, quadUv = fragCore || vertCore))
   private val expander = Module(new SampleExpander(config.maxSampleCount))
@@ -156,7 +159,7 @@ class RenderPipeline(
   private val triSourceBits = Wire(new SceneTriangle(config))
   private val triSourceReady = Wire(Bool())
   private val triSourceFire = Wire(Bool())
-  private val vertDrawCmd = if (vertCore) {
+  private val vertDrawCmd = if (vertCore && !config.tileBinning) {
     val cmd = RegInit(0.U.asTypeOf(new VertexDrawCommand(config)))
     when(io.draw.fire) {
       cmd := io.draw.bits.asInstanceOf[VertexDrawCommand]
@@ -165,6 +168,8 @@ class RenderPipeline(
   } else None
 
   private val kernelVertOpt = if (vertCore) Some(Module(new KernelVertStage(gpuConfig, config, standaloneKernel = false))) else None
+  private val vertBinnerOpt = if (config.tileBinning && vertCore)
+    Some(Module(new TileDrawBinner(config))) else None
 
   if (vertCore) {
     val kernelVert = kernelVertOpt.get
@@ -227,10 +232,23 @@ class RenderPipeline(
       assert(kernelVert.io.done,
         "vertex draw accepted while KernelVertStage still owns the prior draw")
     }
-    triSourceValid := kernelVert.io.vertOut.valid
-    triSourceBits := kernelVert.io.vertOut.bits
-    kernelVert.io.vertOut.ready := triSourceReady
-    triSourceFire := kernelVert.io.vertOut.fire
+    vertBinnerOpt match {
+      case Some(binner) =>
+        binner.io.start := io.tileStart.get
+        binner.io.inputDone := io.tileInputDone.get && kernelVert.io.done
+        binner.io.drawIn <> kernelVert.io.vertOut
+        binner.io.drawOut.ready := triSourceReady
+        binner.io.renderDrained := fragmentDrained
+        binner.io.passDone := fragmentDrained && tileDrained
+        triSourceValid := binner.io.drawOut.valid
+        triSourceBits := binner.io.drawOut.bits
+        triSourceFire := binner.io.drawOut.fire
+      case None =>
+        triSourceValid := kernelVert.io.vertOut.valid
+        triSourceBits := kernelVert.io.vertOut.bits
+        kernelVert.io.vertOut.ready := triSourceReady
+        triSourceFire := kernelVert.io.vertOut.fire
+    }
   } else {
     val drawDecoupled = io.draw.asInstanceOf[DecoupledIO[SceneTriangle]]
     triSourceValid := drawDecoupled.valid
@@ -328,7 +346,7 @@ class RenderPipeline(
     drawState.depthBase := io.depthBase
     drawState.stride := io.stride
     drawState.sampleMode := io.sampleMode
-    if (vertCore) resolveDrawState(vertDrawCmd.get)
+    if (vertCore && !config.tileBinning) resolveDrawState(vertDrawCmd.get)
     else resolveDrawState(triSource.bits)
   }
   when(drawHoldValid && clipper.io.done && clipper.io.outValid === 0.U) {
@@ -425,8 +443,9 @@ class RenderPipeline(
       store.io.stride := om.io.stride
       store.io.sampleMode := om.io.sampleMode
       store.io.omDrained := om.io.drained
-      store.io.finish := upstreamDone &&
-        (if (config.tileBinning) io.tilePassEnd.get else true.B)
+      store.io.finish := fragmentDrained &&
+        (if (config.tileBinning && vertCore) vertBinnerOpt.get.io.passEnd
+         else if (config.tileBinning) io.tilePassEnd.get else true.B)
       store.io.wordIndex := om.io.tileWordIndex
       store.io.depthPlane := om.io.tileDepthPlane
       store.io.om.req <> om.io.mem.req
@@ -435,7 +454,7 @@ class RenderPipeline(
     case None => io.mem <> om.io.mem
   }
   io.done := upstreamDone && tileDrained
-  io.drawDrained.foreach(_ := upstreamDone)
+  io.drawDrained.foreach(_ := fragmentDrained)
   io.performance.omStall := expander.io.out.valid &&
     !(om.io.fragIn.ready && tilePermit)
   io.performance.omConflict := om.io.addressConflict
@@ -526,8 +545,33 @@ class RenderPipeline(
     // Connect KernelShaderStage memory ports to RenderPipeline IO
     io.kernelMemReq <> kernelShader.io.memoryRequest
     kernelShader.io.memoryResponse <> io.kernelMemResp
-    kernelShader.io.l1Invalidate <> io.kernelL1Invalidate
-    io.kernelL1InvalidateDone <> kernelShader.io.l1InvalidateDone
+    if (vertCore) {
+      val staging = kernelVertOpt.get.io.stagingInvalidate
+      val stagingDone = kernelVertOpt.get.io.stagingInvalidateDone
+      val invalidateOwners = Module(new Queue(Bool(), 4))
+      val selectStaging = staging.valid
+      kernelShader.io.l1Invalidate.valid :=
+        (staging.valid || io.kernelL1Invalidate.valid) && invalidateOwners.io.enq.ready
+      kernelShader.io.l1Invalidate.bits := Mux(selectStaging,
+        staging.bits, io.kernelL1Invalidate.bits)
+      staging.ready := kernelShader.io.l1Invalidate.ready && invalidateOwners.io.enq.ready
+      io.kernelL1Invalidate.ready := !selectStaging &&
+        kernelShader.io.l1Invalidate.ready && invalidateOwners.io.enq.ready
+      invalidateOwners.io.enq.valid := kernelShader.io.l1Invalidate.fire
+      invalidateOwners.io.enq.bits := selectStaging
+      val stagingAck = invalidateOwners.io.deq.valid && invalidateOwners.io.deq.bits
+      kernelShader.io.l1InvalidateDone.ready := invalidateOwners.io.deq.valid &&
+        Mux(stagingAck, stagingDone.ready, io.kernelL1InvalidateDone.ready)
+      invalidateOwners.io.deq.ready := kernelShader.io.l1InvalidateDone.fire
+      stagingDone.valid := kernelShader.io.l1InvalidateDone.valid && stagingAck
+      stagingDone.bits := kernelShader.io.l1InvalidateDone.bits
+      io.kernelL1InvalidateDone.valid := kernelShader.io.l1InvalidateDone.valid &&
+        invalidateOwners.io.deq.valid && !invalidateOwners.io.deq.bits
+      io.kernelL1InvalidateDone.bits := kernelShader.io.l1InvalidateDone.bits
+    } else {
+      kernelShader.io.l1Invalidate <> io.kernelL1Invalidate
+      io.kernelL1InvalidateDone <> kernelShader.io.l1InvalidateDone
+    }
     io.kernelGlobalAtomicRequest <> kernelShader.io.globalAtomicRequest
     kernelShader.io.globalAtomicResponse <> io.kernelGlobalAtomicResponse
 
@@ -586,7 +630,9 @@ class RenderPipeline(
     // (and later executes) while batch N's kernel is still running; per-draw
     // state is carried by the context FIFO and the dual staging slots, and
     // the ordered drawRetire handshake retires contexts in submission order.
-    io.draw.ready := triSource.ready && kernelFrag.io.fragIn.ready &&
+    io.draw.ready := (if (config.tileBinning && vertCore)
+      vertBinnerOpt.get.io.drawIn.ready else triSource.ready) &&
+      kernelFrag.io.fragIn.ready &&
       ctxFifo.io.enq.ready && drawTileGate &&
       kernelVert.map(_.io.done).getOrElse(true.B)
     kernelFrag.io.fragIn.valid := shader.io.quad.valid
@@ -735,9 +781,10 @@ class RenderPipeline(
     // Vertex draws also keep the pipeline busy until KernelVertStage returns
     // to idle; otherwise a just-accepted vertex command looks drained before
     // its shader has fetched a single instruction.
-    upstreamDone := !drawHoldValid && shader.io.done && kernelFrag.io.drained &&
-      expander.io.drained && om.io.drained && !ctxFifo.io.headValid &&
-      kernelVert.map(_.io.done).getOrElse(true.B)
+    fragmentDrained := !drawHoldValid && shader.io.done && kernelFrag.io.drained &&
+      expander.io.drained && om.io.drained && !ctxFifo.io.headValid
+    upstreamDone := fragmentDrained && kernelVert.map(_.io.done).getOrElse(true.B) &&
+      vertBinnerOpt.map(_.io.done).getOrElse(true.B)
   } else {
     shader.io.draw.valid := drawHoldValid && !clipTriangleActive && clipper.io.done &&
       clipEmitIndex < clipper.io.outValid
@@ -830,7 +877,8 @@ class RenderPipeline(
     io.kernelGlobalAtomicRequest.bits :=
       0.U.asTypeOf(io.kernelGlobalAtomicRequest.bits)
     io.kernelGlobalAtomicResponse.ready := true.B
-    upstreamDone := !drawHoldValid && shader.io.done && textured.io.drained &&
+    fragmentDrained := !drawHoldValid && shader.io.done && textured.io.drained &&
       expander.io.drained && om.io.drained
+    upstreamDone := fragmentDrained
   }
 }

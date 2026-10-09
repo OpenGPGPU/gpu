@@ -31,8 +31,6 @@ object EmitGpuHostSystemAxi {
     val tileSize = intOption("--tile-size").getOrElse(0)
     val tileAttachments = rest.contains("--tile-attachments")
     val tileBinning = rest.contains("--tile-binning")
-    require(!tileBinning || !vertCore,
-      "--tile-binning currently requires inline triangle commands")
     def isPow2(n: Int): Boolean = n > 0 && (n & (n - 1)) == 0
     require(width >= 16 && height >= 16,
       s"resolution must be at least 16x16, got ${width}x${height}")

@@ -22,6 +22,12 @@ class CacheLineInvalidate(config: GpuConfig) extends Bundle {
   val lineAddress = UInt(config.xLen.W)
 }
 
+object CacheLineInvalidate {
+  /** Unaligned sentinel reserved for invalidating the entire private L1. */
+  def allLinesAddress(config: GpuConfig): UInt =
+    Fill(config.xLen, 1.U(1.W))
+}
+
 class VectorLowerMemoryResponse(val lineBytes: Int = 64) extends Bundle {
   val readData = UInt((lineBytes * 8).W)
   val fault = Bool()
@@ -141,6 +147,8 @@ class VectorDataCache(
     io.invalidate.bits.lineAddress(offsetWidth + indexWidth - 1, offsetWidth)
   private val invalidateTag =
     io.invalidate.bits.lineAddress(config.xLen - 1, offsetWidth + indexWidth)
+  private val invalidateAll =
+    io.invalidate.bits.lineAddress === CacheLineInvalidate.allLinesAddress(config)
 
   when(io.in.fire) {
     request := io.in.bits
@@ -170,7 +178,7 @@ class VectorDataCache(
     output.readData :=
       Mux(request.isStore, 0.U, io.lowerResponse.bits.readData)
     val invalidatingRequest = io.invalidate.fire &&
-      io.invalidate.bits.lineAddress === request.lineAddress
+      (invalidateAll || io.invalidate.bits.lineAddress === request.lineAddress)
     when(!io.lowerResponse.bits.fault && !requestInvalidated && !invalidatingRequest) {
       when(!request.isStore && requestCacheable) {
         for (way <- 0 until ways) {
@@ -202,11 +210,14 @@ class VectorDataCache(
   when(io.invalidate.fire) {
     invalidatePending := true.B
     invalidateAddress := io.invalidate.bits.lineAddress
-    when(state === State.lower && io.invalidate.bits.lineAddress === request.lineAddress) {
+    when(state === State.lower &&
+      (invalidateAll || io.invalidate.bits.lineAddress === request.lineAddress)) {
       requestInvalidated := true.B
     }
     for (way <- 0 until ways) {
-      when(valid(way)(invalidateIndex) && tags(way)(invalidateIndex) === invalidateTag) {
+      when(invalidateAll) {
+        for (set <- 0 until sets) valid(way)(set) := false.B
+      }.elsewhen(valid(way)(invalidateIndex) && tags(way)(invalidateIndex) === invalidateTag) {
         valid(way)(invalidateIndex) := false.B
       }
     }

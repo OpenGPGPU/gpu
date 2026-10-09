@@ -39,8 +39,6 @@ class RenderCore(
   vertCore: Boolean = false,
   graphicsScalarFpu: Boolean = true
 ) extends Module {
-  require(!config.tileBinning || !vertCore,
-    "tile draw replay currently requires inline triangle commands")
   val io = IO(new Bundle {
     val cmdBase = Input(UInt(32.W))
     val cmdCount = Input(UInt(16.W))
@@ -121,7 +119,12 @@ class RenderCore(
   cb.io.mem.req <> io.cbMem.req
   cb.io.mem.resp <> io.cbMem.resp
 
-  if (config.tileBinning) {
+  if (config.tileBinning && vertCore) {
+    cb.io.draw <> rp.io.draw
+    rp.io.tileStart.get := startDelay
+    rp.io.tileInputDone.get := cb.io.done
+    io.done := cb.io.done && rp.io.done
+  } else if (config.tileBinning) {
     val binner = Module(new TileDrawBinner(config))
     binner.io.start := startDelay
     cb.io.draw <> binner.io.drawIn
