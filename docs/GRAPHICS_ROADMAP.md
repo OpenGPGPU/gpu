@@ -246,6 +246,12 @@ draw/tile pair. Fragment-core shading
 and 1x/2x/4x samples are supported.
 The opt-in schedule assumes draws do not read the render target being written
 or depend on cross-pixel shader side effects within a command list.
+The 640x480 FlashSim Debian proof runs GTK ellipse coverage and the multi-draw
+`pipe_desktop` with tile binning. Its QEMU scanout matches the scanline model
+byte for byte across all 307,200 pixels. Run it with
+`GPU_TILE_BINNING=1 GTK_PROOF_DESKTOP=1 JDK_JAVA_OPTIONS=-Xmx12g bash scripts/run_gtk_coverage_guest.sh`;
+see [GTK_COVERAGE.md](GTK_COVERAGE.md) for the cached-model and reference-image
+options.
 
 The functional baseline includes private Sv32 mappings with context-local
 revocation and ASID reuse, failure cleanup across compute/render ioctls,

@@ -7,6 +7,54 @@ import org.scalatest.flatspec.AnyFlatSpec
 class TileDrawBinnerSpec extends AnyFlatSpec {
   behavior of "TileDrawBinner"
 
+  it should "retain all desktop triangle tiles at 640x480" in {
+    val cfg = GraphicsConfig(screenWidth = 640, screenHeight = 480,
+      tileSize = 16, tileAttachments = true, tileBinning = true)
+    def ndc(pixel: Int, extent: Int): Int =
+      (((pixel.toLong * 2 - extent) << 16) / extent).toInt
+    simulate(new TileDrawBinner(cfg)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.drawIn.valid.poke(false.B)
+      dut.io.drawOut.ready.poke(true.B)
+      dut.io.renderDrained.poke(true.B)
+      dut.io.passDone.poke(true.B)
+      dut.io.inputDone.poke(false.B)
+      dut.io.start.poke(true.B)
+      dut.clock.step()
+      dut.io.start.poke(false.B)
+
+      val vertices = Seq((16, 48), (336, 48), (16, 464))
+      val seen = scala.collection.mutable.Set.empty[(Int, Int)]
+      var sent = false
+      var cycles = 0
+      while (!dut.io.done.peek().litToBoolean && cycles < 12000) {
+        dut.io.drawIn.valid.poke((!sent).B)
+        dut.io.drawIn.bits.poke(0.U.asTypeOf(new SceneTriangle(cfg)))
+        for (i <- 0 until 3) {
+          dut.io.drawIn.bits.clip(i).x.poke(ndc(vertices(i)._1, 640).S)
+          dut.io.drawIn.bits.clip(i).y.poke(ndc(vertices(i)._2, 480).S)
+          dut.io.drawIn.bits.clip(i).w.poke(65536.S)
+        }
+        if (!sent && dut.io.drawIn.ready.peek().litToBoolean) sent = true
+        if (sent) dut.io.inputDone.poke(true.B)
+        if (dut.io.drawOut.valid.peek().litToBoolean)
+          seen += ((dut.io.drawOut.bits.scissorMinX.peek().litValue.toInt,
+            dut.io.drawOut.bits.scissorMinY.peek().litValue.toInt))
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(cycles < 12000)
+      val expected = for {
+        y <- 48 until 464 by 16
+        x <- 16 until 336 by 16
+      } yield (x, y)
+      assert(expected.forall(seen.contains),
+        s"missing desktop tiles: ${expected.filterNot(seen.contains)}")
+    }
+  }
+
   it should "replay ordered draws per tile and intersect their scissors" in {
     val cfg = GraphicsConfig(screenWidth = 30, screenHeight = 16,
       tileSize = 16, tileAttachments = true, tileBinning = true)

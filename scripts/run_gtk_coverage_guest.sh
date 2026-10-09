@@ -104,6 +104,10 @@ LOAD_LOG="$PROOF_WORK/load.log"
 : > "$BOOT_LOG"
 : > "$PROOF_LOG"
 : > "$LOAD_LOG"
+if [ "${GTK_PROOF_DESKTOP:-0}" = 1 ]; then
+    SCANOUT="$PROOF_WORK/desktop-scanout.ppm"
+    rm -f "$SCANOUT"
+fi
 qemu_pid=""
 cleanup() {
     if [ -n "$qemu_pid" ]; then
@@ -120,6 +124,7 @@ ARTI_DIR="$ARTI_DIR" ARTI_WORK="$ARTI_WORK" FLASHSIM_DIR="$FLASHSIM_DIR" \
     INTEGRATION_CONFIG="$INTEGRATION_CONFIG" GPU_SIM=flashsim \
     QEMU_DISPLAY=none OPENGPU_AUTO_DISPLAY=0 BUILD_USERSPACE=1 \
     REBUILD_CLOUDINIT=1 CLOUDINIT_PACKAGES=0 \
+    ARTI_DISPLAY_DUMP="${SCANOUT:-}" ARTI_DISPLAY_DUMP_PIXEL=243044 \
     DISK="$DISK" DEBIAN_BASE="$BASE" SSH_PORT="$PORT" SERIAL_LOG="$SERIAL_LOG" \
     "$GPU_DIR/scripts/run_arti_debian.sh" > "$BOOT_LOG" 2>&1 &
 qemu_pid=$!
@@ -149,3 +154,43 @@ echo '=== Check GTK ellipse coverage ==='
 grep -qF 'gl_gtk_coverage: mode 640x480 inside=0xff0000ff outside=0x00000000' "$PROOF_LOG"
 grep -qF 'OPENGPU GL GTK COVERAGE PASS' "$PROOF_LOG"
 echo 'GTK coverage guest proof: PASS'
+
+if [ "${GTK_PROOF_DESKTOP:-0}" = 1 ]; then
+    DESKTOP_LOG="$PROOF_WORK/desktop.log"
+    echo '=== Check multi-draw desktop and present ==='
+    "$GPU_DIR/scripts/gtk_coverage_guest.exp" "$PORT" 1800 \
+        '/root/opengpu_pipe_desktop /dev/dri/card0 /root/opengpu_fragment_tint.bin' \
+        | tee "$DESKTOP_LOG"
+    grep -qF 'OPENGPU DESKTOP PASS: 640x480 ' "$DESKTOP_LOG"
+    python3 - "$SCANOUT" "${GTK_PROOF_SCANOUT_REFERENCE:-}" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if not path.is_file():
+    sys.exit(f"missing QEMU scanout dump: {path}")
+data = path.read_bytes()
+header = re.match(rb"P6\n([0-9]+) ([0-9]+)\n255\n", data)
+if header is None or header.groups() != (b"640", b"480"):
+    sys.exit(f"invalid 640x480 scanout dump: {path}")
+pixels = data[header.end():]
+if len(pixels) != 640 * 480 * 3:
+    sys.exit(f"incomplete scanout dump: {path}")
+if pixels[3 * (640 + 1):3 * (640 + 2)] != bytes.fromhex("243044"):
+    sys.exit(f"desktop panel missing from scanout: {path}")
+colors = {pixels[i:i + 3] for i in range(0, len(pixels), 3)}
+for label, color in (("window", "f2efe8"), ("cursor", "ffe14a"),
+                     ("triangle", "ffbf40")):
+    if bytes.fromhex(color) not in colors:
+        sys.exit(f"desktop {label} missing from scanout: {path}")
+if sys.argv[2]:
+    reference = pathlib.Path(sys.argv[2])
+    if not reference.is_file():
+        sys.exit(f"missing scanout reference: {reference}")
+    if data != reference.read_bytes():
+        sys.exit(f"desktop scanout differs from {reference}")
+print(f"Desktop scanout proof: PASS ({path})")
+PY
+    echo 'Desktop guest proof: PASS'
+fi
