@@ -16,6 +16,9 @@ case class GraphicsConfig(
   subPixelBits: Int = 8,
   drawFifoDepth: Int = 8,
   maxSampleCount: Int = 4,
+  /** Zero keeps scanline order; a power of two scans each tile to completion
+    * before moving to the next tile in row-major tile order. */
+  tileSize: Int = 0,
   /** Concurrent output-merger RMW slots. Workload baselines showed flat draws
     * are OM-bound with zero address conflicts, so depth hides memory latency
     * rather than same-pixel serialization. Default 16 after measuring 8→16. */
@@ -24,6 +27,9 @@ case class GraphicsConfig(
   require(drawFifoDepth >= 2, "draw FIFO must hold at least two records")
   require(Set(1, 2, 4)(maxSampleCount),
     "maxSampleCount must be 1, 2, or 4")
+  require(tileSize == 0 || (tileSize >= 2 && tileSize <= 64 &&
+    (tileSize & (tileSize - 1)) == 0),
+    "tileSize must be zero or a power of two in [2, 64]")
   require(omInflight >= 1 && omInflight <= 32,
     "omInflight must be in [1, 32]")
   def coordWidth: Int = 32
@@ -418,6 +424,10 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   private val maxY = RegInit(0.U(16.W))
   private val curX = RegInit(0.U(16.W))
   private val curY = RegInit(0.U(16.W))
+  private val tileStartX = RegInit(0.U(16.W))
+  private val tileStartY = RegInit(0.U(16.W))
+  private val tileEndX = RegInit(0.U(16.W))
+  private val tileEndY = RegInit(0.U(16.W))
 
   private class Edges extends Bundle {
     val e = Vec(3, SInt(config.edgeWidth.W))
@@ -426,6 +436,8 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   private val dxReg = RegInit(0.U.asTypeOf(new Edges))
   private val dyReg = RegInit(0.U.asTypeOf(new Edges))
   private val rowStartReg = RegInit(0.U.asTypeOf(new Edges))
+  private val tileOriginReg = RegInit(0.U.asTypeOf(new Edges))
+  private val tileRowOriginReg = RegInit(0.U.asTypeOf(new Edges))
   private val areaReg = RegInit(0.S(config.edgeWidth.W))
   private val frontReg = RegInit(true.B)
   private val tlReg = Seq(RegInit(false.B), RegInit(false.B), RegInit(false.B))
@@ -434,12 +446,6 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   io.planeA := coeffReg.a
   io.planeB := coeffReg.b
   io.planeArea := areaReg
-
-  // Stepped candidates: single adds off the current registers.
-  private val edgeNextCol = VecInit((0 until 3).map(i =>
-    FixedPointMath.trim64(edgeReg.e(i) + dxReg.e(i))))
-  private val edgeNextRow = VecInit((0 until 3).map(i =>
-    FixedPointMath.trim64(rowStartReg.e(i) + dyReg.e(i))))
 
   private val quadCov = Module(new QuadCoverage(config))
   quadCov.io.base.zipWithIndex.foreach { case (e, i) => e := edgeReg.e(i) }
@@ -511,48 +517,82 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   }
 
   // ---------------------------------------------------------------------
-  // Scan advance: column step or row wrap, both single-add per edge.
+  // Scan advance. In tile mode, the next tile origin is calculated only at
+  // a tile boundary; pixels inside a tile still use one edge add per step.
   // ---------------------------------------------------------------------
-  if (quadMode) {
-    // One quad per beat: step two columns (or wrap two rows) per fire.
-    when(active && io.quad.fire) {
-      when(curX < maxX) {
-        curX := curX + 2.U
+  private val scanStep = if (quadMode) 2 else 1
+  private val scanAdvance = if (quadMode) io.quad.fire else
+    !curCoveredAny || !inScissor(curX, curY) || io.pixel.fire
+  private def edgeStep(base: SInt, delta: SInt, pixels: UInt): SInt =
+    FixedPointMath.trim64(base + delta * pixels.zext)
+  private def lastInTile(start: UInt, max: UInt): UInt = {
+    val boundary = (start | (config.tileSize - 1).U(16.W)) -
+      (scanStep - 1).U
+    Mux(boundary < max, boundary, max)
+  }
+
+  when(active && scanAdvance) {
+    if (config.tileSize > 0) {
+      when(curX < tileEndX) {
+        curX := curX + scanStep.U
         edgeReg.e.zipWithIndex.foreach { case (r, i) =>
-          r := FixedPointMath.trim64(edgeReg.e(i) + (dxReg.e(i) << 1)) }
-      }.otherwise {
+          r := edgeStep(edgeReg.e(i), dxReg.e(i), scanStep.U) }
+      }.elsewhen(curY < tileEndY) {
+        curX := tileStartX
+        curY := curY + scanStep.U
+        edgeReg.e.zipWithIndex.foreach { case (r, i) =>
+          r := edgeStep(rowStartReg.e(i), dyReg.e(i), scanStep.U) }
+        rowStartReg.e.zipWithIndex.foreach { case (r, i) =>
+          r := edgeStep(rowStartReg.e(i), dyReg.e(i), scanStep.U) }
+      }.elsewhen(tileEndX < maxX) {
+        val nextX = tileEndX + scanStep.U
+        val deltaX = (nextX - tileStartX)(log2Ceil(config.tileSize + 1) - 1, 0)
+        tileStartX := nextX
+        tileEndX := lastInTile(nextX, maxX)
+        curX := nextX
+        curY := tileStartY
+        for (i <- 0 until 3) {
+          val nextEdge = edgeStep(tileOriginReg.e(i), dxReg.e(i), deltaX)
+          tileOriginReg.e(i) := nextEdge
+          rowStartReg.e(i) := nextEdge
+          edgeReg.e(i) := nextEdge
+        }
+      }.elsewhen(tileEndY < maxY) {
+        val nextY = tileEndY + scanStep.U
+        val deltaY = (nextY - tileStartY)(log2Ceil(config.tileSize + 1) - 1, 0)
+        tileStartX := minX
+        tileStartY := nextY
+        tileEndX := lastInTile(minX, maxX)
+        tileEndY := lastInTile(nextY, maxY)
         curX := minX
-        when(curY < maxY) {
-          curY := curY + 2.U
-          edgeReg.e.zipWithIndex.foreach { case (r, i) =>
-            r := FixedPointMath.trim64(rowStartReg.e(i) +
-              (dyReg.e(i) << 1)) }
-          rowStartReg.e.zipWithIndex.foreach { case (r, i) =>
-            r := FixedPointMath.trim64(rowStartReg.e(i) +
-              (dyReg.e(i) << 1)) }
-        }.otherwise {
-          active := false.B
+        curY := nextY
+        for (i <- 0 until 3) {
+          val nextEdge = edgeStep(tileRowOriginReg.e(i), dyReg.e(i), deltaY)
+          tileRowOriginReg.e(i) := nextEdge
+          tileOriginReg.e(i) := nextEdge
+          rowStartReg.e(i) := nextEdge
+          edgeReg.e(i) := nextEdge
         }
+      }.otherwise {
+        active := false.B
       }
-    }
-  } else {
-    when(active) {
-      // Advance on a fire or a miss; never stall on a covered sample.
-      when(!curCoveredAny || !inScissor(curX, curY) || io.pixel.fire) {
-        when(curX < maxX) {
-          curX := curX + 1.U
-          edgeReg.e.zipWithIndex.foreach { case (r, i) => r := edgeNextCol(i) }
-        }.otherwise {
-          curX := minX
-          when(curY < maxY) {
-            curY := curY + 1.U
-            edgeReg.e.zipWithIndex.foreach { case (r, i) => r := edgeNextRow(i) }
-            rowStartReg.e.zipWithIndex.foreach { case (r, i) =>
-              r := edgeNextRow(i) }
-          }.otherwise {
-            active := false.B
-          }
-        }
+    } else {
+      when(curX < maxX) {
+        curX := curX + scanStep.U
+        edgeReg.e.zipWithIndex.foreach { case (r, i) =>
+          r := FixedPointMath.trim64(edgeReg.e(i) +
+            (if (quadMode) dxReg.e(i) << 1 else dxReg.e(i))) }
+      }.elsewhen(curY < maxY) {
+        curX := minX
+        curY := curY + scanStep.U
+        edgeReg.e.zipWithIndex.foreach { case (r, i) =>
+          r := FixedPointMath.trim64(rowStartReg.e(i) +
+            (if (quadMode) dyReg.e(i) << 1 else dyReg.e(i))) }
+        rowStartReg.e.zipWithIndex.foreach { case (r, i) =>
+          r := FixedPointMath.trim64(rowStartReg.e(i) +
+            (if (quadMode) dyReg.e(i) << 1 else dyReg.e(i))) }
+      }.otherwise {
+        active := false.B
       }
     }
   }
@@ -652,6 +692,14 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
         r := FixedPointMath.trim64(coeffReg.b(i) << config.subPixelBits) }
       edgeReg.e.zipWithIndex.foreach { case (r, i) => r := originE(i) }
       rowStartReg.e.zipWithIndex.foreach { case (r, i) => r := originE(i) }
+      if (config.tileSize > 0) {
+        tileStartX := minX
+        tileStartY := minY
+        tileEndX := lastInTile(minX, maxX)
+        tileEndY := lastInTile(minY, maxY)
+        tileOriginReg.e.zipWithIndex.foreach { case (r, i) => r := originE(i) }
+        tileRowOriginReg.e.zipWithIndex.foreach { case (r, i) => r := originE(i) }
+      }
       frontReg := frontN
       tlReg.zipWithIndex.foreach { case (r, i) =>
         val fa = Mux(frontN, coeffReg.a(i), -coeffReg.a(i))

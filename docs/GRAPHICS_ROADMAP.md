@@ -217,6 +217,15 @@ usable DRM GPU under ARTI/QEMU (open card0, submit, fence, scan out RTL
 output). Cycle / PPA work stays secondary unless a guest path is blocked.
 Simulation wall-clock is not a gate.
 
+An opt-in tile-order raster traversal is available through
+`EmitGpuHostSystemAxi ... --tile-size 16`. It visits every pixel or 2x2 helper
+quad in 16x16 tile order, preserving edge planes, coverage masks, scissor,
+MSAA, and backpressure. The default remains scanline order. This is a first
+step toward mobile tile rendering: the output merger still reads and writes
+external color/depth memory, so tile order alone does not reduce framebuffer
+traffic. The next hardware step is tile-local color/depth storage with a
+load/flush boundary, followed by primitive binning across draws.
+
 The functional baseline includes private Sv32 mappings with context-local
 revocation and ASID reuse, failure cleanup across compute/render ioctls,
 reset and completion-backpressure recovery, seeded AXI fault sequences,

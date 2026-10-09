@@ -28,6 +28,7 @@ object EmitGpuHostSystemAxi {
     val height = intOption("--height").getOrElse(64)
     val computeUnits = intOption("--compute-units").getOrElse(1)
     val memoryAxiDataBytes = intOption("--memory-axi-data-bytes").getOrElse(8)
+    val tileSize = intOption("--tile-size").getOrElse(0)
     def isPow2(n: Int): Boolean = n > 0 && (n & (n - 1)) == 0
     require(width >= 16 && height >= 16,
       s"resolution must be at least 16x16, got ${width}x${height}")
@@ -40,7 +41,8 @@ object EmitGpuHostSystemAxi {
     ChiselStage.emitSystemVerilogFile(
       new GpuHostSystemAxi(
         GraphicsConfig(
-          screenWidth = width, screenHeight = height, subPixelBits = 8),
+          screenWidth = width, screenHeight = height, subPixelBits = 8,
+          tileSize = tileSize),
         GpuConfig(lanes = 4, warps = 2),
         numComputeUnits = computeUnits,
         fragCore = fragCore,
