@@ -304,4 +304,96 @@ class TileDrawBinnerSpec extends AnyFlatSpec {
       assert(emitted == 0)
     }
   }
+
+  it should "use bounded searches for sparse geometry on a wider grid" in {
+    val cfg = GraphicsConfig(screenWidth = 256, screenHeight = 64,
+      tileSize = 16, tileAttachments = true, tileBinning = true)
+    simulate(new TileDrawBinner(cfg)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.drawIn.valid.poke(false.B)
+      dut.io.drawOut.ready.poke(true.B)
+      dut.io.renderDrained.poke(true.B)
+      dut.io.passDone.poke(true.B)
+      dut.io.inputDone.poke(false.B)
+      dut.io.start.poke(true.B)
+      dut.clock.step()
+      dut.io.start.poke(false.B)
+
+      val leftXs = Seq(-65536, -62259, -58982)
+      val leftYs = Seq(-65536, -39321, -52428)
+      val middleXs = Seq(2048, 4096, 6144)
+      val middleYs = Seq(8192, 16384, 24576)
+      val ws = Seq(65536, 131072, 32768)
+      var sent = 0
+      val seen = scala.collection.mutable.ArrayBuffer.empty[(Int, Int, Int)]
+      var cycles = 0
+      while (!dut.io.done.peek().litToBoolean && cycles < 600) {
+        dut.io.drawIn.valid.poke((sent < 8).B)
+        dut.io.drawIn.bits.poke(0.U.asTypeOf(new SceneTriangle(cfg)))
+        if (sent < 8) {
+          dut.io.drawIn.bits.shaderPc.poke((sent + 1).U)
+          val xs = if (sent % 2 == 0) leftXs else middleXs
+          val ys = if (sent % 2 == 0) leftYs else middleYs
+          for (i <- 0 until 3) {
+            dut.io.drawIn.bits.clip(i).x.poke(((xs(i).toLong * ws(i)) / 65536).toInt.S)
+            dut.io.drawIn.bits.clip(i).y.poke(((ys(i).toLong * ws(i)) / 65536).toInt.S)
+            dut.io.drawIn.bits.clip(i).w.poke(ws(i).S)
+          }
+        }
+        if (sent < 8 && dut.io.drawIn.ready.peek().litToBoolean) sent += 1
+        if (sent == 8) dut.io.inputDone.poke(true.B)
+        if (dut.io.drawOut.valid.peek().litToBoolean)
+          seen += ((dut.io.drawOut.bits.shaderPc.peek().litValue.toInt,
+            dut.io.drawOut.bits.scissorMinX.peek().litValue.toInt,
+            dut.io.drawOut.bits.scissorMinY.peek().litValue.toInt))
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(seen.toSeq == Seq((1, 0, 0), (3, 0, 0), (5, 0, 0), (7, 0, 0),
+        (2, 128, 32), (4, 128, 32), (6, 128, 32), (8, 128, 32)))
+      assert(cycles < 500, s"wide-grid bounds search took $cycles cycles")
+    }
+  }
+
+  it should "discard triangles beyond either side of a wide target" in {
+    val cfg = GraphicsConfig(screenWidth = 256, screenHeight = 64,
+      tileSize = 16, tileAttachments = true, tileBinning = true)
+    simulate(new TileDrawBinner(cfg)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.drawIn.valid.poke(false.B)
+      dut.io.drawOut.ready.poke(true.B)
+      dut.io.renderDrained.poke(true.B)
+      dut.io.passDone.poke(true.B)
+      dut.io.inputDone.poke(false.B)
+      dut.io.start.poke(true.B)
+      dut.clock.step()
+      dut.io.start.poke(false.B)
+
+      var sent = 0
+      var emitted = 0
+      var cycles = 0
+      while (!dut.io.done.peek().litToBoolean && cycles < 500) {
+        dut.io.drawIn.valid.poke((sent < 2).B)
+        dut.io.drawIn.bits.poke(0.U.asTypeOf(new SceneTriangle(cfg)))
+        if (sent < 2) {
+          for (i <- 0 until 3) {
+            val x = (98304 + i * 16384) * (if (sent == 0) 1 else -1)
+            dut.io.drawIn.bits.clip(i).x.poke(x.S)
+            dut.io.drawIn.bits.clip(i).w.poke(65536.S)
+          }
+        }
+        if (sent < 2 && dut.io.drawIn.ready.peek().litToBoolean) sent += 1
+        if (sent == 2) dut.io.inputDone.poke(true.B)
+        if (dut.io.drawOut.valid.peek().litToBoolean) emitted += 1
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(cycles < 500)
+      assert(emitted == 0)
+    }
+  }
 }

@@ -235,9 +235,10 @@ commands at a time and replays each group tile by tile. A tile stays resident
 across the group's draws and is flushed between groups. Command lists can
 exceed eight draws. A bin-building pass records an ordered eight-bit membership
 mask per tile. Parallel scissor checks discard empty tiles in one cycle;
-unscissored positive-w triangles also get conservative column and row ranges
-from a one-time axis scan. Candidate draws receive a final clip-space bounds
-test. Replay visits only members of each mask. The masks use one byte per tile.
+unscissored positive-w triangles also get conservative column and row ranges.
+Small grids use an axis scan; larger grids use monotonic boundary searches.
+Candidate draws receive a final clip-space bounds test. Replay visits only
+members of each mask. The masks use one byte per tile.
 Full-screen unscissored triangles still require a bounds check for each
 draw/tile pair. Vertex-core commands are future work. Fragment-core shading
 and 1x/2x/4x samples are supported.
