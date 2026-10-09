@@ -138,4 +138,47 @@ class TileDrawBinnerSpec extends AnyFlatSpec {
       assert(seen.toSeq == Seq((1, 0), (2, 16)))
     }
   }
+
+  it should "replay sparse tile masks in submission order" in {
+    val cfg = GraphicsConfig(screenWidth = 32, screenHeight = 16,
+      tileSize = 16, tileAttachments = true, tileBinning = true)
+    simulate(new TileDrawBinner(cfg)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.drawIn.valid.poke(false.B)
+      dut.io.drawOut.ready.poke(true.B)
+      dut.io.renderDrained.poke(true.B)
+      dut.io.passDone.poke(true.B)
+      dut.io.inputDone.poke(false.B)
+      dut.io.start.poke(true.B)
+      dut.clock.step()
+      dut.io.start.poke(false.B)
+
+      var sent = 0
+      val seen = scala.collection.mutable.ArrayBuffer.empty[(Int, Int)]
+      var cycles = 0
+      while (!dut.io.done.peek().litToBoolean && cycles < 150) {
+        dut.io.drawIn.valid.poke((sent < 5).B)
+        dut.io.drawIn.bits.poke(0.U.asTypeOf(new SceneTriangle(cfg)))
+        if (sent < 5) {
+          dut.io.drawIn.bits.shaderPc.poke((sent + 1).U)
+          dut.io.drawIn.bits.scissorEnable.poke((sent != 4).B)
+          dut.io.drawIn.bits.scissorMinX.poke((if (sent % 2 == 0) 0 else 16).U)
+          dut.io.drawIn.bits.scissorMaxX.poke((if (sent % 2 == 0) 16 else 32).U)
+          dut.io.drawIn.bits.scissorMaxY.poke(16.U)
+        }
+        if (sent < 5 && dut.io.drawIn.ready.peek().litToBoolean) sent += 1
+        if (sent == 5) dut.io.inputDone.poke(true.B)
+        if (dut.io.drawOut.valid.peek().litToBoolean)
+          seen += ((dut.io.drawOut.bits.scissorMinX.peek().litValue.toInt,
+            dut.io.drawOut.bits.shaderPc.peek().litValue.toInt))
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(cycles < 150)
+      assert(seen.toSeq == Seq((0, 1), (0, 3), (0, 5),
+        (16, 2), (16, 4), (16, 5)))
+    }
+  }
 }

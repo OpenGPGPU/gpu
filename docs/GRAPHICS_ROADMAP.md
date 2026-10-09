@@ -233,10 +233,12 @@ across draws begins with opt-in `--tile-binning`, used alongside
 `--tile-size 16 --tile-attachments`. It buffers eight ordered inline triangle
 commands at a time and replays each group tile by tile. A tile stays resident
 across the group's draws and is flushed between groups. Command lists can
-exceed eight draws. Each replay tests scissor and conservative clip-space
-triangle bounds against the tile before sending a draw. The scheduler still
-checks every draw/tile pair; compact per-tile lists and vertex-core commands
-are future work. Fragment-core shading and 1x/2x/4x samples are supported.
+exceed eight draws. A bin-building pass tests scissor and conservative
+clip-space triangle bounds for every draw/tile pair, recording an ordered
+eight-bit membership mask per tile. Replay visits only members of each mask.
+The masks use one byte per tile; bin construction still scales with the number
+of draw/tile pairs. Vertex-core commands are future work. Fragment-core shading
+and 1x/2x/4x samples are supported.
 The opt-in schedule assumes draws do not read the render target being written
 or depend on cross-pixel shader side effects within a command list.
 
