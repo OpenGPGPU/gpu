@@ -56,7 +56,31 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
   private val minY = Mux(originalMinY > tileY, originalMinY, tileY)
   private val maxX = Mux(originalMaxX < tileMaxX, originalMaxX, tileMaxX)
   private val maxY = Mux(originalMaxY < tileMaxY, originalMaxY, tileMaxY)
-  private val intersects = minX < maxX && minY < maxY
+  private val scissorIntersects = minX < maxX && minY < maxY
+
+  // Reject a tile only when all three clip-space vertices are strictly on
+  // one side of an expanded tile boundary. Keep a one-pixel margin for MSAA
+  // sample offsets and rasterizer rounding. A non-positive w falls back to
+  // replay, since clipping may create vertices on the visible side.
+  private val loX = Mux(tileX === 0.U, 0.U, tileX - 1.U)
+  private val loY = Mux(tileY === 0.U, 0.U, tileY - 1.U)
+  private val hiX = tileMaxX +& 1.U
+  private val hiY = tileMaxY +& 1.U
+  private def outsideAxis(xAxis: Boolean, lo: UInt, hi: UInt): Bool = {
+    val comparisons = selected.clip.map { v =>
+      val position = if (xAxis) v.x else v.y
+      val dimension = if (xAxis) config.screenWidth else config.screenHeight
+      val numerator = (position +& v.w) * dimension.S
+      (numerator < ((v.w * lo.zext) << 1),
+        numerator > ((v.w * hi.zext) << 1))
+    }
+    comparisons.map(_._1).reduce(_ && _) ||
+      comparisons.map(_._2).reduce(_ && _)
+  }
+  private val positiveW = selected.clip.map(_.w > 0.S).reduce(_ && _)
+  private val outsideGeometry = positiveW &&
+    (outsideAxis(true, loX, hiX) || outsideAxis(false, loY, hiY))
+  private val intersects = scissorIntersects && !outsideGeometry
 
   io.drawIn.ready := state === collect && count < capacity.U && !io.start
   io.drawOut.valid := state === send && intersects && !io.start

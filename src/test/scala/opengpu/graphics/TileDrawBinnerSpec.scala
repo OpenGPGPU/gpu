@@ -95,4 +95,47 @@ class TileDrawBinnerSpec extends AnyFlatSpec {
       assert(passEnds == 2)
     }
   }
+
+  it should "skip tiles outside conservative clip-space triangle bounds" in {
+    val cfg = GraphicsConfig(screenWidth = 32, screenHeight = 16,
+      tileSize = 16, tileAttachments = true, tileBinning = true)
+    simulate(new TileDrawBinner(cfg)) { dut =>
+      dut.reset.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+      dut.io.drawIn.valid.poke(false.B)
+      dut.io.drawOut.ready.poke(true.B)
+      dut.io.renderDrained.poke(true.B)
+      dut.io.passDone.poke(true.B)
+      dut.io.inputDone.poke(false.B)
+      dut.io.start.poke(true.B)
+      dut.clock.step()
+      dut.io.start.poke(false.B)
+
+      val xs = Seq(Seq(-65536, -32768, -13107), Seq(13107, 65536, 32768))
+      var sent = 0
+      val seen = scala.collection.mutable.ArrayBuffer.empty[(Int, Int)]
+      var cycles = 0
+      while (!dut.io.done.peek().litToBoolean && cycles < 100) {
+        dut.io.drawIn.valid.poke((sent < 2).B)
+        dut.io.drawIn.bits.poke(0.U.asTypeOf(new SceneTriangle(cfg)))
+        if (sent < 2) {
+          dut.io.drawIn.bits.shaderPc.poke((sent + 1).U)
+          for (i <- 0 until 3) {
+            dut.io.drawIn.bits.clip(i).x.poke(xs(sent)(i).S)
+            dut.io.drawIn.bits.clip(i).w.poke(65536.S)
+          }
+        }
+        if (sent < 2 && dut.io.drawIn.ready.peek().litToBoolean) sent += 1
+        if (sent == 2) dut.io.inputDone.poke(true.B)
+        if (dut.io.drawOut.valid.peek().litToBoolean)
+          seen += ((dut.io.drawOut.bits.shaderPc.peek().litValue.toInt,
+            dut.io.drawOut.bits.scissorMinX.peek().litValue.toInt))
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(cycles < 100)
+      assert(seen.toSeq == Seq((1, 0), (2, 16)))
+    }
+  }
 }
