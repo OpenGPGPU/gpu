@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the 640x480 FlashSim GPU, stage the GLES driver, and prove GTK ellipse
-# coverage in a fresh Debian guest. Intended for a persistent CI runner with
-# ARTI, FlashSim, Mesa 22.3.6, and cross libdrm installed (see docs/GTK_CI.md).
+# coverage in a fresh Debian guest. The hosted CI job prepares Mesa and cross
+# libraries before invoking this script (see docs/GTK_CI.md).
 set -euo pipefail
 
 GPU_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -41,21 +41,8 @@ done
 # Meson needs the current runner's prefix; the checked-in cross file contains
 # a developer-specific pkg_config_libdir and cannot be used verbatim in CI.
 CROSS="$CI_WORK/aarch64-linux-gnu-cross.txt"
-python3 - "$GPU_DIR/scripts/aarch64-linux-gnu-cross.txt" "$CROSS" "$PREFIX" <<'PY'
-from pathlib import Path
-import sys
-
-template = Path(sys.argv[1]).read_text()
-lines = template.splitlines()
-found = False
-for index, line in enumerate(lines):
-    if line.strip().startswith('pkg_config_libdir'):
-        lines[index] = f"pkg_config_libdir = ['{sys.argv[3]}/lib/pkgconfig']"
-        found = True
-if not found:
-    raise SystemExit('pkg_config_libdir missing from cross file')
-Path(sys.argv[2]).write_text('\n'.join(lines) + '\n')
-PY
+python3 "$GPU_DIR/scripts/ci_aarch64_cross.py" \
+    "$GPU_DIR/scripts/aarch64-linux-gnu-cross.txt" "$CROSS" "$PREFIX"
 
 if [ "${CI_GTK_SKIP_BUILD:-0}" != 1 ]; then
     echo '=== Build FlashSim ARTI GPU ==='
@@ -66,7 +53,8 @@ if [ "${CI_GTK_SKIP_BUILD:-0}" != 1 ]; then
 
     echo '=== Build and stage guest GLES driver ==='
     PREFIX="$PREFIX" MESA_SRC="$MESA_SRC" MESA_BUILD="$MESA_BUILD" \
-        CROSS="$CROSS" DRIVER_OUTPUT="$DRIVER_OUTPUT" \
+        CROSS="$CROSS" CROSS_GCC="$GPU_DIR/scripts/ci_aarch64_gcc.sh" \
+        DRIVER_OUTPUT="$DRIVER_OUTPUT" \
         INTEGRATION_CONFIG="$INTEGRATION_CONFIG" \
         "$GPU_DIR/scripts/build_mesa_opengpu.sh"
 fi
