@@ -139,7 +139,7 @@ class RenderPipeline(
   private val shader = Module(new RasterShader(config, quadMode = fragCore || vertCore))
   private val om = Module(new OutputMerger(config))
   private val tileStoreOpt = if (config.tileAttachments)
-    Some(Module(new TileAttachmentStore)) else None
+    Some(Module(new TileAttachmentStore(config.maxSampleCount))) else None
   private val tilePermit = tileStoreOpt.map(_.io.permit).getOrElse(true.B)
   private val tileDrained = tileStoreOpt.map(_.io.drained).getOrElse(true.B)
   private val upstreamDone = Wire(Bool())

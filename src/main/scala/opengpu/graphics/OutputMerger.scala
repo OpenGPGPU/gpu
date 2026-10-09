@@ -101,7 +101,7 @@ class OutputMerger(
       val resp = Flipped(Decoupled(new OmMemoryResponse))
     }
     /** Sideband for the selected request, used by the optional 16x16 store. */
-    val tileWordIndex = Output(UInt(8.W))
+    val tileWordIndex = Output(UInt(10.W))
     val tileDepthPlane = Output(Bool())
     val colorBase = Input(UInt(32.W))
     val depthBase = Input(UInt(32.W))
@@ -150,7 +150,7 @@ class OutputMerger(
     val state = UInt(3.W)
     val colorAddr = UInt(32.W)
     val depthAddr = UInt(32.W)
-    val tileWordIndex = UInt(8.W)
+    val tileWordIndex = UInt(10.W)
     val color = UInt(32.W)
     val depth = UInt(32.W)
     val depthTestEnable = Bool()
@@ -362,7 +362,9 @@ class OutputMerger(
           Mux(io.blendEnable || io.blendCfgEnable, sReadColor, sWriteColor))
         e.colorAddr := newColorAddr
         e.depthAddr := newDepthAddr
-        e.tileWordIndex := Cat(io.fragIn.bits.y(3, 0), io.fragIn.bits.x(3, 0))
+        e.tileWordIndex := ((Cat(io.fragIn.bits.y(3, 0),
+          io.fragIn.bits.x(3, 0)) << io.sampleMode) +
+          io.fragIn.bits.sampleIndex)(9, 0)
         e.color := io.fragIn.bits.color
         e.depth := io.fragIn.bits.depth
         e.depthTestEnable := io.depthTestEnable

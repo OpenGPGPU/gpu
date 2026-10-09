@@ -8,7 +8,8 @@ class TileAttachmentStoreSpec extends AnyFlatSpec {
   behavior of "TileAttachmentStore"
 
   it should "reuse loaded words and store only dirty words before changing tiles" in {
-    simulate(new TileAttachmentStore) { dut =>
+    for (capacity <- Seq(1, 2, 4)) {
+      simulate(new TileAttachmentStore(capacity)) { dut =>
       dut.reset.poke(true.B)
       dut.clock.step()
       dut.reset.poke(false.B)
@@ -116,6 +117,7 @@ class TileAttachmentStoreSpec extends AnyFlatSpec {
       dut.clock.step()
       dut.io.permit.expect(true.B)
       dut.io.drained.expect(true.B)
+      }
     }
   }
 }

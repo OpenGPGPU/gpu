@@ -10,28 +10,29 @@ class TileRenderPipelineSpec extends AnyFlatSpec {
   private def q(v: Double): Int = (v * (1 << 16)).toInt
 
   private def render(tileSize: Int, attachments: Boolean = false,
-      draws: Int = 1):
+      draws: Int = 1, sampleMode: Int = 0):
       (Seq[Int], Seq[Int], Int) = {
+    val samples = 1 << sampleMode
     val cfg = GraphicsConfig(screenWidth = 32, screenHeight = 32,
-      tileSize = tileSize, maxSampleCount = if (attachments) 1 else 4,
-      tileAttachments = attachments)
+      tileSize = tileSize, tileAttachments = attachments)
     val colorBase = 0x1000
-    val depthBase = 0x2000
+    val depthBase = 0x20000
+    val words = 32 * 32 * samples
     var result = (Seq.empty[Int], Seq.empty[Int], 0)
     simulate(new RenderPipeline(cfg)) { dut =>
-      val mem = Array.fill(1 << 15)(0)
-      for (i <- 0 until 32 * 32) mem(depthBase / 4 + i) = 0x00ffffff
+      val mem = Array.fill(1 << 18)(0)
+      for (i <- 0 until words) mem(depthBase / 4 + i) = 0x00ffffff
       dut.reset.poke(true.B)
       dut.clock.step()
       dut.reset.poke(false.B)
       dut.io.colorBase.poke(colorBase.U)
       dut.io.depthBase.poke(depthBase.U)
-      dut.io.stride.poke(128.U)
+      dut.io.stride.poke((32 * samples * 4).U)
       dut.io.depthTestEnable.poke(true.B)
       dut.io.depthFunc.poke(0.U)
       dut.io.depthWriteEnable.poke(true.B)
       dut.io.cullMode.poke(0.U)
-      dut.io.sampleMode.poke(0.U)
+      dut.io.sampleMode.poke(sampleMode.U)
       dut.io.texEnable.poke(false.B)
       dut.io.texBase.poke(0.U)
       dut.io.texWidth.poke(0.U)
@@ -66,7 +67,7 @@ class TileRenderPipelineSpec extends AnyFlatSpec {
         dut.clock.step()
         dut.io.draw.valid.poke(false.B)
         var cycles = 0
-        while (!dut.io.done.peek().litToBoolean && cycles < 20000) {
+        while (!dut.io.done.peek().litToBoolean && cycles < 80000) {
           while (pending.nonEmpty) responses.enqueue(pending.dequeue())
           if (dut.io.mem.req.valid.peek().litToBoolean) {
             requests += 1
@@ -87,12 +88,12 @@ class TileRenderPipelineSpec extends AnyFlatSpec {
           dut.clock.step()
           cycles += 1
         }
-        assert(cycles < 20000,
+        assert(cycles < 80000,
           s"render pipeline did not drain: requests=$requests pending=${pending.size} responses=${responses.size}")
       }
       result = (
-        (0 until 32 * 32).map(i => mem(colorBase / 4 + i)),
-        (0 until 32 * 32).map(i => mem(depthBase / 4 + i)), requests)
+        (0 until words).map(i => mem(colorBase / 4 + i)),
+        (0 until words).map(i => mem(depthBase / 4 + i)), requests)
     }
     result
   }
@@ -110,5 +111,15 @@ class TileRenderPipelineSpec extends AnyFlatSpec {
     val cached = render(16, attachments = true, draws = 2)
     assert(cached._1 == baseline._1 && cached._2 == baseline._2)
     assert(cached._3 > 0)
+  }
+
+  for (mode <- Seq(1, 2)) {
+    it should s"preserve all ${1 << mode}x sample words with tile attachments" in {
+      val baseline = render(0, sampleMode = mode)
+      val cached = render(16, attachments = true, sampleMode = mode)
+      assert(cached._1 == baseline._1, s"color differs in mode $mode")
+      assert(cached._2 == baseline._2, s"depth differs in mode $mode")
+      assert(cached._1.count(_ != 0) > 100)
+    }
   }
 }

@@ -44,7 +44,6 @@ object EmitGpuHostSystemAxi {
         GraphicsConfig(
           screenWidth = width, screenHeight = height, subPixelBits = 8,
           tileSize = tileSize,
-          maxSampleCount = if (tileAttachments) 1 else 4,
           tileAttachments = tileAttachments),
         GpuConfig(lanes = 4, warps = 2),
         numComputeUnits = computeUnits,
