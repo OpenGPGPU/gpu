@@ -31,13 +31,14 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
     val done = Output(Bool())
   })
 
-  private val Seq(idle, collect, bin, loadTile, captureTile, send,
-    waitDraw, nextTile, finishChunk, complete) = Enum(10)
+  private val Seq(idle, collect, binStart, binScan, loadTile, captureTile,
+    send, waitDraw, nextTile, finishChunk, complete) = Enum(11)
   private val state = RegInit(idle)
   private val draws = Reg(Vec(capacity, new SceneTriangle(config)))
   private val tileMasks = SyncReadMem(tileCount, UInt(capacity.W))
   private val count = RegInit(0.U(log2Ceil(capacity + 1).W))
-  private val scanIndex = RegInit(0.U(log2Ceil(capacity).W))
+  private val scanMask = RegInit(0.U(capacity.W))
+  private val scanIndex = PriorityEncoder(scanMask)
   private val tileIndex = RegInit(0.U(tileIndexWidth.W))
   private val buildMask = RegInit(0.U(capacity.W))
   private val emitMask = RegInit(0.U(capacity.W))
@@ -45,7 +46,7 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
   private val tileX = RegInit(0.U(16.W))
   private val tileY = RegInit(0.U(16.W))
 
-  private val selected = draws(Mux(state === bin, scanIndex, emitIndex))
+  private val selected = draws(Mux(state === binScan, scanIndex, emitIndex))
   private val readMask = tileMasks.read(tileIndex, state === loadTile)
   private val nextTileX = tileX +& 16.U
   private val nextTileY = tileY +& 16.U
@@ -53,6 +54,17 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
     config.screenWidth.U(16.W), nextTileX(15, 0))
   private val tileMaxY = Mux(nextTileY >= config.screenHeight.U,
     config.screenHeight.U(16.W), nextTileY(15, 0))
+  // Cheap scissor checks run in parallel. Most tiles in a small-scissor
+  // chunk can write an empty mask without invoking any geometry comparison.
+  private val candidates = VecInit((0 until capacity).map { i =>
+    val d = draws(i)
+    val x0 = Mux(d.scissorEnable, d.scissorMinX, 0.U(16.W))
+    val y0 = Mux(d.scissorEnable, d.scissorMinY, 0.U(16.W))
+    val x1 = Mux(d.scissorEnable, d.scissorMaxX, config.screenWidth.U(16.W))
+    val y1 = Mux(d.scissorEnable, d.scissorMaxY, config.screenHeight.U(16.W))
+    i.U < count && x0 < tileMaxX && y0 < tileMaxY &&
+      x1 > tileX && y1 > tileY && x0 < x1 && y0 < y1
+  }).asUInt
   private val originalMinX = Mux(selected.scissorEnable,
     selected.scissorMinX, 0.U(16.W))
   private val originalMinY = Mux(selected.scissorEnable,
@@ -92,6 +104,10 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
   private val intersects = scissorIntersects && !outsideGeometry
   private val nextMask = buildMask |
     Mux(intersects, UIntToOH(scanIndex, capacity), 0.U(capacity.W))
+  private val remaining = scanMask & ~UIntToOH(scanIndex, capacity)
+  private val binWrite = WireDefault(false.B)
+  private val binWriteMask = WireDefault(0.U(capacity.W))
+  when(binWrite) { tileMasks.write(tileIndex, binWriteMask) }
 
   io.drawIn.ready := state === collect && count < capacity.U && !io.start
   io.drawOut.valid := state === send && emitMask.orR && !io.start
@@ -104,10 +120,30 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
   io.passEnd := state === finishChunk
   io.done := state === idle || state === complete
 
+  private def advanceBinTile(): Unit = {
+    buildMask := 0.U
+    scanMask := 0.U
+    when(nextTileX < config.screenWidth.U) {
+      tileX := nextTileX(15, 0)
+      tileIndex := tileIndex + 1.U
+      state := binStart
+    }.elsewhen(nextTileY < config.screenHeight.U) {
+      tileX := 0.U
+      tileY := nextTileY(15, 0)
+      tileIndex := tileIndex + 1.U
+      state := binStart
+    }.otherwise {
+      tileX := 0.U
+      tileY := 0.U
+      tileIndex := 0.U
+      state := loadTile
+    }
+  }
+
   when(io.start) {
     state := collect
     count := 0.U
-    scanIndex := 0.U
+    scanMask := 0.U
     tileIndex := 0.U
     buildMask := 0.U
     emitMask := 0.U
@@ -120,47 +156,44 @@ class TileDrawBinner(config: GraphicsConfig) extends Module {
           draws(count(log2Ceil(capacity) - 1, 0)) := io.drawIn.bits
           count := count + 1.U
           when(count === (capacity - 1).U) {
-            scanIndex := 0.U
+            scanMask := 0.U
             tileIndex := 0.U
             buildMask := 0.U
             tileX := 0.U
             tileY := 0.U
-            state := bin
+            state := binStart
           }
         }.elsewhen(io.inputDone) {
           when(count === 0.U) {
             state := complete
           }.otherwise {
-            scanIndex := 0.U
+            scanMask := 0.U
             tileIndex := 0.U
             buildMask := 0.U
             tileX := 0.U
             tileY := 0.U
-            state := bin
+            state := binStart
           }
         }
       }
-      is(bin) {
-        when(scanIndex +& 1.U < count) {
-          buildMask := nextMask
-          scanIndex := scanIndex + 1.U
+      is(binStart) {
+        when(candidates.orR) {
+          scanMask := candidates
+          state := binScan
         }.otherwise {
-          tileMasks.write(tileIndex, nextMask)
-          buildMask := 0.U
-          scanIndex := 0.U
-          when(nextTileX < config.screenWidth.U) {
-            tileX := nextTileX(15, 0)
-            tileIndex := tileIndex + 1.U
-          }.elsewhen(nextTileY < config.screenHeight.U) {
-            tileX := 0.U
-            tileY := nextTileY(15, 0)
-            tileIndex := tileIndex + 1.U
-          }.otherwise {
-            tileX := 0.U
-            tileY := 0.U
-            tileIndex := 0.U
-            state := loadTile
-          }
+          binWrite := true.B
+          binWriteMask := 0.U
+          advanceBinTile()
+        }
+      }
+      is(binScan) {
+        when(remaining.orR) {
+          buildMask := nextMask
+          scanMask := remaining
+        }.otherwise {
+          binWrite := true.B
+          binWriteMask := nextMask
+          advanceBinTile()
         }
       }
       is(loadTile) { state := captureTile }
