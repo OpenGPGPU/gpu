@@ -47,6 +47,10 @@ for f in "$@"; do
           pkgs+=("opengpu.system.*" "opengpu.graphics.*" "opengpu.command.*") ;;
         "$main_root"/config/*|src/main/scala/yunsuan/*)
           full=1 ;;
+        # Vector lane timing is also observable through the backend's
+        # multi-warp ellipse regression, not just the individual ALU specs.
+        "$main_root"/core/vector/*)
+          pkgs+=("opengpu.core.backend.VectorBackendSpec") ;;
         # Every spec drives its design through the shared simulation harness, so
         # a change to it can move any test.
         "$test_root"/testutil/*)

@@ -1,0 +1,64 @@
+name: GTK coverage guest proof
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/gtk_coverage.yml'
+      - 'src/main/scala/opengpu/core/**'
+      - 'src/main/scala/opengpu/graphics/**'
+      - 'src/main/scala/opengpu/config/**'
+      - 'userspace/gallium/**'
+      - 'userspace/examples/gl_gtk_coverage.c'
+      - 'driver/**'
+      - 'scripts/build_arti_debian_display.sh'
+      - 'scripts/build_mesa_opengpu.sh'
+      - 'scripts/ci_gtk_coverage*'
+      - 'scripts/run_arti_debian.sh'
+      - 'scripts/run_arti_gpu.sh'
+
+permissions:
+  contents: read
+
+# The guest proof needs a persistent cross-build workspace and more than the
+# standard hosted runner's 14 GB disk. See docs/GTK_CI.md for runner setup.
+jobs:
+  proof:
+    runs-on: [self-hosted, opengpu-guest]
+    timeout-minutes: 180
+    concurrency:
+      group: gtk-coverage-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: gpu
+          submodules: recursive
+          clean: false  # keep gitignored Mesa and cross-build caches
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: OpenGPGPU/arti
+          ref: 463df439ab19bc7455cf9878f385bd48cfc89073
+          path: arti
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: OpenGPGPU/FlashSim
+          ref: b93a07ff81737173ecfc181f292fec689f71bfb8
+          path: FlashSim
+          persist-credentials: false
+      - name: Build and run the 640x480 guest proof
+        working-directory: gpu
+        run: bash scripts/ci_gtk_coverage.sh
+      - name: Keep guest logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gtk-coverage-guest-logs
+          path: |
+            arti-work/ci-gtk-coverage/*.log
+          if-no-files-found: ignore

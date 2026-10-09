@@ -32,6 +32,9 @@ for path in (
 assert select("src/main/scala/opengpu/config/GpuConfig.scala") == ["ALL"]
 assert select("src/main/scala/yunsuan/fpu/FloatFMA.scala") == ["ALL"]
 assert select("README.md") == ["NONE"]
+vector_selected = select("src/main/scala/opengpu/core/vector/VectorFdivAlu.scala")
+assert "opengpu.core.vector.*" in vector_selected, vector_selected
+assert "opengpu.core.backend.VectorBackendSpec" in vector_selected, vector_selected
 
 # CI shard partition: every Spec belongs to exactly one shard; selection
 # intersects so a graphics-only change only schedules the graphics runner.
@@ -60,5 +63,8 @@ assert json.loads(shard_cmd("shards-json", "opengpu.graphics.*")) == ["graphics"
 graphics_fanout = " ".join(select("src/main/scala/opengpu/graphics/RenderHost.scala"))
 assert "graphics" in json.loads(shard_cmd("shards-json", graphics_fanout))
 assert "system" in json.loads(shard_cmd("shards-json", graphics_fanout))
+assert json.loads(shard_cmd("shards-json", " ".join(vector_selected))) == [
+    "core-b"
+]
 
 print("Integration test selection: PASS")
