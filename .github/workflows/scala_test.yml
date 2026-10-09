@@ -41,7 +41,12 @@ jobs:
         if [ "${{ github.event_name }}" = "pull_request" ]; then
           BASE=$(git merge-base origin/main HEAD)
         else
-          BASE=$(git rev-parse HEAD^)
+          # A push can contain several commits; HEAD^ misses changes in all
+          # but the last one. Compare the whole pushed range instead.
+          BASE='${{ github.event.before }}'
+          if [ "$BASE" = '0000000000000000000000000000000000000000' ]; then
+            BASE=$(git hash-object -t tree /dev/null)
+          fi
         fi
         CHANGED=$(git diff --name-only "$BASE" HEAD)
         echo "Changed files:"

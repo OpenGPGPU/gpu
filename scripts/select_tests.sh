@@ -67,7 +67,11 @@ for f in "$@"; do
       none=0
       full=1
       ;;
-    # docs/, scripts/, timing/, ... do not affect tests
+    .github/workflows/scala_test.yml|scripts/select_tests.sh|scripts/ci_shard_tests.sh)
+      none=0
+      full=1
+      ;;
+    # docs/, other scripts/, timing/, ... do not affect Scala tests
   esac
 done
 
