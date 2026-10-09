@@ -29,6 +29,7 @@ object EmitGpuHostSystemAxi {
     val computeUnits = intOption("--compute-units").getOrElse(1)
     val memoryAxiDataBytes = intOption("--memory-axi-data-bytes").getOrElse(8)
     val tileSize = intOption("--tile-size").getOrElse(0)
+    val tileAttachments = rest.contains("--tile-attachments")
     def isPow2(n: Int): Boolean = n > 0 && (n & (n - 1)) == 0
     require(width >= 16 && height >= 16,
       s"resolution must be at least 16x16, got ${width}x${height}")
@@ -42,7 +43,9 @@ object EmitGpuHostSystemAxi {
       new GpuHostSystemAxi(
         GraphicsConfig(
           screenWidth = width, screenHeight = height, subPixelBits = 8,
-          tileSize = tileSize),
+          tileSize = tileSize,
+          maxSampleCount = if (tileAttachments) 1 else 4,
+          tileAttachments = tileAttachments),
         GpuConfig(lanes = 4, warps = 2),
         numComputeUnits = computeUnits,
         fragCore = fragCore,

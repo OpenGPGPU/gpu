@@ -100,6 +100,9 @@ class OutputMerger(
       val req = Decoupled(new OmMemoryRequest)
       val resp = Flipped(Decoupled(new OmMemoryResponse))
     }
+    /** Sideband for the selected request, used by the optional 16x16 store. */
+    val tileWordIndex = Output(UInt(8.W))
+    val tileDepthPlane = Output(Bool())
     val colorBase = Input(UInt(32.W))
     val depthBase = Input(UInt(32.W))
     val stride = Input(UInt(32.W)) // bytes per row
@@ -147,6 +150,7 @@ class OutputMerger(
     val state = UInt(3.W)
     val colorAddr = UInt(32.W)
     val depthAddr = UInt(32.W)
+    val tileWordIndex = UInt(8.W)
     val color = UInt(32.W)
     val depth = UInt(32.W)
     val depthTestEnable = Bool()
@@ -320,6 +324,9 @@ class OutputMerger(
     granted(i) := portArbiter.io.in(i).fire
   }
   io.mem.req <> portArbiter.io.out
+  io.tileWordIndex := entries(portArbiter.io.chosen).tileWordIndex
+  io.tileDepthPlane := entries(portArbiter.io.chosen).state === sReadDepth ||
+    entries(portArbiter.io.chosen).state === sWriteDepth
   io.mem.resp.ready := true.B
 
   io.wroteColor := VecInit(granted.zip(entries).map { case (g, e) =>
@@ -355,6 +362,7 @@ class OutputMerger(
           Mux(io.blendEnable || io.blendCfgEnable, sReadColor, sWriteColor))
         e.colorAddr := newColorAddr
         e.depthAddr := newDepthAddr
+        e.tileWordIndex := Cat(io.fragIn.bits.y(3, 0), io.fragIn.bits.x(3, 0))
         e.color := io.fragIn.bits.color
         e.depth := io.fragIn.bits.depth
         e.depthTestEnable := io.depthTestEnable

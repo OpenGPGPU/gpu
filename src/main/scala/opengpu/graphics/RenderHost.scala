@@ -355,12 +355,18 @@ class RenderHost(
     wFire && rAddr === RenderHostRegs.BLIT_START.U && io.reg.req.bits.data(0)
   private val stridedStartWrite =
     wFire && rAddr === RenderHostRegs.STRIDED_START.U && io.reg.req.bits.data(0)
+  // DMA clears/copies can address the same attachments. While a tile is
+  // resident, those words are newer than external memory, so serialize these
+  // operations with render jobs in the opt-in tile-store configuration.
+  private val tileDmaAllowed = if (config.tileAttachments)
+    !busy && !renderFetching && !renderLaunch && !renderDonePending
+  else true.B
   fill.io.descriptor.valid := clearStartWrite && dmaOwner === dmaIdle &&
-    !blitStartWrite && !stridedStartWrite
+    !blitStartWrite && !stridedStartWrite && tileDmaAllowed
   blit.io.descriptor.valid := blitStartWrite && dmaOwner === dmaIdle &&
-    !clearStartWrite && !stridedStartWrite
+    !clearStartWrite && !stridedStartWrite && tileDmaAllowed
   strided.io.descriptor.valid := stridedStartWrite && dmaOwner === dmaIdle &&
-    !clearStartWrite && !blitStartWrite
+    !clearStartWrite && !blitStartWrite && tileDmaAllowed
   when(fill.io.descriptor.fire) { dmaOwner := dmaFill }
   when(blit.io.descriptor.fire) { dmaOwner := dmaBlit }
   when(strided.io.descriptor.fire) { dmaOwner := dmaStrided }
@@ -389,11 +395,9 @@ class RenderHost(
       (1 << GpuCapabilities.BlitEngine) |
       (1 << GpuCapabilities.StridedEngine) |
       (if (unifiedCommands) (1 << GpuCapabilities.UnifiedCommands) else 0) |
-      // MSAA is advertised on both backends; the backend is selected by that
-      // backend's own capability bit (FragmentCore here).  A functional claim
-      // only: physical timing closure of the programmable stage is a separate
-      // PPA gate and is not implied by this bit.
-      (1 << GpuCapabilities.Msaa) |
+      // Advertise MSAA only when a mode above 1x is supported. The backend is
+      // selected by FragmentCore, independently of this capability bit.
+      (if (config.maxSampleCount > 1) (1 << GpuCapabilities.Msaa) else 0) |
       (maxSampleMode << GpuCapabilities.MsaaMaxModeShift) |
       (if (unifiedCommands) (1 << GpuCapabilities.UnifiedReset) else 0) |
       (1 << GpuCapabilities.PersistentDepth) |
@@ -605,15 +609,18 @@ class RenderHost(
   // START snapshot was retired.
 
   when(blitStartWrite &&
-      (dmaOwner =/= dmaIdle || clearStartWrite || stridedStartWrite)) {
+      (dmaOwner =/= dmaIdle || clearStartWrite || stridedStartWrite ||
+        !tileDmaAllowed)) {
     error := true.B
   }
   when(clearStartWrite &&
-      (dmaOwner =/= dmaIdle || blitStartWrite || stridedStartWrite)) {
+      (dmaOwner =/= dmaIdle || blitStartWrite || stridedStartWrite ||
+        !tileDmaAllowed)) {
     error := true.B
   }
   when(stridedStartWrite &&
-      (dmaOwner =/= dmaIdle || clearStartWrite || blitStartWrite)) {
+      (dmaOwner =/= dmaIdle || clearStartWrite || blitStartWrite ||
+        !tileDmaAllowed)) {
     error := true.B
   }
   when(blit.io.completion.fire && !blit.io.completion.bits.success) {
@@ -629,7 +636,10 @@ class RenderHost(
   // Unified render command: fetch the 16-word descriptor over the translated
   // command port, then launch from a packed register snapshot.
   renderLaunch := false.B
-  io.renderCommand.ready := !renderFetching && !renderLaunch && !busy && !renderDonePending
+  io.renderCommand.ready := !renderFetching && !renderLaunch && !busy &&
+    !renderDonePending && (if (config.tileAttachments)
+      dmaOwner === dmaIdle && !clearStartWrite && !blitStartWrite &&
+        !stridedStartWrite else true.B)
   when(io.renderCommand.fire) {
     renderFetching := true.B
     memoryFaulted := false.B

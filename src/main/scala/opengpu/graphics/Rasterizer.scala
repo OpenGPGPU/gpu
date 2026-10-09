@@ -19,6 +19,8 @@ case class GraphicsConfig(
   /** Zero keeps scanline order; a power of two scans each tile to completion
     * before moving to the next tile in row-major tile order. */
   tileSize: Int = 0,
+  /** Cache one 16x16 tile of 1x color/depth words between the OM and memory. */
+  tileAttachments: Boolean = false,
   /** Concurrent output-merger RMW slots. Workload baselines showed flat draws
     * are OM-bound with zero address conflicts, so depth hides memory latency
     * rather than same-pixel serialization. Default 16 after measuring 8→16. */
@@ -30,6 +32,8 @@ case class GraphicsConfig(
   require(tileSize == 0 || (tileSize >= 2 && tileSize <= 64 &&
     (tileSize & (tileSize - 1)) == 0),
     "tileSize must be zero or a power of two in [2, 64]")
+  require(!tileAttachments || (tileSize == 16 && maxSampleCount == 1),
+    "tile attachments currently require tileSize=16 and maxSampleCount=1")
   require(omInflight >= 1 && omInflight <= 32,
     "omInflight must be in [1, 32]")
   def coordWidth: Int = 32

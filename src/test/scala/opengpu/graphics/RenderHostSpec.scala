@@ -398,6 +398,15 @@ class RenderHostSpec extends AnyFlatSpec {
 
   it should "advertise MSAA on both backends, selecting the backend by bit 0" in {
     val cfg = GpuConfig(lanes = 4, warps = 2)
+    simulate(new RenderHost(
+      GraphicsConfig(maxSampleCount = 1, tileSize = 16,
+        tileAttachments = true), cfg)) { dut =>
+      dut.io.externalCompletion.poke(false.B)
+      dut.reset.poke(true.B); dut.clock.step(); dut.reset.poke(false.B)
+      val cap = regRead(dut, RenderHostRegs.CAPABILITIES)
+      assert((cap & (1L << GpuCapabilities.Msaa)) == 0L,
+        "the 1x-only tile configuration must not advertise MSAA")
+    }
     for ((fragCore, expected) <- Seq(false -> 0x2a08b8L, true -> 0x2a08b9L)) {
       simulate(new RenderHost(gpuConfig = cfg, fragCore = fragCore)) { dut =>
         dut.io.externalCompletion.poke(false.B)

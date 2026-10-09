@@ -223,8 +223,14 @@ quad in 16x16 tile order, preserving edge planes, coverage masks, scissor,
 MSAA, and backpressure. The default remains scanline order. This is a first
 step toward mobile tile rendering: the output merger still reads and writes
 external color/depth memory, so tile order alone does not reduce framebuffer
-traffic. The next hardware step is tile-local color/depth storage with a
-load/flush boundary, followed by primitive binning across draws.
+traffic. `--tile-size 16 --tile-attachments` additionally enables an
+experimental 1x RGBA8/D24S8 tile store. It fetches words on demand, keeps
+dirty color/depth words on chip, and writes them back at tile/draw boundaries
+before draw completion. This option selects a 1x-only graphics configuration;
+MSAA remains available with the default path. DMA clears/copies and render
+jobs are serialized in this mode because a resident tile is newer than
+external memory. Primitive binning across draws is still needed to keep a
+tile resident for all overlapping triangles.
 
 The functional baseline includes private Sv32 mappings with context-local
 revocation and ASID reuse, failure cleanup across compute/render ioctls,

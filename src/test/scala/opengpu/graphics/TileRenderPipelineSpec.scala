@@ -9,12 +9,15 @@ class TileRenderPipelineSpec extends AnyFlatSpec {
 
   private def q(v: Double): Int = (v * (1 << 16)).toInt
 
-  private def render(tileSize: Int): (Seq[Int], Seq[Int]) = {
+  private def render(tileSize: Int, attachments: Boolean = false,
+      draws: Int = 1):
+      (Seq[Int], Seq[Int], Int) = {
     val cfg = GraphicsConfig(screenWidth = 32, screenHeight = 32,
-      tileSize = tileSize)
+      tileSize = tileSize, maxSampleCount = if (attachments) 1 else 4,
+      tileAttachments = attachments)
     val colorBase = 0x1000
     val depthBase = 0x2000
-    var result = (Seq.empty[Int], Seq.empty[Int])
+    var result = (Seq.empty[Int], Seq.empty[Int], 0)
     simulate(new RenderPipeline(cfg)) { dut =>
       val mem = Array.fill(1 << 15)(0)
       for (i <- 0 until 32 * 32) mem(depthBase / 4 + i) = 0x00ffffff
@@ -48,40 +51,48 @@ class TileRenderPipelineSpec extends AnyFlatSpec {
         draw.clip(i).x.poke(q(vertices(i)._1).S)
         draw.clip(i).y.poke(q(vertices(i)._2).S)
         draw.clip(i).w.poke(q(1.0).S)
-        draw.color(i).r.poke(255.U)
-        draw.depth(i).poke(0x10.S)
       }
-      dut.io.draw.valid.poke(true.B)
-      dut.clock.step()
-      dut.io.draw.valid.poke(false.B)
-
       val pending = scala.collection.mutable.Queue.empty[(Boolean, Int, Long)]
       val responses = scala.collection.mutable.Queue.empty[(Boolean, Int, Long)]
-      var cycles = 0
-      while (!dut.io.done.peek().litToBoolean && cycles < 8000) {
-        while (pending.nonEmpty) responses.enqueue(pending.dequeue())
-        if (dut.io.mem.req.valid.peek().litToBoolean) {
-          val addr = dut.io.mem.req.bits.addr.peek().litValue.toInt
-          val write = dut.io.mem.req.bits.write.peek().litToBoolean
-          val data = dut.io.mem.req.bits.data.peek().litValue.toInt
-          if (write) mem(addr / 4) = data
-          pending.enqueue((write, addr, mem(addr / 4) & 0xffffffffL))
+      var requests = 0
+      for (drawIndex <- 0 until draws) {
+        for (i <- 0 until 3) {
+          draw.color(i).r.poke((if (drawIndex == 0) 255 else 0).U)
+          draw.color(i).g.poke((if (drawIndex == 0) 0 else 255).U)
+          draw.depth(i).poke((if (drawIndex == 0) 0x10 else 0x08).S)
         }
-        if (responses.nonEmpty) {
-          val (write, addr, data) = responses.head
-          dut.io.mem.resp.valid.poke(true.B)
-          dut.io.mem.resp.bits.write.poke(write.B)
-          dut.io.mem.resp.bits.addr.poke(addr.U)
-          dut.io.mem.resp.bits.data.poke(data.U)
-          if (dut.io.mem.resp.ready.peek().litToBoolean) responses.dequeue()
-        } else dut.io.mem.resp.valid.poke(false.B)
+        dut.io.draw.ready.expect(true.B)
+        dut.io.draw.valid.poke(true.B)
         dut.clock.step()
-        cycles += 1
+        dut.io.draw.valid.poke(false.B)
+        var cycles = 0
+        while (!dut.io.done.peek().litToBoolean && cycles < 20000) {
+          while (pending.nonEmpty) responses.enqueue(pending.dequeue())
+          if (dut.io.mem.req.valid.peek().litToBoolean) {
+            requests += 1
+            val addr = dut.io.mem.req.bits.addr.peek().litValue.toInt
+            val write = dut.io.mem.req.bits.write.peek().litToBoolean
+            val data = dut.io.mem.req.bits.data.peek().litValue.toInt
+            if (write) mem(addr / 4) = data
+            pending.enqueue((write, addr, mem(addr / 4) & 0xffffffffL))
+          }
+          if (responses.nonEmpty) {
+            val (write, addr, data) = responses.head
+            dut.io.mem.resp.valid.poke(true.B)
+            dut.io.mem.resp.bits.write.poke(write.B)
+            dut.io.mem.resp.bits.addr.poke(addr.U)
+            dut.io.mem.resp.bits.data.poke(data.U)
+            if (dut.io.mem.resp.ready.peek().litToBoolean) responses.dequeue()
+          } else dut.io.mem.resp.valid.poke(false.B)
+          dut.clock.step()
+          cycles += 1
+        }
+        assert(cycles < 20000,
+          s"render pipeline did not drain: requests=$requests pending=${pending.size} responses=${responses.size}")
       }
-      assert(cycles < 8000, "render pipeline did not drain")
       result = (
         (0 until 32 * 32).map(i => mem(colorBase / 4 + i)),
-        (0 until 32 * 32).map(i => mem(depthBase / 4 + i)))
+        (0 until 32 * 32).map(i => mem(depthBase / 4 + i)), requests)
     }
     result
   }
@@ -89,8 +100,15 @@ class TileRenderPipelineSpec extends AnyFlatSpec {
   it should "preserve the color and depth images across tile boundaries" in {
     val baseline = render(0)
     val tiled = render(16)
-    assert(tiled == baseline)
+    assert(tiled._1 == baseline._1 && tiled._2 == baseline._2)
     assert(tiled._1.count(_ != 0) > 100)
     assert(tiled._1(20 * 32 + 5) != 0) // A covered pixel in a second tile row.
+  }
+
+  it should "preserve the image with on-chip tile attachments" in {
+    val baseline = render(0, draws = 2)
+    val cached = render(16, attachments = true, draws = 2)
+    assert(cached._1 == baseline._1 && cached._2 == baseline._2)
+    assert(cached._3 > 0)
   }
 }

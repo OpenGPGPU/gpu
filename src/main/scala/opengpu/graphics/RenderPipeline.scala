@@ -138,6 +138,11 @@ class RenderPipeline(
   io.shaderFault := false.B
   private val shader = Module(new RasterShader(config, quadMode = fragCore || vertCore))
   private val om = Module(new OutputMerger(config))
+  private val tileStoreOpt = if (config.tileAttachments)
+    Some(Module(new TileAttachmentStore)) else None
+  private val tilePermit = tileStoreOpt.map(_.io.permit).getOrElse(true.B)
+  private val tileDrained = tileStoreOpt.map(_.io.drained).getOrElse(true.B)
+  private val upstreamDone = Wire(Bool())
   private val textured =
     Module(new TexturedFragStage(config, quadUv = fragCore || vertCore))
   private val expander = Module(new SampleExpander(config.maxSampleCount))
@@ -406,8 +411,28 @@ class RenderPipeline(
   // sample expander sit on the fixed-function branch only.
   textured.io.fragIn.bits := shader.io.pixel.bits
 
-  io.mem <> om.io.mem
-  io.performance.omStall := om.io.fragIn.valid && !om.io.fragIn.ready
+  tileStoreOpt match {
+    case Some(store) =>
+      store.io.fragmentValid := expander.io.out.valid
+      store.io.fragmentFire := om.io.fragIn.fire
+      store.io.fragmentX := expander.io.out.bits.x
+      store.io.fragmentY := expander.io.out.bits.y
+      store.io.colorBase := om.io.colorBase
+      store.io.depthBase := om.io.depthBase
+      store.io.stride := om.io.stride
+      store.io.sampleMode := om.io.sampleMode
+      store.io.omDrained := om.io.drained
+      store.io.finish := upstreamDone
+      store.io.wordIndex := om.io.tileWordIndex
+      store.io.depthPlane := om.io.tileDepthPlane
+      store.io.om.req <> om.io.mem.req
+      om.io.mem.resp <> store.io.om.resp
+      io.mem <> store.io.mem
+    case None => io.mem <> om.io.mem
+  }
+  io.done := upstreamDone && tileDrained
+  io.performance.omStall := expander.io.out.valid &&
+    !(om.io.fragIn.ready && tilePermit)
   io.performance.omConflict := om.io.addressConflict
   io.performance.rasterStall := (if (fragCore || vertCore)
     shader.io.quad.valid && !shader.io.quad.ready
@@ -557,7 +582,7 @@ class RenderPipeline(
     // state is carried by the context FIFO and the dual staging slots, and
     // the ordered drawRetire handshake retires contexts in submission order.
     io.draw.ready := triSource.ready && kernelFrag.io.fragIn.ready &&
-      ctxFifo.io.enq.ready &&
+      ctxFifo.io.enq.ready && tileDrained &&
       kernelVert.map(_.io.done).getOrElse(true.B)
     kernelFrag.io.fragIn.valid := shader.io.quad.valid
     kernelFrag.io.fragIn.bits := shader.io.quad.bits
@@ -609,13 +634,13 @@ class RenderPipeline(
     expander.io.in.bits.depths := kfDepths
     kernelFrag.io.out.ready := expander.io.in.ready
 
-    om.io.fragIn.valid := expander.io.out.valid
+    om.io.fragIn.valid := expander.io.out.valid && tilePermit
     om.io.fragIn.bits.x := expander.io.out.bits.x
     om.io.fragIn.bits.y := expander.io.out.bits.y
     om.io.fragIn.bits.color := expander.io.out.bits.color
     om.io.fragIn.bits.depth := expander.io.out.bits.depth
     om.io.fragIn.bits.sampleIndex := expander.io.out.bits.sampleIndex
-    expander.io.out.ready := om.io.fragIn.ready
+    expander.io.out.ready := om.io.fragIn.ready && tilePermit
     textured.io.out.ready := om.io.fragIn.ready
 
     // Pack both staging bridges into translated IDs [0,4): frag owns [0,2),
@@ -705,7 +730,7 @@ class RenderPipeline(
     // Vertex draws also keep the pipeline busy until KernelVertStage returns
     // to idle; otherwise a just-accepted vertex command looks drained before
     // its shader has fetched a single instruction.
-    io.done := !drawHoldValid && shader.io.done && kernelFrag.io.drained &&
+    upstreamDone := !drawHoldValid && shader.io.done && kernelFrag.io.drained &&
       expander.io.drained && om.io.drained && !ctxFifo.io.headValid &&
       kernelVert.map(_.io.done).getOrElse(true.B)
   } else {
@@ -736,7 +761,7 @@ class RenderPipeline(
     // done; admission stays additionally gated on OM slot availability and on
     // the sample expander having emitted its last sample.
     io.draw.ready := triSource.ready && shader.io.draw.ready && shader.io.done &&
-      textured.io.drained && expander.io.drained && om.io.drained
+      textured.io.drained && expander.io.drained && om.io.drained && tileDrained
     // Fragment stream: sampled-and-modulated when texturing is enabled, else
     // straight from the interpolator.  The bypass path keeps disabled draws
     // free of sampler latency and frees its memory port entirely.
@@ -774,13 +799,13 @@ class RenderPipeline(
     expander.io.in.bits.coverageMask := fragCoverage
     expander.io.in.bits.depths := fragDepths
 
-    om.io.fragIn.valid := expander.io.out.valid
+    om.io.fragIn.valid := expander.io.out.valid && tilePermit
     om.io.fragIn.bits.x := expander.io.out.bits.x
     om.io.fragIn.bits.y := expander.io.out.bits.y
     om.io.fragIn.bits.color := expander.io.out.bits.color
     om.io.fragIn.bits.depth := expander.io.out.bits.depth
     om.io.fragIn.bits.sampleIndex := expander.io.out.bits.sampleIndex
-    expander.io.out.ready := om.io.fragIn.ready
+    expander.io.out.ready := om.io.fragIn.ready && tilePermit
     textured.io.out.ready := expander.io.in.ready
     shader.io.pixel.ready := Mux(drawState.texEnable, textured.io.fragIn.ready,
       expander.io.in.ready)
@@ -800,7 +825,7 @@ class RenderPipeline(
     io.kernelGlobalAtomicRequest.bits :=
       0.U.asTypeOf(io.kernelGlobalAtomicRequest.bits)
     io.kernelGlobalAtomicResponse.ready := true.B
-    io.done := !drawHoldValid && shader.io.done && textured.io.drained &&
+    upstreamDone := !drawHoldValid && shader.io.done && textured.io.drained &&
       expander.io.drained && om.io.drained
   }
 }
