@@ -101,6 +101,16 @@ class VectorFmaAluSpec extends AnyFlatSpec {
     assert(data(1) == BigInt("3f800000", 16)) // 1.0
   }
 
+  it should "normalize a difference and keep a negative sign" in {
+    val config = GpuConfig(lanes = 2)
+    val (data, _) = run(config, { bits =>
+      configureFvv(bits, config, "h02", Seq("h3fc00000", "h3f800000"),
+        Seq("h3fa00000", "h40a00000"))
+    })
+    assert(data(0) == BigInt("3e800000", 16)) // 1.5 - 1.25 = 0.25
+    assert(data(1) == BigInt("c0800000", 16)) // 1 - 5 = -4
+  }
+
   it should "execute vfmul per lane" in {
     val config = GpuConfig(lanes = 2)
     val (data, _) = run(config, { bits =>
@@ -109,6 +119,19 @@ class VectorFmaAluSpec extends AnyFlatSpec {
     })
     assert(data(0) == BigInt("40400000", 16)) // 3.0
     assert(data(1) == BigInt("40c00000", 16)) // 6.0
+  }
+
+  it should "square a non-uniform vector per lane" in {
+    val config = GpuConfig(lanes = 4)
+    val (data, _) = run(config, { bits =>
+      configureFvv(bits, config, "h24",
+        Seq("h00000000", "h40800000", "hc0800000", "h41a00000"),
+        Seq("h00000000", "h40800000", "hc0800000", "h41a00000"))
+    })
+    assert(data(0) == BigInt("00000000", 16)) // 0^2
+    assert(data(1) == BigInt("41800000", 16)) // 4^2 = 16
+    assert(data(2) == BigInt("41800000", 16)) // (-4)^2 = 16
+    assert(data(3) == BigInt("43c80000", 16)) // 20^2 = 400
   }
 
   it should "execute all eight fused FMA variants" in {

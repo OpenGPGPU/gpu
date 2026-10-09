@@ -67,10 +67,6 @@ class VectorFmaAlu(config: GpuConfig = GpuConfig()) extends Module {
   private val downstreamReady = allInputsReady && metadata.io.enq.ready
   private val issue = inputValid && downstreamReady
   io.in.ready := (!inputValid || issue) && isSupported
-  when(io.in.fire) {
-    inputValid := true.B
-    inputBits := io.in.bits
-  }
   metadata.io.enq.valid := issue
   metadata.io.enq.bits.warpId := inputBits.warpId
   metadata.io.enq.bits.pc := inputBits.pc
@@ -84,6 +80,13 @@ class VectorFmaAlu(config: GpuConfig = GpuConfig()) extends Module {
   }
   when(issue) {
     inputValid := false.B
+  }
+  // A new request can be accepted in the same cycle the held one issues.
+  // This assignment has to win over the clear above, or the accepted
+  // instruction is dropped and its scoreboard reservation never retires.
+  when(io.in.fire) {
+    inputValid := true.B
+    inputBits := io.in.bits
   }
   private val captureReady = !outputValid || io.out.ready
   private val captureValid = metadata.io.deq.valid && allOutputsValid

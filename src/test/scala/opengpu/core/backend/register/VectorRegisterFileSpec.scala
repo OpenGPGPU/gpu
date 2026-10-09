@@ -63,6 +63,40 @@ class VectorRegisterFileSpec extends AnyFlatSpec {
     }
   }
 
+  it should "forward one write to both ports when they read that register" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new VectorRegisterFile(config)) { dut =>
+      dut.io.read.warpId.poke(0.U)
+      dut.io.read.vs1.poke(6.U)
+      dut.io.read.vs2.poke(6.U)
+      dut.io.read.vs2Odd.poke(7.U)
+      dut.io.read.vd.poke(6.U)
+      dut.io.write.valid.poke(false.B)
+      dut.clock.step()
+
+      val lanes = Seq(
+        BigInt("3f800000", 16), BigInt("40800000", 16),
+        BigInt("c0800000", 16), BigInt("41a00000", 16))
+      dut.io.write.valid.poke(true.B)
+      dut.io.write.bits.warpId.poke(0.U)
+      dut.io.write.bits.vd.poke(6.U)
+      for (lane <- 0 until config.lanes) {
+        dut.io.write.bits.data(lane).poke(lanes(lane).U)
+      }
+      for (lane <- 0 until config.lanes) {
+        dut.io.vs1Data(lane).expect(lanes(lane).U)
+        dut.io.vs2Data(lane).expect(lanes(lane).U)
+        dut.io.oldVdData(lane).expect(lanes(lane).U)
+      }
+      dut.clock.step()
+      dut.io.write.valid.poke(false.B)
+      for (lane <- 0 until config.lanes) {
+        dut.io.vs1Data(lane).expect(lanes(lane).U)
+        dut.io.vs2Data(lane).expect(lanes(lane).U)
+      }
+    }
+  }
+
   it should "take the predicate mask from v0 regardless of the vs1 field" in {
     // The predicate mask is the architectural v0 mask (the low `lanes` bits of
     // v0's lane-0 word, matching the packed layout mask-producing instructions

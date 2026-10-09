@@ -311,4 +311,38 @@ class ExtendedDecoderSpec extends AnyFlatSpec {
       dut.io.vectorOut.valid.expect(false.B)
     }
   }
+
+  it should "decode the guest ellipse multiply and convert words" in {
+    simulate(new FullInstructionDecoder) { dut =>
+      def check(
+          word: String,
+          unit: VectorUnit.Type,
+          vs1: Boolean,
+          vs2: Boolean,
+          float: Boolean = false
+      ): Unit = {
+        dut.io.instruction.poke(s"h$word".U)
+        dut.io.decoded.legal.expect(true.B)
+        dut.io.decoded.executionType.expect(ExecutionType.vector)
+        dut.io.decoded.vector.valid.expect(true.B)
+        dut.io.decoded.vector.unit.expect(unit)
+        dut.io.decoded.vector.readsVs1.expect(vs1.B)
+        dut.io.decoded.vector.readsVs2.expect(vs2.B)
+        dut.io.decoded.vector.readsFloat.expect(float.B)
+        dut.io.decoded.vector.writesVd.expect(true.B)
+      }
+
+      // vfadd.vv v6, v5, v1
+      check("02509357", VectorUnit.floatingPoint, vs1 = true, vs2 = true)
+      // vfmul.vv v2, v5, v5
+      check("92529157", VectorUnit.floatingPoint, vs1 = true, vs2 = true)
+      // vfcvt.x.f.v v5, v6
+      check("4a6092d7", VectorUnit.floatingPoint, vs1 = false, vs2 = true)
+      // vfcvt.f.x.v v5, v5
+      check("4a5192d7", VectorUnit.floatingPoint, vs1 = false, vs2 = true)
+      // vmv.v.v v7, v2 and vmv.v.v v8, v6
+      check("5e0103d7", VectorUnit.alu, vs1 = true, vs2 = false)
+      check("5e030457", VectorUnit.alu, vs1 = true, vs2 = false)
+    }
+  }
 }

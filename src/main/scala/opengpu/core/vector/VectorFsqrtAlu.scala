@@ -39,10 +39,6 @@ class VectorFsqrtAlu(config: GpuConfig = GpuConfig()) extends Module {
   private val downstreamReady = allInputsReady && metadata.io.enq.ready
   private val issue = inputValid && downstreamReady
   io.in.ready := (!inputValid || issue) && isSupported
-  when(io.in.fire) {
-    inputValid := true.B
-    inputBits := io.in.bits
-  }
   metadata.io.enq.valid := issue
   metadata.io.enq.bits.warpId := inputBits.warpId
   metadata.io.enq.bits.pc := inputBits.pc
@@ -56,6 +52,10 @@ class VectorFsqrtAlu(config: GpuConfig = GpuConfig()) extends Module {
   }
   when(issue) {
     inputValid := false.B
+  }
+  when(io.in.fire) {
+    inputValid := true.B
+    inputBits := io.in.bits
   }
   io.out.valid := metadata.io.deq.valid && allOutputsValid
   metadata.io.deq.ready := io.out.ready && allOutputsValid

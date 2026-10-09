@@ -68,7 +68,50 @@ class VectorRegisterManagerSpec extends AnyFlatSpec {
 
       write(3, 0x40)
       dut.io.issue.valid.expect(true.B)
-      dut.io.issue.bits.vs1Data(0).expect(0x40.U)
+      for (lane <- 0 until config.lanes) {
+        dut.io.issue.bits.vs1Data(lane).expect((0x40 + lane).U)
+      }
+    }
+  }
+
+  it should "forward a dependent square to every lane" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new VectorRegisterManager(config)) { dut =>
+      dut.reset.poke(true.B)
+      dut.io.request.valid.poke(false.B)
+      dut.io.issue.ready.poke(true.B)
+      dut.io.writeback.valid.poke(false.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      dut.io.writeback.valid.poke(true.B)
+      dut.io.writeback.bits.warpId.poke(0.U)
+      dut.io.writeback.bits.vd.poke(6.U)
+      for (lane <- 0 until config.lanes) {
+        dut.io.writeback.bits.data(lane).poke((0x100 + lane).U)
+      }
+      dut.clock.step()
+      dut.io.writeback.valid.poke(false.B)
+
+      dut.io.request.valid.poke(true.B)
+      dut.io.request.bits.warpId.poke(0.U)
+      dut.io.request.bits.vs1.poke(6.U)
+      dut.io.request.bits.vs2.poke(6.U)
+      dut.io.request.bits.vd.poke(7.U)
+      dut.io.request.bits.useVs1.poke(true.B)
+      dut.io.request.bits.useVs2.poke(true.B)
+      dut.io.request.bits.useVs2Odd.poke(false.B)
+      dut.io.request.bits.readVd.poke(false.B)
+      dut.io.request.bits.useMask.poke(false.B)
+      dut.io.request.bits.writeVd.poke(true.B)
+      dut.clock.step()
+      dut.io.request.valid.poke(false.B)
+      dut.clock.step()
+      dut.io.issue.valid.expect(true.B)
+      for (lane <- 0 until config.lanes) {
+        dut.io.issue.bits.vs1Data(lane).expect((0x100 + lane).U)
+        dut.io.issue.bits.vs2Data(lane).expect((0x100 + lane).U)
+      }
     }
   }
 }

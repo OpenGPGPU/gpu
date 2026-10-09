@@ -6,6 +6,7 @@
 #include "opengpu_fs_emit.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define OP_MOV 1
@@ -243,6 +244,7 @@ static void kill_src(struct bld *b, const struct fs_insn *in, const struct fs_sr
             b->home[s->index][chan] = -1;
     } else if (s->file == FILE_IN && chan == 0) {
         release(b, b->in_home[0]);
+        b->in_home[0] = -1;
     }
 }
 
@@ -900,6 +902,84 @@ static int src_file(unsigned file, int index, int *out_file, int *out_index)
     return 0;
 }
 
+static const char *fs_op_name(int op)
+{
+    switch (op) {
+    case OP_MOV: return "MOV";
+    case OP_ADD: return "ADD";
+    case OP_MUL: return "MUL";
+    case OP_MAX: return "MAX";
+    case OP_SLT: return "SLT";
+    case OP_SGE: return "SGE";
+    case OP_SEQ: return "SEQ";
+    case OP_DIV: return "DIV";
+    case OP_RSQ: return "RSQ";
+    case OP_RCP: return "RCP";
+    case OP_CMP: return "CMP";
+    case OP_DP2: return "DP2";
+    case OP_DP4: return "DP4";
+    case OP_MAD: return "MAD";
+    default: return "?";
+    }
+}
+
+static char fs_file_name(int file)
+{
+    switch (file) {
+    case FILE_TEMP: return 'T';
+    case FILE_CONST: return 'C';
+    case FILE_IMM: return 'I';
+    case FILE_IN: return 'N';
+    case FILE_OUT: return 'O';
+    default: return '?';
+    }
+}
+
+static void fs_dump(const struct bld *b)
+{
+    static const char chan_name[4] = { 'x', 'y', 'z', 'w' };
+    int i, s, k;
+
+    if (!getenv("OPENGPU_FS_EMIT_DUMP"))
+        return;
+    for (i = 0; i < b->nir; i++) {
+        const struct fs_insn *in = &b->ir[i];
+
+        fprintf(stderr, "ir %d %s %c%d.%c sat=%d comps=%d", i,
+                fs_op_name(in->op), fs_file_name(in->dst_file), in->dst_index,
+                chan_name[in->dst_chan & 3], in->sat, in->comps);
+        for (s = 0; s < in->nsrc; s++) {
+            fprintf(stderr, "  s%d=%c%d[%c", s, fs_file_name(in->src[s].file),
+                    in->src[s].index, in->src[s].neg ? '-' : '+');
+            for (k = 0; k < in->comps; k++)
+                fprintf(stderr, "%c", chan_name[in->comp[s][k] & 3]);
+            fprintf(stderr, "]");
+        }
+        fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "home");
+    for (i = 0; i < MAX_TEMP; i++)
+        for (k = 0; k < 4; k++)
+            if (b->home[i][k] >= 0)
+                fprintf(stderr, " T%d.%c=v%d", i, chan_name[k],
+                        b->home[i][k]);
+    fprintf(stderr, "\nin_home");
+    for (k = 0; k < 4; k++)
+        if (b->in_home[k] >= 0)
+            fprintf(stderr, " %c=v%d", chan_name[k], b->in_home[k]);
+    fprintf(stderr, "\nout_home");
+    for (k = 0; k < 4; k++)
+        if (b->out_home[k] >= 0)
+            fprintf(stderr, " %c=v%d", chan_name[k], b->out_home[k]);
+    fprintf(stderr, "\nused");
+    for (k = 0; k < 32; k++)
+        if (b->used[k])
+            fprintf(stderr, " v%d", k);
+    fprintf(stderr, "\n");
+    for (i = 0; i < b->n; i++)
+        fprintf(stderr, "w %03d %08x\n", i, b->code[i]);
+}
+
 int opengpu_fs_emit(const void *tokens, struct opengpu_fs_alu *out)
 {
     struct tgsi_parse_context parse;
@@ -1080,6 +1160,12 @@ int opengpu_fs_emit(const void *tokens, struct opengpu_fs_alu *out)
         return -1;
     }
     fprintf(stderr, "opengpu: fragment ALU %d instructions\n", bld.n);
+    fs_dump(&bld);
+    if (getenv("OPENGPU_FS_EMIT_DUMP")) {
+        fprintf(stderr, "nconst %d nimm %d\n", nconst, nimm);
+        for (i = 0; i < nimm; i++)
+            fprintf(stderr, "imm %d %.9g\n", i, imm[i]);
+    }
     memcpy(out->code, bld.code, (unsigned)bld.n * 4u);
     out->words = (unsigned)bld.n;
     out->nconst = (unsigned)nconst;

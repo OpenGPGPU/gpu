@@ -1,10 +1,63 @@
 package opengpu.core.backend
 
 import chisel3._
+import chisel3.util._
 import opengpu.config.GpuConfig
-import opengpu.core.frontend.decode.VectorUnit
+import opengpu.core.backend.register.{ScalarRegisterWrite, VectorRegisterWrite}
+import opengpu.core.frontend.decode.{DecodePipe, DecodeRequest, VectorUnit}
 import opengpu.testutil.GpuSim._
 import org.scalatest.flatspec.AnyFlatSpec
+
+/** DecodePipe plus VectorBackend, with the core's unused ports tied off. */
+private class DecodedVectorBackend(config: GpuConfig) extends Module {
+  val decode = Module(new DecodePipe(config))
+  val backend = Module(new VectorBackend(config))
+  val io = IO(new Bundle {
+    val fetch = Flipped(Decoupled(new DecodeRequest(config)))
+    val scalarRs1Data = Input(UInt(config.xLen.W))
+    val scalarRs2Data = Input(UInt(config.xLen.W))
+    val scalarFpData = Input(UInt(32.W))
+    val scalarFpReadRs1 = Output(UInt(5.W))
+    val scalarFpBusy = Input(Vec(config.warps, UInt(32.W)))
+    val initialize = Flipped(Decoupled(new VectorRegisterWrite(config)))
+    val scalarWriteback = Decoupled(new ScalarRegisterWrite(config))
+    val committedVectorWriteback = Output(Valid(new VectorRegisterWrite(config)))
+  })
+
+  decode.io.in <> io.fetch
+  decode.io.scalarOut.ready := true.B
+  decode.io.fpuOut.ready := true.B
+  backend.io.in <> decode.io.vectorOut
+  backend.io.scalarRs1Data := io.scalarRs1Data
+  backend.io.scalarRs2Data := io.scalarRs2Data
+  backend.io.scalarFpData := io.scalarFpData
+  io.scalarFpReadRs1 := backend.io.scalarFpRead.rs1
+  backend.io.scalarFpBusy := io.scalarFpBusy
+  backend.io.initialize.valid := io.initialize.valid
+  backend.io.initialize.bits := io.initialize.bits
+  io.initialize.ready := backend.io.initialize.ready
+  io.scalarWriteback <> backend.io.scalarWriteback
+  io.committedVectorWriteback := backend.io.committedVectorWriteback
+
+  backend.io.scalarFlagsWrite.valid := false.B
+  backend.io.scalarFlagsWrite.bits := 0.U.asTypeOf(backend.io.scalarFlagsWrite.bits)
+  backend.io.shaderCsrWrite.valid := false.B
+  backend.io.shaderCsrWrite.bits := 0.U.asTypeOf(backend.io.shaderCsrWrite.bits)
+  backend.io.clearWarp.valid := false.B
+  backend.io.clearWarp.bits := 0.U
+  backend.io.scalarReserve.ready := true.B
+  backend.io.fpReserve.ready := true.B
+  backend.io.fpWriteback.ready := true.B
+  backend.io.redirect.ready := true.B
+  backend.io.memoryRequest.ready := true.B
+  backend.io.memoryResponse.valid := false.B
+  backend.io.memoryResponse.bits := 0.U.asTypeOf(backend.io.memoryResponse.bits)
+  backend.io.memoryFault.ready := true.B
+  backend.io.unimplemented.ready := true.B
+  backend.io.texSample.ready := true.B
+  backend.io.texCommit.valid := false.B
+  backend.io.texCommit.bits := 0.U.asTypeOf(backend.io.texCommit.bits)
+}
 
 class VectorBackendSpec extends AnyFlatSpec {
   behavior of "VectorBackend"
@@ -1264,6 +1317,461 @@ class VectorBackendSpec extends AnyFlatSpec {
           .expect(BigInt("40e00000", 16).U)
       }
       dut.io.committedVectorFlags.valid.expect(true.B)
+    }
+  }
+
+  it should "round-trip a dependent sum through vfcvt even if it reuses a source" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new VectorBackend(config)) { dut =>
+      dut.reset.poke(true.B)
+      dut.io.in.valid.poke(false.B)
+      dut.io.scalarRs1Data.poke(4.U)
+      dut.io.scalarRs2Data.poke(0.U)
+      dut.io.scalarFpData.poke(0.U)
+      for (warp <- 0 until config.warps) {
+        dut.io.scalarFpBusy(warp).poke(0.U)
+      }
+      dut.io.initialize.valid.poke(false.B)
+      dut.io.scalarWriteback.ready.poke(false.B)
+      dut.io.redirect.ready.poke(true.B)
+      dut.io.memoryRequest.ready.poke(true.B)
+      dut.io.memoryResponse.valid.poke(false.B)
+      dut.io.memoryFault.ready.poke(true.B)
+      dut.io.memoryResponse.bits.faultMask.poke(0.U)
+      dut.io.memoryResponse.bits.pageFault.poke(false.B)
+      for (lane <- 0 until config.lanes) {
+        dut.io.memoryResponse.bits.readData(lane).poke(0.U)
+      }
+      dut.io.scalarReserve.ready.poke(true.B)
+      dut.io.unimplemented.ready.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      def initialize(register: Int, values: Seq[BigInt]): Unit = {
+        dut.io.initialize.valid.poke(true.B)
+        dut.io.initialize.bits.warpId.poke(0.U)
+        dut.io.initialize.bits.vd.poke(register.U)
+        for (lane <- 0 until config.lanes) {
+          dut.io.initialize.bits.data(lane).poke(values(lane).U)
+        }
+        var initCycles = 0
+        while (!dut.io.initialize.ready.peek().litToBoolean && initCycles < 8) {
+          dut.clock.step()
+          initCycles += 1
+        }
+        dut.io.initialize.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.initialize.valid.poke(false.B)
+      }
+
+      def issue(instruction: BigInt, funct6: Int, vs1: Boolean): Unit = {
+        dut.io.in.valid.poke(true.B)
+        dut.io.in.bits.instruction.poke(instruction.U)
+        dut.io.in.bits.pc.poke("h1004".U)
+        dut.io.in.bits.warpId.poke(0.U)
+        dut.io.in.bits.activeMask.poke("b1111".U)
+        dut.io.in.bits.decoded.recognized.poke(true.B)
+        dut.io.in.bits.decoded.valid.poke(true.B)
+        dut.io.in.bits.decoded.unit.poke(VectorUnit.floatingPoint)
+        dut.io.in.bits.decoded.funct6.poke(funct6.U)
+        dut.io.in.bits.decoded.operandType.poke("b001".U)
+        dut.io.in.bits.decoded.vm.poke(instruction.testBit(25).B)
+        dut.io.in.bits.decoded.readsVs1.poke(vs1.B)
+        dut.io.in.bits.decoded.readsVs2.poke(true.B)
+        dut.io.in.bits.decoded.readsVs2Pair.poke(false.B)
+        dut.io.in.bits.decoded.readsScalar.poke(false.B)
+        dut.io.in.bits.decoded.readsFloat.poke(false.B)
+        dut.io.in.bits.decoded.writesVd.poke(true.B)
+        dut.io.in.bits.decoded.memoryRead.poke(false.B)
+        dut.io.in.bits.decoded.memoryWrite.poke(false.B)
+        dut.io.in.bits.decoded.configure.poke(false.B)
+        var waited = 0
+        while (!dut.io.in.ready.peek().litToBoolean && waited < 80) {
+          dut.clock.step()
+          waited += 1
+        }
+        assert(dut.io.in.ready.peek().litToBoolean, "issue never accepted")
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+      }
+
+      dut.io.in.valid.poke(true.B)
+      dut.io.in.bits.instruction.poke("h010170d7".U)
+      dut.io.in.bits.pc.poke("h1000".U)
+      dut.io.in.bits.warpId.poke(0.U)
+      dut.io.in.bits.activeMask.poke("b1111".U)
+      dut.io.in.bits.decoded.recognized.poke(true.B)
+      dut.io.in.bits.decoded.valid.poke(true.B)
+      dut.io.in.bits.decoded.unit.poke(VectorUnit.configuration)
+      dut.io.in.bits.decoded.funct6.poke(0.U)
+      dut.io.in.bits.decoded.operandType.poke(7.U)
+      dut.io.in.bits.decoded.vm.poke(false.B)
+      dut.io.in.bits.decoded.configure.poke(true.B)
+      dut.io.in.bits.decoded.writesVd.poke(false.B)
+      dut.io.in.bits.decoded.readsVs1.poke(false.B)
+      dut.io.in.bits.decoded.readsVs2.poke(false.B)
+      dut.io.in.ready.expect(true.B)
+      dut.clock.step()
+      dut.io.in.valid.poke(false.B)
+      var cycles = 0
+      while (!dut.io.scalarWriteback.valid.peek().litToBoolean && cycles < 8) {
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(dut.io.scalarWriteback.valid.peek().litToBoolean)
+      dut.io.scalarWriteback.ready.poke(true.B)
+      dut.clock.step()
+
+      // 0, 4, -4, 20
+      initialize(5, Seq(BigInt(0), BigInt("40800000", 16),
+        BigInt("c0800000", 16), BigInt("41a00000", 16)))
+
+      def opv(f6: Int, vs2: Int, vs1: Int, vd: Int): BigInt =
+        (BigInt(f6) << 26) | (BigInt(1) << 25) | (BigInt(vs2) << 20) |
+          (BigInt(vs1) << 15) | (BigInt(1) << 12) | (BigInt(vd) << 7) | 0x57
+
+      def cvt(vs1Field: Int, vs2: Int, vd: Int): BigInt =
+        (BigInt(0x12) << 26) | (BigInt(1) << 25) | (BigInt(vs2) << 20) |
+          (BigInt(vs1Field) << 15) | (BigInt(1) << 12) | (BigInt(vd) << 7) | 0x57
+
+      // vfadd.vv v6, v5, v5, then convert that sum into v5 (the add's source)
+      // and back. This is the guest probe's write-after-read on v5.
+      issue(opv(0x00, 5, 5, 6), 0x00, vs1 = true)
+      issue(cvt(1, 6, 5), 0x12, vs1 = false)
+      issue(cvt(3, 5, 8), 0x12, vs1 = false)
+
+      val seen = scala.collection.mutable.Map.empty[Int, Seq[BigInt]]
+      cycles = 0
+      while (seen.size < 3 && cycles < 120) {
+        if (dut.io.committedVectorWriteback.valid.peek().litToBoolean) {
+          val vd = dut.io.committedVectorWriteback.bits.vd.peek().litValue.toInt
+          seen(vd) = (0 until config.lanes).map { lane =>
+            dut.io.committedVectorWriteback.bits.data(lane).peek().litValue
+          }
+        }
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(seen.contains(6), s"vfadd never wrote v6, saw $seen")
+      assert(seen.contains(5), "vfcvt.x.f never wrote v5")
+      assert(seen.contains(8), "vfcvt.f.x never wrote v8")
+      val sum = Seq(BigInt(0), BigInt("41000000", 16),
+        BigInt("c1000000", 16), BigInt("42200000", 16))
+      val sumInt = Seq(BigInt(0), BigInt(8),
+        (BigInt(1) << 32) - 8, BigInt(40))
+      for (lane <- 0 until config.lanes) {
+        assert(seen(6)(lane) == sum(lane),
+          s"add lane $lane got ${seen(6)(lane).toString(16)}")
+        assert(seen(5)(lane) == sumInt(lane),
+          s"cvt.x lane $lane got ${seen(5)(lane).toString(16)}")
+        assert(seen(8)(lane) == sum(lane),
+          s"cvt.f lane $lane got ${seen(8)(lane).toString(16)}")
+      }
+    }
+  }
+
+  it should "keep two warps' dependent sums on their own results" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new VectorBackend(config)) { dut =>
+      dut.reset.poke(true.B)
+      dut.io.in.valid.poke(false.B)
+      dut.io.scalarRs1Data.poke(4.U)
+      dut.io.scalarRs2Data.poke(0.U)
+      dut.io.scalarFpData.poke(0.U)
+      for (warp <- 0 until config.warps)
+        dut.io.scalarFpBusy(warp).poke(0.U)
+      dut.io.initialize.valid.poke(false.B)
+      dut.io.scalarWriteback.ready.poke(false.B)
+      dut.io.redirect.ready.poke(true.B)
+      dut.io.memoryRequest.ready.poke(true.B)
+      dut.io.memoryResponse.valid.poke(false.B)
+      dut.io.memoryFault.ready.poke(true.B)
+      dut.io.memoryResponse.bits.faultMask.poke(0.U)
+      dut.io.memoryResponse.bits.pageFault.poke(false.B)
+      for (lane <- 0 until config.lanes)
+        dut.io.memoryResponse.bits.readData(lane).poke(0.U)
+      dut.io.scalarReserve.ready.poke(true.B)
+      dut.io.unimplemented.ready.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      def initialize(warp: Int, register: Int, values: Seq[BigInt]): Unit = {
+        dut.io.initialize.valid.poke(true.B)
+        dut.io.initialize.bits.warpId.poke(warp.U)
+        dut.io.initialize.bits.vd.poke(register.U)
+        for (lane <- 0 until config.lanes)
+          dut.io.initialize.bits.data(lane).poke(values(lane).U)
+        var waited = 0
+        while (!dut.io.initialize.ready.peek().litToBoolean && waited < 16) {
+          dut.clock.step(); waited += 1
+        }
+        dut.io.initialize.ready.expect(true.B)
+        dut.clock.step()
+        dut.io.initialize.valid.poke(false.B)
+      }
+
+      def configure(warp: Int): Unit = {
+        dut.io.in.valid.poke(true.B)
+        dut.io.in.bits.instruction.poke("h010170d7".U)
+        dut.io.in.bits.pc.poke("h1000".U)
+        dut.io.in.bits.warpId.poke(warp.U)
+        dut.io.in.bits.activeMask.poke("b1111".U)
+        dut.io.in.bits.decoded.recognized.poke(true.B)
+        dut.io.in.bits.decoded.valid.poke(true.B)
+        dut.io.in.bits.decoded.unit.poke(VectorUnit.configuration)
+        dut.io.in.bits.decoded.funct6.poke(0.U)
+        dut.io.in.bits.decoded.operandType.poke(7.U)
+        dut.io.in.bits.decoded.vm.poke(false.B)
+        dut.io.in.bits.decoded.nf.poke(0.U)
+        dut.io.in.bits.decoded.mop.poke(0.U)
+        dut.io.in.bits.decoded.elementWidth.poke(7.U)
+        dut.io.in.bits.decoded.configure.poke(true.B)
+        dut.io.in.bits.decoded.writesVd.poke(false.B)
+        dut.io.in.bits.decoded.readsVs1.poke(false.B)
+        dut.io.in.bits.decoded.readsVs2.poke(false.B)
+        var waited = 0
+        while (!dut.io.in.ready.peek().litToBoolean && waited < 40) {
+          dut.clock.step(); waited += 1
+        }
+        assert(dut.io.in.ready.peek().litToBoolean)
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+        waited = 0
+        while (!dut.io.scalarWriteback.valid.peek().litToBoolean && waited < 12) {
+          dut.clock.step(); waited += 1
+        }
+        assert(dut.io.scalarWriteback.valid.peek().litToBoolean)
+        dut.io.scalarWriteback.ready.poke(true.B)
+        dut.clock.step()
+      }
+
+      def opv(f6: Int, vs2: Int, vs1: Int, vd: Int): BigInt =
+        (BigInt(f6) << 26) | (BigInt(1) << 25) | (BigInt(vs2) << 20) |
+          (BigInt(vs1) << 15) | (BigInt(1) << 12) | (BigInt(vd) << 7) | 0x57
+      def cvt(vs1Field: Int, vs2: Int, vd: Int): BigInt =
+        (BigInt(0x12) << 26) | (BigInt(1) << 25) | (BigInt(vs2) << 20) |
+          (BigInt(vs1Field) << 15) | (BigInt(1) << 12) | (BigInt(vd) << 7) | 0x57
+
+      def issue(warp: Int, instruction: BigInt, funct6: Int, vs1: Boolean): Unit = {
+        dut.io.in.valid.poke(true.B)
+        dut.io.in.bits.instruction.poke(instruction.U)
+        dut.io.in.bits.pc.poke("h1004".U)
+        dut.io.in.bits.warpId.poke(warp.U)
+        dut.io.in.bits.activeMask.poke("b1111".U)
+        dut.io.in.bits.decoded.recognized.poke(true.B)
+        dut.io.in.bits.decoded.valid.poke(true.B)
+        dut.io.in.bits.decoded.unit.poke(VectorUnit.floatingPoint)
+        dut.io.in.bits.decoded.funct6.poke(funct6.U)
+        dut.io.in.bits.decoded.operandType.poke("b001".U)
+        dut.io.in.bits.decoded.vm.poke(true.B)
+        dut.io.in.bits.decoded.readsVs1.poke(vs1.B)
+        dut.io.in.bits.decoded.readsVs2.poke(true.B)
+        dut.io.in.bits.decoded.readsVs2Pair.poke(false.B)
+        dut.io.in.bits.decoded.readsScalar.poke(false.B)
+        dut.io.in.bits.decoded.readsFloat.poke(false.B)
+        dut.io.in.bits.decoded.writesVd.poke(true.B)
+        dut.io.in.bits.decoded.memoryRead.poke(false.B)
+        dut.io.in.bits.decoded.memoryWrite.poke(false.B)
+        dut.io.in.bits.decoded.configure.poke(false.B)
+        var waited = 0
+        while (!dut.io.in.ready.peek().litToBoolean && waited < 80) {
+          dut.clock.step(); waited += 1
+        }
+        assert(dut.io.in.ready.peek().litToBoolean, s"warp $warp never accepted")
+        dut.clock.step()
+        dut.io.in.valid.poke(false.B)
+      }
+
+      configure(0)
+      configure(1)
+      // Warp 0 squares to 0, 8, -8, 40. Warp 1 squares to 2, 4, 6, 10.
+      initialize(0, 5, Seq(BigInt(0), BigInt("40800000", 16),
+        BigInt("c0800000", 16), BigInt("41a00000", 16)))
+      initialize(1, 5, Seq(BigInt("3f800000", 16), BigInt("40000000", 16),
+        BigInt("40400000", 16), BigInt("40a00000", 16)))
+
+      issue(0, opv(0x00, 5, 5, 6), 0x00, vs1 = true)
+      issue(1, opv(0x00, 5, 5, 6), 0x00, vs1 = true)
+      issue(0, cvt(1, 6, 5), 0x12, vs1 = false)
+      issue(1, cvt(1, 6, 5), 0x12, vs1 = false)
+      issue(0, cvt(3, 5, 8), 0x12, vs1 = false)
+      issue(1, cvt(3, 5, 8), 0x12, vs1 = false)
+
+      val seen = scala.collection.mutable.Map.empty[(Int, Int), Seq[BigInt]]
+      var cycles = 0
+      while (seen.size < 6 && cycles < 200) {
+        if (dut.io.committedVectorWriteback.valid.peek().litToBoolean) {
+          val warp = dut.io.committedVectorWriteback.bits.warpId.peek().litValue.toInt
+          val vd = dut.io.committedVectorWriteback.bits.vd.peek().litValue.toInt
+          seen((warp, vd)) = (0 until config.lanes).map { lane =>
+            dut.io.committedVectorWriteback.bits.data(lane).peek().litValue
+          }
+        }
+        dut.clock.step()
+        cycles += 1
+      }
+      assert(seen.size == 6, s"missing writebacks: $seen")
+      val sum0 = Seq(BigInt(0), BigInt("41000000", 16),
+        BigInt("c1000000", 16), BigInt("42200000", 16))
+      val sum1 = Seq(BigInt("40000000", 16), BigInt("40800000", 16),
+        BigInt("40c00000", 16), BigInt("41200000", 16))
+      val int0 = Seq(BigInt(0), BigInt(8), (BigInt(1) << 32) - 8, BigInt(40))
+      val int1 = Seq(BigInt(2), BigInt(4), BigInt(6), BigInt(10))
+      for (lane <- 0 until config.lanes) {
+        assert(seen((0, 6))(lane) == sum0(lane), s"warp0 add $lane")
+        assert(seen((1, 6))(lane) == sum1(lane), s"warp1 add $lane")
+        assert(seen((0, 5))(lane) == int0(lane),
+          s"warp0 cvt ${seen((0, 5))(lane).toString(16)}")
+        assert(seen((1, 5))(lane) == int1(lane),
+          s"warp1 cvt ${seen((1, 5))(lane).toString(16)}")
+        assert(seen((0, 8))(lane) == sum0(lane), s"warp0 back $lane")
+        assert(seen((1, 8))(lane) == sum1(lane), s"warp1 back $lane")
+      }
+    }
+  }
+
+  it should "cover the ellipse outside pixel in black and the inside pixel in red" in {
+    val config = GpuConfig(lanes = 4, warps = 2)
+    simulate(new DecodedVectorBackend(config)) { dut =>
+      val fReg = Map(
+        1 -> BigInt("3f800000", 16), // color.r
+        7 -> BigInt("41800000", 16), // radius.x = 16
+        8 -> BigInt("41800000", 16), // radius.y = 16
+        13 -> BigInt(0),             // 0
+        14 -> BigInt("40000000", 16), // 2
+        15 -> BigInt("bf800000", 16), // -1
+        16 -> BigInt("3f000000", 16), // 0.5
+        17 -> BigInt("3f800000", 16)  // 1
+      )
+      val seen = scala.collection.mutable.Map.empty[Int, Seq[BigInt]]
+      val trace = scala.collection.mutable.ListBuffer.empty[(Int, String)]
+      def stepFp(): Unit = {
+        if (dut.io.committedVectorWriteback.valid.peek().litToBoolean) {
+          val vd = dut.io.committedVectorWriteback.bits.vd.peek().litValue.toInt
+          val data = (0 until config.lanes).map { lane =>
+            dut.io.committedVectorWriteback.bits.data(lane).peek().litValue
+          }
+          seen(vd) = data
+          trace += ((vd, data.map(_.toString(16)).mkString(",")))
+        }
+        val rs = dut.io.scalarFpReadRs1.peek().litValue.toInt
+        dut.io.scalarFpData.poke(fReg.getOrElse(rs, BigInt(0)).U)
+        dut.clock.step()
+      }
+
+      dut.reset.poke(true.B)
+      dut.io.fetch.valid.poke(false.B)
+      dut.io.scalarRs1Data.poke(0.U)
+      dut.io.scalarRs2Data.poke(0.U)
+      dut.io.scalarFpData.poke(0.U)
+      for (warp <- 0 until config.warps)
+        dut.io.scalarFpBusy(warp).poke(0.U)
+      dut.io.initialize.valid.poke(false.B)
+      dut.io.scalarWriteback.ready.poke(true.B)
+      dut.clock.step()
+      dut.reset.poke(false.B)
+
+      // vsetivli from the fragment prologue: vl = 4, e32, m1.
+      dut.io.fetch.valid.poke(true.B)
+      dut.io.fetch.bits.instruction.poke("hc1027057".U)
+      dut.io.fetch.bits.pc.poke(0.U)
+      dut.io.fetch.bits.warpId.poke(0.U)
+      dut.io.fetch.bits.activeMask.poke("b1111".U)
+      dut.io.fetch.bits.instructionAccessFault.poke(false.B)
+      var waited = 0
+      while (!dut.io.fetch.ready.peek().litToBoolean && waited < 20) {
+        stepFp(); waited += 1
+      }
+      assert(dut.io.fetch.ready.peek().litToBoolean, "vsetivli not accepted")
+      stepFp()
+      dut.io.fetch.valid.poke(false.B)
+      waited = 0
+      while (!dut.io.scalarWriteback.valid.peek().litToBoolean && waited < 30) {
+        stepFp(); waited += 1
+      }
+      assert(dut.io.scalarWriteback.valid.peek().litToBoolean, "vsetivli did not retire")
+
+      def initialize(register: Int, values: Seq[BigInt]): Unit = {
+        dut.io.initialize.valid.poke(true.B)
+        dut.io.initialize.bits.warpId.poke(0.U)
+        dut.io.initialize.bits.vd.poke(register.U)
+        for (lane <- 0 until config.lanes)
+          dut.io.initialize.bits.data(lane).poke(values(lane).U)
+        var spins = 0
+        while (!dut.io.initialize.ready.peek().litToBoolean && spins < 40) {
+          stepFp(); spins += 1
+        }
+        assert(dut.io.initialize.ready.peek().litToBoolean, s"init v$register")
+        stepFp()
+        dut.io.initialize.valid.poke(false.B)
+      }
+
+      val dx = Seq(
+        BigInt("40800000", 16), // 4, inside
+        BigInt("41a00000", 16), // 20, outside
+        BigInt("41000000", 16), // 8, inside
+        BigInt("c1000000", 16)  // -8, inside
+      )
+      initialize(0, Seq.fill(4)(BigInt(0)))
+      initialize(4, Seq.fill(4)(BigInt(0))) // dy
+      initialize(5, dx)
+      initialize(6, Seq.fill(4)(BigInt(0)))
+      initialize(7, Seq.fill(4)(BigInt(0)))
+      initialize(8, Seq.fill(4)(BigInt(0)))
+      initialize(30, Seq.fill(4)(BigInt(0)))
+      initialize(31, Seq.fill(4)(BigInt("3f800000", 16)))
+
+      // Ellipse body from the reciprocal of the radius through the coverage move.
+      val program = Seq(
+        "h5e03d0d7", "h8618d3d7", "h92539357", "h5e0450d7", "h8618d4d7",
+        "h924493d7", "h5e075157", "h92231257", "h5e075157", "h922394d7",
+        "h5e03d0d7", "h8618d5d7", "h92459557", "h5e0450d7", "h8618d5d7",
+        "h92959257", "h92631157", "h927390d7", "h02209157", "h5e0104d7",
+        "h5e07d0d7", "h02909357", "h92a51157", "h924210d7", "h02209157",
+        "h5e0103d7", "h4e7294d7", "h8698d257", "h8648d4d7", "h926493d7",
+        "h5e085157", "h267390d7", "h02209357", "h1a66d357", "h1268d357",
+        "h7686d057", "h5e06d3d7", "h5c6380d7", "h5e008257"
+      )
+      program.zipWithIndex.foreach { case (word, pc) =>
+        dut.io.fetch.valid.poke(true.B)
+        dut.io.fetch.bits.instruction.poke(s"$word".U)
+        dut.io.fetch.bits.pc.poke((pc + 1).U)
+        dut.io.fetch.bits.warpId.poke(0.U)
+        dut.io.fetch.bits.activeMask.poke("b1111".U)
+        dut.io.fetch.bits.instructionAccessFault.poke(false.B)
+        var spins = 0
+        while (!dut.io.fetch.ready.peek().litToBoolean && spins < 500) {
+          stepFp(); spins += 1
+        }
+        assert(dut.io.fetch.ready.peek().litToBoolean,
+          s"instruction $pc ($word) was not accepted")
+        stepFp()
+        dut.io.fetch.valid.poke(false.B)
+      }
+
+      var quiet = 0
+      var cycles = 0
+      while (quiet < 400 && cycles < 8000) {
+        if (dut.io.committedVectorWriteback.valid.peek().litToBoolean) {
+          val vd = dut.io.committedVectorWriteback.bits.vd.peek().litValue.toInt
+          seen(vd) = (0 until config.lanes).map { lane =>
+            dut.io.committedVectorWriteback.bits.data(lane).peek().litValue
+          }
+          quiet = 0
+        } else quiet += 1
+        stepFp()
+        cycles += 1
+      }
+      assert(seen.contains(4),
+        s"coverage never wrote v4, trace ${trace.takeRight(8)}")
+      val coverage = seen(4)
+      val one = BigInt("3f800000", 16)
+      assert(coverage(0) == one,
+        s"inside dx=4 ${coverage(0).toString(16)} trace ${trace.takeRight(12)}")
+      assert(coverage(1) == 0,
+        s"outside dx=20 ${coverage(1).toString(16)} trace ${trace.takeRight(12)}")
+      assert(coverage(2) == one, s"inside dx=8 ${coverage(2).toString(16)}")
+      assert(coverage(3) == one, s"inside dx=-8 ${coverage(3).toString(16)}")
     }
   }
 }

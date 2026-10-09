@@ -120,6 +120,16 @@ class VectorFcvtAluSpec extends AnyFlatSpec {
     assert(flags == 0)
   }
 
+  it should "convert fragment pixel coordinates without a 2^23 bias" in {
+    val config = GpuConfig(lanes = 2)
+    val (data, flags) = run(config, { bits =>
+      configure(bits, config, 3, Seq("h0000002c", "h000001cc"))
+    })
+    assert(data(0) == BigInt("42300000", 16)) // 44.0
+    assert(data(1) == BigInt("43e60000", 16)) // 460.0
+    assert(flags == 0)
+  }
+
   it should "apply RTZ to the rtz integer-to-FP forms" in {
     val config = GpuConfig(lanes = 2)
     val (unsigned, _) = run(config, { bits =>
