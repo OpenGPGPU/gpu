@@ -21,6 +21,8 @@ case class GraphicsConfig(
   tileSize: Int = 0,
   /** Cache one 16x16 tile of per-sample color/depth words behind the OM. */
   tileAttachments: Boolean = false,
+  /** Replay ordered groups of draw commands in tile order. */
+  tileBinning: Boolean = false,
   /** Concurrent output-merger RMW slots. Workload baselines showed flat draws
     * are OM-bound with zero address conflicts, so depth hides memory latency
     * rather than same-pixel serialization. Default 16 after measuring 8→16. */
@@ -34,6 +36,8 @@ case class GraphicsConfig(
     "tileSize must be zero or a power of two in [2, 64]")
   require(!tileAttachments || tileSize == 16,
     "tile attachments currently require tileSize=16")
+  require(!tileBinning || tileAttachments,
+    "tile binning requires tile attachments")
   require(omInflight >= 1 && omInflight <= 32,
     "omInflight must be in [1, 32]")
   def coordWidth: Int = 32
@@ -638,14 +642,38 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
   when(setupState === stCoeffs) {
     setupState := stSetup
     // Clamp against the JUST-CAPTURED vertices (vHold registered last edge).
-    minX := (if (quadMode) clampPixN(bboxMinXW - bboxPad, config.screenWidth) & "hfffe".U
-      else clampPixN(bboxMinXW - bboxPad, config.screenWidth))
-    minY := (if (quadMode) clampPixN(bboxMinYW - bboxPad, config.screenHeight) & "hfffe".U
-      else clampPixN(bboxMinYW - bboxPad, config.screenHeight))
-    maxX := (if (quadMode) clampPixN(bboxMaxXW + bboxPad, config.screenWidth) & "hfffe".U
-      else clampPixN(bboxMaxXW + bboxPad, config.screenWidth))
-    maxY := (if (quadMode) clampPixN(bboxMaxYW + bboxPad, config.screenHeight) & "hfffe".U
-      else clampPixN(bboxMaxYW + bboxPad, config.screenHeight))
+    val rawMinX = if (quadMode) clampPixN(bboxMinXW - bboxPad,
+      config.screenWidth) & "hfffe".U else
+      clampPixN(bboxMinXW - bboxPad, config.screenWidth)
+    val rawMinY = if (quadMode) clampPixN(bboxMinYW - bboxPad,
+      config.screenHeight) & "hfffe".U else
+      clampPixN(bboxMinYW - bboxPad, config.screenHeight)
+    val rawMaxX = if (quadMode) clampPixN(bboxMaxXW + bboxPad,
+      config.screenWidth) & "hfffe".U else
+      clampPixN(bboxMaxXW + bboxPad, config.screenWidth)
+    val rawMaxY = if (quadMode) clampPixN(bboxMaxYW + bboxPad,
+      config.screenHeight) & "hfffe".U else
+      clampPixN(bboxMaxYW + bboxPad, config.screenHeight)
+    if (config.tileBinning) {
+      // The replay scheduler visits the same draw in every tile. Restrict
+      // setup to that tile's scissor so each replay scans at most one tile.
+      // Quad mode rounds outward to retain helpers around covered lanes.
+      val scMinX = if (quadMode) scissorMinXReg & "hfffe".U else scissorMinXReg
+      val scMinY = if (quadMode) scissorMinYReg & "hfffe".U else scissorMinYReg
+      val scMaxX = if (quadMode) (scissorMaxXReg - 1.U) & "hfffe".U else
+        scissorMaxXReg - 1.U
+      val scMaxY = if (quadMode) (scissorMaxYReg - 1.U) & "hfffe".U else
+        scissorMaxYReg - 1.U
+      minX := Mux(scissorEnableReg && rawMinX < scMinX, scMinX, rawMinX)
+      minY := Mux(scissorEnableReg && rawMinY < scMinY, scMinY, rawMinY)
+      maxX := Mux(scissorEnableReg && rawMaxX > scMaxX, scMaxX, rawMaxX)
+      maxY := Mux(scissorEnableReg && rawMaxY > scMaxY, scMaxY, rawMaxY)
+    } else {
+      minX := rawMinX
+      minY := rawMinY
+      maxX := rawMaxX
+      maxY := rawMaxY
+    }
     coeffReg.a.zipWithIndex.foreach { case (r, i) => r := linesN(i)._1 }
     coeffReg.b.zipWithIndex.foreach { case (r, i) => r := linesN(i)._2 }
     coeffReg.c.zipWithIndex.foreach { case (r, i) => r := linesN(i)._3 }
@@ -683,7 +711,7 @@ class TriangleRasterizer(config: GraphicsConfig, quadMode: Boolean = false) exte
       Mux(cullReg === 0.U, false.B,
         Mux(cullReg === 1.U, signedAreaN < 0.S, signedAreaN >= 0.S))
 
-    when(culledFinal || degenerate) {
+    when(culledFinal || degenerate || minX > maxX || minY > maxY) {
       active := false.B
     }.otherwise {
       active := true.B

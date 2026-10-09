@@ -53,8 +53,12 @@ class RenderCoreSpec extends AnyFlatSpec {
     }
   }
 
-  it should "apply independent per-draw state in one command buffer" in {
-    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+  it should "apply independent per-draw state with and without tile replay" in {
+    val requestCounts = scala.collection.mutable.ArrayBuffer.empty[Int]
+    for (replay <- Seq(false, true)) {
+    val config = GraphicsConfig(screenWidth = 16, screenHeight = 16,
+      subPixelBits = 8, tileSize = if (replay) 16 else 0,
+      tileAttachments = replay, tileBinning = replay)
     val stride = 16 * 4
     val colorBase = 0x8000
     val depthBase = 0x9000
@@ -121,6 +125,7 @@ class RenderCoreSpec extends AnyFlatSpec {
       // output merger keeps several reads in flight).
       val cbQ = scala.collection.mutable.Queue.empty[(Int, Long)]
       val fbQ = scala.collection.mutable.Queue.empty[(Boolean, Int, Long)]
+      var fbRequests = 0
       var guard = 0
       while (!dut.io.done.peek().litToBoolean && guard < 20000) {
         dut.io.cbMem.req.ready.poke(true.B)
@@ -145,6 +150,7 @@ class RenderCoreSpec extends AnyFlatSpec {
         } else dut.io.fbMem.resp.valid.poke(false.B)
         if (fbQ.nonEmpty && dut.io.fbMem.resp.ready.peek().litToBoolean) fbQ.dequeue()
         if (dut.io.fbMem.req.valid.peek().litToBoolean && dut.io.fbMem.req.ready.peek().litToBoolean) {
+          fbRequests += 1
           val a = dut.io.fbMem.req.bits.addr.peek().litValue.toInt
           val write = dut.io.fbMem.req.bits.write.peek().litToBoolean
           val data = dut.io.fbMem.req.bits.data.peek().litValue.toInt
@@ -155,6 +161,7 @@ class RenderCoreSpec extends AnyFlatSpec {
         guard += 1
       }
       assert(guard < 20000, "did not drain")
+      requestCounts += fbRequests
       def rgb(x: Int, y: Int): (Int, Int, Int) = rgbOf(fbMem, colorBase, x, y)
       // The farther red draw reaches blending despite the nearer green depth.
       assert(rgb(5, 5) == (255, 255, 0),
@@ -189,6 +196,9 @@ class RenderCoreSpec extends AnyFlatSpec {
       Files.write(p, ("P6\n16 16\n255\n").getBytes("US-ASCII") ++ px.map(_.toByte))
       System.err.println(s"wrote ${p.toAbsolutePath}")
     }
+    }
+    assert(requestCounts(1) < requestCounts(0),
+      s"tile replay should reduce framebuffer transactions: $requestCounts")
   }
 
   it should "gate a later draw with per-draw stencil state in one command buffer" in {
@@ -530,14 +540,17 @@ class RenderCoreSpec extends AnyFlatSpec {
     }
   }
 
-  it should "render two core-backed draws in one command buffer (fragCore)" in {
+  it should "render two core-backed draws with and without tile replay" in {
+    for (replay <- Seq(false, true)) {
     // The draw-token regression: the second draw's admission must not let its
     // front-end state interleave with the first draw's tail batch, and both
     // draws' OM writes must land.  Draw 0 is green at depth 0x08 (job-level
     // LESS); draw 1 is a larger red triangle at depth 0x10 with a state
     // override (test enable, func = greater-equal, write enable), so its
     // shader-written 0x11 replaces green in the overlap.
-    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16, subPixelBits = 8)
+    val gfx = GraphicsConfig(screenWidth = 16, screenHeight = 16,
+      subPixelBits = 8, tileSize = if (replay) 16 else 0,
+      tileAttachments = replay, tileBinning = replay)
     val cfg = GpuConfig(lanes = 4, warps = 2)
     val stride = 16 * 4
     val colorBase = 0x8000
@@ -725,6 +738,7 @@ class RenderCoreSpec extends AnyFlatSpec {
       // A pixel off the anti-diagonal half-plane is covered by neither draw.
       assert(rgb(14, 3) == (0, 0, 0), s"uncovered (14,3) should be black, got ${rgb(14, 3)}")
       assert(depth(14, 3) == 0x00ffffff, s"uncovered depth (14,3) should be far, got ${depth(14, 3)}")
+    }
     }
   }
 

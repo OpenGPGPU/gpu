@@ -39,6 +39,8 @@ class RenderCore(
   vertCore: Boolean = false,
   graphicsScalarFpu: Boolean = true
 ) extends Module {
+  require(!config.tileBinning || !vertCore,
+    "tile draw replay currently requires inline triangle commands")
   val io = IO(new Bundle {
     val cmdBase = Input(UInt(32.W))
     val cmdCount = Input(UInt(16.W))
@@ -119,7 +121,20 @@ class RenderCore(
   cb.io.mem.req <> io.cbMem.req
   cb.io.mem.resp <> io.cbMem.resp
 
-  cb.io.draw <> rp.io.draw
+  if (config.tileBinning) {
+    val binner = Module(new TileDrawBinner(config))
+    binner.io.start := startDelay
+    cb.io.draw <> binner.io.drawIn
+    binner.io.inputDone := cb.io.done
+    binner.io.drawOut <> rp.io.draw
+    binner.io.renderDrained := rp.io.drawDrained.get
+    binner.io.passDone := rp.io.done
+    rp.io.tilePassEnd.get := binner.io.passEnd
+    io.done := cb.io.done && binner.io.done && rp.io.done
+  } else {
+    cb.io.draw <> rp.io.draw
+    io.done := cb.io.done && rp.io.done
+  }
   rp.io.instructionSatp := io.instructionSatp
   rp.io.instructionTlbFlush := io.instructionTlbFlush
   rp.io.vectorSatp := io.vectorSatp
@@ -166,6 +181,4 @@ class RenderCore(
   io.kernelGlobalAtomicRequest <> rp.io.kernelGlobalAtomicRequest
   rp.io.kernelGlobalAtomicResponse <> io.kernelGlobalAtomicResponse
 
-  // Done once every command has been consumed and the render pipeline is idle.
-  io.done := cb.io.done && rp.io.done
 }

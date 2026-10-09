@@ -229,8 +229,15 @@ dirty color/depth words on chip, and writes them back at tile/draw boundaries
 before draw completion. The store retains one 16x16 tile with up to four
 samples per pixel. DMA clears/copies and render jobs are serialized in this
 mode because a resident tile is newer than external memory. Primitive binning
-across draws is still needed to keep a tile resident for all overlapping
-triangles.
+across draws begins with opt-in `--tile-binning`, used alongside
+`--tile-size 16 --tile-attachments`. It buffers eight ordered inline triangle
+commands at a time and replays each group tile by tile. A tile stays resident
+across the group's draws and is flushed between groups. Command lists can
+exceed eight draws. The current dense replay checks every draw against every
+tile; geometry bounds bins and vertex-core commands are future work. Fragment-core shading
+and 1x/2x/4x samples are supported. The opt-in schedule assumes draws do not
+read the render target being written or depend on cross-pixel shader side
+effects within a command list.
 
 The functional baseline includes private Sv32 mappings with context-local
 revocation and ASID reuse, failure cleanup across compute/render ioctls,

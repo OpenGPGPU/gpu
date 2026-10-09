@@ -30,6 +30,9 @@ object EmitGpuHostSystemAxi {
     val memoryAxiDataBytes = intOption("--memory-axi-data-bytes").getOrElse(8)
     val tileSize = intOption("--tile-size").getOrElse(0)
     val tileAttachments = rest.contains("--tile-attachments")
+    val tileBinning = rest.contains("--tile-binning")
+    require(!tileBinning || !vertCore,
+      "--tile-binning currently requires inline triangle commands")
     def isPow2(n: Int): Boolean = n > 0 && (n & (n - 1)) == 0
     require(width >= 16 && height >= 16,
       s"resolution must be at least 16x16, got ${width}x${height}")
@@ -44,7 +47,8 @@ object EmitGpuHostSystemAxi {
         GraphicsConfig(
           screenWidth = width, screenHeight = height, subPixelBits = 8,
           tileSize = tileSize,
-          tileAttachments = tileAttachments),
+          tileAttachments = tileAttachments,
+          tileBinning = tileBinning),
         GpuConfig(lanes = 4, warps = 2),
         numComputeUnits = computeUnits,
         fragCore = fragCore,
