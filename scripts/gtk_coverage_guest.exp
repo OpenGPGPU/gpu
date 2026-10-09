@@ -1,8 +1,8 @@
 #!/usr/bin/expect -f
 # Execute one command in the disposable Debian guest. Its test password is
-# supplied by ARTI's cloud-init image, so no CI secret is needed.
+# supplied by ARTI's cloud-init image.
 if {[llength $argv] != 3} {
-    puts stderr "usage: ci_gtk_coverage_guest.exp PORT TIMEOUT COMMAND"
+    puts stderr "usage: gtk_coverage_guest.exp PORT TIMEOUT COMMAND"
     exit 2
 }
 set port [lindex $argv 0]

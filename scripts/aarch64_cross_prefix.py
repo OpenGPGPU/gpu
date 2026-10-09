@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 
 if len(sys.argv) != 4:
-    raise SystemExit("usage: ci_aarch64_cross.py TEMPLATE OUTPUT PREFIX")
+    raise SystemExit("usage: aarch64_cross_prefix.py TEMPLATE OUTPUT PREFIX")
 
 lines = Path(sys.argv[1]).read_text().splitlines()
 matches = [i for i, line in enumerate(lines) if line.strip().startswith("pkg_config_libdir")]
