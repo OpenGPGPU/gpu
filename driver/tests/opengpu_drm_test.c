@@ -1565,6 +1565,11 @@ int main(void)
     CHECK(fill_resource(fd, context_id, &compute_kernarg, 0xcafe0001u,
                         syncobjs[4], OPENGPU_COMMAND_EVENT(7, 1)),
           "initialize compute kernarg and signal hardware event");
+    /* The fault hook is global. Ensure the fill has mapped and signalled its
+     * event before arming it, or a slow scheduler may fail the fill instead
+     * of the compute code snapshot and leave the compute waiting forever. */
+    CHECK(wait_syncobjs(fd, &syncobjs[4], 1),
+          "wait compute kernarg initialization before fault injection");
     errno = 0;
     if (submit_compute(fd, context_id, 7, 8, 1, 0, syncobjs[6], 0,
                        OPENGPU_COMMAND_EVENT(7, 1), 0) != -1 ||
