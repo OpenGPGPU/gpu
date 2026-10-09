@@ -114,7 +114,7 @@ class VectorFcvtAlu(config: GpuConfig = GpuConfig()) extends Module {
     lane.io.in.bits.operandB := 0.U
     lane.io.in.bits.operandC := 0.U
     lane.io.in.bits.tag := Cat(inputBits.warpId, inputBits.vd)
-    lane.io.out.ready := metadata.io.deq.valid && captureReady
+    lane.io.out.ready := metadata.io.deq.valid && allOutputsValid && captureReady
     capturedData(index) := Mux(
       metadata.io.deq.bits.enabled(index),
       lane.io.out.bits.result,

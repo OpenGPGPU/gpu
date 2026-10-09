@@ -85,7 +85,9 @@ class VectorFdivAlu(config: GpuConfig = GpuConfig()) extends Module {
     lane.io.in.bits.operandC := 0.U
     lane.io.in.bits.tag := Cat(inputBits.warpId, inputBits.vd)
     lane.io.flush := false.B
-    lane.io.out.ready := metadata.io.deq.valid && captureReady
+    // Lanes can finish at different times (for example, 1 / infinity is fast).
+    // Consume them together so an early result stays available for capture.
+    lane.io.out.ready := metadata.io.deq.valid && allOutputsValid && captureReady
     capturedData(index) := Mux(
       metadata.io.deq.bits.enabled(index),
       lane.io.out.bits.result,

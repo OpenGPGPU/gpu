@@ -128,7 +128,7 @@ class VectorFmaAlu(config: GpuConfig = GpuConfig()) extends Module {
     )
     lane.io.in.bits.tag := Cat(inputBits.warpId, inputBits.vd)
     lane.io.flush := false.B
-    lane.io.out.ready := metadata.io.deq.valid && captureReady
+    lane.io.out.ready := metadata.io.deq.valid && allOutputsValid && captureReady
     capturedData(index) := Mux(
       metadata.io.deq.bits.enabled(index),
       lane.io.out.bits.result,

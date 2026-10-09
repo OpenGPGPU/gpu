@@ -77,6 +77,23 @@ class VectorFdivAluSpec extends AnyFlatSpec {
     assert(data(1) == BigInt("40a00000", 16)) // 5.0
   }
 
+  it should "retain a fast special-case lane until a normal division finishes" in {
+    val config = GpuConfig(lanes = 2)
+    val (data, flags) = run(config, { bits =>
+      bits.warpId.poke(0.U)
+      bits.vd.poke(3.U)
+      bits.activeMask.poke("b11".U)
+      bits.vm.poke(true.B)
+      bits.funct6.poke("h21".U)
+      bits.operandType.poke("b101".U)
+      bits.scalarFpData.poke("h3f800000".U) // 1.0
+      bits.vs2(0).poke("h40000000".U) // normal: 1 / 2
+      bits.vs2(1).poke("h7f800000".U) // fast: 1 / +inf
+    })
+    assert(data == Vector(BigInt("3f000000", 16), BigInt(0)))
+    assert(flags == 0)
+  }
+
   it should "preserve masked-off lanes and report flags" in {
     val config = GpuConfig(lanes = 2)
     val (data, flags) = run(config, { bits =>

@@ -1630,7 +1630,7 @@ class VectorBackendSpec extends AnyFlatSpec {
     }
   }
 
-  it should "cover the ellipse outside pixel in black and the inside pixel in red" in {
+  it should "cover the ellipse center and interior in red and exterior in black" in {
     val config = GpuConfig(lanes = 4, warps = 2)
     simulate(new DecodedVectorBackend(config)) { dut =>
       val fReg = Map(
@@ -1710,7 +1710,7 @@ class VectorBackendSpec extends AnyFlatSpec {
         BigInt("40800000", 16), // 4, inside
         BigInt("41a00000", 16), // 20, outside
         BigInt("41000000", 16), // 8, inside
-        BigInt("c1000000", 16)  // -8, inside
+        BigInt("00000000", 16)  // 0, ellipse center
       )
       initialize(0, Seq.fill(4)(BigInt(0)))
       initialize(4, Seq.fill(4)(BigInt(0))) // dy
@@ -1744,7 +1744,7 @@ class VectorBackendSpec extends AnyFlatSpec {
           stepFp(); spins += 1
         }
         assert(dut.io.fetch.ready.peek().litToBoolean,
-          s"instruction $pc ($word) was not accepted")
+          s"instruction $pc ($word) was not accepted; trace ${trace.takeRight(16)}")
         stepFp()
         dut.io.fetch.valid.poke(false.B)
       }
@@ -1771,7 +1771,7 @@ class VectorBackendSpec extends AnyFlatSpec {
       assert(coverage(1) == 0,
         s"outside dx=20 ${coverage(1).toString(16)} trace ${trace.takeRight(12)}")
       assert(coverage(2) == one, s"inside dx=8 ${coverage(2).toString(16)}")
-      assert(coverage(3) == one, s"inside dx=-8 ${coverage(3).toString(16)}")
+      assert(coverage(3) == one, s"center dx=0 ${coverage(3).toString(16)}")
     }
   }
 }

@@ -68,6 +68,15 @@ class VectorFsqrtAluSpec extends AnyFlatSpec {
     assert(flags == 0)
   }
 
+  it should "retain a zero lane until a normal square root finishes" in {
+    val config = GpuConfig(lanes = 2)
+    val (data, flags) = run(config, { bits =>
+      configure(bits, config, Seq("h40800000", "h00000000"))
+    })
+    assert(data == Vector(BigInt("40000000", 16), BigInt(0)))
+    assert(flags == 0)
+  }
+
   it should "round inexact roots to nearest even and report NX" in {
     val config = GpuConfig(lanes = 2)
     val (data, flags) = run(config, { bits =>

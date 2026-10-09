@@ -82,7 +82,7 @@ class VectorFsqrtAlu(config: GpuConfig = GpuConfig()) extends Module {
     lane.io.in.bits.operandC := 0.U
     lane.io.in.bits.tag := Cat(inputBits.warpId, inputBits.vd)
     lane.io.flush := false.B
-    lane.io.out.ready := metadata.io.deq.valid && io.out.ready
+    lane.io.out.ready := metadata.io.deq.valid && allOutputsValid && io.out.ready
     io.out.bits.data(index) := Mux(
       metadata.io.deq.bits.enabled(index),
       lane.io.out.bits.result,
