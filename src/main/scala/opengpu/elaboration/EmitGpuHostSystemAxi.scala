@@ -5,7 +5,9 @@ import opengpu.config.GpuConfig
 import opengpu.graphics.GraphicsConfig
 import opengpu.system.GpuHostSystemAxi
 
-/** Emits the AXI graphics + compute/DMA shared-L2 integration top. */
+/** Emits the AXI graphics + compute/DMA shared-L2 integration top.
+  * Defaults to the mobile-oriented GPU configuration with four compute CUs.
+  */
 object EmitGpuHostSystemAxi {
   def main(args: Array[String]): Unit = {
     val targetDir = args.headOption.getOrElse("generated/host-system")
@@ -26,7 +28,8 @@ object EmitGpuHostSystemAxi {
 
     val width = intOption("--width").getOrElse(64)
     val height = intOption("--height").getOrElse(64)
-    val computeUnits = intOption("--compute-units").getOrElse(1)
+    val computeUnits = intOption("--compute-units")
+      .getOrElse(GpuConfig.MobileComputeUnits)
     val memoryAxiDataBytes = intOption("--memory-axi-data-bytes").getOrElse(8)
     val tileSize = intOption("--tile-size").getOrElse(0)
     val tileAttachments = rest.contains("--tile-attachments")
@@ -47,7 +50,7 @@ object EmitGpuHostSystemAxi {
           tileSize = tileSize,
           tileAttachments = tileAttachments,
           tileBinning = tileBinning),
-        GpuConfig(lanes = 4, warps = 2),
+        GpuConfig(),
         numComputeUnits = computeUnits,
         fragCore = fragCore,
         vertCore = vertCore,

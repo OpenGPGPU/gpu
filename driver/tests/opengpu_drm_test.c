@@ -1437,7 +1437,7 @@ int main(void)
         perror("OPENGPU USERSPACE DRM FAIL MSAA capabilities");
         return 1;
     }
-    if (frag_core && batch_capacity != 8) {
+    if (frag_core && (batch_capacity < 4 || (batch_capacity & 3u))) {
         errno = EPROTO;
         perror("OPENGPU USERSPACE DRM FAIL fragment batch capacity");
         return 1;

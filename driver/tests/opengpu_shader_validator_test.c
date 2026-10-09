@@ -272,6 +272,16 @@ int main(void)
     uint32_t program[64];
     unsigned int i;
 
+    /* A mobile-sized batch is valid; values beyond the 8-bit ABI field are not. */
+    {
+        const uint32_t cease[] = { OPENGPU_SHADER_CEASE };
+
+        assert(opengpu_shader_validate_words(cease, 1, 9u * 4u * 128u,
+                                             128, false));
+        assert(!opengpu_shader_validate_words(cease, 1, 9u * 4u * 256u,
+                                              256, false));
+    }
+
     assert(opengpu_compute_shader_validate_words(vxrm_valid, 5, 64, 1));
     assert(opengpu_shader_validate_words(vxrm_valid, 5, 288, 8, false));
     assert(opengpu_vertex_shader_validate_words(vxrm_valid, 5, 512, 8, false));

@@ -72,10 +72,10 @@ class GpuSystemSpec extends AnyFlatSpec {
     }
   }
 
-  it should "elaborate two compute units behind tagged dispatch and shared memory" in {
-    val config = GpuConfig(lanes = 4, warps = 2)
-    simulate(new GpuSystem(config, numComputeUnits = 2)) { dut =>
-      initialize(dut, 2)
+  it should "elaborate four compute units behind tagged dispatch and shared memory" in {
+    val config = GpuConfig(lanes = 4, warps = 2, l2Sets = 8, l2Ways = 2)
+    simulate(new GpuSystem(config, numComputeUnits = GpuConfig.MobileComputeUnits)) { dut =>
+      initialize(dut, GpuConfig.MobileComputeUnits)
 
       dut.io.busyComputeUnits.expect(0.U)
       dut.io.command.ready.expect(true.B)
@@ -85,8 +85,8 @@ class GpuSystemSpec extends AnyFlatSpec {
       dut.io.copyEngineBusy.expect(false.B)
       dut.io.fillEngineBusy.expect(false.B)
       dut.io.stridedCopyEngineBusy.expect(false.B)
-      dut.io.activeWarps(0).expect(0.U)
-      dut.io.activeWarps(1).expect(0.U)
+      for (cu <- 0 until GpuConfig.MobileComputeUnits)
+        dut.io.activeWarps(cu).expect(0.U)
     }
   }
 

@@ -5,19 +5,22 @@ import chisel3.util.log2Ceil
 /** Architectural parameters shared by the GPU core.
   *
   * A lane corresponds to one RISC-V thread in a SIMT warp.
+  * The defaults are a compact mobile-oriented configuration: a 16-thread
+  * warp, 128 resident threads per compute unit, and a 64 KiB shared L2.
+  * These are OpenGPU resource choices, not a replica of any vendor GPU.
   */
 case class GpuConfig(
   xLen: Int = 32,
-  lanes: Int = 8,
-  warps: Int = 4,
+  lanes: Int = 16,
+  warps: Int = 8,
   simtStackDepth: Int = 8,
   sharedMemoryBytes: Int = 16 * 1024,
-  sharedMemoryBanks: Int = 8,
+  sharedMemoryBanks: Int = 16,
   sharedMemoryBase: Long = 0x10000000L,
-  l2Sets: Int = 128,
+  l2Sets: Int = 256,
   l2Ways: Int = 4,
-  l2Banks: Int = 2,
-  l2RequestQueueDepth: Int = 2,
+  l2Banks: Int = 4,
+  l2RequestQueueDepth: Int = 4,
   commandQueueDepth: Int = 8,
   completionQueueDepth: Int = 8,
   copyDescriptorQueueDepth: Int = 4,
@@ -59,4 +62,9 @@ case class GpuConfig(
     "the strided-copy descriptor queue must contain at least one entry")
 
   def warpIdWidth: Int = math.max(1, log2Ceil(warps))
+}
+
+object GpuConfig {
+  /** Compute CUs in the mobile-oriented system RTL emitted by default. */
+  val MobileComputeUnits: Int = 4
 }

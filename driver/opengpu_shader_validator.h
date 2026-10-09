@@ -652,7 +652,8 @@ static inline bool opengpu_shader_validate_words_profile(
     bool reachable = true;
     opengpu_shader_u32 i, branch;
 
-    if (!words || !word_count || !batch_capacity || batch_capacity > 64)
+    /* The advertised fragment batch capacity occupies eight ABI bits. */
+    if (!words || !word_count || !batch_capacity || batch_capacity > 255)
         return false;
     stride = 4ull * batch_capacity;
     if (all_kernarg_writable) {

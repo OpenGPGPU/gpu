@@ -2,7 +2,7 @@ package opengpu.system
 
 import chisel3._
 import opengpu.config.GpuConfig
-import opengpu.graphics.{GpuCommandMmioRegs, GraphicsConfig, RenderHostRegs}
+import opengpu.graphics.{GpuCapabilities, GpuCommandMmioRegs, GraphicsConfig, RenderHostRegs}
 import opengpu.testutil.GpuSim._
 import org.scalatest.flatspec.AnyFlatSpec
 
@@ -153,7 +153,8 @@ class GpuHostAxiSpec extends AnyFlatSpec {
   }
 
   it should "program the register file through the AXI4 channels and return SLVERR on bad reads" in {
-    simulate(new GpuHostAxi(deviceId = 0x4755, version = 0x0001)) { dut =>
+    val gpu = GpuConfig()
+    simulate(new GpuHostAxi(gpuConfig = gpu, deviceId = 0x4755, version = 0x0001)) { dut =>
       dut.io.s_axi_aresetn.poke(false.B)
       dut.clock.step()
       dut.io.s_axi_aresetn.poke(true.B)
@@ -161,7 +162,9 @@ class GpuHostAxiSpec extends AnyFlatSpec {
 
       assert(axiRead(dut, RenderHostRegs.ID) == 0x47550001L,
         "device ID must read back through AXI4")
-      assert(axiRead(dut, RenderHostRegs.CAPABILITIES) == 0x2a20b8L,
+      val expectedCapabilities = 0x2a00b8L |
+        ((gpu.warps * gpu.lanes).toLong << GpuCapabilities.FragmentBatchShift)
+      assert(axiRead(dut, RenderHostRegs.CAPABILITIES) == expectedCapabilities,
         "fixed-function builds must advertise the DMA engines, persistent depth and MSAA but not fragment-core execution")
 
       // Unaligned read -> SLVERR.
