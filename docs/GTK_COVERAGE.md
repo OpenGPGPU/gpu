@@ -39,6 +39,21 @@ GPU_TILE_BINNING=1 GTK_PROOF_DESKTOP=1 GTK_PROOF_SKIP_BUILD=1 \
 To compare the complete tile scanout against a prior scanline proof, set
 `GTK_PROOF_SCANOUT_REFERENCE=../arti-work/gtk-coverage-proof/desktop-scanout.ppm`.
 
+To verify scissored GLES drawing in the same 640x480 scanout, use
+`GTK_PROOF_SCISSOR=1`. This runs the scissor demo after the GTK coverage check,
+checks yellow pixels inside the 16x16 scissor and blue pixels outside it, and
+writes `scissor-scanout.ppm`. Compare the complete tile image with a scanline
+reference using:
+
+```sh
+GPU_TILE_BINNING=1 GTK_PROOF_SCISSOR=1 GTK_PROOF_SKIP_BUILD=1 \
+  GTK_PROOF_SCANOUT_REFERENCE=../arti-work/gtk-coverage-proof/scissor-scanout.ppm \
+  bash scripts/run_gtk_coverage_guest.sh
+```
+
+Run the scanline `GTK_PROOF_SCISSOR=1` proof first to create that reference.
+The desktop and scissor options select separate scanout captures.
+
 The script builds the 640x480 GPU model and guest GLES driver, boots a fresh
 Debian disk, loads the driver, and checks the coverage result. Once the model
 and guest driver are already built, use `GTK_PROOF_SKIP_BUILD=1` to rerun just

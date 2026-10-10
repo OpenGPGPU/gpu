@@ -251,7 +251,9 @@ The 640x480 FlashSim Debian proof runs GTK ellipse coverage and the multi-draw
 byte for byte across all 307,200 pixels. Run it with
 `GPU_TILE_BINNING=1 GTK_PROOF_DESKTOP=1 JDK_JAVA_OPTIONS=-Xmx12g bash scripts/run_gtk_coverage_guest.sh`;
 see [GTK_COVERAGE.md](GTK_COVERAGE.md) for the cached-model and reference-image
-options.
+options. The same full-image comparison also passes for the 640x480 GLES
+scissor demo: tile and scanline PPMs have identical SHA-256 hashes. Run that
+case with `GTK_PROOF_SCISSOR=1` and the reference-image option documented there.
 
 The functional baseline includes private Sv32 mappings with context-local
 revocation and ASID reuse, failure cleanup across compute/render ioctls,

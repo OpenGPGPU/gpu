@@ -12,6 +12,12 @@ PREFIX="${PREFIX:-$GPU_DIR/depends/aarch64-root}"
 MESA_SRC="${MESA_SRC:-$GPU_DIR/depends/mesa}"
 MESA_BUILD="${MESA_BUILD:-$GPU_DIR/depends/mesa-build}"
 GPU_TILE_BINNING="${GPU_TILE_BINNING:-0}"
+GTK_PROOF_DESKTOP="${GTK_PROOF_DESKTOP:-0}"
+GTK_PROOF_SCISSOR="${GTK_PROOF_SCISSOR:-0}"
+[ "$GTK_PROOF_DESKTOP" != 1 ] || [ "$GTK_PROOF_SCISSOR" != 1 ] || {
+    echo "choose either GTK_PROOF_DESKTOP or GTK_PROOF_SCISSOR" >&2
+    exit 1
+}
 INTEGRATION_CONFIG="$GPU_DIR/driver/gpu_integration_debian.yaml"
 eval "$(python3 "$GPU_DIR/scripts/gpu_display_config.py" --shell "$INTEGRATION_CONFIG")"
 [ "$GPU_MODE" = 640x480 ] || {
@@ -79,6 +85,10 @@ for artifact in "$DISPLAY_WORK/qemu-arti-build/qemu-system-aarch64" \
                 "$DRIVER_OUTPUT/opengpu_dri.so"; do
     [ -f "$artifact" ] || { echo "missing guest artifact: $artifact" >&2; exit 1; }
 done
+if [ "$GTK_PROOF_SCISSOR" = 1 ]; then
+    artifact="$DRIVER_OUTPUT/opengpu_gl_scissor.bin"
+    [ -f "$artifact" ] || { echo "missing guest artifact: $artifact" >&2; exit 1; }
+fi
 
 BASE="$ARTI_WORK/debian-arm64-base.qcow2"
 [ -f "$BASE" ] || { echo "Debian base image missing at $BASE" >&2; exit 1; }
@@ -104,8 +114,13 @@ LOAD_LOG="$PROOF_WORK/load.log"
 : > "$BOOT_LOG"
 : > "$PROOF_LOG"
 : > "$LOAD_LOG"
-if [ "${GTK_PROOF_DESKTOP:-0}" = 1 ]; then
+if [ "$GTK_PROOF_DESKTOP" = 1 ]; then
     SCANOUT="$PROOF_WORK/desktop-scanout.ppm"
+    SCANOUT_PIXEL=243044
+    rm -f "$SCANOUT"
+elif [ "$GTK_PROOF_SCISSOR" = 1 ]; then
+    SCANOUT="$PROOF_WORK/scissor-scanout.ppm"
+    SCANOUT_PIXEL=ffff00
     rm -f "$SCANOUT"
 fi
 qemu_pid=""
@@ -124,7 +139,7 @@ ARTI_DIR="$ARTI_DIR" ARTI_WORK="$ARTI_WORK" FLASHSIM_DIR="$FLASHSIM_DIR" \
     INTEGRATION_CONFIG="$INTEGRATION_CONFIG" GPU_SIM=flashsim \
     QEMU_DISPLAY=none OPENGPU_AUTO_DISPLAY=0 BUILD_USERSPACE=1 \
     REBUILD_CLOUDINIT=1 CLOUDINIT_PACKAGES=0 \
-    ARTI_DISPLAY_DUMP="${SCANOUT:-}" ARTI_DISPLAY_DUMP_PIXEL=243044 \
+    ARTI_DISPLAY_DUMP="${SCANOUT:-}" ARTI_DISPLAY_DUMP_PIXEL="${SCANOUT_PIXEL:-}" \
     DISK="$DISK" DEBIAN_BASE="$BASE" SSH_PORT="$PORT" SERIAL_LOG="$SERIAL_LOG" \
     "$GPU_DIR/scripts/run_arti_debian.sh" > "$BOOT_LOG" 2>&1 &
 qemu_pid=$!
@@ -155,19 +170,34 @@ grep -qF 'gl_gtk_coverage: mode 640x480 inside=0xff0000ff outside=0x00000000' "$
 grep -qF 'OPENGPU GL GTK COVERAGE PASS' "$PROOF_LOG"
 echo 'GTK coverage guest proof: PASS'
 
-if [ "${GTK_PROOF_DESKTOP:-0}" = 1 ]; then
+if [ "$GTK_PROOF_DESKTOP" = 1 ]; then
     DESKTOP_LOG="$PROOF_WORK/desktop.log"
     echo '=== Check multi-draw desktop and present ==='
     "$GPU_DIR/scripts/gtk_coverage_guest.exp" "$PORT" 1800 \
         '/root/opengpu_pipe_desktop /dev/dri/card0 /root/opengpu_fragment_tint.bin' \
         | tee "$DESKTOP_LOG"
     grep -qF 'OPENGPU DESKTOP PASS: 640x480 ' "$DESKTOP_LOG"
-    python3 - "$SCANOUT" "${GTK_PROOF_SCANOUT_REFERENCE:-}" <<'PY'
+    echo 'Desktop guest proof: PASS'
+elif [ "$GTK_PROOF_SCISSOR" = 1 ]; then
+    SCISSOR_LOG="$PROOF_WORK/scissor.log"
+    echo '=== Check GL scissor draw and present ==='
+    "$GPU_DIR/scripts/gtk_coverage_guest.exp" "$PORT" 1800 \
+        'LD_LIBRARY_PATH=/root LIBGL_DRIVERS_PATH=/root OPENGPU_GL_EXIT=1 /root/opengpu_gl_scissor.bin' \
+        | tee "$SCISSOR_LOG"
+    grep -qF 'OPENGPU GL SCISSOR PASS' "$SCISSOR_LOG"
+    echo 'Scissor guest proof: PASS'
+fi
+
+if [ -n "${SCANOUT:-}" ]; then
+    SCENE=desktop
+    [ "$GTK_PROOF_SCISSOR" != 1 ] || SCENE=scissor
+    python3 - "$SCANOUT" "${GTK_PROOF_SCANOUT_REFERENCE:-}" "$SCENE" <<'PY'
 import pathlib
 import re
 import sys
 
 path = pathlib.Path(sys.argv[1])
+scene = sys.argv[3]
 if not path.is_file():
     sys.exit(f"missing QEMU scanout dump: {path}")
 data = path.read_bytes()
@@ -177,20 +207,29 @@ if header is None or header.groups() != (b"640", b"480"):
 pixels = data[header.end():]
 if len(pixels) != 640 * 480 * 3:
     sys.exit(f"incomplete scanout dump: {path}")
-if pixels[3 * (640 + 1):3 * (640 + 2)] != bytes.fromhex("243044"):
-    sys.exit(f"desktop panel missing from scanout: {path}")
-colors = {pixels[i:i + 3] for i in range(0, len(pixels), 3)}
-for label, color in (("window", "f2efe8"), ("cursor", "ffe14a"),
-                     ("triangle", "ffbf40")):
-    if bytes.fromhex(color) not in colors:
-        sys.exit(f"desktop {label} missing from scanout: {path}")
+def pixel(x, y):
+    index = 3 * (y * 640 + x)
+    return pixels[index:index + 3]
+
+if scene == "desktop":
+    if pixel(1, 1) != bytes.fromhex("243044"):
+        sys.exit(f"desktop panel missing from scanout: {path}")
+    colors = {pixels[i:i + 3] for i in range(0, len(pixels), 3)}
+    for label, color in (("window", "f2efe8"), ("cursor", "ffe14a"),
+                         ("triangle", "ffbf40")):
+        if bytes.fromhex(color) not in colors:
+            sys.exit(f"desktop {label} missing from scanout: {path}")
+elif scene == "scissor":
+    for x, y, color in ((1, 1, "ffff00"), (8, 8, "ffff00"),
+                        (8, 48, "0000ff"), (632, 8, "0000ff")):
+        if pixel(x, y) != bytes.fromhex(color):
+            sys.exit(f"scissor scanout pixel ({x},{y}) differs: {path}")
 if sys.argv[2]:
     reference = pathlib.Path(sys.argv[2])
     if not reference.is_file():
         sys.exit(f"missing scanout reference: {reference}")
     if data != reference.read_bytes():
-        sys.exit(f"desktop scanout differs from {reference}")
-print(f"Desktop scanout proof: PASS ({path})")
+        sys.exit(f"{scene} scanout differs from {reference}")
+print(f"{scene.capitalize()} scanout proof: PASS ({path})")
 PY
-    echo 'Desktop guest proof: PASS'
 fi
