@@ -3,10 +3,13 @@
  */
 #include <gtk/gtk.h>
 #include <epoxy/gl.h>
-#include <math.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 struct AppState {
     GtkWidget *area;
+    GtkWidget *button;
+    gboolean reported;
     gboolean active;
     GLuint program;
     GLuint vbo;
@@ -89,6 +92,8 @@ static void realize(GtkGLArea *area, gpointer data)
     fflush(stdout);
 }
 
+static gboolean automatic_redraw(gpointer data);
+
 static gboolean render(GtkGLArea *area, GdkGLContext *context, gpointer data)
 {
     struct AppState *state = data;
@@ -114,11 +119,30 @@ static gboolean render(GtkGLArea *area, GdkGLContext *context, gpointer data)
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glDisableVertexAttribArray(0);
-    static gboolean reported;
-    if (!reported) {
-        reported = TRUE;
-        g_print("OPENGPU GTK FRAME PASS\n");
+    glFinish();
+    {
+        GLubyte pixel[4] = {0};
+        const int expected[3] = { state->active ? 242 : 51,
+                                  state->active ? 89 : 140, 46 };
+        glReadPixels(gtk_widget_get_allocated_width(GTK_WIDGET(area)) / 2,
+                     gtk_widget_get_allocated_height(GTK_WIDGET(area)) / 2,
+                     1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+        if (glGetError() != GL_NO_ERROR ||
+            abs((int)pixel[0] - expected[0]) > 2 ||
+            abs((int)pixel[1] - expected[1]) > 2 ||
+            abs((int)pixel[2] - expected[2]) > 2) {
+            g_printerr("OPENGPU GTK FRAME ERROR: pixel=%u,%u,%u,%u\n",
+                       pixel[0], pixel[1], pixel[2], pixel[3]);
+            exit(1);
+        }
+        g_print("OPENGPU GTK FRAME PASS: %s pixel=%u,%u,%u,%u\n",
+                state->active ? "active" : "idle",
+                pixel[0], pixel[1], pixel[2], pixel[3]);
         fflush(stdout);
+    }
+    if (!state->reported && getenv("OPENGPU_GTK_AUTOTEST")) {
+        state->reported = TRUE;
+        g_timeout_add_seconds(3, automatic_redraw, state);
     }
     return TRUE;
 }
@@ -134,7 +158,8 @@ static void clicked(GtkButton *button, gpointer data)
 
 static gboolean automatic_redraw(gpointer data)
 {
-    clicked(NULL, data);
+    struct AppState *state = data;
+    g_signal_emit_by_name(state->button, "clicked");
     return G_SOURCE_REMOVE;
 }
 
@@ -159,6 +184,7 @@ static void activate(GtkApplication *application, gpointer data)
     g_signal_connect(state->area, "render", G_CALLBACK(render), state);
     gtk_box_pack_start(GTK_BOX(box), state->area, TRUE, TRUE, 0);
     button = gtk_button_new_with_label("Redraw GPU panel");
+    state->button = button;
     g_signal_connect(button, "clicked", G_CALLBACK(clicked), state);
     gtk_box_pack_start(GTK_BOX(box), button, FALSE, FALSE, 0);
     gtk_container_add(GTK_CONTAINER(window), box);
@@ -174,9 +200,7 @@ static void activate(GtkApplication *application, gpointer data)
     gtk_window_present(GTK_WINDOW(window));
     g_print("OPENGPU GTK PRESENT PASS\n");
     fflush(stdout);
-    /* Keep the unattended guest proof deterministic while retaining the same
-     * callback used by the real button. */
-    g_timeout_add_seconds(3, automatic_redraw, state);
+
 }
 
 int main(int argc, char **argv)

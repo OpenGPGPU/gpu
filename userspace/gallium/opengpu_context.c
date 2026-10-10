@@ -132,6 +132,7 @@ struct opengpu_context {
     unsigned fs_block_n;
     struct pipe_opengpu_resource *packed;
     uint32_t packed_bytes;
+    int64_t fence_timeout_ms;
 };
 
 struct hw_vertex {
@@ -151,28 +152,28 @@ static struct opengpu_context *octx(struct pipe_context *pipe)
  * selects its wait budget per environment so fast hardware tests need not
  * inherit the emulator's long wall-clock allowance. */
 #ifndef OPENGPU_FENCE_TIMEOUT_MS
-#define OPENGPU_FENCE_TIMEOUT_MS 1800000
+#define OPENGPU_FENCE_TIMEOUT_MS 300000
 #endif
 
 static int64_t opengpu_fence_timeout_ms(void)
 {
-    static int64_t timeout = -1;
+    const int64_t timeout = OPENGPU_FENCE_TIMEOUT_MS;
     const char *value;
     char *end;
     unsigned long long parsed;
 
-    if (timeout >= 0)
-        return timeout;
-    timeout = OPENGPU_FENCE_TIMEOUT_MS;
     value = getenv("OPENGPU_FENCE_TIMEOUT_MS");
     if (!value || !*value)
         return timeout;
     errno = 0;
     parsed = strtoull(value, &end, 10);
-    if (errno || end == value || *end || parsed > INT64_MAX)
+    if (errno || value[0] < '0' || value[0] > '9' ||
+        end == value || *end || !parsed || parsed > INT_MAX) {
+        fprintf(stderr, "opengpu: invalid OPENGPU_FENCE_TIMEOUT_MS; using %lld ms\n",
+                (long long)timeout);
         return timeout;
-    timeout = (int64_t)parsed;
-    return timeout;
+    }
+    return (int64_t)parsed;
 }
 
 static void reject(const char *why)
@@ -1571,7 +1572,7 @@ static void clear(struct pipe_context *pipe, unsigned buffers,
 
         if (pipe_opengpu_clear(ctx->gpu, pack_color(rgba), &fence) ||
             pipe_opengpu_fence_finish(ctx->gpu, fence,
-                                      opengpu_fence_timeout_ms()))
+                                      ctx->fence_timeout_ms))
             gpu_failed("colour clear failed");
         pipe_opengpu_fence_reference(&fence, NULL);
     }
@@ -1591,7 +1592,7 @@ static void clear(struct pipe_context *pipe, unsigned buffers,
         if (pipe_opengpu_fill(ctx->gpu, depth_res->gpu, 0, bytes, pattern,
                               &fence) ||
             pipe_opengpu_fence_finish(ctx->gpu, fence,
-                                      opengpu_fence_timeout_ms()))
+                                      ctx->fence_timeout_ms))
             gpu_failed("depth clear failed");
         pipe_opengpu_fence_reference(&fence, NULL);
     }
@@ -2050,7 +2051,7 @@ static void draw_vbo(struct pipe_context *pipe,
             if (pipe_opengpu_invalidate(ctx->gpu, ctx->packed, 0, ctx->packed_bytes,
                                         &fence) ||
                 pipe_opengpu_fence_finish(ctx->gpu, fence,
-                                          opengpu_fence_timeout_ms())) {
+                                          ctx->fence_timeout_ms)) {
                 pipe_opengpu_fence_reference(&fence, NULL);
                 gpu_failed("vertex buffer invalidate failed");
                 return;
@@ -2123,7 +2124,7 @@ static void draw_vbo(struct pipe_context *pipe,
             }
             if (pipe_opengpu_draw_vertex(ctx->gpu, &vdraw, &fence) ||
                 pipe_opengpu_fence_finish(ctx->gpu, fence,
-                                          opengpu_fence_timeout_ms()))
+                                          ctx->fence_timeout_ms))
                 gpu_failed("GPU draw failed");
             else if (ctx->vs->mvp)
                 pipe_opengpu_log_vs_kernarg(ctx->gpu);
@@ -2176,7 +2177,7 @@ static void buffer_unmap(struct pipe_context *pipe, struct pipe_transfer *xfer)
         if ((bytes & 63u) == 0 &&
             (pipe_opengpu_invalidate(ctx->gpu, res->gpu, 0, bytes, &fence) ||
              pipe_opengpu_fence_finish(ctx->gpu, fence,
-                                       opengpu_fence_timeout_ms())))
+                                       ctx->fence_timeout_ms)))
             gpu_failed("buffer invalidate failed");
         pipe_opengpu_fence_reference(&fence, NULL);
     }
@@ -2467,6 +2468,7 @@ struct pipe_context *opengpu_pipe_context_create(struct pipe_screen *screen,
         FREE(ctx);
         return NULL;
     }
+    ctx->fence_timeout_ms = opengpu_fence_timeout_ms();
     ctx->base.screen = screen;
     ctx->base.priv = priv;
     ctx->base.destroy = context_destroy;

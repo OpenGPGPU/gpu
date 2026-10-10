@@ -174,13 +174,52 @@ echo 'GTK coverage guest proof: PASS'
 if [ "$GTK_PROOF_SMOKE" = 1 ]; then
     GTK_SMOKE_LOG="$PROOF_WORK/gtk-smoke.log"
     GTK_SMOKE_TIMEOUT="${GTK_PROOF_FENCE_TIMEOUT_MS:-1800000}"
+    [[ "$GTK_SMOKE_TIMEOUT" =~ ^[0-9]+$ ]] &&
+        [ "${#GTK_SMOKE_TIMEOUT}" -le 10 ] &&
+        [ "$GTK_SMOKE_TIMEOUT" -gt 0 ] &&
+        [ "$GTK_SMOKE_TIMEOUT" -le 2147483647 ] || {
+        echo 'GTK_PROOF_FENCE_TIMEOUT_MS must be 1..2147483647' >&2
+        exit 1
+    }
     echo '=== Check GTK Wayland/OpenGPU smoke window ==='
     GTK_SMOKE_CMD=$(cat <<'EOF'
-set -eu; /root/opengpu_gtk_smoke_build.sh; mkdir -p /run/user/0; chmod 700 /run/user/0; pkill weston || true; export XDG_RUNTIME_DIR=/run/user/0 WAYLAND_DISPLAY=opengpu-gl GDK_BACKEND=wayland LD_LIBRARY_PATH=/root LIBGL_DRIVERS_PATH=/root MESA_LOADER_DRIVER_OVERRIDE=opengpu EGL_LOG_LEVEL=debug LIBGL_DEBUG=verbose OPENGPU_FENCE_TIMEOUT_MS=1800000; weston --backend=drm-backend.so --tty=1 --socket=opengpu-gl >/tmp/weston-gtk-smoke.log 2>&1 & w=$!; for i in $(seq 1 60); do test -S /run/user/0/opengpu-gl && break; kill -0 "$w" 2>/dev/null || break; sleep 1; done; if ! test -S /run/user/0/opengpu-gl; then cat /tmp/weston-gtk-smoke.log; kill "$w" 2>/dev/null || true; wait "$w" 2>/dev/null || true; exit 1; fi; : >/tmp/gtk-client.log; /root/opengpu_gtk_smoke.bin >/tmp/gtk-client.log 2>&1 & a=$!; for i in $(seq 1 900); do grep -qF 'OPENGPU GTK REDRAW: active' /tmp/gtk-client.log && break; kill -0 "$a" 2>/dev/null || break; sleep 1; done; cat /tmp/gtk-client.log; cat /tmp/weston-gtk-smoke.log; kill "$a" "$w" 2>/dev/null || true; wait "$a" 2>/dev/null || true; wait "$w" 2>/dev/null || true
+set -eu
+/root/opengpu_gtk_smoke_build.sh
+mkdir -p /run/user/0
+chmod 700 /run/user/0
+export XDG_RUNTIME_DIR=/run/user/0 WAYLAND_DISPLAY=opengpu-gl GDK_BACKEND=wayland
+export LD_LIBRARY_PATH=/root LIBGL_DRIVERS_PATH=/root MESA_LOADER_DRIVER_OVERRIDE=opengpu
+export OPENGPU_FENCE_TIMEOUT_MS=1800000
+: >/tmp/weston-gtk-smoke.log
+: >/tmp/gtk-client.log
+tail -n +1 -f /tmp/weston-gtk-smoke.log /tmp/gtk-client.log & logger=$!
+w= a=
+cleanup() {
+    kill ${a:-} ${w:-} "$logger" 2>/dev/null || true
+}
+trap cleanup EXIT
+weston --backend=drm-backend.so --tty=1 --socket=opengpu-gl >/tmp/weston-gtk-smoke.log 2>&1 & w=$!
+for i in $(seq 1 60); do
+    test -S /run/user/0/opengpu-gl && break
+    kill -0 "$w" 2>/dev/null || exit 1
+    sleep 1
+done
+test -S /run/user/0/opengpu-gl
+OPENGPU_GTK_AUTOTEST=1 /root/opengpu_gtk_smoke.bin >/tmp/gtk-client.log 2>&1 & a=$!
+for i in $(seq 1 120); do
+    if grep -qF 'OPENGPU GTK FRAME PASS: active' /tmp/gtk-client.log; then
+        cat /tmp/gtk-client.log
+        exit 0
+    fi
+    kill -0 "$w" 2>/dev/null && kill -0 "$a" 2>/dev/null || exit 1
+    sleep 30
+done
+cat /tmp/gtk-client.log
+exit 1
 EOF
 )
     GTK_SMOKE_CMD="${GTK_SMOKE_CMD/OPENGPU_FENCE_TIMEOUT_MS=1800000/OPENGPU_FENCE_TIMEOUT_MS=$GTK_SMOKE_TIMEOUT}"
-    "$GPU_DIR/scripts/gtk_coverage_guest.exp" "$PORT" 2100 "$GTK_SMOKE_CMD" \
+    "$GPU_DIR/scripts/gtk_coverage_guest.exp" "$PORT" 3900 "$GTK_SMOKE_CMD" \
         | tee "$GTK_SMOKE_LOG"
     grep -qF 'OPENGPU GTK FRAME PASS' "$GTK_SMOKE_LOG"
     grep -qF 'OPENGPU GTK REDRAW: active' "$GTK_SMOKE_LOG"
