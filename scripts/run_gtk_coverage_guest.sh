@@ -90,7 +90,7 @@ if [ "$GTK_PROOF_SCISSOR" = 1 ]; then
     [ -f "$artifact" ] || { echo "missing guest artifact: $artifact" >&2; exit 1; }
 fi
 
-BASE="$ARTI_WORK/debian-arm64-base.qcow2"
+BASE="${GTK_DEBIAN_BASE:-$ARTI_WORK/debian-arm64-base.qcow2}"
 [ -f "$BASE" ] || { echo "Debian base image missing at $BASE" >&2; exit 1; }
 QEMU_IMG="${QEMU_IMG:-$DISPLAY_WORK/qemu-arti-build/qemu-img}"
 [ -x "$QEMU_IMG" ] || { echo "qemu-img missing at $QEMU_IMG" >&2; exit 1; }

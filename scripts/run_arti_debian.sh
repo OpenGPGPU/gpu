@@ -18,7 +18,9 @@
 #   GPU_SIM=verilator ./scripts/run_arti_debian.sh
 #   GPU_SIM=flashsim QEMU_DISPLAY=cocoa ./scripts/run_arti_debian.sh
 #   REBUILD_DISK=1 ./scripts/run_arti_debian.sh   # fresh qcow2 from base image
-#   CLOUDINIT_PACKAGES=1 ./scripts/run_arti_debian.sh  # also apt-install tools (slow)
+#   DEBIAN_BASE=../arti-work/debian-gtk-arm64.qcow2 ./scripts/run_arti_debian.sh
+#       # reuse the one-time GTK-enabled image for interactive runs
+#   CLOUDINIT_PACKAGES=1 ./scripts/run_arti_debian.sh  # install tools into a new disk (slow)
 #
 # OpenGPU loads at boot and presents a GPU-drawn desktop
 # (OPENGPU_AUTO_DISPLAY=desktop). The RTL writes the pixels. Set
@@ -70,6 +72,7 @@ QEMU_BUILD="${QEMU_BUILD:-$DISPLAY_WORK/qemu-arti-build}"
 KERNEL="${KERNEL:-$LINUX_BUILD/arch/arm64/boot/Image}"
 DISK="${DISK:-$ARTI_WORK/arti-dev.qcow2}"
 BASE="${DEBIAN_BASE:-$ARTI_WORK/debian-arm64-base.qcow2}"
+echo "  Base image: $BASE"
 CIDATA="${CIDATA:-$DISPLAY_WORK/cloud-init.iso}"
 MODULES_ISO="${MODULES_ISO:-$DISPLAY_WORK/opengpu-modules.iso}"
 DRIVER_KO="${DRIVER_KO:-$DRIVER_OUTPUT/gpu_drv.ko}"
