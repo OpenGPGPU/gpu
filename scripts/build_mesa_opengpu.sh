@@ -28,8 +28,8 @@ if [ ! -f "$MESA_BUILD/build.ninja" ]; then
         --prefix "$PREFIX" \
         -Dgallium-drivers=opengpu \
         -Dvulkan-drivers= \
-        -Dplatforms= \
-        -Degl-native-platform=drm \
+        -Dplatforms=wayland \
+        -Degl-native-platform=wayland \
         -Dgbm=enabled \
         -Degl=enabled \
         -Dgles1=disabled \
@@ -49,6 +49,11 @@ if [ ! -f "$MESA_BUILD/build.ninja" ]; then
         -Dzstd=disabled
 fi
 
+meson configure "$MESA_BUILD" \
+    -Dplatforms=wayland \
+    -Degl-native-platform=wayland \
+    -Dbuild.pkg_config_path="$GPU_DIR/depends/wayland-native/lib/pkgconfig:$PREFIX/lib/pkgconfig"
+
 ninja -C "$MESA_BUILD"
 meson install -C "$MESA_BUILD" --no-rebuild
 
@@ -57,187 +62,187 @@ mkdir -p "$PREFIX/bin"
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_triangle" \
     "$GPU_DIR/userspace/examples/gl_triangle.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_texture" \
     "$GPU_DIR/userspace/examples/gl_texture.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_blend" \
     "$GPU_DIR/userspace/examples/gl_blend.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_scissor" \
     "$GPU_DIR/userspace/examples/gl_scissor.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_transform" \
     "$GPU_DIR/userspace/examples/gl_transform.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_textransform" \
     "$GPU_DIR/userspace/examples/gl_textransform.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_modulate" \
     "$GPU_DIR/userspace/examples/gl_modulate.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_tint" \
     "$GPU_DIR/userspace/examples/gl_tint.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_opacity" \
     "$GPU_DIR/userspace/examples/gl_opacity.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_sprite" \
     "$GPU_DIR/userspace/examples/gl_sprite.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_fill" \
     "$GPU_DIR/userspace/examples/gl_fill.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_icon" \
     "$GPU_DIR/userspace/examples/gl_icon.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_shade" \
     "$GPU_DIR/userspace/examples/gl_shade.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_fade" \
     "$GPU_DIR/userspace/examples/gl_fade.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_glass" \
     "$GPU_DIR/userspace/examples/gl_glass.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_quad" \
     "$GPU_DIR/userspace/examples/gl_quad.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_pane" \
     "$GPU_DIR/userspace/examples/gl_pane.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_wash" \
     "$GPU_DIR/userspace/examples/gl_wash.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_ramp" \
     "$GPU_DIR/userspace/examples/gl_ramp.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_veil" \
     "$GPU_DIR/userspace/examples/gl_veil.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_sheet" \
     "$GPU_DIR/userspace/examples/gl_sheet.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_grade" \
     "$GPU_DIR/userspace/examples/gl_grade.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_haze" \
     "$GPU_DIR/userspace/examples/gl_haze.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_qt_flatcolor" \
     "$GPU_DIR/userspace/examples/gl_qt_flatcolor.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_qt_texture" \
     "$GPU_DIR/userspace/examples/gl_qt_texture.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_qt_opacity" \
     "$GPU_DIR/userspace/examples/gl_qt_opacity.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_qt_vertexcolor" \
     "$GPU_DIR/userspace/examples/gl_qt_vertexcolor.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_qt_stencilclip" \
     "$GPU_DIR/userspace/examples/gl_qt_stencilclip.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_qt_rendernode" \
     "$GPU_DIR/userspace/examples/gl_qt_rendernode.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_gtk_color" \
     "$GPU_DIR/userspace/examples/gl_gtk_color.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 "$CROSS_GCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$PREFIX/include" -I"$PREFIX/include/libdrm" \
     -o "$PREFIX/bin/opengpu_gl_gtk_coverage" \
     "$GPU_DIR/userspace/examples/gl_gtk_coverage.c" \
-    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" \
+    -L"$PREFIX/lib" -Wl,-rpath-link,"$PREFIX/lib" -Wl,--allow-shlib-undefined \
     -lEGL -lGLESv2 -lgbm -ldrm
 
 echo "Built $PREFIX/bin/opengpu_gl_triangle"
@@ -289,6 +294,9 @@ if [ -d "$DRIVER_OUTPUT" ]; then
     cp -L "$PREFIX/bin/opengpu_gl_qt_rendernode" "$DRIVER_OUTPUT/opengpu_gl_qt_rendernode.bin"
     cp -L "$PREFIX/bin/opengpu_gl_gtk_color" "$DRIVER_OUTPUT/opengpu_gl_gtk_color.bin"
     cp -L "$PREFIX/bin/opengpu_gl_gtk_coverage" "$DRIVER_OUTPUT/opengpu_gl_gtk_coverage.bin"
+    cp "$GPU_DIR/userspace/examples/gtk_opengpu_smoke.c" "$DRIVER_OUTPUT/gtk_opengpu_smoke.c"
+    cp "$GPU_DIR/userspace/examples/opengpu_gtk_smoke.sh" "$DRIVER_OUTPUT/opengpu_gtk_smoke.sh"
+    cp "$GPU_DIR/userspace/examples/opengpu_gtk_smoke_build.sh" "$DRIVER_OUTPUT/opengpu_gtk_smoke_build.sh"
     aarch64-linux-gnu-strip "$DRIVER_OUTPUT"/libEGL.so.1 \
         "$DRIVER_OUTPUT"/libGLESv2.so.2 "$DRIVER_OUTPUT"/libgbm.so.1 \
         "$DRIVER_OUTPUT"/libglapi.so.0 "$DRIVER_OUTPUT"/libdrm.so.2 \

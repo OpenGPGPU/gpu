@@ -61,3 +61,66 @@ the guest proof. Logs are kept in `../arti-work/gtk-coverage-proof/`.
 
 The ordinary `Scala CI` workflow continues to run vector ALU specs and the
 backend ellipse regression for relevant changes.
+
+## Minimal GTK window
+
+`userspace/examples/gtk_opengpu_smoke.c` is the first real GTK client. It
+creates a `GtkApplication` window with a label and button, renders the panel
+through `GtkGLArea` and the OpenGPU GLES driver, and queues a second GPU draw
+when the button is clicked. The guest modules ISO now stages the source and a build helper. GTK and the guest development/debug tools are installed once into a dedicated image.
+Cloud-init remains package-free during normal boots. Prepare the image with:
+
+```sh
+scripts/bake_gtk_debian_image.sh
+```
+
+Then point the proof at that image; ordinary boots remain package-free:
+
+```sh
+GTK_DEBIAN_BASE=../arti-work/debian-gtk-arm64.qcow2 \
+  bash scripts/run_gtk_coverage_guest.sh
+```
+
+On that guest, build it with:
+
+```sh
+/root/opengpu_gtk_smoke_build.sh
+```
+
+Run it under the same environment as the GLES proofs:
+
+```sh
+LD_LIBRARY_PATH=/root LIBGL_DRIVERS_PATH=/root \
+  /root/opengpu_gtk_smoke.bin
+```
+
+The first acceptance point is Weston DRM startup on the `Virtual-1` connector and
+GTK/Wayland startup without a display error. The next acceptance point is
+`GtkGLArea` realization and one successful frame, followed by the
+`OPENGPU GTK REDRAW` line after pressing the button.
+The existing ellipse, desktop, and scissor proofs remain the deterministic
+scanout checks.
+
+The opt-in smoke gate now starts Weston through the OpenGPU EGL path and reports
+`GL vendor: opengpu` and `GL renderer: opengpu`. The TGSI texture shader and
+indexed triangle lowering are implemented in the Gallium driver. The remaining
+GPU wait budget is selected with `OPENGPU_FENCE_TIMEOUT_MS`; the smoke gate uses
+1800000 ms because a 640x480 FlashSim compositor frame can take several
+minutes. Fast hardware or small tests can set a shorter value. The kernel
+watchdog remains independent and still reports real GPU faults.
+
+
+## Reusing the GTK-enabled image
+
+The prepared image is a normal Debian ARM64 qcow2 image, so the other ARTI
+runners can use it as their base as well:
+
+```sh
+DEBIAN_BASE=../arti-work/debian-gtk-arm64.qcow2 \
+  scripts/run_arti_debian.sh
+```
+
+`DEBIAN_BASE` is only used when the persistent `DISK` does not exist. To start
+from the GTK image again, choose a new `DISK` or set `REBUILD_DISK=1`. The
+qualification scripts should keep using the clean default image for reproducible
+baseline runs; use the GTK image for interactive and application development.

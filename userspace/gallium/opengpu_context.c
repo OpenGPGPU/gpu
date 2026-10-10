@@ -30,7 +30,9 @@
 #include "util/u_upload_mgr.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define OPENGPU_VB_SLOTS 8u
@@ -55,6 +57,7 @@ struct opengpu_shader {
     int color_imm;
     float color[4];
     int samples;
+    int sample_alpha_one;
     int modulate;
     /* The modulate colour is fragment CONST[0][0], packed into the
      * interpolant. The fragment core still does the multiply.
@@ -143,8 +146,34 @@ static struct opengpu_context *octx(struct pipe_context *pipe)
     return (struct opengpu_context *)pipe;
 }
 
-/* A FlashSim draw can take minutes of wall clock; match pipe_desktop. */
-#define OPENGPU_FENCE_TIMEOUT_MS 300000
+/* A 640x480 FlashSim compositor frame is several minutes at the current
+ * active model rate. The kernel driver owns the actual watchdog; userspace
+ * selects its wait budget per environment so fast hardware tests need not
+ * inherit the emulator's long wall-clock allowance. */
+#ifndef OPENGPU_FENCE_TIMEOUT_MS
+#define OPENGPU_FENCE_TIMEOUT_MS 1800000
+#endif
+
+static int64_t opengpu_fence_timeout_ms(void)
+{
+    static int64_t timeout = -1;
+    const char *value;
+    char *end;
+    unsigned long long parsed;
+
+    if (timeout >= 0)
+        return timeout;
+    timeout = OPENGPU_FENCE_TIMEOUT_MS;
+    value = getenv("OPENGPU_FENCE_TIMEOUT_MS");
+    if (!value || !*value)
+        return timeout;
+    errno = 0;
+    parsed = strtoull(value, &end, 10);
+    if (errno || end == value || *end || parsed > INT64_MAX)
+        return timeout;
+    timeout = (int64_t)parsed;
+    return timeout;
+}
 
 static void reject(const char *why)
 {
@@ -788,7 +817,8 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                     insn->Texture.Texture != TGSI_TEXTURE_2D)
                     goto fail;
                 if (insn->Instruction.NumSrcRegs >= 2 &&
-                    (insn->Src[1].Register.File != TGSI_FILE_SAMPLER ||
+                    ((insn->Src[1].Register.File != TGSI_FILE_SAMPLER &&
+                      insn->Src[1].Register.File != TGSI_FILE_SAMPLER_VIEW) ||
                      insn->Src[1].Register.Index != 0))
                     goto fail;
                 if (insn->Dst[0].Register.WriteMask != TGSI_WRITEMASK_XYZW ||
@@ -930,6 +960,44 @@ static struct opengpu_shader *lower_shader(const struct pipe_shader_state *state
                 if (match_fill_mov(insn, temp_file, temp_index, shader, sem_out))
                     goto fail;
                 break;
+            }
+            /* NIR/TGSI commonly materializes texture2D() as a sample
+             * temporary followed by a self-copy of RGB and an explicit
+             * alpha write:
+             *
+             *   TEX TEMP[0], ...
+             *   MOV TEMP[0].xyz, TEMP[0]
+             *   MOV TEMP[0].w, IMM[0].xxxx
+             *
+             * The RGB self-copy is a no-op. The alpha write must execute on
+             * the fragment core before any modulation.
+             */
+            if (want_fs && insn->Instruction.Opcode == TGSI_OPCODE_MOV &&
+                !insn->Instruction.Saturate &&
+                insn->Instruction.NumDstRegs == 1 &&
+                insn->Instruction.NumSrcRegs == 1 &&
+                !insn->Dst[0].Register.Indirect &&
+                insn->Dst[0].Register.File == TGSI_FILE_TEMPORARY &&
+                insn->Dst[0].Register.Index >= 0 &&
+                insn->Dst[0].Register.Index < (int)OPENGPU_ATTRIBS &&
+                temp_file[insn->Dst[0].Register.Index] == TEMP_SAMPLE) {
+                unsigned dst_mask = insn->Dst[0].Register.WriteMask;
+                const struct tgsi_full_src_register *src = &insn->Src[0];
+
+                if (src->Register.File == TGSI_FILE_TEMPORARY &&
+                    src->Register.Index == insn->Dst[0].Register.Index &&
+                    dst_mask == TGSI_WRITEMASK_XYZ &&
+                    identity_swizzle(&src->Register))
+                    break;
+                if (src->Register.File == TGSI_FILE_IMMEDIATE &&
+                    dst_mask == TGSI_WRITEMASK_W && nimm &&
+                    src->Register.Index == 0 &&
+                    !saw_modulate &&
+                    broadcast_swizzle(&src->Register, TGSI_SWIZZLE_X) &&
+                    imm[0] == 1.0f) {
+                    shader->sample_alpha_one = 1;
+                    break;
+                }
             }
             if (insn->Instruction.Opcode != TGSI_OPCODE_MOV ||
                 insn->Instruction.Saturate || insn->Instruction.NumDstRegs != 1 ||
@@ -1111,6 +1179,31 @@ static void *create_vs_state(struct pipe_context *pipe,
     return create_shader(pipe, state, 0);
 }
 
+/* The fixed sampling programs put the packed RGBA result in v2. Insert
+ * alpha = 255 immediately after sampling, before the program multiplies it. */
+static int bind_sample_program(struct opengpu_context *ctx,
+                               const uint32_t *code, size_t bytes)
+{
+    uint32_t patched[256];
+    size_t words = bytes / sizeof(uint32_t), i;
+
+    if (!ctx->fs->sample_alpha_one)
+        return pipe_opengpu_bind_fs(ctx->gpu, code, bytes);
+    if (words + 2 > ARRAY_SIZE(patched))
+        return -1;
+    for (i = 0; i < words; i++) {
+        if (code[i] != 0x0620812bu) /* vtex.sample v2, v1, v2 */
+            continue;
+        memcpy(patched, code, (i + 1) * sizeof(uint32_t));
+        patched[i + 1] = 0x0ff00393u; /* addi x7, zero, 255 */
+        patched[i + 2] = 0x2a23c157u; /* vor.vx v2, v2, x7 */
+        memcpy(patched + i + 3, code + i + 1,
+               (words - i - 1) * sizeof(uint32_t));
+        return pipe_opengpu_bind_fs(ctx->gpu, patched, bytes + 8);
+    }
+    return -1;
+}
+
 static void bind_fs_state(struct pipe_context *pipe, void *hw)
 {
     struct opengpu_context *ctx = octx(pipe);
@@ -1126,15 +1219,15 @@ static void bind_fs_state(struct pipe_context *pipe, void *hw)
     }
     if (ctx->fs->scale_const && ctx->fs->modulate &&
         ctx->fs->scale_const_chan < 0) {
-        if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_wash,
+        if (bind_sample_program(ctx, opengpu_fragment_wash,
                                  OPENGPU_FRAGMENT_WASH_BYTES))
             reject("fragment shader bind failed");
     } else if (ctx->fs->scale_const && ctx->fs->modulate) {
-        if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_shade,
+        if (bind_sample_program(ctx, opengpu_fragment_shade,
                                  OPENGPU_FRAGMENT_SHADE_BYTES))
             reject("fragment shader bind failed");
     } else if (ctx->fs->modulate) {
-        if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_modulate,
+        if (bind_sample_program(ctx, opengpu_fragment_modulate,
                                  OPENGPU_FRAGMENT_MODULATE_BYTES))
             reject("fragment shader bind failed");
     } else if (ctx->fs->scale_const) {
@@ -1142,7 +1235,7 @@ static void bind_fs_state(struct pipe_context *pipe, void *hw)
                                  OPENGPU_FRAGMENT_FADE_BYTES))
             reject("fragment shader bind failed");
     } else if (ctx->fs->samples) {
-        if (pipe_opengpu_bind_fs(ctx->gpu, opengpu_fragment_sample,
+        if (bind_sample_program(ctx, opengpu_fragment_sample,
                                  OPENGPU_FRAGMENT_SAMPLE_BYTES))
             reject("fragment shader bind failed");
     } else if (ctx->vs && ctx->vs->vs_opacity && ctx->fs->color_src >= 0 &&
@@ -1477,7 +1570,8 @@ static void clear(struct pipe_context *pipe, unsigned buffers,
         float rgba[4] = { color->f[0], color->f[1], color->f[2], color->f[3] };
 
         if (pipe_opengpu_clear(ctx->gpu, pack_color(rgba), &fence) ||
-            pipe_opengpu_fence_finish(ctx->gpu, fence, OPENGPU_FENCE_TIMEOUT_MS))
+            pipe_opengpu_fence_finish(ctx->gpu, fence,
+                                      opengpu_fence_timeout_ms()))
             gpu_failed("colour clear failed");
         pipe_opengpu_fence_reference(&fence, NULL);
     }
@@ -1496,7 +1590,8 @@ static void clear(struct pipe_context *pipe, unsigned buffers,
         bytes = pipe_opengpu_resource_size(depth_res->gpu);
         if (pipe_opengpu_fill(ctx->gpu, depth_res->gpu, 0, bytes, pattern,
                               &fence) ||
-            pipe_opengpu_fence_finish(ctx->gpu, fence, OPENGPU_FENCE_TIMEOUT_MS))
+            pipe_opengpu_fence_finish(ctx->gpu, fence,
+                                      opengpu_fence_timeout_ms()))
             gpu_failed("depth clear failed");
         pipe_opengpu_fence_reference(&fence, NULL);
     }
@@ -1749,6 +1844,9 @@ static void draw_vbo(struct pipe_context *pipe,
                      unsigned num_draws)
 {
     struct opengpu_context *ctx = octx(pipe);
+    const uint8_t *index_data = NULL;
+    uint64_t index_bytes = 0;
+    unsigned index_size = info->index_size;
     unsigned draw_i;
 
     (void)drawid_offset;
@@ -1757,11 +1855,34 @@ static void draw_vbo(struct pipe_context *pipe,
         reject("draw without a lowered shader or a colour target");
         return;
     }
-    if (indirect || info->index_size || info->primitive_restart ||
+    if (indirect || info->primitive_restart ||
         info->mode != PIPE_PRIM_TRIANGLES ||
         (info->instance_count > 1)) {
-        reject("draw needs a non-indexed triangle list on the GPU");
+        reject("draw needs a triangle list without restart or instancing");
         return;
+    }
+    /* The hardware command is a triangle list, but does not need an index
+     * buffer of its own. Expand indexed Gallium draws on the CPU while
+     * packing the same three vertices into the existing upload buffer. */
+    if (index_size) {
+        if (index_size != 1 && index_size != 2 && index_size != 4) {
+            reject("indexed draw has an unsupported index size");
+            return;
+        }
+        if (info->has_user_indices) {
+            index_data = (const uint8_t *)info->index.user;
+        } else if (info->index.resource) {
+            struct opengpu_resource *index_res =
+                opengpu_resource(info->index.resource);
+            if (index_res) {
+                index_data = pipe_opengpu_resource_map(index_res->gpu);
+                index_bytes = pipe_opengpu_resource_size(index_res->gpu);
+            }
+        }
+        if (!index_data) {
+            reject("indexed draw has no readable index buffer");
+            return;
+        }
     }
     if (ctx->dsa.alpha_enabled) {
         reject("alpha test is not lowered onto the GPU yet");
@@ -1876,7 +1997,31 @@ static void draw_vbo(struct pipe_context *pipe,
             unsigned v;
 
             for (v = 0; v < 3; v++) {
-                if (pack_one(ctx, start + tri + v, ctx->vs, ctx->fs, &verts[v])) {
+                unsigned vertex = start + tri + v;
+                if (index_size) {
+                    uint32_t raw;
+                    int64_t biased;
+
+                    if (index_bytes &&
+                        ((uint64_t)vertex + 1u) * index_size > index_bytes) {
+                        reject("indexed draw exceeds the index buffer");
+                        return;
+                    }
+
+                    if (index_size == 1)
+                        raw = index_data[vertex];
+                    else if (index_size == 2)
+                        raw = ((const uint16_t *)index_data)[vertex];
+                    else
+                        raw = ((const uint32_t *)index_data)[vertex];
+                    biased = (int64_t)raw + draws[draw_i].index_bias;
+                    if (biased < 0 || biased > UINT32_MAX) {
+                        reject("indexed draw has an invalid index bias");
+                        return;
+                    }
+                    vertex = (unsigned)biased;
+                }
+                if (pack_one(ctx, vertex, ctx->vs, ctx->fs, &verts[v])) {
                     reject("vertex attribute did not pack into the GPU format");
                     return;
                 }
@@ -1904,7 +2049,8 @@ static void draw_vbo(struct pipe_context *pipe,
             }
             if (pipe_opengpu_invalidate(ctx->gpu, ctx->packed, 0, ctx->packed_bytes,
                                         &fence) ||
-                pipe_opengpu_fence_finish(ctx->gpu, fence, OPENGPU_FENCE_TIMEOUT_MS)) {
+                pipe_opengpu_fence_finish(ctx->gpu, fence,
+                                          opengpu_fence_timeout_ms())) {
                 pipe_opengpu_fence_reference(&fence, NULL);
                 gpu_failed("vertex buffer invalidate failed");
                 return;
@@ -1976,7 +2122,8 @@ static void draw_vbo(struct pipe_context *pipe,
                                OPENGPU_DRAW_STATE_TEX_CLAMP;
             }
             if (pipe_opengpu_draw_vertex(ctx->gpu, &vdraw, &fence) ||
-                pipe_opengpu_fence_finish(ctx->gpu, fence, OPENGPU_FENCE_TIMEOUT_MS))
+                pipe_opengpu_fence_finish(ctx->gpu, fence,
+                                          opengpu_fence_timeout_ms()))
                 gpu_failed("GPU draw failed");
             else if (ctx->vs->mvp)
                 pipe_opengpu_log_vs_kernarg(ctx->gpu);
@@ -2028,7 +2175,8 @@ static void buffer_unmap(struct pipe_context *pipe, struct pipe_transfer *xfer)
 
         if ((bytes & 63u) == 0 &&
             (pipe_opengpu_invalidate(ctx->gpu, res->gpu, 0, bytes, &fence) ||
-             pipe_opengpu_fence_finish(ctx->gpu, fence, OPENGPU_FENCE_TIMEOUT_MS)))
+             pipe_opengpu_fence_finish(ctx->gpu, fence,
+                                       opengpu_fence_timeout_ms())))
             gpu_failed("buffer invalidate failed");
         pipe_opengpu_fence_reference(&fence, NULL);
     }

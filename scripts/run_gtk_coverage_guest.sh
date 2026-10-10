@@ -14,6 +14,7 @@ MESA_BUILD="${MESA_BUILD:-$GPU_DIR/depends/mesa-build}"
 GPU_TILE_BINNING="${GPU_TILE_BINNING:-0}"
 GTK_PROOF_DESKTOP="${GTK_PROOF_DESKTOP:-0}"
 GTK_PROOF_SCISSOR="${GTK_PROOF_SCISSOR:-0}"
+GTK_PROOF_SMOKE="${GTK_PROOF_SMOKE:-0}"
 [ "$GTK_PROOF_DESKTOP" != 1 ] || [ "$GTK_PROOF_SCISSOR" != 1 ] || {
     echo "choose either GTK_PROOF_DESKTOP or GTK_PROOF_SCISSOR" >&2
     exit 1
@@ -169,6 +170,22 @@ echo '=== Check GTK ellipse coverage ==='
 grep -qF 'gl_gtk_coverage: mode 640x480 inside=0xff0000ff outside=0x00000000' "$PROOF_LOG"
 grep -qF 'OPENGPU GL GTK COVERAGE PASS' "$PROOF_LOG"
 echo 'GTK coverage guest proof: PASS'
+
+if [ "$GTK_PROOF_SMOKE" = 1 ]; then
+    GTK_SMOKE_LOG="$PROOF_WORK/gtk-smoke.log"
+    GTK_SMOKE_TIMEOUT="${GTK_PROOF_FENCE_TIMEOUT_MS:-1800000}"
+    echo '=== Check GTK Wayland/OpenGPU smoke window ==='
+    GTK_SMOKE_CMD=$(cat <<'EOF'
+set -eu; /root/opengpu_gtk_smoke_build.sh; mkdir -p /run/user/0; chmod 700 /run/user/0; pkill weston || true; export XDG_RUNTIME_DIR=/run/user/0 WAYLAND_DISPLAY=opengpu-gl GDK_BACKEND=wayland LD_LIBRARY_PATH=/root LIBGL_DRIVERS_PATH=/root MESA_LOADER_DRIVER_OVERRIDE=opengpu EGL_LOG_LEVEL=debug LIBGL_DEBUG=verbose OPENGPU_FENCE_TIMEOUT_MS=1800000; weston --backend=drm-backend.so --tty=1 --socket=opengpu-gl >/tmp/weston-gtk-smoke.log 2>&1 & w=$!; for i in $(seq 1 60); do test -S /run/user/0/opengpu-gl && break; kill -0 "$w" 2>/dev/null || break; sleep 1; done; if ! test -S /run/user/0/opengpu-gl; then cat /tmp/weston-gtk-smoke.log; kill "$w" 2>/dev/null || true; wait "$w" 2>/dev/null || true; exit 1; fi; : >/tmp/gtk-client.log; /root/opengpu_gtk_smoke.bin >/tmp/gtk-client.log 2>&1 & a=$!; for i in $(seq 1 900); do grep -qF 'OPENGPU GTK REDRAW: active' /tmp/gtk-client.log && break; kill -0 "$a" 2>/dev/null || break; sleep 1; done; cat /tmp/gtk-client.log; cat /tmp/weston-gtk-smoke.log; kill "$a" "$w" 2>/dev/null || true; wait "$a" 2>/dev/null || true; wait "$w" 2>/dev/null || true
+EOF
+)
+    GTK_SMOKE_CMD="${GTK_SMOKE_CMD/OPENGPU_FENCE_TIMEOUT_MS=1800000/OPENGPU_FENCE_TIMEOUT_MS=$GTK_SMOKE_TIMEOUT}"
+    "$GPU_DIR/scripts/gtk_coverage_guest.exp" "$PORT" 2100 "$GTK_SMOKE_CMD" \
+        | tee "$GTK_SMOKE_LOG"
+    grep -qF 'OPENGPU GTK FRAME PASS' "$GTK_SMOKE_LOG"
+    grep -qF 'OPENGPU GTK REDRAW: active' "$GTK_SMOKE_LOG"
+    echo 'GTK Wayland/OpenGPU smoke proof: PASS'
+fi
 
 if [ "$GTK_PROOF_DESKTOP" = 1 ]; then
     DESKTOP_LOG="$PROOF_WORK/desktop.log"

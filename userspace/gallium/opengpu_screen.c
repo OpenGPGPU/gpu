@@ -186,7 +186,8 @@ static int screen_get_shader_param(struct pipe_screen *screen,
 
 static bool format_ok(enum pipe_format format, unsigned bindings)
 {
-    bool color = format == PIPE_FORMAT_R8G8B8A8_UNORM;
+    bool color = format == PIPE_FORMAT_R8G8B8A8_UNORM ||
+                 format == PIPE_FORMAT_B8G8R8X8_UNORM;
     bool depth = format == PIPE_FORMAT_Z24_UNORM_S8_UINT ||
                  format == PIPE_FORMAT_Z24X8_UNORM;
     bool vertex = format == PIPE_FORMAT_R32G32B32A32_FLOAT ||
@@ -254,6 +255,7 @@ static struct pipe_resource *resource_create(struct pipe_screen *screen,
         if (!templ->width0 || !templ->height0 || templ->nr_samples > 1)
             return NULL;
         if (templ->format != PIPE_FORMAT_R8G8B8A8_UNORM &&
+            templ->format != PIPE_FORMAT_B8G8R8X8_UNORM &&
             templ->format != PIPE_FORMAT_Z24_UNORM_S8_UINT &&
             templ->format != PIPE_FORMAT_Z24X8_UNORM)
             return NULL;
